@@ -4,7 +4,7 @@ use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     GenerationPin, LqExpr, LqFilter, LqLeaf, LqQuery, LqStructuralBlock, LqStructuralConstraint,
     LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef, LqStructuralNode,
-    SearchPlaneTrackKind, StructuralQueryRequest, TextQuerySyntax,
+    SearchPlaneTrackKind, StructuralQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::structural::StructuralExecutableFilter;
@@ -18,18 +18,7 @@ pub(super) fn lower_structural_query_request(
     activation_catalog: &ActivationCatalog,
     request: &StructuralQueryRequest,
 ) -> Result<(GenerationPin, LqQuery), CoreError> {
-    let lowered = match request.text_query.syntax {
-        TextQuerySyntax::CodeSearch => {
-            return Err(structural_invalid_request(
-                "structural: code_search returns files; use native or sourcegraph syntax on this route",
-            ));
-        }
-        TextQuerySyntax::Native => lower_lexical_text_query(&request.text_query)?,
-        TextQuerySyntax::Sourcegraph => {
-            lower_sourcegraph_structural_query_text(&request.text_query.query_text)?
-        }
-    };
-    validate_structural_feature_surface(&lowered)?;
+    let lowered = lower_structural_text_query(&request.text_query)?;
     let pin = resolve_lexical_request_pin(
         activation_catalog,
         &request.text_query,
@@ -37,6 +26,24 @@ pub(super) fn lower_structural_query_request(
         "structural",
     )?;
     Ok((pin, lowered))
+}
+
+pub(super) fn lower_structural_text_query(
+    request: &TextQueryRequest,
+) -> Result<LqQuery, CoreError> {
+    let lowered = match request.syntax {
+        TextQuerySyntax::CodeSearch => {
+            return Err(structural_invalid_request(
+                "structural: code_search returns files; use native or sourcegraph syntax on this route",
+            ));
+        }
+        TextQuerySyntax::Native => lower_lexical_text_query(request)?,
+        TextQuerySyntax::Sourcegraph => {
+            lower_sourcegraph_structural_query_text(&request.query_text)?
+        }
+    };
+    validate_structural_feature_surface(&lowered)?;
+    Ok(lowered)
 }
 
 fn validate_structural_feature_surface(query: &LqQuery) -> Result<(), CoreError> {

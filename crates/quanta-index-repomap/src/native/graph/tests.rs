@@ -32,6 +32,7 @@ fn certified_output_requires_unique_canonical_members() {
     assert!(
         validate_output(&GraphOwnerOutput {
             projection: Vec::new(),
+            facts: None,
             nodes: vec![node.clone()],
             edges: vec![edge.clone()]
         })
@@ -40,6 +41,7 @@ fn certified_output_requires_unique_canonical_members() {
     assert!(
         validate_output(&GraphOwnerOutput {
             projection: Vec::new(),
+            facts: None,
             nodes: vec![node.clone(), node],
             edges: vec![]
         })
@@ -48,6 +50,7 @@ fn certified_output_requires_unique_canonical_members() {
     assert!(
         validate_output(&GraphOwnerOutput {
             projection: Vec::new(),
+            facts: None,
             nodes: vec![],
             edges: vec![edge.clone(), edge]
         })
@@ -90,6 +93,7 @@ fn rank_policy_requires_a_projection_for_each_searchable_node()
         }],
         edges: Vec::new(),
         projection: Vec::new(),
+        facts: None,
     };
     if !matches!(
         validate_rank_coverage(&output, native_repomap_rank_policy()),
@@ -121,14 +125,16 @@ mod projection_retention {
     use quanta_index_contract::index::{
         AttemptId, AttemptRef, CollectionId, GroupActivation, IndexInstanceId, IndexKind,
         InputBinding, InputDomain, InstanceSpec, MapRoot, MemberBinding, ObjectRef, OperationKey,
-        OwnerMutationSet, ProjectionBinding, ProjectionId, PublicationGroupId, SchemaId, SlotId,
-        SourceCut, StorageFormatId, StreamId, TenantId, WorkspaceKey, WorktreeId,
+        OwnerMutation, OwnerMutationSet, ProjectionBinding, ProjectionId,
+        ProjectionOwnerContribution, PublicationGroupId, SchemaId, SlotId, SourceCut,
+        StorageFormatId, StreamId, TenantId, WorkspaceKey, WorktreeId,
     };
     use quanta_index_core::index::{
-        AttemptContext, IndexError, MapBatchRequest, MapBatchWrite, MapEdit, MapPage, MapWrite,
-        MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort,
+        AttemptContext, IndexError, MapBatchRequest, MapBatchWrite, MapEdit, MapPage, MapValue,
+        MapWrite, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort,
         ObjectBatchInput, OwnerMutationDigest, RegisteredObject, RegisteredObjectBatch,
         ScratchAllocation, ScratchRequest, ScratchSpacePort, StoredObject, WorkBudget, WorkLimits,
+        owner_map_key, owner_mutation_value,
         ports::{
             ImmutableObjectPort, MapEditCursor, ObjectCustodyPort, ObjectWriteSink,
             PersistentMapPort,
@@ -138,7 +144,7 @@ mod projection_retention {
 
     use super::super::{
         GraphRoot, NativeGraph,
-        contribution::{GraphElement, GraphSupport, load_support},
+        contribution::{GraphElement, GraphSupport, OwnerGraphRecord, load_owner, load_support},
     };
     use super::Digest;
 
@@ -415,7 +421,7 @@ mod projection_retention {
             }
 
             // An empty graph is valid JSON, unlike an empty output body.
-            let payload = br#"{"nodes":[],"edges":[],"projection":[]}"#;
+            let payload = br#"{"nodes":[],"edges":[],"projection":[],"facts":null}"#;
             let reference = objects.store(payload, &[])?.reference;
             let loaded = load_output(reference, &objects, &mut work)?;
             if !loaded.output.nodes.is_empty()
@@ -555,6 +561,7 @@ mod projection_retention {
                 subject: entry.subject.clone(),
                 row: row_ref,
             }],
+            facts: None,
         };
         let output_bytes = serde_json::to_vec(&output)
             .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
@@ -602,6 +609,76 @@ mod projection_retention {
                 "support accepted missing row child".into(),
             ));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn typed_file_facts_child_must_match_canonical_graph_nodes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::contribution::load_output;
+        use quanta_index_contract::{
+            RepoMapFileNode, RepoMapNode, RepoRelativePath,
+            native_protocol::NativeRepoMapFileFactsV1,
+        };
+
+        let objects = Objects::default();
+        let mut work = budget()?;
+        let node = RepoMapNode::File(RepoMapFileNode {
+            file_id: super::FileId::new("src/a.rs"),
+            repo_relative_path: RepoRelativePath::new("src/a.rs"),
+            line_count: 10,
+        });
+        let facts = NativeRepoMapFileFactsV1 {
+            owner_path: RepoRelativePath::new("src/a.rs"),
+            nodes: vec![node.clone()],
+        };
+        let mut hash = Sha256::new();
+        hash.update(b"quanta-index/native-repomap-node/v1\0");
+        serde_json::to_writer(&mut hash, &node)?;
+        let graph_node = super::GraphNode {
+            identity: super::file("src/a.rs"),
+            payload_digest: Digest(hash.finalize().into()),
+        };
+        let mut check = |facts: &NativeRepoMapFileFactsV1, graph: &super::GraphNode|
+            -> Result<bool, Box<dyn std::error::Error>> {
+            let facts_ref = objects.store(&serde_json::to_vec(facts)?, &[])?.reference;
+            let output = super::GraphOwnerOutput {
+                nodes: vec![graph.clone()],
+                edges: Vec::new(),
+                projection: Vec::new(),
+                facts: Some(facts_ref),
+            };
+            let bytes = serde_json::to_vec(&output)?;
+            let output_ref = objects.store(&bytes, &[facts_ref])?.reference;
+            Ok(load_output(output_ref, &objects, &mut work).is_ok())
+        };
+        assert!(check(&facts, &graph_node)?);
+
+        let mut wrong_path = facts.clone();
+        wrong_path.owner_path = RepoRelativePath::new("src/b.rs");
+        assert!(!check(&wrong_path, &graph_node)?);
+        let mut wrong_payload = facts;
+        let RepoMapNode::File(ref mut file) = wrong_payload.nodes[0] else {
+            return Err("test file node changed variant".into());
+        };
+        file.line_count = 11;
+        assert!(!check(&wrong_payload, &graph_node)?);
+        let mut noncanonical = serde_json::to_vec(&wrong_payload)?;
+        noncanonical.push(b' ');
+        let facts_ref = objects.store(&noncanonical, &[])?.reference;
+        let output = super::GraphOwnerOutput {
+            nodes: vec![graph_node],
+            edges: Vec::new(),
+            projection: Vec::new(),
+            facts: Some(facts_ref),
+        };
+        let output_ref = objects
+            .store(&serde_json::to_vec(&output)?, &[facts_ref])?
+            .reference;
+        assert!(matches!(
+            load_output(output_ref, &objects, &mut work),
+            Err(IndexError::CorruptObject(_))
+        ));
         Ok(())
     }
 
@@ -668,6 +745,235 @@ mod projection_retention {
         Ok(())
     }
 
+    struct OwnerRefreshMaps {
+        key: Vec<u8>,
+        selected: [(MapRoot, ObjectRef); 3],
+        mutations: MapRoot,
+        mutation: MapValue,
+        updated_owners: Mutex<Option<ObjectRef>>,
+    }
+
+    impl PersistentMapPort for OwnerRefreshMaps {
+        fn lookup(
+            &self,
+            root: MapRoot,
+            key: &[u8],
+            _: &mut WorkBudget,
+        ) -> Result<Option<MapValue>, IndexError> {
+            self.selected
+                .iter()
+                .find(|(base, _)| *base == root && key == self.key.as_slice())
+                .map(|(_, value)| Some((*value).into()))
+                .ok_or_else(|| {
+                    IndexError::BackendViolation("unexpected graph support lookup".into())
+                })
+        }
+
+        fn scan(
+            &self,
+            root: MapRoot,
+            after: Option<&[u8]>,
+            limit: u32,
+            _: &mut WorkBudget,
+        ) -> Result<MapPage, IndexError> {
+            if root != self.mutations || after.is_some() || limit != 1 {
+                return Err(IndexError::BackendViolation(
+                    "unexpected graph support scan".into(),
+                ));
+            }
+            Ok(MapPage::new(
+                vec![(self.key.clone(), self.mutation)],
+                false,
+                Vec::new(),
+                None,
+            ))
+        }
+
+        fn apply(
+            &self,
+            root: MapRoot,
+            edits: &[MapEdit],
+            _: &dyn ObjectWriteSink,
+            _: &mut WorkBudget,
+        ) -> Result<MapWrite, IndexError> {
+            let (owner_root, owner_record) = self.selected[2];
+            let [edit] = edits else {
+                return Err(IndexError::BackendViolation(
+                    "expected one graph owner edit".into(),
+                ));
+            };
+            if root != owner_root
+                || edit.key != self.key
+                || edit.expected != Some(owner_record.into())
+            {
+                return Err(IndexError::BackendViolation(
+                    "unexpected graph support edit".into(),
+                ));
+            }
+            let Some(MapValue::Object(next)) = edit.next else {
+                return Err(IndexError::BackendViolation(
+                    "missing refreshed graph owner".into(),
+                ));
+            };
+            *self
+                .updated_owners
+                .lock()
+                .map_err(|_| IndexError::Storage("test lock".into()))? = Some(next);
+            Ok(MapWrite {
+                root: MapRoot(Some(reference(99))),
+            })
+        }
+
+        fn apply_batch(
+            &self,
+            requests: &[MapBatchRequest],
+            sink: &dyn ObjectWriteSink,
+            budget: &mut WorkBudget,
+        ) -> Result<MapBatchWrite, IndexError> {
+            EmptyMaps.apply_batch(requests, sink, budget)
+        }
+
+        fn apply_stream(
+            &self,
+            roots: &[MapRoot],
+            cursor: &mut dyn MapEditCursor,
+            sink: &dyn ObjectWriteSink,
+            budget: &mut WorkBudget,
+        ) -> Result<quanta_index_core::index::StagedMapRoots, IndexError> {
+            EmptyMaps.apply_stream(roots, cursor, sink, budget)
+        }
+    }
+
+    #[test]
+    fn identical_graph_output_refreshes_only_owner_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let objects = Objects::default();
+        let output = super::GraphOwnerOutput {
+            nodes: vec![super::GraphNode {
+                identity: super::file("src/unchanged.rs"),
+                payload_digest: Digest([60; 32]),
+            }],
+            edges: Vec::new(),
+            projection: Vec::new(),
+            facts: None,
+        };
+        let output = objects.store(&serde_json::to_vec(&output)?, &[])?.reference;
+        let source = SourceCut {
+            owners: MapRoot(None),
+            paths: MapRoot(None),
+            frontiers: MapRoot(None),
+        };
+        let before = projection(source, reference(21));
+        let after = ProjectionBinding {
+            owners: MapRoot(Some(reference(22))),
+            ..before
+        };
+        let owner = quanta_index_contract::index::OwnerKey {
+            producer: before.producer,
+            ..super::owner(1)
+        };
+        let contribution = |stamp| -> Result<ObjectRef, Box<dyn std::error::Error>> {
+            let contribution = ProjectionOwnerContribution {
+                projection: before.projection,
+                producer: before.producer,
+                owner,
+                source_owner: None,
+                source: None,
+                dependency_stamp: Digest([stamp; 32]),
+                output: Some(output),
+            };
+            Ok(objects
+                .store(
+                    &serde_json::to_vec(&contribution)?,
+                    &contribution.object_children(),
+                )?
+                .reference)
+        };
+        let (previous, next) = (contribution(1)?, contribution(2)?);
+        let old_record = OwnerGraphRecord {
+            owner,
+            projection: previous,
+            output: Some(output),
+        };
+        let mut children = [previous, output];
+        children.sort_unstable();
+        let old_record = objects
+            .store(&serde_json::to_vec(&old_record)?, &children)?
+            .reference;
+        let mut root = GraphRoot {
+            facts_epoch: super::super::TYPED_FACTS_ROOT_EPOCH,
+            input: InputBinding {
+                root: before.owners,
+                schema: before.schema,
+                policy: instance().policy,
+                context: before.materialization_context(),
+            },
+            projection: before,
+            owners: MapRoot(Some(reference(31))),
+            nodes: MapRoot(Some(reference(32))),
+            edges: MapRoot(Some(reference(33))),
+            incoming: MapRoot(Some(reference(34))),
+        };
+        let mutation = OwnerMutation {
+            owner,
+            expected: Some(previous),
+            next: Some(next),
+        };
+        let maps = OwnerRefreshMaps {
+            key: owner_map_key(owner).to_vec(),
+            selected: [
+                (before.owners, previous),
+                (after.owners, next),
+                (root.owners, old_record),
+            ],
+            mutations: MapRoot(Some(reference(35))),
+            mutation: owner_mutation_value(&mutation)?,
+            updated_owners: Mutex::new(None),
+        };
+        let mut digest = OwnerMutationDigest::default();
+        digest.push(&mutation)?;
+        let affected = OwnerMutationSet {
+            root: maps.mutations,
+            count: 1,
+            digest: digest.finish(),
+        };
+        let mut work = budget()?;
+        let mut context = AttemptContext {
+            attempt: attempt(),
+            objects: &objects,
+            maps: &maps,
+            custody: &Custody,
+            scratch: &NoScratch,
+            budget: &mut work,
+        };
+        let before_writes = objects.writes();
+        let supports = (root.nodes, root.edges, root.incoming);
+        super::super::affected::apply(&mut root, &after, Some(affected), &mut context)?;
+        check_equal(
+            &(root.nodes, root.edges, root.incoming),
+            &supports,
+            "reused graph support roots",
+        )?;
+        check_equal(
+            &objects.writes(),
+            &(before_writes + 1),
+            "owner-only object write",
+        )?;
+        let updated = maps
+            .updated_owners
+            .lock()
+            .map_err(|_| "map update lock")?
+            .ok_or("graph owner was not refreshed")?;
+        let updated = load_owner(updated, &objects, context.budget)?;
+        check_equal(&updated.projection, &next, "refreshed graph contribution")?;
+        check_equal(
+            &updated.output,
+            &Some(output),
+            "reused immutable graph output",
+        )?;
+        Ok(())
+    }
+
     #[test]
     fn unchanged_graph_refreshes_projection_children_without_rebuilding_maps()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -694,6 +1000,7 @@ mod projection_retention {
             MapRoot(Some(reference(54))),
         );
         let old_root = GraphRoot {
+            facts_epoch: super::super::TYPED_FACTS_ROOT_EPOCH,
             input: InputBinding {
                 root: old_projection.owners,
                 schema: instance.schema,
@@ -706,6 +1013,14 @@ mod projection_retention {
             edges: graph_roots.2,
             incoming: graph_roots.3,
         };
+        let mut stale_root = serde_json::to_value(old_root)?;
+        stale_root
+            .as_object_mut()
+            .ok_or("graph root must serialize as a record")?
+            .remove("facts_epoch");
+        if serde_json::from_value::<GraphRoot>(stale_root).is_ok() {
+            return Err("graph root accepted old wire without typed-facts epoch".into());
+        }
         let old_bytes = serde_json::to_vec(&old_root)?;
         let old_children = [20, 31, 32, 33, 34, 51, 52, 53, 54].map(reference).to_vec();
         let old_artifact = objects.store(&old_bytes, &old_children)?.reference;
@@ -716,6 +1031,22 @@ mod projection_retention {
             input: old_root.input,
             logical_commitment: Digest(Sha256::digest(&old_bytes).into()),
         };
+        let wrong_epoch_bytes = serde_json::to_vec(&GraphRoot {
+            facts_epoch: 0,
+            ..old_root
+        })?;
+        let wrong_epoch_artifact = objects.store(&wrong_epoch_bytes, &old_children)?.reference;
+        let wrong_epoch_binding = MemberBinding {
+            artifact: wrong_epoch_artifact,
+            logical_commitment: Digest(Sha256::digest(&wrong_epoch_bytes).into()),
+            ..prior.clone()
+        };
+        if !matches!(
+            super::super::load_root(&wrong_epoch_binding, &objects, &mut budget()?),
+            Err(IndexError::CorruptObject(_))
+        ) {
+            return Err("graph root accepted prior typed-facts epoch".into());
+        }
         let affected = OwnerMutationSet {
             root: MapRoot(None),
             count: 0,

@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import struct
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -350,10 +351,14 @@ def replay_pools(
     ev.require(
         isinstance(coverage, dict)
         and set(coverage) == {"instance", "desired", "covered", "searchable", "status", "owners"}
-        and coverage["instance"] == hybrid.get("semantic_instance")
         and coverage["status"] == "Complete"
-        and coverage["covered"] == coverage["desired"],
+        and ev.canonical(coverage["covered"]) == ev.canonical(coverage["desired"]),
         "Native semantic source coverage differs",
+    )
+    ev.require(
+        _bytes(coverage["instance"], 16, "semantic coverage instance")
+        == _bytes(hybrid.get("semantic_instance"), 16, "semantic instance"),
+        "Native semantic instance differs",
     )
     desired = coverage["desired"]
     ev.require(
@@ -394,20 +399,33 @@ def replay_pools(
         and hybrid["semantic_exhaustive"] == (traversal == "ExactExhausted" and stale == 0),
         "Native semantic scan or exhaustive claim differs",
     )
+    ev.require(lexical.get("coverage") == "CoreRequired", "Native lexical coverage differs")
+    instance = _bytes(lexical.get("instance"), 16, "lexical instance")
+    hybrid_instance = _bytes(hybrid.get("text_instance"), 16, "Hybrid lexical instance")
+    artifact = _bytes(lexical.get("artifact"), 32, "lexical artifact")
+    hybrid_artifact = _bytes(hybrid.get("lexical_artifact"), 32, "Hybrid lexical artifact")
+    matched = lexical["matched"]
     ev.require(
-        lexical["view"] == hybrid["view"]
-        and lexical["instance"] == hybrid["text_instance"]
-        and lexical["artifact"] == hybrid["lexical_artifact"]
-        and lexical["matched"] == hybrid["lexical_matched"]
-        and lexical["hits"] == hybrid["lexical_pool"]
+        type(matched) is int
+        and 0 <= matched < 2**64
+        and type(hybrid["lexical_matched"]) is int
+        and matched == hybrid["lexical_matched"],
+        "Native lexical match total differs",
+    )
+    # JSON equality must preserve the wire types. Python container equality
+    # otherwise treats a boolean byte or coordinate as the matching integer.
+    hits = lexical["hits"]
+    ev.require(
+        ev.canonical(lexical["view"]) == ev.canonical(hybrid["view"])
+        and instance == hybrid_instance
+        and artifact == hybrid_artifact
+        and isinstance(hits, list)
+        and len(hits) == min(matched, lane_top_k)
+        and ev.canonical(hits) == ev.canonical(hybrid["lexical_pool"])
         and lexical["exhaustive"] is True
+        and type(hybrid["file_top_k"]) is int
         and hybrid["file_top_k"] == file_top_k,
         "Native standalone lexical pool binding differs",
-    )
-    matched = lexical["matched"]
-    ev.require(type(matched) is int and matched >= 0, "Native match total differs")
-    ev.require(
-        len(lexical["hits"]) == min(matched, lane_top_k), "Native lexical pool is incomplete"
     )
     identities = {}
     paths = {}
@@ -489,6 +507,53 @@ def replay_pools(
     }
 
 
+REVIEW_FILE_LABEL_FIELDS = frozenset({
+    "query_intent", "answerable", "answerability_min_grade", "gold",
+    "file_judgments", "judgment_policy", "evaluation_contract", "label_review",
+})
+
+
+def _require_review_overlay(execution_suite: dict, reviewed_suite: dict) -> None:
+    """Keep the captured source/query authority immutable across label review."""
+    ev.require(
+        isinstance(execution_suite, dict) and isinstance(reviewed_suite, dict),
+        "Native reviewed suite differs from execution suite",
+    )
+    original = {key: value for key, value in execution_suite.items() if key != "tasks"}
+    reviewed = {key: value for key, value in reviewed_suite.items() if key != "tasks"}
+    if "diagnostic_policy" not in original and reviewed.get("diagnostic_policy") == ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY:
+        reviewed.pop("diagnostic_policy")
+    ev.require(
+        ev.canonical(original) == ev.canonical(reviewed),
+        "Native reviewed suite corpus differs from execution suite",
+    )
+    original_tasks = execution_suite.get("tasks")
+    reviewed_tasks = reviewed_suite.get("tasks")
+    ev.require(
+        isinstance(original_tasks, list)
+        and isinstance(reviewed_tasks, list)
+        and len(original_tasks) == len(reviewed_tasks),
+        "Native reviewed suite tasks differ from execution suite",
+    )
+    for before, after in zip(original_tasks, reviewed_tasks, strict=True):
+        ev.require(
+            isinstance(before, dict)
+            and isinstance(after, dict)
+            and "judgment_policy" not in before
+            and "file_judgments" not in before
+            and "label_review" not in before
+            and ("answerable" not in before or before["answerable"] is False)
+            and ("gold" not in before or before["gold"] == []),
+            "Native execution suite is already judged or malformed",
+        )
+        immutable_before = {key: value for key, value in before.items() if key not in REVIEW_FILE_LABEL_FIELDS}
+        immutable_after = {key: value for key, value in after.items() if key not in REVIEW_FILE_LABEL_FIELDS}
+        ev.require(
+            ev.canonical(immutable_before) == ev.canonical(immutable_after),
+            "Native reviewed suite tasks differ from execution suite",
+        )
+
+
 def repository_cluster_ci_from_native_families(
     families: list[dict], repositories: dict[str, str], repository_strata: dict[str, str]
 ) -> dict:
@@ -506,15 +571,20 @@ def repository_cluster_ci_from_native_families(
     target_releases: dict[str, str] = {}
     base_release: str | None = None
     for item in families:
+        overlay = isinstance(item, dict) and "execution_suite" in item
         ev.require(
-            isinstance(item, dict) and set(item) == {"suite", "capture", "report"},
+            isinstance(item, dict)
+            and set(item) == ({"suite", "execution_suite", "capture", "report"} if overlay else {"suite", "capture", "report"}),
             "Native family replay shape differs",
         )
         suite, capture, report = item["suite"], item["capture"], item["report"]
+        execution_suite = item["execution_suite"] if overlay else suite
         ev.require(
             isinstance(suite, dict) and isinstance(capture, dict) and isinstance(report, dict),
             "Native family replay inputs are malformed",
         )
+        if overlay:
+            _require_review_overlay(execution_suite, suite)
         binding = report.get("composite_source_binding")
         ev.require(isinstance(binding, dict), "Native composite source binding is absent")
         family = binding.get("family_id")
@@ -551,6 +621,7 @@ def repository_cluster_ci_from_native_families(
         rank_metrics = report.get("rank_metrics")
         comparison = rank_metrics.get("comparison") if isinstance(rank_metrics, dict) else None
         suite_sha = ev.digest(ev.canonical(suite))
+        execution_suite_sha = ev.digest(ev.canonical(execution_suite))
         capture_sha = ev.digest(ev.canonical(capture))
         ev.require(
             binding.get("qualification") == "SOURCE_ONLY_NOT_FORMAL_EVAL"
@@ -574,17 +645,18 @@ def repository_cluster_ci_from_native_families(
                 "source_binding_sha256": source_binding,
             }
             and suite.get("repository_commit") == source_commit
-            and suite.get("file_universe_digest") == universe_digest
+            and suite.get("file_universe_digest") == universe_digest.removeprefix("sha256:")
             and capture.get("schema_version") == 2
             and capture.get("profile") == "native_file"
             and capture.get("engine") == "native"
             and capture.get("suite_id") == suite.get("suite_id")
             and capture.get("repository_commit") == source_commit
-            and capture.get("file_universe_digest") == universe_digest
+            and capture.get("file_universe_digest") == suite["file_universe_digest"]
             and capture.get("source_universe_sha256") == source_universe
             and capture.get("source_binding_sha256") == source_binding
-            and capture.get("suite_commitment_sha256") == suite_sha
+            and capture.get("suite_commitment_sha256") == execution_suite_sha
             and report.get("suite_commitment_sha256") == suite_sha
+            and (not overlay or report.get("execution_suite_commitment_sha256") == execution_suite_sha)
             and report.get("capture_commitment_sha256") == capture_sha
             and report.get("status") == "native_file_evidence_unqualified"
             and report.get("product_default_decision") is False
@@ -623,8 +695,7 @@ def repository_cluster_ci_from_native_families(
             suite, report, "lexical", "hybrid", require_graded=True
         )
         rows.extend((target, task_id, family_id, delta) for task_id, family_id, _category, delta in paired)
-        cohort.append(
-            {
+        cohort_row = {
                 "family_id": family,
                 "target_repository": target,
                 "target_commit": target_commit,
@@ -636,7 +707,9 @@ def repository_cluster_ci_from_native_families(
                 "suite_commitment_sha256": suite_sha,
                 "capture_commitment_sha256": capture_sha,
             }
-        )
+        if overlay:
+            cohort_row["execution_suite_commitment_sha256"] = execution_suite_sha
+        cohort.append(cohort_row)
     ev.require(set(target_releases) == set(repositories), "Native target repository coverage is incomplete")
     cohort.sort(key=lambda item: (item["target_repository"], item["family_id"]))
     cohort_sha = ev.digest(ev.canonical({"base_release_digest": base_release, "families": cohort}))
@@ -653,14 +726,18 @@ def repository_cluster_ci_from_native_families(
     }
 
 
-def evaluate(
+def _replay_candidate_pools(
     suite: dict,
     pack: dict,
     capture: dict,
     source: ev.SourceSnapshot | None = None,
     composite_source_inputs: tuple[Path, Path, Path, Path, str] | None = None,
-) -> dict:
-    """Score every frozen eval task; schema 2 also authenticates SDK inventory."""
+    *,
+    release_validator: Callable[[Path], dict] | None = None,
+    expected_source_universe: tuple[str, int] | None = None,
+    expected_source_binding: tuple[str, int] | None = None,
+) -> tuple[bool, dict | None, Iterator[tuple[dict, dict, dict]]]:
+    """Authenticate the source, exact read view and each paired candidate pool."""
     ev.require(
         type(capture.get("schema_version")) is int
         and capture["schema_version"] in (1, 2)
@@ -707,7 +784,10 @@ def evaluate(
         from tools.benchmark.retrieval import composite_source_binding
 
         source_binding = composite_source_binding.verify(
-            source, suite, pack, capture, *composite_source_inputs
+            source, suite, pack, capture, *composite_source_inputs,
+            release_validator=release_validator,
+            expected_source_universe=expected_source_universe,
+            expected_source_binding=expected_source_binding,
         )
     else:
         ev.require(
@@ -747,8 +827,10 @@ def evaluate(
             capture["indexed_universe"],
         )
     session = capture["released_session"]
+    session_id = _bytes(session.get("session"), 32, "released session")
+    view_identity = ev.canonical(view)
     ev.require(
-        session["state"] == "Released" and session["view"] == view,
+        session["state"] == "Released" and ev.canonical(session["view"]) == view_identity,
         "Native capture pin was not released",
     )
     settlement = capture["settlement"]
@@ -757,8 +839,8 @@ def evaluate(
     state = settlement.get("state")
     pins = settlement.get("has_remaining_target_pins")
     ev.require(
-        settlement["session"] == session["session"]
-        and settlement["view"] == view
+        _bytes(settlement.get("session"), 32, "settlement session") == session_id
+        and ev.canonical(settlement["view"]) == view_identity
         and isinstance(head, dict)
         and head.get("workspace") == view["workspace"]
         and type(head.get("epoch")) is int
@@ -798,6 +880,162 @@ def evaluate(
     ev.require(captured, "Native file evidence has no tasks")
     selected_hybrid = captured[0]["hybrid"]
     universe = {row["path"] for row in pack["file_universe"]}
+
+    def validated_rows() -> Iterator[tuple[dict, dict, dict]]:
+        for row in captured:
+            if capture["schema_version"] == 2:
+                for key in ("lexical_micros", "hybrid_micros"):
+                    elapsed = row.get(key)
+                    ev.require(
+                        type(elapsed) is int and 0 <= elapsed <= deadline_micros,
+                        f"Native task SDK timing exceeds its deadline or is invalid: {key}",
+                    )
+            task = tasks[row["task_id"]]
+            raw_query = blind[row["task_id"]]["query"]
+            planned = query_plan.plan_lexical_request("natural_language_file", raw_query)
+            identity = row["query_identity"]
+            text, semantic = row["text_request"], row["semantic_request"]
+            ev.require(
+                identity["original_query_sha256"]
+                == blind[row["task_id"]]["query_sha256"]
+                == ev.digest(raw_query.encode())
+                and identity["effective_lexical_request_sha256"] == ev.digest(planned.encode())
+                and identity["semantic_text_sha256"] == ev.digest(raw_query.encode())
+                and identity["policy_config_sha256"]
+                == ev.digest(query_plan.policy_config_canonical("natural_language_file").encode()),
+                "Native independently derived query identity differs",
+            )
+            ev.require(
+                text["syntax"] == "native"
+                and text["query_text"] == planned
+                and semantic["query_text"] == raw_query
+                and text["top_k"] == semantic["top_k"] == capture["lane_top_k"]
+                and text["constraints"] == semantic["constraints"] == {"language_any_of": []}
+                and text["generation"] is None
+                and text["generation_selector"] is None
+                and semantic["generation"] is None
+                and semantic["generation_selector"] is None
+                and text["cursor"] is None
+                and semantic["lexical_scope"] is None,
+                "Native actual query, eligibility or lane depth differs",
+            )
+            ev.require(
+                ev.canonical(row["hybrid"]["view"]) == view_identity
+                and _bytes(row["hybrid"].get("session"), 32, "task view/session") == session_id,
+                "Native task view/session differs",
+            )
+            ev.require(
+                row["hybrid"]["text_instance"] == capture["text_instance"]
+                and row["hybrid"]["semantic_instance"] == capture["semantic_instance"],
+                "Native task instance differs",
+            )
+            ev.require(
+                row["hybrid"]["lexical_artifact"] == selected_hybrid["lexical_artifact"]
+                and row["hybrid"].get("semantic_coverage") == selected_hybrid.get("semantic_coverage"),
+                "Native same-view query resources differ",
+            )
+            pools = replay_pools(row, capture["lane_top_k"], capture["file_top_k"], universe, indexed)
+            if semantic_spec is not None:
+                desired = row["hybrid"]["semantic_coverage"]["desired"]
+                ev.require(
+                    desired["schema"] == semantic_spec["schema"]
+                    and desired["policy"] == semantic_spec["policy"],
+                    "Native semantic coverage differs from retained profile",
+                )
+                if source_context is not None:
+                    ev.require(
+                        desired["root"] == source_cut["owners"]
+                        and bytes(desired["context"]) == source_context,
+                        "Native semantic coverage differs from selected SourceCut",
+                    )
+            yield task, row, pools
+
+    return indexed is not None, source_binding, validated_rows()
+
+
+def verify_execution(
+    suite: dict,
+    pack: dict,
+    capture: dict,
+    source: ev.SourceSnapshot,
+    composite_source_inputs: tuple[Path, Path, Path, Path, str] | None = None,
+    *,
+    release_validator: Callable[[Path], dict] | None = None,
+    expected_source_universe: tuple[str, int] | None = None,
+    expected_source_binding: tuple[str, int] | None = None,
+) -> None:
+    """Replay the exact captured SDK execution without relevance judgments."""
+    indexed, _, rows = _replay_candidate_pools(
+        suite, pack, capture, source, composite_source_inputs,
+        release_validator=release_validator,
+        expected_source_universe=expected_source_universe,
+        expected_source_binding=expected_source_binding,
+    )
+    ev.require(indexed, "Native controlled execution requires authenticated indexed inventory")
+    for _ in rows:
+        pass
+
+
+def prepare_review_candidates(
+    suite: dict,
+    pack: dict,
+    capture: dict,
+    source: ev.SourceSnapshot,
+    composite_source_inputs: tuple[Path, Path, Path, Path, str] | None = None,
+) -> dict[str, dict[str, list[dict]]]:
+    """Replay unjudged Native candidates and discard scores, ranks and owner IDs."""
+    ev.require(
+        capture.get("schema_version") == 2 and source is not None,
+        "Native review preparation requires authenticated indexed inventory",
+    )
+    _, _, rows = _replay_candidate_pools(
+        suite, pack, capture, source, composite_source_inputs
+    )
+    universe = {file["path"]: file["file_sha256"] for file in pack["file_universe"]}
+    prepared: dict[str, dict[str, list[dict]]] = {"lexical": {}, "hybrid": {}}
+    for task, _row, pools in rows:
+        ev.require(
+            task["answerable"] is False and task["gold"] == []
+            and not set(task).intersection({
+                "judgment_policy", "file_judgments", "declaration_judgments",
+                "label_review", "source_oracle",
+            }),
+            "Native review preparation requires unjudged eval tasks",
+        )
+        for route in prepared:
+            prepared[route][task["task_id"]] = [
+                {"path": path, "file_sha256": universe[path]}
+                for path in sorted(hit["path"] for hit in pools[route])
+            ]
+    return prepared
+
+
+def evaluate(
+    suite: dict,
+    pack: dict,
+    capture: dict,
+    source: ev.SourceSnapshot | None = None,
+    composite_source_inputs: tuple[Path, Path, Path, Path, str] | None = None,
+    *,
+    release_validator: Callable[[Path], dict] | None = None,
+    reviewed_suite: dict | None = None,
+    expected_source_universe: tuple[str, int] | None = None,
+    expected_source_binding: tuple[str, int] | None = None,
+) -> dict:
+    """Score every frozen eval task; schema 2 also authenticates SDK inventory."""
+    if reviewed_suite is not None:
+        _require_review_overlay(suite, reviewed_suite)
+    judged_suite = reviewed_suite if reviewed_suite is not None else suite
+    judged_tasks = (
+        {task["task_id"]: task for task in reviewed_suite["tasks"] if task["split"] == "eval"}
+        if reviewed_suite is not None else None
+    )
+    indexed_verified, source_binding, replayed = _replay_candidate_pools(
+        suite, pack, capture, source, composite_source_inputs,
+        release_validator=release_validator,
+        expected_source_universe=expected_source_universe,
+        expected_source_binding=expected_source_binding,
+    )
     per_query = []
     failures = []
     negative = {route: [] for route in ("lexical", "hybrid")}
@@ -806,77 +1044,14 @@ def evaluate(
         route: {metric: [] for metric in ("file_mrr_at_10", "file_recall_at_10")}
         for route in negative
     }
-    for row in captured:
-        if capture["schema_version"] == 2:
-            for key in ("lexical_micros", "hybrid_micros"):
-                elapsed = row.get(key)
-                ev.require(
-                    type(elapsed) is int and 0 <= elapsed <= deadline_micros,
-                    f"Native task SDK timing exceeds its deadline or is invalid: {key}",
-                )
-        task = tasks[row["task_id"]]
-        raw_query = blind[row["task_id"]]["query"]
-        planned = query_plan.plan_lexical_request("natural_language_file", raw_query)
-        identity = row["query_identity"]
-        text, semantic = row["text_request"], row["semantic_request"]
+    for execution_task, row, pools in replayed:
+        task = judged_tasks[execution_task["task_id"]] if judged_tasks is not None else execution_task
         ev.require(
-            identity["original_query_sha256"]
-            == blind[row["task_id"]]["query_sha256"]
-            == ev.digest(raw_query.encode())
-            and identity["effective_lexical_request_sha256"] == ev.digest(planned.encode())
-            and identity["semantic_text_sha256"] == ev.digest(raw_query.encode())
-            and identity["policy_config_sha256"]
-            == ev.digest(query_plan.policy_config_canonical("natural_language_file").encode()),
-            "Native independently derived query identity differs",
-        )
-        ev.require(
-            text["syntax"] == "native"
-            and text["query_text"] == planned
-            and semantic["query_text"] == raw_query
-            and text["top_k"] == semantic["top_k"] == capture["lane_top_k"]
-            and text["constraints"] == semantic["constraints"] == {"language_any_of": []}
-            and text["generation"] is None
-            and text["generation_selector"] is None
-            and semantic["generation"] is None
-            and semantic["generation_selector"] is None
-            and text["cursor"] is None
-            and semantic["lexical_scope"] is None,
-            "Native actual query, eligibility or lane depth differs",
-        )
-        ev.require(
-            row["hybrid"]["view"] == view and row["hybrid"]["session"] == session["session"],
-            "Native task view/session differs",
-        )
-        ev.require(
-            row["hybrid"]["text_instance"] == capture["text_instance"]
-            and row["hybrid"]["semantic_instance"] == capture["semantic_instance"],
-            "Native task instance differs",
-        )
-        ev.require(
-            row["hybrid"]["lexical_artifact"] == selected_hybrid["lexical_artifact"]
-            and row["hybrid"].get("semantic_coverage") == selected_hybrid.get("semantic_coverage"),
-            "Native same-view query resources differ",
-        )
-        ev.require(
-            task["judgment_policy"]
+            task.get("judgment_policy")
             in (ev.COMPLETE_JUDGMENT_POLICY, ev.SOURCE_ORACLE_JUDGMENT_POLICY),
             "Native file qrels are incomplete",
         )
         judgments = task["file_judgments"]
-        pools = replay_pools(row, capture["lane_top_k"], capture["file_top_k"], universe, indexed)
-        if semantic_spec is not None:
-            desired = row["hybrid"]["semantic_coverage"]["desired"]
-            ev.require(
-                desired["schema"] == semantic_spec["schema"]
-                and desired["policy"] == semantic_spec["policy"],
-                "Native semantic coverage differs from retained profile",
-            )
-            if source_context is not None:
-                ev.require(
-                    desired["root"] == source_cut["owners"]
-                    and bytes(desired["context"]) == source_context,
-                    "Native semantic coverage differs from selected SourceCut",
-                )
         if not task["answerable"] and not pools["hybrid"]:
             ev.require(
                 row["hybrid"]["semantic_exhaustive"],
@@ -932,23 +1107,23 @@ def evaluate(
     ev.require(answerable > 0, "Native file evidence has no positive tasks")
     abstention = ev.no_answer_delta_summary(
         negative_rows,
-        suite["repository_commit"],
+        judged_suite["repository_commit"],
     )
     report = {
         "status": "native_file_evidence_unqualified",
         "product_default_decision": False,
         "graded": True,
-        "indexed_universe_verified": indexed is not None,
+        "indexed_universe_verified": indexed_verified,
         "indexed_universe_verification_scope": (
             "frozen_body_refs_exact_view_source_owner_lookup_profile"
-            if indexed is not None
+            if indexed_verified
             else "none"
         ),
         "runtime_qualified": False,
         "capture_commitment_sha256": ev.digest(ev.canonical(capture)),
-        "suite_id": suite["suite_id"],
-        "repository_commit": suite["repository_commit"],
-        "suite_commitment_sha256": ev.digest(ev.canonical(suite)),
+        "suite_id": judged_suite["suite_id"],
+        "repository_commit": judged_suite["repository_commit"],
+        "suite_commitment_sha256": ev.digest(ev.canonical(judged_suite)),
         "rank_metrics": {
             "comparison": {
                 "baseline": "lexical",
@@ -971,4 +1146,6 @@ def evaluate(
     }
     if source_binding is not None:
         report["composite_source_binding"] = source_binding
+    if reviewed_suite is not None:
+        report["execution_suite_commitment_sha256"] = ev.digest(ev.canonical(suite))
     return report

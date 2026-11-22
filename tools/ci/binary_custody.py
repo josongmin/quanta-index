@@ -28,22 +28,29 @@ def _absolute_parts(path: Path) -> tuple[Path, str]:
     return root, absolute.relative_to(root).as_posix()
 
 
-def verify(digest: str, paths: list[Path]) -> None:
+def verify(digest: str, paths: list[Path], *, archive: Path | None = None) -> None:
     if re.fullmatch(r"[0-9a-f]{64}", digest) is None or not paths:
         raise ValueError("binary custody requires a SHA-256 and named files")
-    for path in paths:
+    if archive is not None and archive not in paths:
+        raise ValueError("P10 archive is missing from binary custody")
+    for path in dict.fromkeys(paths):
         root, relative = _absolute_parts(path)
         if _sha256_repo_regular_file(root, relative, label="proof daemon") != digest:
             raise ValueError(f"release daemon bytes changed during proof: {path}")
-        if not os.access(path, os.X_OK):
+        if path != archive and not os.access(path, os.X_OK):
             raise ValueError(f"proof daemon is no longer executable: {path}")
 
 
-def pin(built: Path, provided: Path, destination: Path) -> str:
+def pin(
+    built: Path, provided: Path, destination: Path, *, archive_sha256: str | None = None
+) -> str:
     root, relative = _absolute_parts(built)
-    raw = _read_repo_regular_bytes(root, relative, label="fresh release daemon")
+    raw = _read_repo_regular_bytes(root, relative, label="release daemon source")
     digest = hashlib.sha256(raw).hexdigest()
-    verify(digest, [built, provided])
+    archive = built if archive_sha256 is not None else None
+    if archive_sha256 is not None and digest != archive_sha256:
+        raise ValueError("P10 archived daemon differs from its approved SHA-256")
+    verify(digest, [built, provided], archive=archive)
     output_root, output_relative = _absolute_parts(destination)
     parent_fd = _open_repo_output_parent(output_root, output_relative, create=False)
     try:
@@ -56,14 +63,20 @@ def pin(built: Path, provided: Path, destination: Path) -> str:
             0o500,
             dir_fd=parent_fd,
         )
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.fsync(parent_fd)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.fsync(parent_fd)
+            verify(digest, [built, provided, destination], archive=archive)
+        except BaseException:
+            # Cleanup belongs only to the invocation that won O_EXCL above.
+            os.unlink(destination.name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+            raise
     finally:
         os.close(parent_fd)
-    verify(digest, [built, provided, destination])
     return digest
 
 
@@ -73,15 +86,17 @@ def main() -> int:
     pin_command = commands.add_parser("pin")
     for name in ("built", "provided", "destination"):
         pin_command.add_argument(name, type=Path)
+    pin_command.add_argument("--archive-sha256")
     verify_command = commands.add_parser("verify")
     verify_command.add_argument("digest")
     verify_command.add_argument("paths", nargs="+", type=Path)
+    verify_command.add_argument("--archive", type=Path)
     args = parser.parse_args()
     try:
         if args.operation == "pin":
-            print(pin(args.built, args.provided, args.destination))
+            print(pin(args.built, args.provided, args.destination, archive_sha256=args.archive_sha256))
         else:
-            verify(args.digest, args.paths)
+            verify(args.digest, args.paths, archive=args.archive)
     except (OSError, ValueError) as error:
         parser.exit(1, f"binary custody: {error}\n")
     return 0

@@ -12,7 +12,7 @@ threads-required = "num-test-threads"
 # deadline in the focused selection. Reserve the pool for this process fixture;
 # every other test retains its existing parallelism, deadline and assertions.
 [[profile.default.overrides]]
-filter = 'binary(=runtime_extended_suite) & test(=e2e_scale_process_restart::medium_scale_source_survives_real_daemon_process_restart_and_delete)'
+filter = 'binary(=process_readiness_owner_v1) & test(=e2e_legacy_reference_scale_restart::medium_scale_source_survives_real_daemon_process_restart_and_delete)'
 threads-required = "num-test-threads"
 
 # ANN incremental sealing trains and appends a persisted vector index through
@@ -20,16 +20,16 @@ threads-required = "num-test-threads"
 # under the default full-suite concurrency on macOS; isolate this test's
 # resource demand while retaining its production timeout and assertions.
 [[profile.default.overrides]]
-filter = 'binary(=runtime_extended_suite) & test(=e2e_ann_incremental_seal::a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so)'
+filter = 'binary(=process_readiness_owner_v1) & test(=e2e_ann_incremental_seal::a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so)'
 threads-required = "num-test-threads"
 
 # The 4,096-source publication and binary restart proof exceeded its existing
 # 300-second IPC deadline alongside other corpus E2Es, then passed alone with
 # the same deadline and source/pagination oracles. Reserve the pool for this
-# fixture in both the owner target and suite launcher instead of widening
+# fixture in the canonical process-readiness owner target instead of widening
 # production or client deadlines.
 [[profile.default.overrides]]
-filter = '(binary(=runtime_extended_suite) | binary(=process_readiness_owner_v1)) & test(=e2e_process_readiness::binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page)'
+filter = 'binary(=process_readiness_owner_v1) & test(=legacy_reference_process::restart::binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page)'
 threads-required = "num-test-threads"
 
 # The fixed Native quality gate materializes 4,096 source owners through the

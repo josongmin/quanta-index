@@ -3,7 +3,7 @@
 
 use super::*;
 use quanta_index_catalog::{
-    NativeBootQuiescentCatalogV1, verify_native_boot_catalog,
+    NativeBootPublicationReader, NativeBootQuiescentCatalogV1, verify_native_boot_catalog,
     verify_native_source_root_publications_v1,
     verify_native_source_root_publications_with_routes_v1, verify_native_source_root_quiescence_v1,
     verify_native_source_root_quiescence_with_routes_v1,
@@ -14,7 +14,10 @@ use quanta_index_contract::{
         NativeCutoverEvidenceSourceFactV1 as Fact, NativeCutoverEvidenceV1,
         NativeCutoverReplayPhaseV1,
     },
-    native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1,
+    native_cutover_source_join_v1::{
+        NativeCutoverJoinedSourceFactsV1, NativeCutoverPublicationFactsV1,
+        NativeCutoverSourceJoinErrorV1,
+    },
 };
 use quanta_index_core::index::{
     MemoryLease, MemoryLifetime, NativeProtectedSourceRoutesV1, OperationKey, ViewRef, WorkUsage,
@@ -198,17 +201,18 @@ impl HeldPreviousNativeV1 {
         self.authority.io.as_ref()
     }
 
-    pub(in crate::native_product::boot) fn native_io_v1(&self) -> &crate::native_scratch_io::NativeScratchIo {
+    pub(in crate::native_product::boot) fn native_io_v1(
+        &self,
+    ) -> &crate::native_scratch_io::NativeScratchIo {
         self.authority.io.as_ref()
     }
 
-    fn with_routes_from_reader_v1<T>(
+    fn with_route_object_from_reader_v1<T>(
         &self,
         reader: &FileObjectReader,
         budget: &mut WorkBudget,
         visit: impl FnOnce(&NativeProtectedSourceRoutesV1, &mut WorkBudget) -> Result<T>,
     ) -> Result<T> {
-        let root = self.authority.lease.state_root_identity_v1();
         let selected = self
             .observed
             .snapshot
@@ -222,30 +226,13 @@ impl HeldPreviousNativeV1 {
             return Err(IndexError::DigestConflict.into());
         }
         let stored = reader.get(route.object, budget)?;
-        let result = with_native_protected_source_routes_v1(
+        with_native_protected_source_routes_v1(
             route.object,
             Some(route.count),
             stored,
             budget,
-            |routes, budget| {
-                let observed = verify_native_source_root_quiescence_with_routes_v1(
-                    root,
-                    self.authority.io.as_ref(),
-                    selected.operation.key.workspace,
-                    routes,
-                    budget,
-                )?;
-                if observed.snapshot.root_nonce != self.observed.snapshot.root_nonce
-                    || observed.snapshot.selected != self.observed.snapshot.selected
-                    || observed.snapshot.namespace != self.observed.snapshot.namespace
-                    || observed.current_head != self.observed.current_head
-                {
-                    return Err(IndexError::DigestConflict);
-                }
-                Ok(visit(routes, budget))
-            },
-        )?;
-        result
+            |routes, budget| Ok(visit(routes, budget)),
+        )?
     }
 
     pub(crate) fn with_protected_routes_v1<T>(
@@ -257,6 +244,21 @@ impl HeldPreviousNativeV1 {
             &mut WorkBudget,
         ) -> Result<T>,
     ) -> Result<T> {
+        self.with_protected_routes_and_quiescence_v1(budget, |routes, reader, _, budget| {
+            visit(routes, reader, budget)
+        })
+    }
+
+    fn with_protected_routes_and_quiescence_v1<T>(
+        &self,
+        budget: &mut WorkBudget,
+        visit: impl FnOnce(
+            &NativeProtectedSourceRoutesV1,
+            &FileObjectReader,
+            NativeBootQuiescentCatalogV1,
+            &mut WorkBudget,
+        ) -> Result<T>,
+    ) -> Result<T> {
         let root = self.authority.lease.state_root_identity_v1();
         let objects = root.join("native-objects");
         let io = Arc::new(NativeObjectReadIo::new(Arc::clone(
@@ -264,8 +266,31 @@ impl HeldPreviousNativeV1 {
         )));
         let lock = io.open(&objects.join(".object-namespace.lease"), budget)?;
         let reader = FileObjectReader::open_existing(&objects, lock, io, budget)?;
-        self.with_routes_from_reader_v1(&reader, budget, |routes, budget| {
-            visit(routes, &reader, budget)
+        self.with_route_object_from_reader_v1(&reader, budget, |routes, budget| {
+            let workspace = self
+                .observed
+                .snapshot
+                .selected
+                .as_ref()
+                .ok_or(IndexError::SnapshotUnavailable)?
+                .operation
+                .key
+                .workspace;
+            let observed = verify_native_source_root_quiescence_with_routes_v1(
+                root,
+                self.authority.io.as_ref(),
+                workspace,
+                routes,
+                budget,
+            )?;
+            if observed.snapshot.root_nonce != self.observed.snapshot.root_nonce
+                || observed.snapshot.selected != self.observed.snapshot.selected
+                || observed.snapshot.namespace != self.observed.snapshot.namespace
+                || observed.current_head != self.observed.current_head
+            {
+                return Err(IndexError::DigestConflict.into());
+            }
+            visit(routes, &reader, observed, budget)
         })
     }
 
@@ -442,6 +467,36 @@ impl HeldPreviousNativeV1 {
             }
         }
         let (_, latest_operation) = latest_source.ok_or(IndexError::SnapshotUnavailable)?;
+        let count = evidence.source_facts.len();
+        let bytes = count
+            .checked_mul(std::mem::size_of::<usize>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(IndexError::ResourceLimited)?;
+        let facts_memory = budget
+            .reserve_memory(bytes, MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut fact_rows = Vec::new();
+        fact_rows
+            .try_reserve_exact(count)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        if fact_rows.capacity() > count {
+            return Err(IndexError::ResourceLimited.into());
+        }
+        let publication_facts = NativeCutoverPublicationFactsV1::from_facts_v1(
+            &evidence.source_facts,
+            &mut fact_rows,
+            &mut |bytes| {
+                budget.charge(WorkUsage {
+                    reads: 1,
+                    bytes,
+                    ..Default::default()
+                })
+            },
+        )
+        .map_err(|cause| match cause {
+            NativeCutoverSourceJoinErrorV1::Refused(_) => IndexError::DigestConflict,
+            NativeCutoverSourceJoinErrorV1::Work(cause) => cause,
+        })?;
         let root = self.authority.lease.state_root_identity_v1();
         let object_root = root.join("native-objects");
         let io = Arc::new(NativeObjectReadIo::new(Arc::clone(
@@ -458,8 +513,8 @@ impl HeldPreviousNativeV1 {
         let mut sibling_count = 0_u64;
         let mut found_boot = false;
         let mut found_head = None;
-        let mut visit = |routes: Option<&NativeProtectedSourceRoutesV1>,
-                         snapshot: &quanta_index_catalog::NativeBootCatalogSnapshot,
+        let mut visit = |snapshot: &quanta_index_catalog::NativeBootCatalogSnapshot,
+                         publication_reader: &NativeBootPublicationReader<'_>,
                          head: &quanta_index_core::index::CatalogView,
                          operation: &quanta_index_core::index::ImmutableOperation,
                          publication: &quanta_index_core::index::CatalogView,
@@ -492,8 +547,9 @@ impl HeldPreviousNativeV1 {
             if head != &self.observed.current_head {
                 return Err(IndexError::DigestConflict);
             }
+            let matching_facts = publication_facts.for_operation_v1(operation.key);
             let mut ast = None;
-            for fact in &evidence.source_facts {
+            for fact in matching_facts.clone() {
                 budget.charge(WorkUsage {
                     reads: 1,
                     bytes: u64::try_from(std::mem::size_of::<OperationKey>())
@@ -501,7 +557,6 @@ impl HeldPreviousNativeV1 {
                     ..Default::default()
                 })?;
                 if let Fact::AstWork {
-                    ast_operation: Some(key),
                     candidate_root_nonce,
                     phase: NativeCutoverAstWorkPhaseV1::Published,
                     source_operation,
@@ -511,7 +566,6 @@ impl HeldPreviousNativeV1 {
                     request: Some(request),
                     ..
                 } = fact
-                    && *key == operation.key
                 {
                     if *candidate_root_nonce != Some(root_nonce)
                         || ast
@@ -523,15 +577,9 @@ impl HeldPreviousNativeV1 {
                 }
             }
             if let Some((source_operation, source_view, source_cut, ast_view, request)) = ast {
-                let source = quanta_index_catalog::verify_native_published_operation(
-                    root,
-                    self.authority.io.as_ref(),
-                    source_operation,
-                    budget,
-                )?;
-                if source.snapshot().root_nonce != snapshot.root_nonce
-                    || source.publication() != source_view
-                    || source.publication_metadata().source != source_cut
+                let source = publication_reader.published_operation(source_operation, budget)?;
+                if source.identity != source_view
+                    || source.source != source_cut
                     || publication.identity != ast_view
                     || publication.source != source_cut
                 {
@@ -579,7 +627,7 @@ impl HeldPreviousNativeV1 {
                 return Ok(());
             }
             let mut matched = None;
-            for fact in &evidence.source_facts {
+            for fact in matching_facts.clone() {
                 budget.charge(WorkUsage {
                     reads: 1,
                     bytes: u64::try_from(std::mem::size_of::<OperationKey>())
@@ -591,7 +639,6 @@ impl HeldPreviousNativeV1 {
                     candidate_root_nonce,
                     ..
                 } = fact
-                    && target.operation == operation.key
                 {
                     if *candidate_root_nonce != Some(root_nonce)
                         || matched.replace(target).is_some()
@@ -626,22 +673,8 @@ impl HeldPreviousNativeV1 {
                     &stored_request,
                     budget,
                     |request, budget| {
-                        let prior = if let Some(routes) = routes {
-                            quanta_index_catalog::verify_native_published_view_with_routes_v1(
-                                root,
-                                self.authority.io.as_ref(),
-                                request.expected_view,
-                                routes,
-                                budget,
-                            )?
-                        } else {
-                            quanta_index_catalog::verify_native_published_view_v1(
-                                root,
-                                self.authority.io.as_ref(),
-                                request.expected_view,
-                                budget,
-                            )?
-                        };
+                        let prior =
+                            publication_reader.published_view(request.expected_view, budget)?;
                         if prior.source != publication.source
                             || prior.projections != publication.projections
                         {
@@ -685,14 +718,9 @@ impl HeldPreviousNativeV1 {
                     found_boot = true;
                 }
                 if publication.identity == head.identity {
-                    let source = quanta_index_catalog::verify_native_published_operation(
-                        root,
-                        self.authority.io.as_ref(),
-                        latest_operation,
-                        budget,
-                    )?;
-                    if source.snapshot().root_nonce != snapshot.root_nonce
-                        || source.publication_metadata().source != publication.source
+                    let source =
+                        publication_reader.published_operation(latest_operation, budget)?;
+                    if source.source != publication.source
                         || found_head.replace(latest_operation).is_some()
                     {
                         return Err(IndexError::DigestConflict);
@@ -701,7 +729,7 @@ impl HeldPreviousNativeV1 {
                 return Ok(());
             };
             let mut request = None;
-            for fact in &evidence.source_facts {
+            for fact in matching_facts {
                 budget.charge(WorkUsage {
                     reads: 1,
                     bytes: u64::try_from(std::mem::size_of::<OperationKey>())
@@ -713,7 +741,6 @@ impl HeldPreviousNativeV1 {
                     phase,
                     ..
                 } = fact
-                    && next.operation == operation.key
                 {
                     if !matches!(
                         phase,
@@ -764,15 +791,22 @@ impl HeldPreviousNativeV1 {
             .and_then(|selected| selected.protected_source_routes)
             .is_some()
         {
-            self.with_routes_from_reader_v1(&reader, budget, |routes, budget| {
+            self.with_route_object_from_reader_v1(&reader, budget, |routes, budget| {
                 Ok(verify_native_source_root_publications_with_routes_v1(
                     root,
                     self.authority.io.as_ref(),
                     latest_operation.workspace,
                     routes,
                     budget,
-                    |snapshot, head, operation, publication, budget| {
-                        visit(Some(routes), snapshot, head, operation, publication, budget)
+                    |snapshot, publication_reader, head, operation, publication, budget| {
+                        visit(
+                            snapshot,
+                            publication_reader,
+                            head,
+                            operation,
+                            publication,
+                            budget,
+                        )
                     },
                 )?)
             })?
@@ -782,13 +816,24 @@ impl HeldPreviousNativeV1 {
                 self.authority.io.as_ref(),
                 latest_operation.workspace,
                 budget,
-                |snapshot, head, operation, publication, budget| {
-                    visit(None, snapshot, head, operation, publication, budget)
+                |snapshot, publication_reader, head, operation, publication, budget| {
+                    visit(
+                        snapshot,
+                        publication_reader,
+                        head,
+                        operation,
+                        publication,
+                        budget,
+                    )
                 },
             )?
         };
+        drop(fact_rows);
+        drop(facts_memory);
         drop(reader);
         if observed.snapshot.root_nonce != self.observed.snapshot.root_nonce
+            || observed.snapshot.selected != self.observed.snapshot.selected
+            || observed.snapshot.namespace != self.observed.snapshot.namespace
             || observed.current_head != self.observed.current_head
             || published_count == 0
             || published_count
@@ -836,15 +881,7 @@ impl HeldPreviousNativeV1 {
             .and_then(|selected| selected.protected_source_routes)
             .is_some()
         {
-            self.with_protected_routes_v1(budget, |routes, _reader, budget| {
-                Ok(verify_native_source_root_quiescence_with_routes_v1(
-                    self.authority.lease.state_root_identity_v1(),
-                    self.authority.io.as_ref(),
-                    expected.manifest_operation.workspace,
-                    routes,
-                    budget,
-                )?)
-            })?
+            self.with_protected_routes_and_quiescence_v1(budget, |_, _, observed, _| Ok(observed))?
         } else {
             verify_native_source_root_quiescence_v1(
                 self.authority.lease.state_root_identity_v1(),

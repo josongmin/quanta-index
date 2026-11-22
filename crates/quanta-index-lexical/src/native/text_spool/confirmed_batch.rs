@@ -28,7 +28,9 @@ fn program_bytes(references: usize) -> Result<usize, IndexError> {
             .checked_add(INSERT_PREFIX.len())
             .and_then(|bytes| bytes.checked_add(values))
             .ok_or(IndexError::ResourceLimited)?;
-        remaining -= rows;
+        remaining = remaining
+            .checked_sub(rows)
+            .ok_or(IndexError::ResourceLimited)?;
     }
     Ok(total)
 }

@@ -9,7 +9,7 @@ use quanta_index_contract::{
     TextQueryRequest, TextQuerySyntax,
 };
 
-use crate::{QuantaIndexClientPayloadV1, SdkError};
+use crate::{LegacyQueryCapabilityV1, QuantaIndexClientPayloadV1, SdkError};
 
 pub(crate) struct TextQueryBuilderState {
     pub(crate) syntax: TextQuerySyntax,
@@ -37,7 +37,13 @@ impl TextQueryBuilderState {
         }
     }
 
-    pub(crate) fn build_request(self, plane: &str) -> Result<TextQueryRequest, SdkError> {
+    pub(crate) fn build_request(
+        self,
+        client: &QuantaIndexClientPayloadV1,
+        capability: LegacyQueryCapabilityV1,
+        plane: &str,
+    ) -> Result<TextQueryRequest, SdkError> {
+        client.admit_legacy_query_v1(capability)?;
         let query_text = self
             .query_text
             .ok_or_else(|| SdkError::Usage(format!("{plane} query text is required")))?;
@@ -87,7 +93,11 @@ impl VectorQueryBuilderState {
         }
     }
 
-    pub(crate) fn build_semantic_request(self) -> Result<SemanticQueryRequest, SdkError> {
+    pub(crate) fn build_semantic_request(
+        self,
+        client: &QuantaIndexClientPayloadV1,
+    ) -> Result<SemanticQueryRequest, SdkError> {
+        client.admit_legacy_query_v1(LegacyQueryCapabilityV1::Semantic)?;
         let query_text = self
             .semantic_query_text
             .ok_or_else(|| SdkError::Usage("semantic query text is required".to_string()))?;
@@ -140,7 +150,12 @@ impl VectorQueryBuilderState {
 
     /// The hybrid request (QI-BB-018): the text lane, the dense text, the
     /// selection and the fused `top_k`, gated once under the shared code.
-    pub(crate) fn build_hybrid_request(self) -> Result<HybridQueryRequest, SdkError> {
+    pub(crate) fn build_hybrid_request(
+        self,
+        client: &QuantaIndexClientPayloadV1,
+        capability: LegacyQueryCapabilityV1,
+    ) -> Result<HybridQueryRequest, SdkError> {
+        client.admit_legacy_query_v1(capability)?;
         let (syntax, query_text) = self
             .text_leg
             .ok_or_else(|| SdkError::Usage("hybrid text query is required".to_string()))?;
@@ -172,7 +187,11 @@ impl VectorQueryBuilderState {
         })
     }
 
-    pub(crate) fn build_hybrid_seed_request(self) -> Result<HybridSeedQueryRequest, SdkError> {
+    pub(crate) fn build_hybrid_seed_request(
+        self,
+        client: &QuantaIndexClientPayloadV1,
+    ) -> Result<HybridSeedQueryRequest, SdkError> {
+        client.admit_legacy_query_v1(LegacyQueryCapabilityV1::HybridSeed)?;
         let (syntax, query_text) = self
             .text_leg
             .ok_or_else(|| SdkError::Usage("hybrid seed text query is required".to_string()))?;

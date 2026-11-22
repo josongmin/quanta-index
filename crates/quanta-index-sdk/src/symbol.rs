@@ -152,7 +152,11 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 
 impl SymbolQueryBuilder<'_, true, true, true> {
     pub fn execute(self) -> Result<SymbolQueryResponse, SdkError> {
-        let request = self.state.build_request("symbol")?;
+        let request = self.state.build_request(
+            self.client,
+            crate::LegacyQueryCapabilityV1::Symbol,
+            "symbol",
+        )?;
         dispatch_symbol_query_request_v1(
             self.client,
             quanta_index_contract::SymbolQueryRequest::from(request),

@@ -9,9 +9,13 @@ use quanta_index_core::index::{IndexError, MemoryLease, MemoryLifetime, WorkBudg
 use super::literal_grams::MAX_GRAMS;
 
 const GRAM_BITS: usize = 1 << 24;
-const WORD_BITS: usize = u64::BITS as usize;
-const WORDS: usize = GRAM_BITS / WORD_BITS;
+const WORD_BITS: usize = std::mem::size_of::<u64>() * 8;
+const WORDS: usize = GRAM_BITS.div_euclid(WORD_BITS);
 pub(super) const ENTRY_CHUNK_CAP: usize = 65_536;
+#[expect(
+    clippy::as_conversions,
+    reason = "the fixed 24-bit bitmap and bounded chunk have a compile-time value below u64::MAX; new() checks every backing against this limit"
+)]
 pub(super) const MAX_ADMITTED_BYTES: u64 = (2 * WORDS * std::mem::size_of::<u64>()
     + WORDS * std::mem::size_of::<u32>()
     + ENTRY_CHUNK_CAP * std::mem::size_of::<MembershipEdit>())
@@ -175,24 +179,31 @@ impl OwnerMemberships {
     ) -> Result<(), IndexError> {
         let windows = bytes.len().saturating_sub(2);
         budget.charge(WorkUsage {
-            bytes: u64::try_from(windows)
-                .map_err(|_error| IndexError::ResourceLimited)?
-                .checked_mul(3)
-                .ok_or(IndexError::ResourceLimited)?,
+            bytes: if windows == 0 {
+                0
+            } else {
+                u64::try_from(bytes.len()).map_err(|_error| IndexError::ResourceLimited)?
+            },
             mutations: u64::from(windows != 0),
             ..WorkUsage::default()
         })?;
+        if windows == 0 {
+            return Ok(());
+        }
+        let (first, rest) = bytes.split_first_chunk::<2>().ok_or_else(|| {
+            IndexError::BackendViolation("literal gram source prefix missing".into())
+        })?;
+        let [first, second] = first;
+        // The first two bytes seed the rolling gram; each later window reads
+        // only its new byte. The old windows(3) walk reread the overlap.
+        let mut gram = (usize::from(*first) << 8) | usize::from(*second);
         let mut unique = 0_usize;
-        for (slot, window) in bytes.windows(3).enumerate() {
+        for (slot, next) in rest.iter().enumerate() {
             if slot % 4096 == 0 {
                 budget.checkpoint()?;
             }
-            let [first, second, third] = window else {
-                return Err(IndexError::BackendViolation("literal gram width".into()));
-            };
-            let gram =
-                (usize::from(*first) << 16) | (usize::from(*second) << 8) | usize::from(*third);
-            let word = gram / WORD_BITS;
+            gram = ((gram << 8) & 0x00ff_ffff) | usize::from(*next);
+            let word = gram.div_euclid(WORD_BITS);
             let bit = 1_u64 << (gram % WORD_BITS);
             let old_word = self.old.get_mut(word).ok_or(IndexError::ResourceLimited)?;
             let new_word = self.new.get_mut(word).ok_or(IndexError::ResourceLimited)?;
@@ -209,7 +220,7 @@ impl OwnerMemberships {
                     return Err(IndexError::ResourceLimited);
                 }
                 *target |= bit;
-                unique += 1;
+                unique = unique.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             }
         }
         Ok(())
@@ -351,6 +362,46 @@ mod tests {
             return Err(IndexError::BackendViolation(
                 "failed emission reused scratch".into(),
             ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rolling_raw_grams_read_each_source_byte_once() -> Result<(), IndexError> {
+        for bytes in [
+            &b""[..],
+            &b"a"[..],
+            &b"ab"[..],
+            &b"abc"[..],
+            &b"ababa"[..],
+            &b"a\xc3\xa9\xffb"[..],
+        ] {
+            let mut budget = work()?;
+            let mut scratch = OwnerMemberships::new(&budget)?;
+            scratch.mark_bytes(bytes, false, &mut budget)?;
+            let expected_bytes = if bytes.len() < 3 { 0 } else { bytes.len() };
+            if budget.usage().bytes
+                != u64::try_from(expected_bytes).map_err(|_| IndexError::ResourceLimited)?
+                || budget.usage().mutations != u64::from(bytes.len() >= 3)
+            {
+                return Err(IndexError::BackendViolation(
+                    "raw gram scan work differs from bytes actually read".into(),
+                ));
+            }
+            for window in bytes.windows(3) {
+                let [first, second, third] = window else {
+                    return Err(IndexError::BackendViolation("test gram width".into()));
+                };
+                let gram =
+                    (usize::from(*first) << 16) | (usize::from(*second) << 8) | usize::from(*third);
+                let word = gram / WORD_BITS;
+                let bit = 1_u64 << (gram % WORD_BITS);
+                if scratch.new.get(word).is_none_or(|mask| mask & bit == 0) {
+                    return Err(IndexError::BackendViolation(
+                        "rolling raw gram membership differs from source windows".into(),
+                    ));
+                }
+            }
         }
         Ok(())
     }

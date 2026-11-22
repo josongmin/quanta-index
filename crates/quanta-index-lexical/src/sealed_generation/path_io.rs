@@ -1,15 +1,54 @@
 //! Descriptor-anchored access to sealed generation artifacts.
 
-use std::ffi::{OsStr, OsString};
 use std::fs::{File, Metadata};
 use std::io::{self, Read};
-use std::os::unix::ffi::OsStringExt as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path};
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct OpenedFileIdentity {
+    device: u64,
+    inode: u64,
+    bytes: u64,
+    links: u64,
+    owner: u32,
+    group: u32,
+    mode: u32,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl OpenedFileIdentity {
+    fn from(metadata: &Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            bytes: metadata.len(),
+            links: metadata.nlink(),
+            owner: metadata.uid(),
+            group: metadata.gid(),
+            mode: metadata.mode(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+}
+
+fn changed_entry(relative: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "sealed artifact changed while it was read: {}",
+            relative.display()
+        ),
+    )
+}
 
 /// Resolve a sealed artifact without following symlinks below its generation.
 ///
 /// A prior path metadata check cannot authorize a later resolution, including
 /// one through a nested directory.
+#[cfg(test)]
 pub(crate) fn open_regular_nofollow(root: &Path, relative: &Path) -> io::Result<File> {
     let directory = open_generation_dir_nofollow(root)?;
     open_regular_below(&directory, relative)
@@ -25,10 +64,15 @@ pub(crate) fn optional_entry_metadata(path: &Path) -> io::Result<Option<Metadata
     }
 }
 
-/// Check a top-level entry relative to an already opened generation. The
-/// result includes symlinks, including dangling links.
-pub(crate) fn optional_entry_at(root: &File, name: &Path) -> io::Result<bool> {
-    use rustix::fs::{AtFlags, statat};
+/// Inspect a top-level entry relative to an already opened generation without
+/// following it. The result includes symlinks, including dangling links, and
+/// lets control-file readers reject special inodes before attempting to open
+/// them.
+pub(crate) fn optional_entry_file_type_at(
+    root: &File,
+    name: &Path,
+) -> io::Result<Option<rustix::fs::FileType>> {
+    use rustix::fs::{AtFlags, FileType, statat};
 
     if name.components().count() != 1
         || !matches!(name.components().next(), Some(Component::Normal(_)))
@@ -39,42 +83,18 @@ pub(crate) fn optional_entry_at(root: &File, name: &Path) -> io::Result<bool> {
         ));
     }
     match statat(root, name, AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(_) => Ok(true),
-        Err(error) if error == rustix::io::Errno::NOENT => Ok(false),
+        Ok(metadata) => Ok(Some(FileType::from_raw_mode(metadata.st_mode))),
+        Err(error) if error == rustix::io::Errno::NOENT => Ok(None),
         Err(error) => Err(io::Error::from_raw_os_error(error.raw_os_error())),
     }
 }
 
-/// Enumerate entries from the pinned generation or one nofollow child
-/// directory, never by resolving the generation pathname a second time.
-pub(crate) fn entry_names_at(root: &File, child: Option<&OsStr>) -> io::Result<Vec<OsString>> {
-    use rustix::fs::{Dir, Mode, OFlags, openat};
-
-    let directory = match child {
-        Some(name) => File::from(
-            openat(
-                root,
-                Path::new(name),
-                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW,
-                Mode::empty(),
-            )
-            .map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))?,
-        ),
-        None => root.try_clone()?,
-    };
-    let mut entries = Dir::read_from(&directory)
-        .map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))?;
-    let mut names = Vec::new();
-    while let Some(entry) = entries.read() {
-        let entry = entry.map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))?;
-        let bytes = entry.file_name().to_bytes();
-        if bytes != b"." && bytes != b".." {
-            names.push(OsString::from_vec(bytes.to_vec()));
-        }
-    }
-    Ok(names)
+#[cfg(test)]
+pub(crate) fn optional_entry_at(root: &File, name: &Path) -> io::Result<bool> {
+    Ok(optional_entry_file_type_at(root, name)?.is_some())
 }
 
+#[cfg(test)]
 pub(crate) fn open_generation_dir_nofollow(root: &Path) -> io::Result<File> {
     use rustix::fs::{Mode, OFlags, open, openat};
 
@@ -153,6 +173,65 @@ pub(crate) fn is_unsafe_artifact_path(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::InvalidData
         || error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
         || error.raw_os_error() == Some(rustix::io::Errno::NOTDIR.raw_os_error())
+        || error.raw_os_error() == Some(rustix::io::Errno::OPNOTSUPP.raw_os_error())
+}
+
+fn read_regular_bounded_with_post_read(
+    root: &File,
+    relative: &Path,
+    ceiling: usize,
+    post_read: impl FnOnce() -> io::Result<()>,
+) -> io::Result<Vec<u8>> {
+    use rustix::fs::{AtFlags, FileType, fstat, statat};
+
+    // The final named-inode comparison is safe only for a direct child. A
+    // multi-component statat could traverse a replaced intermediate link.
+    if relative.components().count() != 1
+        || !matches!(relative.components().next(), Some(Component::Normal(_)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "bounded control file is not top-level",
+        ));
+    }
+    let mut file = open_regular_below(root, relative)?;
+    let before = OpenedFileIdentity::from(&file.metadata()?);
+    let bytes = read_opened_bounded(&mut file, ceiling)?;
+    post_read()?;
+    let after = OpenedFileIdentity::from(&file.metadata()?);
+    if after != before {
+        return Err(changed_entry(relative));
+    }
+    let named = match statat(root, relative, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(named) => named,
+        Err(error)
+            if matches!(
+                error,
+                rustix::io::Errno::NOENT | rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR
+            ) =>
+        {
+            return Err(changed_entry(relative));
+        }
+        Err(error) => return Err(io::Error::from_raw_os_error(error.raw_os_error())),
+    };
+    let opened =
+        fstat(&file).map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))?;
+    if FileType::from_raw_mode(named.st_mode) != FileType::RegularFile
+        || (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
+    {
+        return Err(changed_entry(relative));
+    }
+    Ok(bytes)
+}
+
+/// Read one top-level control file from a pinned generation and prove that the
+/// same named inode remained stable for the whole read.
+pub(crate) fn read_regular_bounded_at(
+    root: &File,
+    relative: &Path,
+    ceiling: usize,
+) -> io::Result<Vec<u8>> {
+    read_regular_bounded_with_post_read(root, relative, ceiling, || Ok(()))
 }
 
 /// Read a regular file after admitting its opened descriptor's length. The
@@ -266,6 +345,31 @@ mod path_tests {
             || !super::optional_entry_at(&opened, name)?
         {
             return Err("dangling optional entry was treated as absent".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_control_read_refuses_a_named_inode_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let generation = root.path().join("family/g1");
+        std::fs::create_dir_all(&generation)?;
+        let path = generation.join("identity.cbor");
+        let displaced = generation.join("displaced.cbor");
+        std::fs::write(&path, b"original")?;
+        let opened = super::open_generation_dir_nofollow(&generation)?;
+        let result = super::read_regular_bounded_with_post_read(
+            &opened,
+            Path::new("identity.cbor"),
+            64,
+            || {
+                std::fs::rename(&path, &displaced)?;
+                std::fs::write(&path, b"replacement")
+            },
+        );
+        if !matches!(result, Err(error) if error.kind() == std::io::ErrorKind::InvalidData) {
+            return Err("named control-file replacement was not refused".into());
         }
         Ok(())
     }

@@ -10,6 +10,7 @@ use quanta_index_core::{
 use rusqlite::Connection;
 
 use crate::connection::engine_error;
+pub(crate) use crate::integrity_error::IntegrityCheckError;
 use crate::sequence::{
     SequenceEventKindV1, checked_event_row, event_commitment, event_raw_row,
     has_later_invalidation, verify_gc_floor_domain_integrity, verify_invalidation_target,
@@ -41,22 +42,6 @@ pub(crate) fn verify_integrity(
         Err(IntegrityCheckError::Admission(_)) => Err(CoreError::InvalidContract(
             "startup integrity pass has no WorkBudget".into(),
         )),
-    }
-}
-
-pub(crate) enum IntegrityCheckError {
-    Admission(IndexError),
-    Integrity(CoreError),
-}
-
-impl From<CoreError> for IntegrityCheckError {
-    fn from(error: CoreError) -> Self {
-        Self::Integrity(error)
-    }
-}
-impl From<IndexError> for IntegrityCheckError {
-    fn from(error: IndexError) -> Self {
-        Self::Admission(error)
     }
 }
 

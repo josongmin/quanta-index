@@ -94,7 +94,82 @@ fn source_root_quiescence_allows_actual_post_selection_publication() -> TestResu
         read_only::check_rollback(&guard, &selected, &mut admission_budget()),
         Err(IndexError::Conflict)
     ));
-    check_eq!(boot_manifest::read_stored(&guard)?, Some(selected));
+    check_eq!(boot_record::read_stored(&guard)?, Some(selected));
+    Ok(())
+}
+
+#[test]
+fn single_workspace_boot_and_rollback_refuse_orphan_view_root() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, selected) = selected_catalog(root.path())?;
+    let guard = catalog.lock()?;
+    let workspace_blob = workspace_key(workspace())?;
+    let epoch = int(selected.publication.identity.epoch)?;
+    let sequence = int(selected.publication.identity.sequence + 1)?;
+    let object = object_key(selected.publication.profile);
+    let digest = fields_digest(
+        b"qidx.native.viewroot.v1",
+        &(&workspace_blob, epoch, sequence, &object),
+    )?;
+    let foreign_keys: bool = guard.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+    guard.pragma_update(None, "foreign_keys", false)?;
+    let inserted = guard.execute(
+        "INSERT INTO native_view_root_v1(workspace,epoch,sequence,object,row_digest)
+         VALUES (?1,?2,?3,?4,?5)",
+        params![&workspace_blob, epoch, sequence, &object, &digest],
+    );
+    guard.pragma_update(None, "foreign_keys", foreign_keys)?;
+    check_eq!(inserted?, 1);
+
+    check_eq!(
+        boot_quiescence::check_quiescent_rows(
+            &guard,
+            workspace(),
+            selected.publication.identity,
+            &mut admission_budget(),
+        ),
+        Err(IndexError::DigestConflict)
+    );
+    check_eq!(
+        read_only::check_source_root_quiescence(
+            &guard,
+            &selected,
+            workspace(),
+            &mut admission_budget(),
+        ),
+        Err(IndexError::DigestConflict)
+    );
+    check_eq!(
+        read_only::check_rollback(&guard, &selected, &mut admission_budget()),
+        Err(IndexError::DigestConflict)
+    );
+    check_eq!(boot_record::read_stored(&guard)?, Some(selected.clone()));
+    let retained: i64 = guard.query_row(
+        "SELECT count(*) FROM native_view_root_v1
+         WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
+        params![&workspace_blob, epoch, sequence],
+        |row| row.get(0),
+    )?;
+    check_eq!(retained, 1);
+
+    check_eq!(
+        guard.execute(
+            "DELETE FROM native_view_root_v1
+             WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
+            params![&workspace_blob, epoch, sequence],
+        )?,
+        1
+    );
+    check_eq!(
+        read_only::check_source_root_quiescence(
+            &guard,
+            &selected,
+            workspace(),
+            &mut admission_budget(),
+        )?,
+        selected.publication
+    );
+    read_only::check_rollback(&guard, &selected, &mut admission_budget())?;
     Ok(())
 }
 
@@ -135,8 +210,89 @@ fn source_root_quiescence_refuses_ingress_pending_operation_and_pending_work() -
             Err(IndexError::Conflict)
         ));
         check_eq!(visited, 0);
-        check_eq!(boot_manifest::read_stored(&guard)?, Some(selected));
+        check_eq!(boot_record::read_stored(&guard)?, Some(selected));
     }
+    Ok(())
+}
+
+#[test]
+fn source_root_quiescence_refuses_a_second_encoding_of_a_published_key() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, selected) = selected_catalog(root.path())?;
+    let guard = catalog.lock()?;
+    let key = operation_key(selected.operation.key)?;
+    let mut alias = key.clone();
+    alias.push(b' ');
+    check_eq!(decode::<OperationKey>(&alias)?, selected.operation.key);
+    check_eq!(
+        guard.execute(
+            "INSERT INTO native_operation_v1(operation,workspace,epoch,payload,row_digest)
+             SELECT ?1,workspace,epoch,payload,row_digest FROM native_operation_v1 WHERE operation=?2",
+            params![&alias, &key],
+        )?,
+        1
+    );
+    let mut visited = 0;
+    check!(matches!(
+        visit_quiescent_publications(&guard, &selected, &mut admission_budget(), |_, _, _| {
+            visited += 1;
+            Ok(())
+        }),
+        Err(IndexError::DigestConflict)
+    ));
+    check_eq!(visited, 0);
+    check_eq!(
+        guard.execute(
+            "DELETE FROM native_operation_v1 WHERE operation=?1",
+            params![&alias],
+        )?,
+        1
+    );
+    check_eq!(
+        visit_quiescent_publications(&guard, &selected, &mut admission_budget(), |_, _, _| {
+            visited += 1;
+            Ok(())
+        })?,
+        selected.publication
+    );
+    check_eq!(visited, 1);
+    Ok(())
+}
+
+#[test]
+fn source_root_quiescence_refuses_work_payload_at_another_key() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, selected) = selected_catalog(root.path())?;
+    let intent = owner_work(209);
+    let head = publish_work_next(&catalog, &selected.publication, 2, &intent, 32_002, 210)?;
+    set_terminal_work_status(&catalog, &intent, &WorkStatus::Superseded)?;
+    let guard = catalog.lock()?;
+    let key = work_key(&intent)?;
+    let other_key = work_key(&owner_work(210))?;
+    check_ne!(other_key, key);
+    check_eq!(
+        read_only::check_source_root_quiescence(
+            &guard,
+            &selected,
+            workspace(),
+            &mut admission_budget()
+        )?,
+        head
+    );
+    check_eq!(
+        guard.execute(
+            "INSERT INTO native_work_v1(work,operation,workspace,epoch,sequence,status,owner_mode,
+                                      ready_since_ms,lease_until_ms,payload,row_digest)
+             SELECT ?1,operation,workspace,epoch,sequence,status,owner_mode,
+                    ready_since_ms,lease_until_ms,payload,row_digest FROM native_work_v1 WHERE work=?2",
+            params![&other_key, &key],
+        )?,
+        1
+    );
+    check!(matches!(
+        read_only::check_source_root_quiescence(&guard, &selected, workspace(), &mut admission_budget()),
+        Err(IndexError::Storage(reason)) if reason == "native work row identity mismatch"
+    ));
     Ok(())
 }
 
@@ -164,7 +320,7 @@ fn source_root_quiescence_refuses_foreign_scope_and_preserves_cancellation() -> 
         read_only::check_source_root_quiescence(&guard, &selected, workspace(), &mut cancelled),
         Err(IndexError::Cancelled)
     ));
-    check_eq!(boot_manifest::read_stored(&guard)?, Some(selected));
+    check_eq!(boot_record::read_stored(&guard)?, Some(selected));
     Ok(())
 }
 

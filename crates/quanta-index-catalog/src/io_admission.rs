@@ -7,6 +7,7 @@
 use std::{
     cell::RefCell,
     ops::{Deref, DerefMut},
+    path::Path,
     rc::{Rc, Weak},
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -185,11 +186,15 @@ pub trait CatalogIoAdmission: Send + Sync {
 /// before the first header read, including a checkpointed main-only URI open.
 /// Verification reads must check this original request even during native WAL
 /// recovery, which can run before a SQL VM progress callback is invoked.
+/// The main and WAL byte limits apply to the native descriptors that SQLite
+/// opens, including file-size observations during WAL recovery.
 pub trait CatalogReadOnlyIoAdmission: Send + Sync {
     fn read_only_vfs_name(&self) -> &str;
     fn enter_read_only_scope(
         &self,
         request: &quanta_index_core::RequestBudgetV1,
+        main_bytes: u64,
+        wal_bytes: u64,
     ) -> Box<dyn CatalogIoScope>;
 }
 
@@ -207,8 +212,11 @@ impl ScopeLease {
     pub(crate) fn enter_read_only(
         owner: &dyn CatalogReadOnlyIoAdmission,
         request: &quanta_index_core::RequestBudgetV1,
+        main_bytes: u64,
+        wal_bytes: u64,
     ) -> Self {
-        let scope: Rc<dyn CatalogIoScope> = Rc::from(owner.enter_read_only_scope(request));
+        let scope: Rc<dyn CatalogIoScope> =
+            Rc::from(owner.enter_read_only_scope(request, main_bytes, wal_bytes));
         let previous = CURRENT_SCOPE.with(|slot| slot.replace(Some(Rc::downgrade(&scope))));
         Self {
             previous,
@@ -257,6 +265,38 @@ pub(crate) fn is_capacity_refusal(error: &rusqlite::Error) -> bool {
     // Drop the RefCell borrow before invoking backend code.
     let scope = CURRENT_SCOPE.with(|slot| slot.borrow().as_ref().and_then(Weak::upgrade));
     scope.is_some_and(|scope| scope.is_capacity_refusal(error))
+}
+
+pub(crate) fn storage(action: &str, path: &Path, error: &dyn std::fmt::Display) -> CoreError {
+    CoreError::Storage(format!("catalog: {action} {}: {error}", path.display()))
+}
+
+/// Map an engine error to the typed codes the ports promise.
+pub(crate) fn engine_error(action: &str, path: &Path, error: &rusqlite::Error) -> CoreError {
+    if is_capacity_refusal(error) {
+        return CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+            message: format!(
+                "catalog: {action} {} exceeded admitted file capacity: {error}",
+                path.display()
+            ),
+        };
+    }
+    if let rusqlite::Error::SqliteFailure(failure, _) = error
+        && matches!(
+            failure.code,
+            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+        )
+    {
+        return CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy,
+            message: format!(
+                "catalog: {action} {} met a held lock past the busy budget: {error}",
+                path.display()
+            ),
+        };
+    }
+    storage(action, path, error)
 }
 
 #[cfg(test)]
@@ -848,6 +888,12 @@ mod tests {
             path: PathBuf::from(":memory:"),
             clock: Arc::new(SystemCatalogClock),
             writer_cache: None,
+            pin_data_version: std::sync::atomic::AtomicI64::new(i64::MIN),
+            native_quarantine_schema: std::sync::atomic::AtomicU8::new(0),
+            native_source_stage_schema: std::sync::atomic::AtomicBool::new(false),
+            transient_source_body_quarantines: std::sync::RwLock::new(
+                std::collections::BTreeMap::new(),
+            ),
         };
         catalog.close_checked()?;
         if entries.load(Ordering::SeqCst) != 1

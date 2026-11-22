@@ -10123,6 +10123,13 @@ def test_qualified_gold_receipts_require_source_bound_task_reviews(tmp_path):
     same_reviewer["gold"]["adjudicator_id"] = "gold-owner-a"
     with pytest.raises(pairrun.RunError, match="distinct from annotators"):
         pairrun.validate_admission_manifest(same_reviewer)
+    same_reviewer["gold"]["adjudicator_id"] = " gold-owner-a\t"
+    with pytest.raises(pairrun.RunError, match="distinct from annotators"):
+        pairrun.validate_admission_manifest(same_reviewer)
+    same_reviewer = json.loads(json.dumps(admission))
+    same_reviewer["gold"]["annotators"][1]["annotator_id"] = " gold-owner-a\t"
+    with pytest.raises(pairrun.RunError, match="annotation authorities and receipts must be distinct"):
+        pairrun.validate_admission_manifest(same_reviewer)
     common = {
         "suite_sha256": pairrun.sha_file(st["suite_path"]),
         "suite": st["suite"],

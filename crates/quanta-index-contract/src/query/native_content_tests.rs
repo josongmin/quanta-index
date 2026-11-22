@@ -1,4 +1,4 @@
-use crate::{LqCase, LqCountBound, LqExpr, LqLeaf, LqPatternType};
+use crate::{LqCase, LqCountBound, LqExpr, LqLeaf, LqPatternType, LqPredicateArg};
 use quanta_index_lq_norm::LqParseErrorCode;
 
 use super::{
@@ -83,6 +83,66 @@ fn unsupported_engine_tokens_refuse_before_engine_specific_parse() {
             Err(error) if error.code == LqParseErrorCode::UnsupportedCombo
         ));
     }
+}
+
+#[test]
+fn native_file_contains_preserves_raw_substring_and_boolean_shape() -> TestResult {
+    let atom = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "file.contains".into(),
+        args: vec![LqPredicateArg::RawString("oo_ba".into())],
+    });
+    assert_eq!(
+        parse_native_content_query("file.contains('oo_ba')")?.expr,
+        atom
+    );
+    assert_eq!(
+        parse_native_content_query("needle AND file.contains('oo_ba')")?.expr,
+        LqExpr::All(vec![
+            LqExpr::Leaf(LqLeaf::Keyword("needle".into())),
+            atom.clone()
+        ])
+    );
+    assert_eq!(
+        parse_native_content_query("needle OR NOT file.contains('oo_ba')")?.expr,
+        LqExpr::Any(vec![
+            LqExpr::Leaf(LqLeaf::Keyword("needle".into())),
+            LqExpr::Not(Box::new(atom)),
+        ])
+    );
+    Ok(())
+}
+
+#[test]
+fn native_repo_has_file_preserves_correlated_filters_and_boolean_shape() -> TestResult {
+    let query = parse_native_content_query(
+        "needle AND repo:has.file(path:src/lib.rs, name:lib.rs, content:needle)",
+    )?;
+    let LqExpr::All(children) = query.expr else {
+        return Err("repo file gate was not retained as an AND child".into());
+    };
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[0], LqExpr::Leaf(LqLeaf::Keyword("needle".into())));
+    assert_eq!(
+        children[1],
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".into(),
+            args: vec![
+                LqPredicateArg::Filter {
+                    name: "path".into(),
+                    value: "src/lib.rs".into(),
+                },
+                LqPredicateArg::Filter {
+                    name: "name".into(),
+                    value: "lib.rs".into(),
+                },
+                LqPredicateArg::Filter {
+                    name: "content".into(),
+                    value: "needle".into(),
+                },
+            ],
+        })
+    );
+    Ok(())
 }
 
 #[test]

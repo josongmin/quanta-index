@@ -489,10 +489,10 @@ fn prepare_snapshot_census(
     routes: &NativeProtectedSourceRoutesV1,
     budget: &mut WorkBudget,
 ) -> Result<SnapshotCensus, IndexError> {
-    if boot_manifest::read_stored(connection)?.as_ref() != Some(manifest) {
+    if boot_record::read_stored(connection)?.as_ref() != Some(manifest) {
         return Err(IndexError::DigestConflict);
     }
-    boot_manifest::validate_custody(connection, manifest, budget)?;
+    boot_record::validate_custody(connection, manifest, budget)?;
     let route = manifest
         .protected_source_routes
         .ok_or(IndexError::SnapshotUnavailable)?;
@@ -679,7 +679,7 @@ fn scan_snapshot_rows(
             }
             let _row_memory = operation_scratch_v1(payload, budget)?;
             let original =
-                decode_stored_operation(connection, key, &scope, epoch, payload, digest)?;
+                decode_stored_operation(connection, key, &scope, epoch, payload, digest, None)?;
             if !canonical_row_v1(payload, &original)? {
                 return Err(IndexError::DigestConflict);
             }
@@ -821,7 +821,7 @@ fn scan_snapshot_rows(
     }
     for head in &routes.repomap_heads {
         if head.source_operation.is_none() {
-            let genesis = boot_manifest::load_publication(
+            let genesis = boot_record::load_publication(
                 connection,
                 head.source_publication.identity,
                 budget,

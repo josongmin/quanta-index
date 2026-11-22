@@ -39,7 +39,7 @@ fn directory_descriptor_stamp_binds_fixed_wire_and_same_child_mutations() -> Res
     fixed_wire.extend_from_slice(&[0xa5; 32]);
     assert_eq!(encoded.as_slice()?, fixed_wire.as_slice());
 
-    let mut stamp = entry_patch::Edits::new();
+    let mut stamp = entry_edits::Edits::new();
     let mut work = budget();
     stamp.push_descriptor(&baseline, &mut work)?;
     let golden = stamp.finish();
@@ -55,7 +55,7 @@ fn directory_descriptor_stamp_binds_fixed_wire_and_same_child_mutations() -> Res
         ])
     );
     for changed in [[2, 0, 1], [1, 0, 3]] {
-        let mut alternate = entry_patch::Edits::new();
+        let mut alternate = entry_edits::Edits::new();
         alternate.push_descriptor(&selector(changed)?, &mut budget())?;
         let changed_stamp = alternate.finish();
         assert_eq!(changed_stamp.count, golden.count);

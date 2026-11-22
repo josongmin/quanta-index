@@ -1,4 +1,4 @@
-//! Warm DSL matrix entry point for Native file samples and the Legacy gate.
+//! Warm DSL matrix entry point for Native file samples.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -8,12 +8,9 @@ use anyhow::Result as AnyResult;
 use quanta_index_searchd_harness::artifact::BenchMode;
 use quanta_index_searchd_harness::native_index::{
     NativeDslTiming, assemble_native_dsl_artifact, measure_native_dsl_history,
-    measure_native_dsl_text, measure_reopened_native_dsl_history, native_dsl_scenario_roster,
+    measure_native_dsl_retained, measure_native_dsl_text, measure_reopened_native_dsl_history,
+    native_dsl_scenario_roster,
 };
-
-#[cfg(feature = "legacy-bench")]
-#[path = "dsl_warm_matrix/legacy.rs"]
-mod legacy;
 
 const DEFAULT_WARM_SAMPLES: usize = 100;
 const DEFAULT_WARM_REPEATS: usize = 5;
@@ -89,6 +86,7 @@ fn run_cli() -> AnyResult<()> {
     if let Some(flag) = args.first()
         && (flag == "--native-text"
             || flag == "--native-history"
+            || flag == "--native-retained"
             || flag == "--native-history-reopen")
     {
         let [_, input, id] = args.as_slice() else {
@@ -107,6 +105,7 @@ fn run_cli() -> AnyResult<()> {
         };
         let report = match flag.to_str() {
             Some("--native-text") => measure_native_dsl_text(Path::new(input), id, timing)?,
+            Some("--native-retained") => measure_native_dsl_retained(Path::new(input), id, timing)?,
             Some("--native-history") => measure_native_dsl_history(Path::new(input), id, timing)?,
             Some("--native-history-reopen") => {
                 measure_reopened_native_dsl_history(Path::new(input), id, timing)?
@@ -116,13 +115,8 @@ fn run_cli() -> AnyResult<()> {
         serde_json::to_writer(std::io::stdout().lock(), &report)?;
         return Ok(());
     }
-    #[cfg(feature = "legacy-bench")]
-    {
-        legacy::run()
-    }
-    #[cfg(not(feature = "legacy-bench"))]
     anyhow::bail!(
-        "usage: dsl_warm_matrix (--list-native | --native-text <daemon> <scenario-id> | --native-history <fixture-input-json> <scenario-id> | --native-history-reopen <cold-fixture-json> <scenario-id> | --assemble-native --input <matrix.json> --out <artifact.json>)"
+        "usage: dsl_warm_matrix (--list-native | --native-text <daemon> <scenario-id> | --native-retained <daemon> <scenario-id> | --native-history <fixture-input-json> <scenario-id> | --native-history-reopen <cold-fixture-json> <scenario-id> | --assemble-native --input <matrix.json> --out <artifact.json>)"
     );
 }
 

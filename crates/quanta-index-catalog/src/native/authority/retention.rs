@@ -9,17 +9,28 @@ use quanta_index_core::index::{
     ViewRef, WorkBudget, WorkUsage, WorkspaceKey,
 };
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params, types::ValueRef};
-
 use std::hash::{BuildHasher, RandomState};
 
 use super::{
-    SqliteCatalog, begin, boot_manifest, current_view, distinct_roots, exactly_one,
-    fields_digest, int, object_install, object_key, read_view_row, require_registered_edges, sql,
-    uint, workspace_key,
+    MAX_VIEW_PAYLOAD_BYTES, MAX_VIEW_ROOTS, SqliteCatalog, VIEW_ROOT_QUERY_LIMIT, begin,
+    boot_record, current_view, decode, distinct_roots, exactly_one, fields_digest, int,
+    object_install, object_key, read_view_row, require_registered_edges, sql, uint, workspace_key,
 };
 
 const FLOOR_DIGEST_DOMAIN: &[u8] = b"qidx.native.exactfloor.v1";
 const MAX_RETIRE_VIEWS: u32 = 256;
+
+fn checked_blob_len(
+    length: Option<i64>,
+    minimum: i64,
+    maximum: i64,
+    error: &'static str,
+) -> Result<i64, IndexError> {
+    match length {
+        Some(length) if (minimum..=maximum).contains(&length) => Ok(length),
+        _ => Err(IndexError::Storage(error.into())),
+    }
+}
 
 fn row_bytes(parts: &[i64]) -> Result<u64, IndexError> {
     parts.iter().try_fold(0_u64, |total, &part| {
@@ -35,6 +46,14 @@ fn floor_row(
     epoch: u64,
 ) -> Result<Option<u64>, IndexError> {
     let workspace_blob = workspace_key(workspace)?;
+    floor_row_by_key(connection, &workspace_blob, epoch)
+}
+
+fn floor_row_by_key(
+    connection: &Connection,
+    workspace_blob: &[u8],
+    epoch: u64,
+) -> Result<Option<u64>, IndexError> {
     let epoch_integer = int(epoch)?;
     let row: Option<(i64, Vec<u8>)> = connection
         .query_row(
@@ -94,16 +113,19 @@ fn floor_row(
 
 /// Check every retained floor through the same canonical digest/head validator
 /// used by Exact admission. Old epochs may retain valid history after the
-/// workspace advances; only a foreign or malformed workspace is refused.
+/// workspace advances. Every floor must belong to the selected workspace set.
 pub(super) fn verify_source_floors(
     connection: &Connection,
-    expected_workspace: WorkspaceKey,
+    selected: impl Fn(WorkspaceKey) -> bool,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    let expected = workspace_key(expected_workspace)?;
     let mut statement = connection
         .prepare(
-            "SELECT workspace,epoch FROM native_exact_history_floor_v1
+            "SELECT CASE
+                      WHEN typeof(workspace) != 'blob' THEN 0
+                      WHEN length(workspace) NOT BETWEEN 1 AND 4096 THEN X''
+                      ELSE workspace END, epoch
+             FROM native_exact_history_floor_v1
              ORDER BY workspace,epoch",
         )
         .map_err(|error| sql(&error))?;
@@ -116,24 +138,34 @@ pub(super) fn verify_source_floors(
         let Some(row) = rows.next().map_err(|error| sql(&error))? else {
             break;
         };
-        let ValueRef::Blob(workspace) = row.get_ref(0).map_err(|error| sql(&error))? else {
+        let ValueRef::Blob(workspace_blob) = row.get_ref(0).map_err(|error| sql(&error))? else {
             return Err(IndexError::Storage(
                 "exact floor workspace is not a BLOB".into(),
             ));
         };
-        if workspace != expected.as_slice() {
+        // The same workspace encoding bound as the selected catalog census.
+        if workspace_blob.is_empty() || workspace_blob.len() > 4096 {
+            return Err(IndexError::Conflict);
+        }
+        budget.charge(WorkUsage {
+            bytes: u64::try_from(workspace_blob.len())
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        let workspace = decode(workspace_blob).map_err(|_error| IndexError::Conflict)?;
+        if !selected(workspace) || workspace_key(workspace)?.as_slice() != workspace_blob {
             return Err(IndexError::Conflict);
         }
         let epoch = uint(row.get(1).map_err(|error| sql(&error))?)?;
         budget.charge(WorkUsage {
             reads: 2,
-            bytes: u64::try_from(expected.len())
+            bytes: u64::try_from(workspace_blob.len())
                 .map_err(|_error| IndexError::ResourceLimited)?
                 .checked_add(32)
                 .ok_or(IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
-        if floor_row(connection, expected_workspace, epoch)?.is_none() {
+        if floor_row_by_key(connection, workspace_blob, epoch)?.is_none() {
             return Err(IndexError::Storage(
                 "exact floor disappeared in read snapshot".into(),
             ));
@@ -148,7 +180,15 @@ pub(super) fn exact_floor_for_epoch(
     workspace: WorkspaceKey,
     epoch: u64,
 ) -> Result<u64, IndexError> {
-    Ok(floor_row(connection, workspace, epoch)?.unwrap_or(0))
+    exact_floor_for_epoch_by_key(connection, &workspace_key(workspace)?, epoch)
+}
+
+pub(super) fn exact_floor_for_epoch_by_key(
+    connection: &Connection,
+    workspace_blob: &[u8],
+    epoch: u64,
+) -> Result<u64, IndexError> {
+    Ok(floor_row_by_key(connection, workspace_blob, epoch)?.unwrap_or(0))
 }
 
 pub(super) fn charged_current_view(
@@ -161,9 +201,12 @@ pub(super) fn charged_current_view(
         reads: 1,
         ..WorkUsage::default()
     })?;
-    let metadata: Option<(i64, i64, i64, i64)> = connection
+    let metadata: Option<(i64, i64, Option<i64>, Option<i64>)> = connection
         .query_row(
-            "SELECT epoch,sequence,length(payload),length(row_digest) FROM native_workspace_v1 WHERE workspace=?1",
+            "SELECT epoch,sequence,
+                    CASE WHEN typeof(payload)='blob' THEN length(payload) END,
+                    CASE WHEN typeof(row_digest)='blob' THEN length(row_digest) END
+             FROM native_workspace_v1 WHERE workspace=?1",
             params![&workspace_blob],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
@@ -172,6 +215,14 @@ pub(super) fn charged_current_view(
     let Some((epoch, sequence, payload_length, digest_length)) = metadata else {
         return Ok(None);
     };
+    let payload_length = checked_blob_len(
+        payload_length,
+        1,
+        MAX_VIEW_PAYLOAD_BYTES,
+        "current view payload shape mismatch",
+    )?;
+    let digest_length =
+        checked_blob_len(digest_length, 32, 32, "current view digest shape mismatch")?;
     let workspace_lengths: [i64; 2] = (payload_length, digest_length).into();
     budget.charge(WorkUsage {
         reads: 1,
@@ -182,9 +233,12 @@ pub(super) fn charged_current_view(
         reads: 1,
         ..WorkUsage::default()
     })?;
-    let historical: Option<(i64, i64, i64)> = connection
+    let historical: Option<(Option<i64>, Option<i64>, Option<i64>)> = connection
         .query_row(
-            "SELECT length(identity_digest),length(payload),length(row_digest) FROM native_view_v1 WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
+            "SELECT CASE WHEN typeof(identity_digest)='blob' THEN length(identity_digest) END,
+                    CASE WHEN typeof(payload)='blob' THEN length(payload) END,
+                    CASE WHEN typeof(row_digest)='blob' THEN length(row_digest) END
+             FROM native_view_v1 WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
             params![&workspace_blob, epoch, sequence],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -192,6 +246,15 @@ pub(super) fn charged_current_view(
         .map_err(|error| sql(&error))?;
     let (identity_length, view_length, view_digest_length) =
         historical.ok_or(IndexError::SnapshotUnavailable)?;
+    let identity_length = checked_blob_len(identity_length, 32, 32, "view digest shape mismatch")?;
+    let view_length = checked_blob_len(
+        view_length,
+        1,
+        MAX_VIEW_PAYLOAD_BYTES,
+        "view payload shape mismatch",
+    )?;
+    let view_digest_length =
+        checked_blob_len(view_digest_length, 32, 32, "view digest shape mismatch")?;
     let historical_lengths: [i64; 3] = (identity_length, view_length, view_digest_length).into();
     budget.charge(WorkUsage {
         reads: 1,
@@ -200,19 +263,24 @@ pub(super) fn charged_current_view(
     })?;
     let mut roots = connection
         .prepare(
-            "SELECT length(object),length(row_digest) FROM native_view_root_v1 WHERE workspace=?1 AND epoch=?2 AND sequence=?3 ORDER BY object LIMIT 8",
+            "SELECT CASE WHEN typeof(object)='blob' THEN length(object) END,
+                    CASE WHEN typeof(row_digest)='blob' THEN length(row_digest) END
+             FROM native_view_root_v1 WHERE workspace=?1 AND epoch=?2 AND sequence=?3 ORDER BY object LIMIT ?4",
         )
         .map_err(|error| sql(&error))?;
     let lengths = roots
-        .query_map(params![&workspace_blob, epoch, sequence], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-        })
+        .query_map(
+            params![&workspace_blob, epoch, sequence, VIEW_ROOT_QUERY_LIMIT],
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
         .map_err(|error| sql(&error))?;
     for (index, lengths) in lengths.enumerate() {
-        if index >= 7 {
+        if index >= MAX_VIEW_ROOTS {
             return Err(IndexError::Storage("view has too many roots".into()));
         }
         let (object_length, digest_length) = lengths.map_err(|error| sql(&error))?;
+        let object_length = checked_blob_len(object_length, 32, 32, "view root shape mismatch")?;
+        let digest_length = checked_blob_len(digest_length, 32, 32, "view root shape mismatch")?;
         let root_lengths: [i64; 2] = (object_length, digest_length).into();
         budget.charge(WorkUsage {
             reads: 1,
@@ -244,9 +312,13 @@ fn next_retire_candidate(
         reads: 1,
         ..WorkUsage::default()
     })?;
-    let metadata: Option<(i64, i64, i64, i64)> = connection
+    let metadata: Option<(i64, Option<i64>, Option<i64>, Option<i64>)> = connection
         .query_row(
-            "SELECT sequence,length(identity_digest),length(payload),length(row_digest) FROM native_view_v1 WHERE workspace=?1 AND epoch=?2 AND sequence>?3 AND sequence<?4 ORDER BY sequence LIMIT 1",
+            "SELECT sequence,
+                    CASE WHEN typeof(identity_digest)='blob' THEN length(identity_digest) END,
+                    CASE WHEN typeof(payload)='blob' THEN length(payload) END,
+                    CASE WHEN typeof(row_digest)='blob' THEN length(row_digest) END
+             FROM native_view_v1 WHERE workspace=?1 AND epoch=?2 AND sequence>?3 AND sequence<?4 ORDER BY sequence LIMIT 1",
             params![&workspace_blob, int(epoch)?, after_integer, int(floor)?],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
@@ -255,11 +327,20 @@ fn next_retire_candidate(
     let Some((sequence, identity_length, payload_length, digest_length)) = metadata else {
         return Ok(None);
     };
-    if identity_length != 32 || digest_length != 32 {
-        return Err(IndexError::Storage(
-            "retiring view digest shape mismatch".into(),
-        ));
-    }
+    let identity_length = checked_blob_len(
+        identity_length,
+        32,
+        32,
+        "retiring view digest shape mismatch",
+    )?;
+    let payload_length = checked_blob_len(
+        payload_length,
+        1,
+        MAX_VIEW_PAYLOAD_BYTES,
+        "retiring view payload shape mismatch",
+    )?;
+    let digest_length =
+        checked_blob_len(digest_length, 32, 32, "retiring view digest shape mismatch")?;
     let lengths: [i64; 3] = (identity_length, payload_length, digest_length).into();
     budget.charge(WorkUsage {
         reads: 1,
@@ -298,20 +379,29 @@ pub(super) fn charged_exact_view(
         reads: 1,
         ..WorkUsage::default()
     })?;
-    let lengths: Option<(i64, i64, i64)> = connection
+    let lengths: Option<(Option<i64>, Option<i64>, Option<i64>)> = connection
         .query_row(
-            "SELECT length(identity_digest),length(payload),length(row_digest)
+            "SELECT CASE WHEN typeof(identity_digest)='blob' THEN length(identity_digest) END,
+                    CASE WHEN typeof(payload)='blob' THEN length(payload) END,
+                    CASE WHEN typeof(row_digest)='blob' THEN length(row_digest) END
              FROM native_view_v1 WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
             params![&workspace, int(identity.epoch)?, int(identity.sequence)?],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()
         .map_err(|error| sql(&error))?;
-    let lengths: [i64; 3] = lengths.ok_or(IndexError::SnapshotUnavailable)?.into();
-    let [identity_length, _, digest_length] = lengths;
-    if identity_length != 32 || digest_length != 32 {
-        return Err(IndexError::Storage("view digest shape mismatch".into()));
-    }
+    let (identity_length, payload_length, digest_length) =
+        lengths.ok_or(IndexError::SnapshotUnavailable)?;
+    let lengths = [
+        checked_blob_len(identity_length, 32, 32, "view digest shape mismatch")?,
+        checked_blob_len(
+            payload_length,
+            1,
+            MAX_VIEW_PAYLOAD_BYTES,
+            "view payload shape mismatch",
+        )?,
+        checked_blob_len(digest_length, 32, 32, "view digest shape mismatch")?,
+    ];
     budget.charge(WorkUsage {
         reads: 1,
         bytes: row_bytes(&lengths)?,
@@ -331,7 +421,9 @@ fn charged_view_roots_and_read(
     })?;
     let mut statement = connection
         .prepare(
-            "SELECT length(object),length(row_digest) FROM native_view_root_v1 WHERE workspace=?1 AND epoch=?2 AND sequence=?3 ORDER BY object LIMIT 8",
+            "SELECT CASE WHEN typeof(object)='blob' THEN length(object) END,
+                    CASE WHEN typeof(row_digest)='blob' THEN length(row_digest) END
+             FROM native_view_root_v1 WHERE workspace=?1 AND epoch=?2 AND sequence=?3 ORDER BY object LIMIT ?4",
         )
         .map_err(|error| sql(&error))?;
     let root_lengths = statement
@@ -339,19 +431,19 @@ fn charged_view_roots_and_read(
             params![
                 workspace_key(identity.workspace)?,
                 int(identity.epoch)?,
-                int(identity.sequence)?
+                int(identity.sequence)?,
+                VIEW_ROOT_QUERY_LIMIT,
             ],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
         )
         .map_err(|error| sql(&error))?;
     for (index, lengths) in root_lengths.enumerate() {
-        if index >= 7 {
+        if index >= MAX_VIEW_ROOTS {
             return Err(IndexError::Storage("view has too many roots".into()));
         }
         let (object_length, digest_length) = lengths.map_err(|error| sql(&error))?;
-        if object_length != 32 || digest_length != 32 {
-            return Err(IndexError::Storage("view root shape mismatch".into()));
-        }
+        let object_length = checked_blob_len(object_length, 32, 32, "view root shape mismatch")?;
+        let digest_length = checked_blob_len(digest_length, 32, 32, "view root shape mismatch")?;
         let lengths: [i64; 2] = (object_length, digest_length).into();
         budget.charge(WorkUsage {
             reads: 1,
@@ -378,16 +470,16 @@ struct SelectedRoute {
 impl SelectedRoute {
     fn read(
         connection: &Connection,
-        route: boot_manifest::NativeBootSourceRouteRefV1,
+        route: boot_record::NativeBootSourceRouteRefV1,
         budget: &mut WorkBudget,
     ) -> Result<Self, IndexError> {
         let memory = budget.reserve_memory(
-            boot_manifest::REGISTRATION_SCRATCH_BYTES,
+            boot_record::REGISTRATION_SCRATCH_BYTES,
             MemoryLifetime::Temporary,
         )?;
         budget.charge(WorkUsage {
             reads: 12,
-            bytes: boot_manifest::REGISTRATION_SCRATCH_BYTES,
+            bytes: boot_record::REGISTRATION_SCRATCH_BYTES,
             ..WorkUsage::default()
         })?;
         let mut registration = read_route_registration(connection, route.object, budget)?;
@@ -429,6 +521,8 @@ fn blocked_by_pin_or_work(
     route: Option<&mut SelectedRoute>,
     budget: &mut WorkBudget,
 ) -> Result<bool, IndexError> {
+    // The retirement page validated every pin row in this transaction before
+    // interpreting this exact-byte lookup as absence.
     let workspace_blob = workspace_key(identity.workspace)?;
     let epoch = int(identity.epoch)?;
     let sequence = int(identity.sequence)?;
@@ -592,7 +686,7 @@ pub(super) fn compact_marker_anchor_at_seal(
     budget: &mut WorkBudget,
 ) -> Result<Option<ObjectRef>, IndexError> {
     let _registration = budget.reserve_memory(
-        boot_manifest::REGISTRATION_SCRATCH_BYTES,
+        boot_record::REGISTRATION_SCRATCH_BYTES,
         MemoryLifetime::Temporary,
     )?;
     let carries_markers = |registration: &RegisteredObject| {
@@ -882,13 +976,23 @@ impl LegacyRoutePending {
 }
 
 fn delete_retired_view(
+    catalog: &SqliteCatalog,
     connection: &Connection,
     view: &CatalogView,
     budget: &mut WorkBudget,
-) -> Result<(), IndexError> {
+) -> Result<Option<ObjectRef>, IndexError> {
     let workspace_blob = workspace_key(view.identity.workspace)?;
     let epoch = int(view.identity.epoch)?;
     let sequence = int(view.identity.sequence)?;
+    // The view delete cascades its receipt. Complete any older single-view
+    // fence while the original view and its root edges still exist.
+    let completed_body = super::view_quarantine::resume_receipt_by_key(
+        catalog,
+        connection,
+        view.identity,
+        &workspace_blob,
+        budget,
+    )?;
     let root_count = distinct_roots(view).len();
     if root_count == 0 || root_count > 7 {
         return Err(IndexError::Storage(
@@ -933,7 +1037,7 @@ fn delete_retired_view(
             super::reclaim::release(connection, root)?;
         }
     }
-    Ok(())
+    Ok(completed_body)
 }
 
 fn write_floor(
@@ -1133,13 +1237,32 @@ impl CatalogExactHistoryPort for SqliteCatalog {
                 has_more: false,
             });
         }
+        // A retired view can be the last witness for a process-local
+        // incident. Persist the body before pruning any exact view evidence.
+        let _staged = super::view_quarantine::stage_transient_incidents(self, &tx, budget)?;
         let mut cursor = after;
         let mut examined = 0_u32;
         let mut retired = 0_u32;
         let mut blocked = 0_u32;
+        let retirement_scratch_bytes = u64::from(limit)
+            .checked_mul(256)
+            .ok_or(IndexError::ResourceLimited)?;
+        let _retirement_scratch =
+            budget.reserve_memory(retirement_scratch_bytes, MemoryLifetime::Temporary)?;
+        let mut retired_views = Vec::new();
+        retired_views
+            .try_reserve(usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?)
+            .map_err(|_allocation_error| IndexError::ResourceLimited)?;
+        let mut completed_quarantine_bodies = Vec::new();
+        completed_quarantine_bodies
+            .try_reserve(usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?)
+            .map_err(|_allocation_error| IndexError::ResourceLimited)?;
         let mut next = next_retire_candidate(&tx, workspace, epoch, cursor, floor, budget)?;
+        if next.is_some() {
+            self.require_pin_integrity(&tx, budget)?;
+        }
         let mut selected_route = if next.is_some() {
-            boot_manifest::read_stored(&tx)?
+            boot_record::read_stored(&tx)?
                 .and_then(|selected| selected.protected_source_routes)
                 .map(|route| SelectedRoute::read(&tx, route, budget))
                 .transpose()?
@@ -1160,7 +1283,12 @@ impl CatalogExactHistoryPort for SqliteCatalog {
             if protected {
                 blocked = blocked.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             } else {
-                delete_retired_view(&tx, &view, budget)?;
+                if let Some(body) = delete_retired_view(self, &tx, &view, budget)?
+                    && !completed_quarantine_bodies.contains(&body)
+                {
+                    completed_quarantine_bodies.push(body);
+                }
+                retired_views.push(identity);
                 retired = retired.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             }
             examined = examined.checked_add(1).ok_or(IndexError::ResourceLimited)?;
@@ -1172,6 +1300,12 @@ impl CatalogExactHistoryPort for SqliteCatalog {
         let has_more = next.is_some();
         budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
+        for body in completed_quarantine_bodies {
+            super::view_quarantine::clear_transient_body(self, body);
+        }
+        for identity in retired_views {
+            super::view_quarantine::clear_transient_view(self, identity);
+        }
         drop(guard);
         Ok(ViewRetirementPage {
             after: cursor,
@@ -1213,7 +1347,8 @@ mod tests {
 
     impl MemoryScopePort for TrackedMemory {
         fn reserve(&self, bytes: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
-            self.0
+            let _previous_live = self
+                .0
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
                     live.checked_add(bytes)
                 })
@@ -1272,7 +1407,7 @@ mod tests {
             route_children.sort_unstable();
             previous = register(&[b'r', depth], &route_children)?;
         }
-        let route = boot_manifest::NativeBootSourceRouteRefV1 {
+        let route = boot_record::NativeBootSourceRouteRefV1 {
             object: previous,
             count: 0,
             marker_anchor: None,
@@ -1388,14 +1523,14 @@ mod tests {
             },
             RequestBudgetV1::for_duration(Duration::from_secs(30)),
         );
-        let unanchored = boot_manifest::NativeBootSourceRouteRefV1 {
+        let unanchored = boot_record::NativeBootSourceRouteRefV1 {
             object: selected,
             count: 0,
             marker_anchor: None,
         };
         let legacy_record = serde_json::json!({ "object": selected, "count": 0 });
         assert_eq!(
-            serde_json::from_value::<boot_manifest::NativeBootSourceRouteRefV1>(legacy_record)?,
+            serde_json::from_value::<boot_record::NativeBootSourceRouteRefV1>(legacy_record)?,
             unanchored
         );
         let mut route = SelectedRoute::read(&connection, unanchored, &mut budget)?;
@@ -1425,7 +1560,7 @@ mod tests {
             &mut budget,
         )?;
         assert_eq!(marker_anchor, Some(direct));
-        let anchored = boot_manifest::NativeBootSourceRouteRefV1 {
+        let anchored = boot_record::NativeBootSourceRouteRefV1 {
             marker_anchor,
             ..unanchored
         };

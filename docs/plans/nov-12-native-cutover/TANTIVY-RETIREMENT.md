@@ -1,56 +1,67 @@
 # Tantivy 퇴역과 Native 전환 실행 계획
 
-이번 Tantivy 제거 후보의 종료 조건은 격리된 설치 후보의 기본 호출자가 Native로 동작하고, 현재 저장소의 코드·전체 Cargo 그래프·lockfile·vendor·후보 번들에서 Tantivy 계열이 0건인 상태다. 실제 기본 선택 활성화는 전체 통합 A 이후의 E06에서 수행한다. Lance와 자체 ANN은 기존 담당과 [전체 Native 단일 엔진 수용](DOD.md#최종-제거-및-증거-체크리스트)을 따른다.
+이번 Tantivy 제거 후보의 종료 조건은 격리된 설치 후보의 기본 호출자가 Native로 동작하고, 현재 저장소의 코드·전체 Cargo 그래프·lockfile·vendor·후보 번들에서 Tantivy 계열이 0건인 상태다. 실제 기본 선택 활성화는 전체 통합 A 이후의 E06에서 수행한다. Native Semantic은 [전체 Native 출하 기준](DOD.md#최종-제거-및-증거-체크리스트)에 따라 LanceDB를 사용한다.
 
-**단계 경계:** 이 문서의 T 단계는 Tantivy 제거 후보의 독립 수용이다. T의 설치 기본 호출 리허설은 격리된 후보 선택 안에서 실행한다. 전체 Native 통합 A/B는 Tantivy와 Lance 모두 0건이라는 기존 기준을 유지한다. T 완료를 전체 Native 출하 승인이나 전역 E06 활성화로 사용하지 않는다. Lance 오너의 작업은 별도이며 Tantivy 코드 제거를 기다리게 하는 선행 조건으로 추가하지 않는다. [T 단계 판정](DOD.md#tantivy-우선-퇴역-t-단계)
+T 단계의 설치 기본 호출 리허설은 격리된 후보에서 실행한다. 전체 Native 출하와 전역 E06 활성화에는 통합 A/B의 제품 검증을 적용한다. LanceDB는 Native Semantic 범위에서 검증한다. [T 단계 판정](DOD.md#tantivy-우선-퇴역-t-단계)
 
-기록된 Native-only release와 로컬 SDK·Large 실행은 각 후보의 증거다. 전체 workspace·lock·vendor·출하 번들 퇴역은 아직 별도 수용이다. 원 SDK의 후보·첫 거절·수리 범위는 [NC-TEXT](tickets/NC-TEXT-build-final.md#현재-원-sdk-진단과-다음-수리-경계), 통합 판정은 [NC-F](tickets/NC-F-integration.md#2026-11-15-잔여-코드-재감사)가 소유한다. 이 계획에 이전 회차의 실패 수치나 후보 상태를 현재 상태로 복제하지 않는다.
+**현재 구분.** Legacy 엔진·feature·workspace patch·Cargo.lock·vendor 삭제와 전체 타깃 컴파일, workspace Tantivy 검사 통과는 [06.2–06.3 원장](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)에 기록됐다. Linux release 실물·서명 설치 번들·rollback/restore-forward·SDK60·독립 품질은 별도 수용이다. 원 SDK는 [NC-TEXT](tickets/NC-TEXT-build-final.md), 최종 후보는 [06.4–06.5](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)가 관리한다. 아래 과거 후보 수치는 현재 결과로 승계하지 않는다.
 
 ## 기능 우선 최종 감사와 갭
 
-현재 원문 패턴 검토는 설계 선택의 근거다. 실제 전환에서 먼저 닫을 것은 아래 유지 기능과 게시·복구 경계다. 독립 hunk의 구현·계측·평가 입력 준비는 병렬 진행할 수 있지만, 최적화 수치로 미완료 기능을 대신 수용하지 않는다.
+현재 구현·실행 상태는 아래 티켓이 소유한다. 이 계획은 T 단계의
+유지 기능·설치·벤치·삭제 수용 조건을 고정하며 source별 상태를 복제하지 않는다.
 
-| 우선순위·갭 | 현재 있는 것과 빠진 것 | 최소 기능 종료 조건·기존 오너 |
-| --- | --- | --- |
-| 1. Native History 실제 게시·조회 — 생산자·서버·caller 연결 | 원본·ACK 보존, 복수 세대 FULL과 후보 재시도, Q checkpoint export와 S의 최초 seal 전 인계, 활성 Source/History DELTA가 코드에 연결됐다. 서명 설치·재시작, Q commit과 S V9 terminal 사이 복구, 여러 Legacy 활성 revision의 이전은 [H 원장](tickets/NC-H-history.md#current-actionable-backlog--2026-11-16-re-audit)이 관리한다. | 기존 History/생산자/C·실제 caller 오너와 F가 같은 source cut·입력 carrier를 단일 member/Catalog CAS에 연결해 검증한다. 작은 FULL→recency/relevance·필터·페이지→DELTA→이전 view→reopen을 기존 oracle로 대조한다. 기존 전체 데이터 이전은 실제 source authority의 완전성으로 별도 판정하며 target에서 기대값을 만들지 않는다. |
-| 2. Source·첫 ACK·설치 복구 — 생산 연결과 실행 | 초기 ordinary Source binding·Initial/Watch ancestry·cold graph/DFG·normal fixture의 현재 구현을 재사용한다. S에 반영된 D1–D3와 source-only Main·compiler/body·signed normal/postpublication 수용을 분리한다. 과거 Source7 미실행이나 API 미공급 목록을 새 구현으로 재발급하지 않는다. | D의 기존 Source/Store·producer worker와 F가 실제 Source→ACK→Q head를 독립 대조한다. 기존 Q txn/lease의 bounded Published census와 기존 Source intent/completion getter·단일 typed decoder를 재사용한다. 격리된 signed 후보에서 forward→rollback→restore-forward·ACK 유실·재시작을 실행한다. 새 Source issuer/store·AST head의 lexical 대용·delivery와 operation의 1:1 가정은 도입하지 않는다. |
-| 3. 원 SDK60 게시 | 고정 후보의 Caddy Record FULL·검색·재오픈 및 동일 daemon Large가 통과했다. Caddy quiet Off는 본문 0/2이며 etcd Record는 Work bytes에서 거절됐다. | etcd는 토큰 mutation 하한도 100만을 넘는다. 기존 Text 오너가 고정 입력·한도를 충족할 생산 경로를 수리한다. 실제 Record·Off·Large와 최종 후보의 영향 재검증은 [Text 원장](tickets/NC-TEXT-build-final.md#admission-decision-and-remaining-product-verification)을 따른다. |
-| 4. Hybrid 최종 판정 — 설치 신원·필수 지표·독립 입력 | native_file_runtime의 선택적 Linux peer/config/policy 결속, native_file_decision과 기존 decision CLI의 실제 family replay·MRR/Recall·식별자·무정답·표본/저장소·latency 판정 코드는 있다. quality_admit/reject는 replay 범위이며 runtime_qualified·product_default_decision은 false다. 실제 Linux SDK 독립 capture·설치/운영·blind EVAL은 별도 수용이다. | F3/Root는 현재 F-CODE-1과 실제 SDK 입력을 소비해 기존 판정기를 실행한다. 새 adapter·집계기를 중복 구현하지 않는다. 동일 universe의 독립 qrels와 원 품질 기준을 유지하고 fusion 변경은 DEV 손실 근거가 있을 때만 판단한다. |
-| 5. Tantivy 제거 후보 — 잔여 조립/의존성 코드 | ordinary SDK/CLI가 Native를 기본 선택한다. Runtime과 workspace 기본 Cargo 그래프의 Tantivy는 0개다. 명시적 daemon Legacy 조립, dep/patch·lock·vendor가 남아 있다. 유지 기능을 먼저 Native로 이관해야 한다. | F가 해당 기능 오너의 인수를 소비해 코드·전체 그래프·lock·vendor·후보 번들 Tantivy 0건을 만든다. 같은 최종 후보에서 유지 호출·SDK60·Large·품질·설치 복구를 검증한다. Lance는 별도 기존 Semantic 범위다. |
+| 경계 | 현재 원장과 재사용 계약 |
+| --- | --- |
+| Native History 게시·조회·이관 | [H 잔여](tickets/NC-H-history.md#current-actionable-backlog--2026-11-16-re-audit)와 [History ADR](../../adr/NOV-12-001-native-query-and-semantic-engine.md#native-history-publication-and-read-contract). 원본 replay/checkpoint·복수 활성 revision·동일 view FULL/DELTA·필터/페이지·재시작 수용을 유지한다. |
+| Source·첫 ACK·설치 복구 | [D 잔여](tickets/NC-D-boot.md#d-current-disposition-20261116)와 [복구 계약](../../operator/state-cutover-runbook.md#rollback-boundary). 원 생산자 Source/ACK·cold graph/DFG·normal cycle을 재사용하고 같은 서명 입력에서 Q head·선택·ACK 유실·두 재시작을 검증한다. |
+| 원 SDK60 게시 | [Text 잔여](tickets/NC-TEXT-build-final.md#admission-decision-and-remaining-product-verification)와 [Text ADR](../../adr/NOV-07-001-native-index-execution-and-custody.md#cold-text-installation-and-packet-custody). Caddy·etcd 고정 입력과 Work·mutation 한도를 유지하고 최종 후보의 영향 수용을 확인한다. |
+| Hybrid·실제 caller·출하 결속 | [F 현재 코드 범위](tickets/NC-F-integration.md#이-채팅의-잔여-코드-범위--2026-11-15)와 [완료 Query 공급](../../adr/NOV-12-001-native-query-and-semantic-engine.md#closed-query-supplier-scope). 독립 SDK/Linux capture·설치 신원·blind EVAL·실제 유지 호출을 수용한다. |
+| Tantivy 전체 퇴역 | [06.2–06.3](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)는 코드·전체 Cargo 그래프·lock·vendor 삭제를 판정했다. 아래 [삭제 조건](#삭제-범위와-최종-확인)의 Linux release·서명 번들·제품 결과는 06.4–06.5에서 수용한다. Native LanceDB Semantic은 별도 제품 수용이다. |
 
-직접 확인한 호출 근거: [Native transport의 Legacy 요청 거절](../../../crates/quanta-index-sdk/src/client.rs#L53) · [일반 CLI의 Native 분기](../../../crates/quanta-index-searchctl/src/lib.rs#L83) · [Native CLI History](../../../crates/quanta-index-searchctl/src/native/history.rs#L16) · [기존 History SDK dispatch](../../../crates/quanta-index-sdk/src/history.rs#L1461) · [추가된 History 요청](../../../crates/quanta-index-contract/src/native_protocol/read_session.rs#L197) · [현재 서버 dispatch](../../../crates/quanta-index-searchd-runtime/src/native_read_session_transport.rs#L90) · [Native History 입력 검증](../../../crates/quanta-index-search-plane/src/native_history.rs#L272) · [family 재생 CLI](../../../tools/benchmark/retrieval/evaluator.py#L4491).
-
-**이미 닫힌 범위의 재사용:** 기존 C74의 canonical file-source binding·SDK/Runtime 소비자와 C77의 Published metadata endpoint는 해당 입력의 기존 완료 결과를 소비한다. 같은 문제를 새 Query 레인으로 발급하지 않는다. History readback·기존 alias/단일-block zero-copy·Catalog 원자 전환·Large helper도 재작성하지 않는다. 현재 미완료 History 기능과 기존 C 닫힌 endpoint는 별도 hunk다.
-
-**최소 변경 원칙:** 현재 순서는 유지 기능 연결/인수 → 같은 출력과 실패 계약의 수정 → 원 SDK/설치 실행 → 최종 품질·퇴역 판정이다. Caddy의 기존 batch 재사용은 좁은 수정으로 검증한다. etcd의 SPIMI형 내부 표현, borrowed multiblock, Hybrid의 CC는 해당 비용·손실이 확인된 경우만 적용한다. 새 영속 포맷·공용 IR·추가 엔진·추가 모델을 이 감사의 기본 작업으로 만들지 않는다. 기존 DOD 수치와 운영 게이트는 유지한다.
-
-**History 원본과 checkpoint:** 원 발행·ACK가 남은 세대는 기존 replay를 사용한다. 유실 세대에는 같은 WAL snapshot·writer fence와 실제 replay boundary를 인증한 checkpoint가 필요하다. [History 구현·수용 계약](../../adr/NOV-12-001-native-query-and-semantic-engine.md#legacy-history-replay-during-cutover)
-
-**History integration:** The [History ADR](../../adr/NOV-12-001-native-query-and-semantic-engine.md#native-history-publication-and-read-contract) holds the producer replay, catalog and candidate contracts. H/producer/caller own the remaining migration, and F consumes the shared integration. Keep the original single CAS/root, profile, DATA lifetime, filters, scoring, cursor and EOF/completeness oracles.
-
-**Source·복구:** ordinary Source·ACK의 signed loan, Q join, cold graph/DFG, normal cycle·ACK 유실 fixture를 재사용한다. [D 잔여 패킷](tickets/NC-D-boot.md#d-current-disposition-20261116)이 영향 owning과 동일 서명 입력의 설치 본문을 검증한다. 원 생산자의 ACK 및 Source custody는 기존 계약을 따른다.
-
-**패턴과 수용의 차이:** 아래 Lucene/RocksDB의 내구화·원자 게시와 SPIMI의 bounded posting 구성은 설계 근거다. 현재 기능 연결·SDK60·설치 복구·독립 EVAL이 끝나기 전에는 이 후보를 SOTA 성능이나 퇴역 완료로 판정하지 않는다. WAND·새 ANN·새 fusion·추가 엔진은 이번 기능 종료의 선행 조건이 아니다.
+완료된 C74/C77 endpoint, Native History wire·reader·caller 공급과
+child-first Text 설치를 다시 구현하지 않는다. 실제 이관·설치·제품 수용은
+각 원장의 독립 oracle로 확인한다. SPIMI/borrowed multiblock/CC 등은
+측정된 비용·DEV 손실이 있을 때만 검토하는 후보이며 필수 기능 분모가 아니다.
+소스별 감사·실패 수치와 철회한 공용 prepared API 확장안은
+[복구 색인](../../ARCHIVE-INDEX.md#2026-11-17-upper-plan-and-retired-audit-consolidation)에 보존한다.
 
 ## 브레이킹 변경과 유지할 계약
 
 - 기본 바이너리에는 Native 런타임만 조립한다. 설치 런처는 검증한 선택의 설정·digest를 사용해 `serve-native`를 명시한다. 인자 없는 수동 기동과 예전 `serve --state-root`는 명시 오류로 종료한다. Legacy IPC/SDK, History continuation, 저장 포맷은 새 릴리스에서 끊을 수 있다. 새 포맷과 호환 경계를 명시하고 이전 루트는 이전 릴리스가 보유한다. 새 루트는 authoritative source와 replay에서 재구축한다. 구 버전 요청과 루트는 쓰기 전에 거절하며 자동 Legacy fallback은 제거한다. [현재 데몬 파서](../../../crates/quanta-index-searchd/src/cli/command.rs#L48)
-- **유지 확정** 범위는 실제 사용 중인 Semantica History와 검색·발행 제품 흐름이다. History는 기존 commit/ref/tag/diff 생산자를 사용해 Native의 같은 Catalog view에 게시한다. 동일 workspace/view에서 recency·relevance, 필터, 페이지 순서를 검증하고 새 커서는 view·query·order에 결속한다. 기존 이벤트 중복·재정렬·삭제, 고정 view의 다음 페이지, 재시작 및 다시 읽기까지 독립 oracle로 확인한다. 구 포맷 호환을 위해 두 writer를 띄우지 않는다. [현재 요청 계약](../../../crates/quanta-index-contract/src/query/requests.rs#L638) · [기존 History 검색 oracle](../../../crates/quanta-index-lexical/src/history_text_index/tests.rs#L146)
+- **유지 확정** 범위는 실제 사용 중인 Semantica History와 검색·발행 제품 흐름이다. History는 기존 commit/ref/tag/diff 생산자를 사용해 Native의 같은 Catalog view에 게시한다. 동일 workspace/view에서 recency·relevance, 필터, 페이지 순서를 검증하고 새 커서는 view·query·order에 결속한다. 기존 이벤트 중복·재정렬·삭제, 고정 view의 다음 페이지, 재시작 및 다시 읽기까지 독립 oracle로 확인한다. 구 포맷 호환을 위해 두 writer를 띄우지 않는다. [현재 요청 계약](../../../crates/quanta-index-contract/src/query/requests.rs#L638) · [Native History 조회 회귀](../../../crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/history.rs)
 - **History 이관 입력.** [History ADR](../../adr/NOV-12-001-native-query-and-semantic-engine.md#legacy-history-replay-during-cutover)의 원본 replay와 checkpoint export를 사용한다. 보존된 History 행·ACK·high-water를 결속하고, 이동·삭제된 ref/tag와 발행 시점 metadata를 독립 oracle로 대조한다. signed FULL·successor DELTA와 여러 활성 head의 이관은 [H](tickets/NC-H-history.md#current-actionable-backlog--2026-11-16-re-audit)가 수용한다.
 - **History 검색은 행 의미를 유지한다.** commit과 diff는 같은 Native view 안에서도 서로 다른 BM25 통계를 쓴다. author·ref·time·diff 필터는 순위 창을 자르기 전에 적용하고, 커서 뒤 전체 `matched`를 정확히 계산한다. 고정 소수점 점수·committer time·SHA·path 동점 순서와 기존 BM25 oracle을 재사용한다. 상위 후보가 전부 필터에서 떨어져도 뒤의 적격 행이 페이지에 나오는 회귀를 둔다. [History 랭킹·필터 계약](../../../crates/quanta-index-core/src/domains/lexical/history_text.rs#L182)
 - 기존 Semantica 호출·통합 오너는 구현된 C 공급 계약을 재사용하고 확정 후보 전에 실제 호출별 `유지` 또는 `퇴역`을 기록한다. 범위는 ordinary SDK/CLI, Semantica API/MCP와 벤치의 lexical·semantic 검색, Symbol, RuntimeMetadata, Structural, seed/cluster/explain, RepoMap, diagnostics 및 구 DTO다. History·Structural의 게시 경로도 확인한다. `유지`는 새 SDK 경로와 독립 기능 oracle을, `퇴역`은 실제 호출 제거·공개 버전 경계·거절 회귀를 요구한다. 기존 필수 호출의 `UnsupportedNativeQuery`만으로 통과할 수 없다. 분류 없이 남은 설치 호출이 하나라도 있으면 전환을 진행하지 않는다. [실제 호출 목록](../../adr/NOV-12-001-native-query-and-semantic-engine.md#closed-query-supplier-scope)
 
 ## 실행 순서와 담당
 
+아래 표는 원래의 단계·책임 계약이다. 소스 삭제 단계는 완료됐으며 현재 실행 대상은 [06.4–06.5](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)의 릴리스·설치·복구 수용이다. 표의 이전 구현 지시는 새 작업 발급이 아니다.
+
 | 순서 | 담당과 작업 | 완료 조건 |
 | --- | --- | --- |
 | 1. 이전 릴리스와 비교 입력 고정 | F가 마지막 호환 Linux **서명 Q/S 설치 쌍 전체**를 저장소 밖의 지속 경로에 보존한다. 데몬·Semantica resident/생산자·CLI·SQL worker·런처, rulepack/model 정책·설정·선택과 복귀 루트, SDK 벤치 도구와 소스 식별자를 함께 고정한다. Caddy·etcd 원 입력과 홀드아웃도 고정한다. | 보존한 묶음 자체로 재기동·게시·조회 및 복귀 연습을 실행한다. 유지할 호출의 결과·순위·필터·페이지·오류·권한 oracle을 고정한다. 과거 임시 디렉터리나 경로가 살아 있다는 가정으로 완료 처리하지 않는다. |
 | 2. History 및 실제 호출 이전 | H는 기존 Native History 게시·조회와 원본 이관을 검증한다. F와 기존 Semantica/SDK/CLI 오너는 남은 실제 호출을 이전한다. Query wire와 cursor는 [완료 ADR](../../adr/NOV-12-001-native-query-and-semantic-engine.md#closed-query-supplier-scope)을 사용한다. | 유지·퇴역 목록의 실제 본문 결과, 기존 입력의 유지 회귀와 구버전 거절을 확인한다. |
 | 3. 설치·복구와 교차 저장소 검증 이전 | D와 F가 기존 cold graph, 최초 Legacy ACK·게시 후 coverage, resident→Q helper, RepoMap·launcher·serve와 설치 회귀를 인수한다. 교차 저장소 proof 오너는 기존 실행 경계를 이전한다. | 실제 Linux의 같은 서명 Q/S 후보에서 FULL·검색·정상 복구 cycle·DELTA/delete/no-op·ACK 유실·재시도·게시 후 replay·두 재시작을 검증한다. [단일 D 실행 목록](tickets/NC-D-boot.md#current-work-packets-20261115) · [교차 저장소 실행기](../../../scripts/verify-repomap-cross-repo.sh#L58) |
-| 4. 삭제가 반영된 최종 후보 자격 검증 | F가 아래 전체 삭제를 적용한 **미승격 릴리스 후보**를 만든다. 기존 main 작업을 소비하고 격리가 필요한 검증에만 단일 임시 체크아웃을 사용한다. Native 기본 진입점·벤치 연결·Cargo/CI·API/wire/module 변경을 후보에 포함한다. | 후보의 서명 Linux 번들과 Q/S 바이너리, profile·config·source·SDK 벤치를 해시로 고정한다. 그래프 0건, 설치·복구 본문, 성능 표의 필수 기준이 같은 출하 후보에서 모두 **VERIFIED**다. |
+| 4. 삭제가 반영된 최종 후보 자격 검증 | F가 완료된 코드·Cargo/CI 정리를 **미승격 릴리스 후보**에 결속한다. 기존 main 작업을 소비하고 격리가 필요한 검증에만 단일 임시 체크아웃을 사용한다. | 후보의 서명 Linux 번들과 Q/S 바이너리, profile·config·source·SDK 벤치를 해시로 고정한다. 그래프 0건, 설치·복구 본문, 성능 표의 필수 기준이 같은 출하 후보에서 모두 **VERIFIED**다. |
 | 5. 검증한 후보 승격과 기본 전환 | D의 설치 경로에서 새 루트를 선택 CAS로 활성화한다. F가 검증한 소스 정리와 같은 바이너리·설정을 기본 배포에 승격한다. 활성화 뒤 실제 기본 호출을 다시 점검한다. | 일반 SDK·CLI·런처·Semantica와 벤치가 Native를 선택한다. 승격 중 바이너리·설정 변경이 있으면 영향 검증을 먼저 재실행한다. |
 
-2번과 3번의 소스 작업은 독립적으로 진행한다. 3번의 설치 본문과 4번 성능 본문은 최종 바이너리가 나온 뒤 같은 후보에 대해 닫는다. 같은 파일의 공용 mount·Cargo/lock은 F가 한 번 합친다. 무거운 검증은 기존 단일 실행 큐를 사용한다. B14·F1/F2의 기록된 source별 결과는 원 범위로 보존하고, [P07의 현재 수용 절단](tickets/NC-F-integration.md#p07-final-actions-20261115)을 재사용한다. 별도 검증 체크아웃이 필요하면 Root가 하나만 만들고 사용 직후 제거한다. [수정권과 실행권](README.md#레인별-착수와-인계)
+원래 2·3번 소스 작업은 독립 레인으로 진행했다. 설치·성능 본문은 최종 바이너리가 나온 뒤 같은 후보에 대해 닫는다. B14·F1/F2의 기록된 source별 결과는 원 범위로 보존하고, [P07의 현재 수용 절단](tickets/NC-F-integration.md#p07-final-actions-20261115)을 재사용한다. 무거운 검증과 격리 체크아웃은 [현재 레인](../nov-20-native-cutover-closeout/tickets/LANES.md)이 관리한다.
+
+위1~3번의 제품 성공은 소스 삭제 hunk 착수의 선행조건이 아니다. T0 코드 조립은 실제 compile 소비자와 유지 test/bench 등록의 disposition, 엔진 독립 DATA reader/export 연결을 먼저 해결한다. 서명 Linux 설치·Metadata10/Structural2의 실제 caller gold·SDK60/Large·독립 품질은 최종 승격 전까지 필수이며 해당 결과가 없는 미승격 후보를 완료/기본 제품으로 표시하지 않는다. `process_readiness_owner_v1`의 Legacy `E2eRuntime` 소비와 이중 mount는 외부 old-Q SDK 호환16본문의 단일 target으로 이관했다. 내부 Legacy capture1은 퇴역하며 이 호환성 결과를 Native 준비 상태로 사용하지 않는다. DATA reader5는 no-default 실제 SDK 게시 후5/5 통과했다. readiness16·권한2·Ambiguity·Native Scale32의 최신 Rust/SDK 판정과 남은 Legacy test/bench disposition은 [F의 현재 코드 재감사](tickets/NC-F-integration.md#현재-코드-재감사와-실제-수정)를 따른다. 새 feature gate로 결손을 숨기거나 미결정 DSL 행을 삭제해서 그래프0을 만들지 않는다. semantic-stream 유지 oracle는 고정 외부 old-Q SDK와 NoFeatures target으로 이관했고 macOS 본문이 통과했다. Linux reference 공급과 최종 후보 수용은 별도다. Native L4는 opt-in SDK와 no-feature snippet_matrix를 연결했다. 제품 데몬과 Native UDS 실제 검증 및 Legacy path-only 대응은 F에서 수용한다.
+
+Native 기동의 0777 상태 루트 거절 회귀는 NoFeatures 제품 테스트로 이관했다.
+Legacy의 세 소켓 및 하위 경로 권한 양성 회귀는 고정 old-Q NoFeatures 타깃에서 유지한다.
+Regex alternation의 동일 네 source oracle를 기존 Native UDS 타깃으로 이전했다. 실제 SDK 본문은 **VERIFIED**이며 동일 Legacy 본문 한 건을 제거했다. 같은 Legacy 파일의 casefold 및 conjunction/cache 본문은 유지한다.
+Legacy writer envelope 전용 타깃과 등록은 삭제했다. 기존 Native SDK가 게시·검색·재오픈 oracle를 보존하며 Legacy metrics 소비자는 별도 퇴역 대상이다.
+Ambiguity 등 산출물 CLI의 잘못된 출력 인자 거절과 IPC scalar 예약 보완은
+[F의 RR/SS 후속](tickets/NC-F-integration.md#현재-코드-재감사와-실제-수정)에서 검증한다.
+
+DSL의 유지 roster·caller·collector **코드 준비**가 삭제 후보 조립의 입력이다.
+Linux warm/cold 기준선과 SDK60·Large·설치·독립 품질의 **최종 수용**은
+삭제를 반영한 같은 후보로 실행한다. 최종 Linux 통과를 후보 생성의 선행
+조건으로 삼아 순환 대기시키지 않는다. 완료된 H4·SDK19 진단은 입력이
+같으면 재사용하며 [F의 현재 작성 패킷](tickets/NC-F-integration.md#이-채팅의-잔여-코드-범위--2026-11-17)을 따른다.
 
 F가 먼저 확정할 인계 입력은 이전 릴리스의 실제 Linux 실행 파일과 비교 호출자, 재현 가능한 Caddy·etcd manifest, C의 실제 호출 목록, D의 서명 설치 묶음과 생산자 복구 슬롯이다. 각 인계에 오너·경로·대상 소스·expected body를 적고, 이미 진행 중인 같은 입력을 재사용한다. 성능 실행은 Caddy·etcd 첫 Off 본문과 필수 History/설치 본문부터 확인한다. 여기서 제품 실패가 나면 나머지 반복을 예약하기 전에 해당 경로를 수리한다.
 
@@ -58,11 +69,7 @@ Current independent inputs, their original recovery records, qrels and required 
 
 ### 코드 착수 순서
 
-[활성 작업 목록](../oct-22-finalizing/README.md#활성-작업-문서)의 담당이 현재 source와
-남은 수용을 관리한다. 기존 writer는 완료된 producer·caller·recovery 연결과 원
-독립 oracle를 재사용한다. History의 checkpoint 인계, 복수 세대 FULL, 활성
-DELTA·commit 직후 재시도의 설치 검증과 여러 Legacy 활성 revision의 이전은 [H 원장](tickets/NC-H-history.md#current-actionable-backlog--2026-11-16-re-audit)이
-관리한다. D는 같은 요청의 recovery와 두 차례 재시작을, Text는 원 SDK60을 검증한다.
+이 절은 코드 삭제 전 착수 순서의 역사적 표제다. 현재 소스 정리는 [06.2–06.3](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)에서 완료됐다. History의 checkpoint 인계, 복수 세대 FULL, 활성 DELTA·commit 직후 재시도의 설치 검증과 여러 Legacy 활성 revision의 이전은 [H 원장](tickets/NC-H-history.md#current-actionable-backlog--2026-11-16-re-audit)이 관리한다. D는 같은 요청의 recovery와 두 차례 재시작을, Text는 원 SDK60을 검증한다.
 
 F는 기존 Large 바이너리 결속과 Native quality 판정을 사용하고, Mixed의 서명된
 release daemon과 caller receipt 결속 및 독립 SDK 평가를 수용한다. 설치·벤치·
@@ -84,16 +91,18 @@ Text의 단일 구현·증거 원장은 [NC-TEXT](tickets/NC-TEXT-build-final.md
 
 적격 cold window의 leaf+directory 설치와 입장 전 separate 경로는 구현됐다.
 실패 정산·입장 거절과 COMMIT 비교의 원 실행은 NC-TEXT에 보존한다.
-SDK60·전체 GC·Direct 수용은 원 입력으로 판정한다.
+R44 원본 Record는 같은 입력의 590파일을 게시했고 45.910초에 검색 가능 상태에 도달했다. 재시작 뒤 조회도 통과했다. 최종 출하 후보의 quiet Off·전체 GC·Direct 수용은 원 입력으로 판정한다.
 [구현 계약](../../adr/NOV-07-001-native-index-execution-and-custody.md#cold-text-installation-and-packet-custody) ·
 [NTX1a 본문 결과](tickets/NC-TEXT-build-final.md#ntx1a-runtime3-실제-green)
 
 ### 2. etcd — 누적 Work를 줄이는 생산 경로 확정
 
 Work/shape 계측, single-fill, compact row와 packet 경계 검증을 재사용한다.
-같은 원본 etcd에서 첫 거절은 posting Work bytes이고, 실제 토큰 census
-1,009,664개는 고정 mutation 한도 100만을 독립적으로 초과한다.
-생산 경로의 두 한도를 함께 검증하고 원 수용 기준을 적용한다.
+R44 원본 etcd Record는 posting 편집 입장 전 Work bytes 512MiB 한도에서 거절됐고 FULL ACK가 없다. 원시 indexed run
+1,009,664개는 현재 prefix/whole-body 재사용 경로의 최종 mutation 하한이 아니다.
+재사용된 program은 그대로 참조하고 새로 materialize하는 run에 기존 mutation을
+차지한다. NC-TEXT의 token-prepare component 기록은 M905,316이며, Source·Literal·
+anchor 편집을 포함한 최종 SDK 총량은 원 512MiB·R/W/M 각100만에서 다시 검증한다.
 [Text 판정과 남은 검증](tickets/NC-TEXT-build-final.md#admission-decision-and-remaining-product-verification)
 
 ### 3. Hybrid — 후보 손실·순위 손실과 판정 연결 분리
@@ -105,14 +114,22 @@ Work/shape 계측, single-fill, compact row와 packet 경계 검증을 재사용
 
 ### 4. 공용 합류·Tantivy 퇴역과 최종 실행
 
+Native L4의 본문 발췌 및 제품 `snippet_matrix` 연결은 [F-PREVIEW](tickets/NC-F-integration.md#f-preview--native-l4-연결-및-수용)에서 검증한다. Legacy `select:path`는 본문과 경로 후보를 조회해 저장소별 경로 묶음을 만들고 대표를 정한다. 경로에만 일치한 결과는 `PreviewKind::Path`를 제공하고 본문 증거가 있는 결과는 발췌를 제공한다. 현재 Native prefix 목록 호출은 이 투영을 제공하지 않으므로 관련 Legacy 회귀를 유지한다.
+
+다음 R44·11월 19일 수치는 삭제 전 후보의 이력이다. 현재 결과는 [06 원장](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)에서 확인한다. 기존 R44 후보는 원 Large 4,096파일 및 두 OS 재시작 기능 시험을 133.605초에 통과했다. Tantivy 제거 최종 후보의 Large 수용과 quiet Off는 별도 실행을 요구한다. [R44 원장](tickets/NC-TEXT-build-final.md)
+
+11월 19일 `cargow tree --locked --offline` 재확인에서 Runtime 기본 `normal,build`는 Tantivy 계열 0개이며, 전체 workspace `--all-features --target all --edges normal,build,dev`에는 9개가 남는다. 두 명령 모두 exit0이다. 작업트리 `Cargo.lock`에도 9개가 남으며 설치 번들의 제거 검증은 **NOT_RUN**이다.
+
+`rust-build-release-native-daemon`는 Native 의존성 선검사 뒤 같은 `cargow` 빌드의 Cargo JSON 산출물을 검사한다. Rust 1.92의 Cargo build directory에 기존 중간 산출물을 재사용하고 빌드별 임시 target에 실행 파일을 받는다. 성공 terminal·프로세스 exit0·Tantivy package 0개를 확인한다. 설치본 SHA-256이 주어진 경우 같은 digest인지도 확인한다. 검증한 바이너리는 release lane의 `verified-native/<sha256>/quanta-index-searchd`에 보존하고 경로와 SHA를 출력한다. 설치 검증에는 출력된 경로와 SHA를 사용한다. Python 집중 회귀 34/34와 독립 소형 Cargo 1.92 재빌드에서 서로 다른 후보의 SHA·실행 내용·경로 보존, 같은 후보의 재사용, 불일치 거절, 임시 target 정리를 확인했다. 실제 최적화 제품 재빌드와 설치·출하 서명 시험은 이 검사 변경에서 **NOT_RUN**이다.
+
 | 순서 | 실행 및 인수 조건 |
 | --- | --- |
 | 독립 준비 | 구현된 Text 설치·Work 계측·F 판정 경로를 재사용한다. 측정으로 확인한 실제 잔여만 정확한 함수 hunk에서 인수한다. 같은 parent는 기존 writer가 합친다. B/ANN·History·D/설치와 F의 P07은 각 활성 패킷의 조건을 따른다. |
 | 좁은 검증 | 변경된 Core/Storage/Text의 독립 oracle와 소유 범위 회귀를 실행한다. 소스·입력·바이너리가 일치하는 기존 회귀와 Large 결과를 재사용한다. Rust 실행은 F의 기존 큐를 사용한다. |
-| 최종 T 후보 조립 | 유지할 실제 호출·History 이전을 소비한 뒤 F가 Legacy Tantivy 코드·feature·공용 dep/patch·lock·vendor·bundle를 제거한다. 전체 workspace와 실제 release 그래프 모두 Tantivy 계열 0건이어야 한다. 격리된 설치 후보의 Native 기본 호출과 명시 거절을 구분한다. Lance 잔여는 별도로 보고한다. |
+| 최종 T 후보 조립 | 완료된 Legacy 엔진·feature·dep/patch·lock·vendor 삭제를 같은 릴리스 후보에 결속한다. 전체 workspace와 실제 release 그래프 및 서명 번들에서 Tantivy 계열 0건이어야 한다. 격리된 설치 후보의 Native 기본 호출과 명시 거절을 구분한다. Native LanceDB의 실제 제품 경로는 별도 확인한다. |
 | 원 한도 SDK60 | 조립한 같은 후보에서 Caddy·etcd 각각 Off 2회+Record 1회를 실행한다. **파일 30,000·Work 512MiB·읽기/쓰기/변경 각 100만·SDK I/O 및 submit→ACK 60초**를 유지한다. Full ACK·검색·재오픈·source digest·Record 완전성을 모두 확인한다. diagnostic만 가능한 호스트에서는 성능 통과로 판정하지 않는다. |
 | 회귀·품질·설치 인수 | 최종 후보에서 표준 Large의 두 OS 재시작, 새 독립 Hybrid 평가, 기존 D의 실제 설치 게시·조회·재시작·복구를 검증한다. 이전 릴리스 및 삭제 전 Native와 동등 기능의 5쌍 성능 회귀, Mixed/ANN과 전체 workspace/API/module/CI의 기존 필수 범위를 닫는다. 최종 후보와 무관한 소스 변경 때문에 유효 증거를 폐기하지 않는다. |
-| 승격 | T 단계는 Tantivy 제거 후보의 수용으로 판정한다. 전체 Native A/B는 Lance 0건까지 포함한 기존 전체 기준을 별도로 충족한 뒤 판정하며, 전역 기본 선택의 E06 활성화는 통합 A 이후다. 각 범위에서 실제 `FAILED`·`BLOCKED`·`NOT_RUN`을 표시하고 코드 완료·로컬 검증·운영 출하를 합쳐 부르지 않는다. |
+| 승격 | T 단계는 Tantivy 제거 후보의 수용으로 판정한다. 전체 Native A/B는 Native LanceDB와 나머지 제품 게이트를 적용한다. 전역 기본 선택의 E06 활성화는 통합 A 이후다. 각 범위에서 실제 `FAILED`·`BLOCKED`·`NOT_RUN`을 표시한다. |
 
 현재 최초 구현은 기존 staging/설치 계약과 persisted wire를 재사용한다. 후속 측정이 계약 변경의 필요성을 입증하면 source-level breaking change를 허용하고 producer·consumer·회귀를 함께 이전한다. 저장 포맷·wire·게시/GC 계약 변경은 별도로 명시한다. 새 worktree는 만들지 않는다.
 
@@ -172,9 +189,9 @@ restore-forward를 적용한다. 실패·거절·타임아웃·미판정 파일�
 유지하고 공개 N3/N4/N5는 DEV에 사용한다. [복구 계약](../../operator/state-cutover-runbook.md#rollback-boundary) ·
 [원 평가 기준](DOD.md#독립-홀드아웃-실행과-판정)
 
-- Legacy Tantivy lexical·History writer/reader, `tantivy-fst` scope matcher, `legacy-tantivy` 기능과 동작 이관이 끝난 Legacy `serve` 조립을 제거한다. Native 복구가 호출하는 기존 물리 포맷 해시·seal 검증기는 Tantivy를 의존하지 않으므로 보존한다. [복구 소비자](../../../crates/quanta-index-searchd-runtime/src/native_boot.rs#L895)
-- Legacy 빌드 프로필 및 이 엔진이 필요한 harness·scan experiment·테스트를 Native 경로로 이전하거나, 역사적 성능 비교를 위해 고정한 외부 릴리스에서 실행한다. CI/test authority, DSL proof·wire inventory, `deny.toml`을 실제 소비자와 같이 갱신한다. [테스트 등록](../../../tools/ci/test-authority.toml#L994) · [wire inventory](../../../tools/ci/inventory/wire-surface.toml#L461)
-- `Cargo.toml`의 workspace dep·patch·exclude, `Cargo.lock`의 해당 패키지와 `vendor/tantivy-0.22.1`을 삭제한다. 최종 `cargo tree --workspace --all-features --target all --edges normal,build,dev`와 각 배포 대상의 실제 release 그래프에 아래 패키지 차단 검사를 건다. `cargo metadata --locked --all-features`의 패키지 이름, lockfile, vendor 및 출하 번들도 **0건**이어야 한다. 회귀를 막는 금지 정책과 과거 검증 기록은 유지한다. [현재 workspace 정의](../../../Cargo.toml#L179)
+- Legacy Tantivy lexical·History writer/reader, `tantivy-fst` scope matcher, `legacy-tantivy` 기능과 Legacy `serve` 조립은 현재 소스에서 제거했다. Native 복구의 엔진 독립 물리 포맷 해시·seal 검증기는 보존했다. [06.2–06.3](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md) · [복구 소비자](../../../crates/quanta-index-searchd-runtime/src/native_boot.rs#L895)
+- Legacy 빌드 프로필과 인프로세스 harness·테스트를 제거하고, 비교에 필요한 old-Q는 고정 외부 릴리스로 분리했다. CI/test authority와 DSL·wire inventory의 현재 등록을 [06.3](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)에서 판정했다. 실제 벤치 본문과 hosted 실행은 별도 수용이다. [테스트 등록](../../../tools/ci/test-authority.toml#L994) · [wire inventory](../../../tools/ci/inventory/wire-surface.toml#L461)
+- `Cargo.toml`의 workspace dep·patch·exclude, `Cargo.lock`의 해당 패키지와 `vendor/tantivy-0.22.1`은 현재 소스에서 제거됐다. 출하 대상의 실제 release 그래프·`cargo metadata`·서명 번들에도 Tantivy 계열이 **0건**인지 동일 후보로 검증한다. 회귀 방지 정책과 과거 검증 기록은 유지한다. [현재 workspace 정의](../../../Cargo.toml)
 - 최종 제거 커밋에서 canonical release·workspace tests/API/module/CI 및 기본 설치 경로를 검증한다. 그래프·번들·설치 기록은 같은 최종 바이너리 해시를 가리켜야 한다. 삭제 뒤 바이너리나 실행 설정이 바뀌면 해당 성능·설치 본문을 다시 실행한다. [최종 수용](DOD.md#전환-및-퇴역-판정)
 
 최종 workspace 소스 검사는 아래 명령을 사용한다. 전체 플랫폼의 normal/build/dev 의존성, metadata, lockfile, workspace 선언과 vendor를 검사한다. Legacy 기능이 남아 있는 후보는 실패한다. 출하 대상별 release 그래프와 서명 번들은 실제 설치 후보 자격 검증에서 확인한다.
@@ -183,9 +200,15 @@ restore-forward를 적용한다. 실패·거절·타임아웃·미판정 파일�
 just rust-check-tantivy-retirement
 ```
 
-실제 release의 compiler artifact를 검사할 때는 기존 설치 검증기가 확정한 Q 데몬 SHA-256을 함께 넘긴다. 이 명령은 SDK60 release의 원 컴파일 기록과 보존 바이너리를 읽고, 해당 SHA와 설치 검증에서 확인한 SHA를 대조한다.
+일반 릴리스 빌드 `just rust-profile release-daemon`은 Native 후보를 만든다. Cargo 데몬 산출물의 `features`가 빈 목록이어야 하고, 실제 컴파일 산출물 목록의 Tantivy 의존성이 0이어야 한다. R5의 Legacy 비교는 현재 저장소에 없는 old-Q 릴리스·실행 파일을 별도로 고정해 사용한다. 직접 빌드한 바이너리를 설치 검증기의 Q SHA-256과 대조하려면 `--build-native-daemon --expected-daemon-sha256 "$installed_q_sha256"`를 사용한다.
+
+보존된 release 기록에는 생산자가 발급한 원 `build-result.json`이 필요하다. 같은 영수증에 `compiler_stream_sha256`, `source_capture_sha256`, 보존 데몬의 SHA-256이 있어야 한다. 생산자는 해당 Cargo 호출의 `compiler-artifact.executable`이 가리키는 실제 산출물을 빌드 격리 안에서 해시하고 `binaries.quanta-index-searchd.compiler_artifact_sha256`에 기록한다. 이 값은 보관 사본의 `sha256` 및 설치 검증기가 확정한 Q 데몬 SHA-256과 일치해야 한다. 검증에는 생산자가 전달한 원 영수증의 SHA-256과 설치 검증기가 확정한 Q 데몬 SHA-256을 넘긴다. 빌드 전후 Source 캡처는 같은 바이트여야 하며, `files`는 정규화한 상대 경로에서 SHA-256으로 가는 비어 있지 않은 맵이어야 한다.
+
+판정기는 원 Cargo 이벤트의 SHA-256과 Cargo 1.77 이상이 기록하는 package ID를 확인한다. 데몬의 원 package ID 경로, 이벤트의 `manifest_path`, 영수증의 `compiler_artifact`를 대조한다. 현재 checkout과 Cargo metadata 조회 없이 검증한다. 영수증의 데몬 보존 절대 경로는 생산 시점의 기록으로 쓰고, 실행 파일은 검증에 전달한 보관 디렉터리의 `quanta-index-searchd`에서 읽는다. 보관 디렉터리를 이동한 뒤에도 그대로 보존한 영수증·Source·스트림과 같은 데몬 SHA-256으로 재검증할 수 있다. 확인한 R44·R56 보관본에는 필요한 원 영수증과 스트림이 없어 실제 보존 검증은 **BLOCKED**다.
 
 ```bash
 uv run --frozen --offline python tools/ci/check-tantivy-retirement.py \
-  --release-build "$release_evidence_dir" --expected-daemon-sha256 "$installed_q_sha256"
+  --release-build "$release_evidence_dir" \
+  --expected-daemon-sha256 "$installed_q_sha256" \
+  --expected-build-receipt-sha256 "$release_build_receipt_sha256"
 ```

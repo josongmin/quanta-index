@@ -718,6 +718,115 @@ fn dirty_publish_routes_through_ingest_transport_and_carries_typed_entries() {
     assert_eq!(wire.entries.len(), 2);
 }
 
+fn sample_runtime_catalog_batch() -> quanta_index_contract::RuntimeCatalogIngestBatch {
+    use quanta_index_contract::{
+        RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
+        RuntimeEdgeAuthorityRecord, RuntimeSnapshotRecord,
+    };
+
+    let doc_id = ChunkId::new("chunk-runtime");
+    RuntimeCatalogIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation: ManifestGeneration::new(4),
+        overlay_epoch_ms: 20,
+        batch_digest: "caller-supplied-digest-is-not-authority".to_string(),
+        producer_head_applied_at_ms: 100,
+        generation_materialized_at_ms: 20,
+        changed_entries: vec![RuntimeChangedRecord {
+            doc_id: doc_id.clone(),
+            applied_at_ms: 25,
+            payload_hash: [0xaa; 32],
+        }],
+        facet_entries: vec![RuntimeDocFacetRecord {
+            doc_id: doc_id.clone(),
+            owner: Some("team-a".to_string()),
+            service: Some("search".to_string()),
+            layer: Some("index".to_string()),
+            surface: Some("lexical".to_string()),
+        }],
+        snapshot_entries: vec![RuntimeSnapshotRecord {
+            name: "active".to_string(),
+            doc_ids: vec![doc_id.clone()],
+        }],
+        affected_entries: vec![RuntimeEdgeAuthorityRecord {
+            key: "rebuild=lexical".to_string(),
+            doc_ids: vec![doc_id.clone()],
+        }],
+        invalidated_by_entries: vec![RuntimeEdgeAuthorityRecord {
+            key: "rebuild=lexical".to_string(),
+            doc_ids: vec![doc_id],
+        }],
+    }
+}
+
+#[test]
+fn runtime_catalog_publish_stamps_canonical_digest_and_binds_receipt() {
+    let batch = sample_runtime_catalog_batch();
+    let mut expected = batch.clone();
+    ok_or_fail!(crate::stamp_batch_digest_v1(&mut expected));
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(BatchPublishReceipt {
+            generation: batch.generation,
+            applied: true,
+            durable_sequence: 7,
+            ..BatchPublishReceipt::default()
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let receipt = ok_or_fail!(client.producer().publish_runtime_catalog(batch));
+    assert_eq!(receipt.generation, expected.generation);
+    assert_eq!(receipt.batch_digest, expected.batch_digest);
+    assert!(receipt.applied);
+    assert_eq!(receipt.durable_sequence, 7);
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert_eq!(
+        captured.payload,
+        SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(expected)
+    );
+}
+
+#[test]
+fn runtime_catalog_publish_refuses_wrong_receipt_identity_and_query_only_client() {
+    let batch = sample_runtime_catalog_batch();
+    let ingest = Arc::new(StubIngestTransport::answering_verbatim(
+        SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(BatchPublishReceipt {
+            generation: batch.generation,
+            batch_digest: "wrong-digest".to_string(),
+            ..BatchPublishReceipt::default()
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    assert!(matches!(
+        client.runtime().publish_catalog(batch.clone()),
+        Err(crate::SdkError::Binding { .. })
+    ));
+    assert_eq!(ok_or_fail!(ingest.requests.lock()).len(), 1);
+
+    let wrong_route = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::DirtyReceipt(BatchPublishReceipt {
+            generation: batch.generation,
+            ..BatchPublishReceipt::default()
+        }),
+    ));
+    let client =
+        QuantaIndex::from_transports(unused_query(), unused_control(), wrong_route.clone());
+    assert!(matches!(
+        client.runtime().publish_catalog(batch.clone()),
+        Err(crate::SdkError::Binding { .. })
+    ));
+    assert_eq!(ok_or_fail!(wrong_route.requests.lock()).len(), 1);
+
+    let root = ok_or_fail!(tempfile::tempdir());
+    let query_only = ok_or_fail!(QuantaIndex::connect_legacy_query_only(
+        ConnectOptions::from_state_root(root.path())
+    ));
+    assert!(matches!(
+        query_only.producer().publish_runtime_catalog(batch),
+        Err(crate::SdkError::PlaneUnavailable { plane: "ingest" })
+    ));
+}
+
 #[test]
 fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() {
     let batch = StructuralBatch::delta(
@@ -769,6 +878,59 @@ fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() 
         return;
     };
     assert_eq!(first_scope.trees.len(), 1);
+}
+
+#[test]
+fn structural_publish_wire_preserves_unsealed_delta_without_base() {
+    let batch = quanta_index_contract::StructuralIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation: ManifestGeneration::new(5),
+        base_generation: None,
+        manifest_digest: "manifest:structural".to_owned(),
+        batch_digest: "stale-digest".to_owned(),
+        mode: quanta_index_contract::BatchIngestMode::Delta,
+        replace_scopes: vec![quanta_index_contract::StructuralReplaceScope {
+            scope: sample_search_scope(),
+            scope_digest: "scope:structural".to_owned(),
+            trees: vec![quanta_index_contract::StructuralTreeRecord {
+                chunk_id: ChunkId::new("chunk-tree"),
+                record: sample_parse_tree_record(),
+            }],
+        }],
+        tombstone_scopes: Vec::new(),
+        seal: false,
+    };
+    let mut expected = batch.clone();
+    ok_or_fail!(crate::stamp_batch_digest_v1(&mut expected));
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::StructuralReceipt(BatchPublishReceipt {
+            generation: batch.generation,
+            manifest_digest: Some(batch.manifest_digest.clone()),
+            ..BatchPublishReceipt::default()
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let receipt = ok_or_fail!(client.structural().publish_wire_batch(batch.clone()));
+    assert_eq!(receipt.batch_digest, expected.batch_digest);
+    assert!(!receipt.sealed);
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert_eq!(
+        captured.payload,
+        SearchPlaneIngestIpcRequest::PublishStructuralBatch(expected)
+    );
+
+    let wrong_generation = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::StructuralReceipt(BatchPublishReceipt {
+            generation: ManifestGeneration::new(4),
+            ..BatchPublishReceipt::default()
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), wrong_generation);
+    assert!(matches!(
+        client.structural().publish_wire_batch(batch),
+        Err(crate::SdkError::Binding { .. })
+    ));
 }
 
 #[test]

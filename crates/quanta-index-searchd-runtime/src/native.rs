@@ -7,40 +7,48 @@ use std::{
     io::{ErrorKind, Read as _, Write as _},
     os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
 use anyhow::{Context as _, Result};
-#[path = "native_source_route_seal.rs"]
-mod source_route_seal;
 #[path = "native_protected_source_resolve.rs"]
 mod protected_source_resolve;
+mod request;
+mod service;
+#[path = "native_source_route_seal.rs"]
+mod source_route_seal;
 use quanta_index_catalog::{SqliteCatalog, WalReclaimOutcome};
 use quanta_index_contract::{
     SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
-    index::{IndexInstanceId, OperationKey, OperationStatus, SubmitOutcome, ViewSelection},
+    index::{
+        IndexInstanceId, OperationKey, OperationStatus, OwnerKey, SubmitOutcome, ViewRef,
+        ViewSelection,
+    },
     native_protocol::{
-        MAX_NATIVE_TEXT_TOP_K, NativeFilePathEntry, NativeIndexErrorCode, NativeIndexRequest,
-        NativeIndexRequestEnvelope, NativeIndexResponse, NativeIndexWireError, NativeLiteralHit,
-        NativeLiteralPage, NativePathPage, NativeProjectionRead,
+        MAX_NATIVE_TEXT_TOP_K, NativeFilePathEntry, NativeIndexErrorCode, NativeIndexResponse,
+        NativeIndexWireError, NativeLiteralHit, NativeLiteralPage, NativePathPage,
     },
 };
 use quanta_index_core::index::{
-    BootstrapRef, IndexError, MAX_RECLAIM_DRAIN_PAGE, ObjectRef, QueryCoverage, QueryOutcome,
-    WorkBudget, WorkLimits,
+    BootstrapRef, IndexError, MAX_RECLAIM_DRAIN_PAGE, MemoryLifetime, ObjectRef, QueryCoverage,
+    QueryOutcome, SourceRecordOwner, WorkBudget, WorkLimits,
     effort::{ReservationGuard, ResourceNeed},
     owner_map_key,
     ports::{
-        CatalogGenesisPort, CatalogReadPort, ObjectReadIoPort, OperationInspectAccess,
-        PersistentMapPort,
+        CatalogGenesisPort, CatalogReadPort, ImmutableObjectPort, ObjectReadIoPort,
+        OperationInspectAccess, PersistentMapPort,
     },
     validate_read_ticket_lease,
 };
-use quanta_index_core::{CoreError, RequestBudgetV1};
+use quanta_index_core::{
+    CoreError, PROCESS_RSS_CEILING_EXCEEDED_CODE, ProcessMemoryProbePort, RequestBudgetV1,
+};
 use quanta_index_ipc::{
-    IpcPlane, IpcServerCounters, ServerAdmissionPolicy, ShutdownHandle, SocketAccessPolicy,
-    UdsServer,
+    IpcServerCounters, ServerAdmissionPolicy, ShutdownHandle, SocketAccessPolicy, UdsServer,
 };
 use quanta_index_kernel::{
     AdapterDescriptor, AdapterRegistry, Kernel, KernelServices, QueryAdapterRegistry,
@@ -96,7 +104,8 @@ use crate::{
     native_reclaim_driver::reclaim_one_step,
     native_resources::{NativeClassScheduler, NativeResourceClass, NativeResourceLedger},
     native_scratch_io::NativeScratchIo,
-    native_work_diagnostic::{self, DiscardFailureStage, ReadFailureStage},
+    native_source_path::valid_native_source_path,
+    native_work_diagnostic::{self, DiscardFailureStage},
     native_worker::{DIRECT_ENRICHMENT_DISPATCH_LIMIT, NativeOperationWorker},
     publication_file_capacity::{
         InodeObservation, PublicationFileCapacity, RecoveryReadMemoryV1,
@@ -130,8 +139,6 @@ fn native_server_admission() -> Result<ServerAdmissionPolicy> {
     )?)
 }
 
-const MAX_STAGE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_STAGE_PATH_BYTES: usize = quanta_index_core::index::MAX_SOURCE_PATH_BYTES;
 // One bounded GC step may decode a 1 MiB catalog registration and stream a
 // 16 MiB object with a second physical recheck. The extra 64 KiB is the
 // store's streaming hash buffer. These are logical service reservations,
@@ -365,6 +372,7 @@ pub use crate::native_stub_certificate_projection_v1::StubGrammarPolicy;
 
 pub(super) struct NativeDispatcher {
     pub(super) read_sessions: Arc<OnceLock<Arc<crate::native_read_sessions::NativeReadSessions>>>,
+    pub(super) dsl_corpus_cache: crate::native_read_session_transport::NativeDslCorpusCache,
     pub(super) kernel: Arc<Kernel<SqliteCatalog>>,
     pub(super) catalog: Arc<SqliteCatalog>,
     pub(super) literal_queries: QueryAdapterRegistry<LiteralReadRequest, LiteralPage>,
@@ -403,6 +411,15 @@ pub(super) struct NativeDispatcher {
             quanta_index_repomap::native::NativeRepoMapRankPage,
         >,
     >,
+    pub(super) repomap_prior_files: OnceLock<
+        QueryAdapterRegistry<
+            OwnerKey,
+            Option<quanta_index_repomap::native::NativeRepoMapPriorFileContextV1>,
+        >,
+    >,
+    pub(super) installation_config_sha256: OnceLock<quanta_index_contract::index::Digest>,
+    pub(super) repomap_graph_installation:
+        OnceLock<quanta_index_contract::native_protocol::NativeRepoMapGraphDescriptorV1>,
     pub(super) imported_repomap_graph: OnceLock<
         QueryAdapterRegistry<
             quanta_index_contract::native_protocol::NativeImportedRepoMapQueryV1,
@@ -417,6 +434,7 @@ pub(super) struct NativeDispatcher {
     physical: Arc<PublicationFileCapacity>,
     pub(super) io: Arc<NativeScratchIo>,
     wal_checkpoint_bytes: u64,
+    pub(super) process_memory_admission: Option<Arc<NativeProcessMemoryAdmission>>,
 }
 
 impl NativeDispatcher {
@@ -470,57 +488,6 @@ impl NativeDispatcher {
                 budget.reserve_memory(bytes, lifetime)
             })?
         };
-        budget.checkpoint()?;
-        Ok(result)
-    }
-
-    pub(super) fn search_text(
-        &self,
-        selection: ViewSelection,
-        instance: IndexInstanceId,
-        query: &TextQueryRequest,
-        budget: &mut WorkBudget,
-        stage: &mut ReadFailureStage,
-    ) -> Result<ScopedNativeTextResult, IndexError> {
-        let (prepared, result_limit) = {
-            *stage = ReadFailureStage::ControlAdmission;
-            let control = self
-                .control_scheduler
-                .acquire_control_for_request(self.control_need, budget)?;
-            budget.bind_memory_scope(control.memory_scope());
-            *stage = ReadFailureStage::QueryPreparation;
-            let planned = plan_native_text(query, |bytes, lifetime| {
-                budget.reserve_memory(bytes, lifetime)
-            })?;
-            let result_limit = planned.result_limit()?;
-            let prepared = self.kernel.prepare_query(
-                &self.text_queries,
-                selection,
-                instance,
-                planned,
-                budget,
-            )?;
-            (prepared, result_limit)
-        };
-        let need = prepared.required_resources();
-        *stage = ReadFailureStage::InteractiveAdmission;
-        let reservation = match self
-            .interactive_scheduler
-            .acquire_interactive_for_request(need, prepared.admission_budget())
-        {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                prepared.abort()?;
-                return Err(error);
-            }
-        };
-        *stage = ReadFailureStage::QueryExecution;
-        let outcome = prepared.execute(&reservation)?;
-        *stage = ReadFailureStage::ResultConversion;
-        let result = native_text_result(outcome, instance, result_limit, |bytes, lifetime| {
-            budget.reserve_memory(bytes, lifetime)
-        })?;
-        *stage = ReadFailureStage::Checkpoint;
         budget.checkpoint()?;
         Ok(result)
     }
@@ -736,366 +703,11 @@ impl NativeDispatcher {
             .map_err(|error| IndexError::Storage(format!("root-scoped view identity: {error}")))
     }
 
-    pub(super) fn execute(
-        &self,
-        request: NativeIndexRequest,
-        budget: &mut WorkBudget,
-    ) -> Result<crate::native_reply::NativeReply, IndexError> {
-        let is_discard = matches!(&request, NativeIndexRequest::DiscardInput(_));
-        budget.checkpoint().inspect_err(|error| {
-            if is_discard {
-                native_work_diagnostic::record_discard_if_enabled(
-                    DiscardFailureStage::ExecuteCheckpoint,
-                    budget,
-                    error,
-                );
-            }
-        })?;
-        // Staged references already own their retained backing grant.
-        let request = match request {
-            NativeIndexRequest::StageSources { ingress, inputs } => {
-                return self
-                    .kernel
-                    .stage_sources(ingress, inputs, budget)
-                    .map(crate::native_reply::NativeReply::StagedSources);
-            }
-            NativeIndexRequest::StageRepositorySources {
-                ingress,
-                repository,
-                inputs,
-            } => {
-                return self
-                    .kernel
-                    .stage_repository_sources(ingress, &repository, inputs, budget)
-                    .map(crate::native_reply::NativeReply::StagedSources);
-            }
-            request => request,
-        };
-        let reply_slot = crate::native_reply::NativeReply::reserve_canonical(|bytes| {
-            budget.reserve_memory(bytes, quanta_index_core::index::MemoryLifetime::Retained)
-        })
-        .inspect_err(|error| {
-            if is_discard {
-                native_work_diagnostic::record_discard_if_enabled(
-                    DiscardFailureStage::ReplyReservation,
-                    budget,
-                    error,
-                );
-            }
-        })?;
-        let result = match request {
-            NativeIndexRequest::SealCandidateWithSourceRoutes { primary, ingress, routes } =>
-                self.seal_source_routes_v1(primary, ingress, routes, budget),
-            NativeIndexRequest::ResolveProtectedSourceHead { repo_id, revision_id } =>
-                self.resolve_protected_source_head_v1(&repo_id, &revision_id, budget),
-            NativeIndexRequest::ResolveProtectedRepoMapHead { repo_id, revision_id } =>
-                self.resolve_protected_repomap_head_v1(&repo_id, &revision_id, budget),
-            NativeIndexRequest::ReadImportedRepoMapMember { view, instance } =>
-                self.read_imported_repomap_member_v1(view, instance, budget),
-            NativeIndexRequest::CreateWorkspace { workspace, epoch } => self
-                .kernel
-                .create_workspace(workspace, epoch, budget)
-                .map(NativeIndexResponse::Created),
-            NativeIndexRequest::BeginInput(key) => self
-                .kernel
-                .begin_input(key)
-                .map(NativeIndexResponse::InputOpened),
-            NativeIndexRequest::StageSource {
-                ingress,
-                path,
-                bytes,
-                text,
-            } => {
-                if path.is_empty()
-                    || path.len() > MAX_STAGE_PATH_BYTES
-                    || bytes.len() > MAX_STAGE_BYTES
-                    || path.starts_with('/')
-                    || path.contains('\0')
-                    || path
-                        .split('/')
-                        .any(|part| part.is_empty() || part == "." || part == "..")
-                {
-                    return Err(IndexError::InvalidInput(
-                        "source stage exceeds native bounds".into(),
-                    ));
-                }
-                let reference = self
-                    .kernel
-                    .stage_source_text(ingress, &path, &bytes, text, budget)?;
-                Ok(NativeIndexResponse::Staged(reference))
-            }
-            NativeIndexRequest::StageProfile { ingress, profile } => {
-                let reference = self.kernel.stage_profile(ingress, &profile, budget)?;
-                Ok(NativeIndexResponse::Staged(reference))
-            }
-            NativeIndexRequest::StageProjectionOutput {
-                ingress,
-                bytes,
-                children,
-            } => {
-                if bytes.len() > MAX_STAGE_BYTES {
-                    return Err(IndexError::ResourceLimited);
-                }
-                let reference = self.kernel.stage_projection_output_with_children(
-                    ingress,
-                    &bytes,
-                    children.as_slice(),
-                    budget,
-                )?;
-                Ok(NativeIndexResponse::Staged(reference))
-            }
-            NativeIndexRequest::StageImmutableObject { ingress, bytes, children } => {
-                let wire_bytes = u64::try_from(bytes.len())
-                    .ok()
-                    .and_then(|payload| payload.checked_add(16))
-                    .and_then(|payload| {
-                        payload.checked_add(u64::try_from(children.as_slice().len()).ok()?.checked_mul(32)?)
-                    })
-                    .ok_or(IndexError::ResourceLimited)?;
-                if wire_bytes > quanta_index_contract::native_protocol::MAX_NATIVE_IMMUTABLE_OBJECT_WIRE_BYTES_V1 {
-                    return Err(IndexError::ResourceLimited);
-                }
-                let reference = self.kernel.stage_immutable_object_v1(
-                    ingress, &bytes, children.as_slice(), budget,
-                )?;
-                Ok(NativeIndexResponse::Staged(reference))
-            }
-            NativeIndexRequest::StageProjectionOwner {
-                ingress,
-                contribution,
-            } => {
-                let ticket = self.kernel.pin_view(
-                    ViewSelection::Latest {
-                        workspace: ingress.operation.workspace,
-                        epoch: ingress.operation.epoch,
-                    },
-                    budget,
-                )?;
-                ticket.validate()?;
-                if contribution.owner.producer != contribution.producer {
-                    return Err(IndexError::InvalidInput(
-                        "projection owner must belong to its producer".into(),
-                    ));
-                }
-                match (contribution.source_owner, contribution.source) {
-                    (Some(source_owner), Some(source)) => {
-                        let expected = self.objects.lookup_object(
-                            ticket.view().source.owners,
-                            &owner_map_key(source_owner),
-                            budget,
-                        )?;
-                        if expected != Some(source) {
-                            return Err(IndexError::Conflict);
-                        }
-                    }
-                    (None, None) => {}
-                    _ => {
-                        return Err(IndexError::InvalidInput(
-                            "projection source owner and record must be paired".into(),
-                        ));
-                    }
-                }
-                let reference =
-                    self.kernel
-                        .stage_projection_owner(ingress, contribution, budget)?;
-                Ok(NativeIndexResponse::Staged(reference))
-            }
-            NativeIndexRequest::StageProjectionCertificate {
-                ingress,
-                certificate,
-            } => {
-                let ticket = self.kernel.pin_view(
-                    ViewSelection::Latest {
-                        workspace: ingress.operation.workspace,
-                        epoch: ingress.operation.epoch,
-                    },
-                    budget,
-                )?;
-                ticket.validate()?;
-                if certificate.target_source != ticket.view().source {
-                    return Err(IndexError::Conflict);
-                }
-                let reference =
-                    self.kernel
-                        .stage_projection_certificate(ingress, &certificate, budget)?;
-                Ok(NativeIndexResponse::Staged(reference))
-            }
-            NativeIndexRequest::StageMutationPage {
-                ingress,
-                base,
-                mutations,
-            } => {
-                if mutations.is_empty() || mutations.len() > 128 {
-                    return Err(IndexError::ResourceLimited);
-                }
-                self.kernel
-                    .stage_mutation_page(ingress, base, &mutations, budget)
-                    .map(NativeIndexResponse::MutationPageStaged)
-            }
-            NativeIndexRequest::SealMutations {
-                ingress,
-                root,
-                count,
-            } => self
-                .kernel
-                .seal_mutations(ingress, root, count, budget)
-                .map(NativeIndexResponse::MutationsStaged),
-            NativeIndexRequest::DiscardInput(ingress) => {
-                let _physical = self.prepare_discard(budget)?;
-                self.kernel
-                    .discard_input(ingress, budget)
-                    .inspect_err(|error| {
-                        native_work_diagnostic::record_discard_if_enabled(
-                            DiscardFailureStage::CatalogDiscard,
-                            budget,
-                            error,
-                        );
-                        native_work_diagnostic::record_discard_physical_if_enabled(
-                            self.catalog.as_ref(),
-                            self.physical.as_ref(),
-                        );
-                    })?;
-                Ok(NativeIndexResponse::InputDiscarded(ingress))
-            }
-            NativeIndexRequest::StageSources { .. }
-            | NativeIndexRequest::StageRepositorySources { .. }
-            | NativeIndexRequest::Overlay(_)
-            | NativeIndexRequest::Stub(_)
-            | NativeIndexRequest::BindOverlaySave(_)
-            | NativeIndexRequest::CompleteOverlaySave(_)
-            | NativeIndexRequest::QueryGraph { .. }
-            | NativeIndexRequest::QueryImportedRepoMap { .. }
-            | NativeIndexRequest::QueryRepoMap { .. }
-            | NativeIndexRequest::LookupSourceOwners { .. }
-            | NativeIndexRequest::LookupProjectionOwners { .. }
-            | NativeIndexRequest::ListProducerSourceOwners { .. }
-            | NativeIndexRequest::DiffProjectionSourceOwners { .. }
-            | NativeIndexRequest::SearchLiteral { .. }
-            | NativeIndexRequest::QueryPaths { .. }
-            | NativeIndexRequest::QueryRepositoryPaths { .. }
-            | NativeIndexRequest::SearchOverlayText(_)
-            | NativeIndexRequest::ReadSession(_)
-            | NativeIndexRequest::SearchText { .. }
-            | NativeIndexRequest::SearchSemantic { .. }
-            | NativeIndexRequest::QueryEffortStream { .. } => Err(IndexError::BackendViolation(
-                "native query bypassed selected reader admission".into(),
-            )),
-            NativeIndexRequest::Submit(_) | NativeIndexRequest::Resume(_) => Err(
-                IndexError::BackendViolation("async native operation routed to sync path".into()),
-            ),
-            NativeIndexRequest::PublishedViewMetadata(key) => self
-                .kernel
-                .published_view_metadata(key, budget)
-                .map(|payload| {
-                    NativeIndexResponse::PublishedViewMetadata(
-                        quanta_index_core::index::OperationReply {
-                            operation: key,
-                            payload,
-                        },
-                    )
-                }),
-            NativeIndexRequest::Status(key) => self
-                .kernel
-                .status(key, OperationInspectAccess::Request(budget))
-                .map(|payload| {
-                    NativeIndexResponse::Status(quanta_index_core::index::OperationReply {
-                        operation: key,
-                        payload,
-                    })
-                }),
-            NativeIndexRequest::ReadProjection {
-                selection,
-                projection,
-            } => {
-                let (view, binding) = self
-                    .kernel
-                    .read_projection_binding(selection, projection, budget)?;
-                Ok(NativeIndexResponse::Projection(NativeProjectionRead {
-                    view,
-                    binding,
-                }))
-            }
-            NativeIndexRequest::ReadView(selection) => self
-                .with_read_view(selection, budget, |view, _budget| Ok(view.clone()))
-                .map(NativeIndexResponse::View),
-            NativeIndexRequest::ObserveRootView(selection) => self
-                .with_read_view(selection, budget, |view, budget| {
-                    let before = self.current_root_identity_for_view(budget)?;
-                    // The live writer's own canonical connection observes its
-                    // immutable stamp. The offline RO verifier intentionally
-                    // excludes live owners and must not be weakened here.
-                    let nonce = self.catalog.observe_native_root_nonce_v1(budget)?;
-                    let after = self.current_root_identity_for_view(budget)?;
-                    if before != after || nonce == [0; 32] {
-                        return Err(IndexError::DigestConflict);
-                    }
-                    budget.checkpoint()?;
-                    Ok(
-                        quanta_index_contract::native_protocol::NativeRootScopedViewV1 {
-                            view: view.clone(),
-                            root_nonce: quanta_index_contract::index::Digest(nonce),
-                            root_device: before.device,
-                            root_inode: before.inode,
-                        },
-                    )
-                })
-                .map(NativeIndexResponse::RootScopedView),
-            NativeIndexRequest::ReadyWork {
-                workspace,
-                epoch,
-                limit,
-            } => {
-                if limit == 0 || limit > 1024 {
-                    return Err(IndexError::ResourceLimited);
-                }
-                self.kernel
-                    .ready_work(workspace, epoch, limit, budget)
-                    .map(NativeIndexResponse::ReadyWork)
-            }
-            NativeIndexRequest::ClaimWork {
-                intent,
-                lease_millis,
-            } => {
-                if lease_millis == 0 || lease_millis > 600_000 {
-                    return Err(IndexError::InvalidInput(
-                        "work lease outside 1..=600000 ms".into(),
-                    ));
-                }
-                self.kernel
-                    .claim_work(&intent, Duration::from_millis(lease_millis), budget)
-                    .map(NativeIndexResponse::Claimed)
-            }
-            NativeIndexRequest::RenewWork {
-                claim,
-                lease_millis,
-            } => {
-                if lease_millis == 0 || lease_millis > 600_000 {
-                    return Err(IndexError::InvalidInput(
-                        "work lease outside 1..=600000 ms".into(),
-                    ));
-                }
-                self.kernel
-                    .renew_work(&claim, Duration::from_millis(lease_millis), budget)
-                    .map(NativeIndexResponse::Renewed)
-            }
-            NativeIndexRequest::WorkStatus(intent) => self
-                .kernel
-                .work_status(&intent, budget)
-                .map(NativeIndexResponse::WorkStatus),
-            NativeIndexRequest::InteractionBegin { .. }
-            | NativeIndexRequest::InteractionActivity { .. }
-            | NativeIndexRequest::InteractionRenew { .. }
-            | NativeIndexRequest::InteractionEnd { .. } => Err(IndexError::InvalidInput(
-                "interaction publication requires a kernel-authenticated IPC principal".into(),
-            )),
-        };
-        result.map(|payload| reply_slot.finish(payload))
-    }
-
     pub(super) fn submitted_or_reconcile(
         &self,
         key: OperationKey,
         result: Result<SubmitOutcome, IndexError>,
+        observed_admission: Option<OperationStatus>,
     ) -> Result<NativeIndexResponse, IndexError> {
         let payload = match result {
             Ok(outcome) => outcome,
@@ -1112,10 +724,13 @@ impl NativeDispatcher {
                 // deterministic violations must never become an ACK-loss hint.
                 return Err(error);
             }
-            Err(error) => match self
-                .kernel
-                .status(key, OperationInspectAccess::PostFailureReconcile)
-            {
+            Err(error) => match observed_admission.map_or_else(
+                || {
+                    self.kernel
+                        .status(key, OperationInspectAccess::PostFailureReconcile)
+                },
+                Ok,
+            ) {
                 // No admission is known, so preserve the concrete refusal.
                 Ok(OperationStatus::Unknown) => return Err(error),
                 // An admitted operation may have committed despite this error.
@@ -1143,6 +758,27 @@ pub(super) fn plan_native_text(
         quanta_index_core::index::MemoryLifetime,
     ) -> Result<Option<quanta_index_core::index::MemoryLease>, IndexError>,
 ) -> Result<PlannedTextRead, IndexError> {
+    plan_native_text_query(query, false, reserve)
+}
+
+pub(super) fn plan_native_projected_text(
+    query: &TextQueryRequest,
+    reserve: impl Fn(
+        u64,
+        quanta_index_core::index::MemoryLifetime,
+    ) -> Result<Option<quanta_index_core::index::MemoryLease>, IndexError>,
+) -> Result<PlannedTextRead, IndexError> {
+    plan_native_text_query(query, true, reserve)
+}
+
+fn plan_native_text_query(
+    query: &TextQueryRequest,
+    allow_path_projection: bool,
+    reserve: impl Fn(
+        u64,
+        quanta_index_core::index::MemoryLifetime,
+    ) -> Result<Option<quanta_index_core::index::MemoryLease>, IndexError>,
+) -> Result<PlannedTextRead, IndexError> {
     if query.syntax == TextQuerySyntax::CodeSearch
         || !query.constraints.language_any_of.is_empty()
         || query.generation.is_some()
@@ -1160,6 +796,21 @@ pub(super) fn plan_native_text(
     let plan_memory = reserve(backing, quanta_index_core::index::MemoryLifetime::Retained)?;
     let plan = LexicalPlanner::plan(&lowered)
         .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+    if plan.filters.surface == quanta_index_lexical::symbol::ResultSurface::Path
+        && !(allow_path_projection
+            && lowered.filters.iter().any(|filter| {
+                matches!(
+                    filter,
+                    quanta_index_contract::LqFilter::Select {
+                        dim: quanta_index_contract::LqSelect::Path,
+                    }
+                )
+            }))
+    {
+        return Err(IndexError::InvalidInput(
+            "native path grouping requires select:path on a projection-capable text route".into(),
+        ));
+    }
     Ok(
         PlannedTextRead::new(plan, query.top_k, &query.constraints, reserve)?.with_plan_memory([
             plan_memory,
@@ -1383,16 +1034,6 @@ pub(super) fn native_text_result(
     ) -> Result<Option<quanta_index_core::index::MemoryLease>, IndexError>,
 ) -> Result<ScopedNativeTextResult, IndexError> {
     crate::native_text_result::convert(outcome, instance, requested_top_k, reserve)
-}
-
-pub(super) fn valid_native_source_path(path: &str) -> bool {
-    !path.is_empty()
-        && path.len() <= MAX_STAGE_PATH_BYTES
-        && !path.starts_with('/')
-        && !path.contains('\0')
-        && path
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 pub(super) fn native_semantic_result(
@@ -1696,14 +1337,169 @@ pub struct NativeIndexMaintenance {
     kernel: Arc<Kernel<SqliteCatalog>>,
     catalog: Arc<SqliteCatalog>,
     objects: Arc<FileObjectStore>,
-    control_scheduler: Arc<NativeClassScheduler>,
-    control_need: ResourceNeed,
+    maintenance_scheduler: Arc<NativeClassScheduler>,
+    maintenance_need: ResourceNeed,
     io: Arc<NativeScratchIo>,
     wal_checkpoint_bytes: u64,
     _lease: Arc<StateRootLease>,
 }
 
 impl NativeIndexMaintenance {
+    /// Re-prove the selected source-local member root before opening any of its
+    /// child pages. A physical root defect durably fences every retained view
+    /// that reaches the same object through the Catalog object graph.
+    pub fn scrub_source_member_artifact(
+        &self,
+        view: ViewRef,
+        instance: IndexInstanceId,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<ObjectRef>, IndexError> {
+        budget.checkpoint()?;
+        let reservation = ReservationGuard::try_acquire(
+            Arc::clone(&self.maintenance_scheduler),
+            self.maintenance_need,
+        )
+        .ok_or_else(|| self.maintenance_scheduler.denial())?;
+        budget.bind_memory_scope(reservation.memory_scope());
+        let _physical = self.io.enter_maintenance_scope()?;
+        self.kernel.with_reproved_source_member_artifact(
+            ViewSelection::Exact(view),
+            instance,
+            budget,
+            |artifact, intact, budget| {
+                if intact {
+                    Ok(None)
+                } else {
+                    self.catalog
+                        .quarantine_view_object(view, artifact, budget)
+                        .map(Some)
+                }
+            },
+        )
+    }
+
+    /// Re-prove the selected Source body under the original maintenance budget.
+    /// A confirmed defect fences retained views that depend on the body.
+    /// An existing receipt resumes an older single-view fence before returning.
+    pub fn scrub_source_body(
+        &self,
+        view: ViewRef,
+        owner: OwnerKey,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<ObjectRef>, IndexError> {
+        budget.checkpoint()?;
+        let reservation = ReservationGuard::try_acquire(
+            Arc::clone(&self.maintenance_scheduler),
+            self.maintenance_need,
+        )
+        .ok_or_else(|| self.maintenance_scheduler.denial())?;
+        budget.bind_memory_scope(reservation.memory_scope());
+        let _physical = self.io.enter_maintenance_scope()?;
+        if self
+            .catalog
+            .resume_source_body_quarantine(view, budget)?
+            .is_some()
+        {
+            return self.reprove_quarantined_source_body(view, owner, budget);
+        }
+        match self.reprove_source_body(view, owner, budget) {
+            Err(primary @ IndexError::CorruptObject(_)) => {
+                if self
+                    .catalog
+                    .resume_source_body_quarantine(view, budget)?
+                    .is_some()
+                {
+                    self.reprove_quarantined_source_body(view, owner, budget)
+                } else {
+                    Err(primary)
+                }
+            }
+            other => other,
+        }
+    }
+
+    fn reprove_source_body(
+        &self,
+        view: ViewRef,
+        owner: OwnerKey,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<ObjectRef>, IndexError> {
+        let ticket = self.kernel.pin_view(ViewSelection::Exact(view), budget)?;
+        let result = (|| {
+            ticket.validate_for_request(budget)?;
+            let (body, intact) =
+                self.check_source_body(ticket.view().source.owners, owner, budget)?;
+            ticket.validate_for_request(budget)?;
+            if intact {
+                return Ok(None);
+            }
+            self.catalog
+                .quarantine_source_body(view, body, budget)
+                .map(Some)
+        })();
+        ticket.finish(result, budget)
+    }
+
+    fn reprove_quarantined_source_body(
+        &self,
+        view: ViewRef,
+        owner: OwnerKey,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<ObjectRef>, IndexError> {
+        let owners = self
+            .catalog
+            .quarantined_source_owners_for_scrub(view, budget)?;
+        let (body, intact) = self.check_source_body(owners, owner, budget)?;
+        if intact {
+            return self
+                .catalog
+                .source_body_incident_for_scrub(view, body, budget)
+                .map(|known| known.then_some(body));
+        }
+        // The write rechecks the exact view and body reachability under the
+        // catalog transaction, including retirement during the physical read.
+        self.catalog
+            .quarantine_source_body(view, body, budget)
+            .map(Some)
+    }
+
+    fn check_source_body(
+        &self,
+        owners: quanta_index_contract::index::MapRoot,
+        owner: OwnerKey,
+        budget: &mut WorkBudget,
+    ) -> Result<(ObjectRef, bool), IndexError> {
+        let source = self
+            .objects
+            .lookup_object(owners, &owner_map_key(owner), budget)?
+            .ok_or_else(|| {
+                IndexError::InvalidInput("scrub owner is absent from the selected view".into())
+            })?;
+        let stored = self.objects.get(source, budget)?;
+        let record =
+            SourceRecordOwner::decode_json(&stored.payload, budget, MemoryLifetime::Temporary)?;
+        if stored.registration.reference != source
+            || stored.registration.children.as_slice() != [record.bytes]
+        {
+            return Err(IndexError::CorruptObject(
+                "selected Source record registration differs".into(),
+            ));
+        }
+        let body = record.bytes;
+        let intact = match self.objects.get(body, budget) {
+            Ok(stored) => {
+                stored.registration.reference == body
+                    && stored.registration.children.is_empty()
+                    && u64::try_from(stored.payload.len())
+                        .map_err(|_| IndexError::ResourceLimited)?
+                        == record.byte_len
+            }
+            Err(IndexError::CorruptObject(_)) => false,
+            Err(error) => return Err(error),
+        };
+        Ok((body, intact))
+    }
+
     pub fn recover_read_sessions(
         &self,
         after: Option<quanta_index_core::index::ReadSessionRef>,
@@ -1711,9 +1507,11 @@ impl NativeIndexMaintenance {
         budget: &mut WorkBudget,
     ) -> Result<quanta_index_core::index::ReadSessionRecoveryPage, IndexError> {
         budget.checkpoint()?;
-        let reservation =
-            ReservationGuard::try_acquire(Arc::clone(&self.control_scheduler), self.control_need)
-                .ok_or_else(|| self.control_scheduler.denial())?;
+        let reservation = ReservationGuard::try_acquire(
+            Arc::clone(&self.maintenance_scheduler),
+            self.maintenance_need,
+        )
+        .ok_or_else(|| self.maintenance_scheduler.denial())?;
         budget.bind_memory_scope(reservation.memory_scope());
         let _physical = self.io.enter_maintenance_scope()?;
         self.kernel.recover_read_sessions(after, limit, budget)
@@ -1733,20 +1531,22 @@ impl NativeIndexMaintenance {
                 "reclaim child page limit is out of range".into(),
             ));
         }
-        if self.control_need.memory_bytes < GC_STEP_MIN_MEMORY_BYTES
-            || self.control_need.io_bytes < GC_STEP_MIN_IO_BYTES
+        if self.maintenance_need.memory_bytes < GC_STEP_MIN_MEMORY_BYTES
+            || self.maintenance_need.io_bytes < GC_STEP_MIN_IO_BYTES
         {
             return Err(IndexError::ResourceLimited);
         }
-        let reservation =
-            ReservationGuard::try_acquire(Arc::clone(&self.control_scheduler), self.control_need)
-                .ok_or_else(|| self.control_scheduler.denial())?;
+        let reservation = ReservationGuard::try_acquire(
+            Arc::clone(&self.maintenance_scheduler),
+            self.maintenance_need,
+        )
+        .ok_or_else(|| self.maintenance_scheduler.denial())?;
         budget.bind_memory_scope(reservation.memory_scope());
         budget.checkpoint()?;
         let _physical = self.io.enter_maintenance_scope()?;
         let _wal_outcome = self.catalog.checkpoint_wal_for_reclaim(
             self.wal_checkpoint_bytes,
-            self.control_need.io_bytes,
+            self.maintenance_need.io_bytes,
             budget,
         )?;
         reclaim_one_step(&self.catalog, &self.objects, after, child_limit, budget)
@@ -1759,9 +1559,11 @@ impl NativeIndexMaintenance {
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         budget.checkpoint()?;
-        let reservation =
-            ReservationGuard::try_acquire(Arc::clone(&self.control_scheduler), self.control_need)
-                .ok_or_else(|| self.control_scheduler.denial())?;
+        let reservation = ReservationGuard::try_acquire(
+            Arc::clone(&self.maintenance_scheduler),
+            self.maintenance_need,
+        )
+        .ok_or_else(|| self.maintenance_scheduler.denial())?;
         budget.bind_memory_scope(reservation.memory_scope());
         budget.checkpoint()?;
         let _physical = self.io.enter_maintenance_scope()?;
@@ -1839,6 +1641,77 @@ pub struct NativeServiceResources {
     /// Logical aggregate concurrency estimates. These are not measured RSS,
     /// WAL, disk or provider charges.
     pub execution: NativeResourcePlan,
+}
+
+/// Optional measured-RSS admission for opening a new native publication.
+///
+/// This is deliberately separate from [`NativeResourcePlan`]: that plan is a
+/// deterministic logical concurrency ledger, while this gate observes the
+/// process through the supplied kernel/test probe at each `BeginInput`.
+pub struct NativeProcessMemoryAdmission {
+    probe: Arc<dyn ProcessMemoryProbePort>,
+    ceiling_bytes: u64,
+    refusals: AtomicU64,
+}
+
+impl core::fmt::Debug for NativeProcessMemoryAdmission {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("NativeProcessMemoryAdmission")
+            .field("ceiling_bytes", &self.ceiling_bytes)
+            .field("refusals", &self.refusals())
+            .finish_non_exhaustive()
+    }
+}
+
+impl NativeProcessMemoryAdmission {
+    pub fn new(probe: Arc<dyn ProcessMemoryProbePort>, ceiling_bytes: u64) -> Result<Self> {
+        if ceiling_bytes == 0 {
+            return Err(anyhow::anyhow!(
+                "native process RSS ceiling must be positive"
+            ));
+        }
+        Ok(Self {
+            probe,
+            ceiling_bytes,
+            refusals: AtomicU64::new(0),
+        })
+    }
+
+    #[must_use]
+    pub fn ceiling_bytes(&self) -> u64 {
+        self.ceiling_bytes
+    }
+
+    #[must_use]
+    pub fn refusals(&self) -> u64 {
+        self.refusals.load(Ordering::Acquire)
+    }
+
+    pub(super) fn admit_publication_start(&self) -> std::result::Result<(), NativeIndexWireError> {
+        let resident = self
+            .probe
+            .resident_bytes()
+            .map_err(|error| NativeIndexWireError {
+                code: NativeIndexErrorCode::Storage,
+                message: format!("native process RSS admission probe failed: {error}"),
+            })?;
+        if resident > self.ceiling_bytes {
+            return Err(NativeIndexWireError {
+                code: NativeIndexErrorCode::ProcessRssCeilingExceeded,
+                message: format!(
+                    "{}: refusing to begin a native publication: the process holds {resident} resident bytes, above the {} byte ceiling",
+                    PROCESS_RSS_CEILING_EXCEEDED_CODE.as_wire_str(),
+                    self.ceiling_bytes
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn record_refusal(&self) {
+        let _prior = self.refusals.fetch_add(1, Ordering::AcqRel);
+    }
 }
 
 /// Deployment-owned schema/format identifiers for the two installed native
@@ -1977,6 +1850,52 @@ impl NativeIndexService {
             .repomap
             .set(readers)
             .map_err(|_readers| IndexError::Conflict)
+    }
+
+    pub(crate) fn record_installation_config_sha256(
+        &self,
+        config_sha256: quanta_index_contract::index::Digest,
+    ) -> Result<(), IndexError> {
+        if config_sha256.0 == [0; 32] {
+            return Err(IndexError::DigestConflict);
+        }
+        self.dispatcher
+            .installation_config_sha256
+            .set(config_sha256)
+            .map_err(|_| IndexError::Conflict)
+    }
+
+    pub(crate) fn configure_repomap_prior_files(
+        &self,
+        descriptor: AdapterDescriptor,
+        need: ResourceNeed,
+    ) -> Result<(), IndexError> {
+        use quanta_index_repomap::native::NativeRepoMapPriorFileReaderV1;
+
+        let mut readers = QueryAdapterRegistry::new();
+        readers.register(descriptor, need, NativeRepoMapPriorFileReaderV1::new(need)?)?;
+        readers.validate_reservation(self.dispatcher.interactive_need)?;
+        self.dispatcher
+            .repomap_prior_files
+            .set(readers)
+            .map_err(|_readers| IndexError::Conflict)
+    }
+
+    pub(crate) fn record_repomap_graph_installation(
+        &self,
+        descriptor: quanta_index_contract::native_protocol::NativeRepoMapGraphDescriptorV1,
+    ) -> Result<(), IndexError> {
+        if self.dispatcher.graph.get().is_none()
+            || self.dispatcher.repomap.get().is_none()
+            || self.dispatcher.repomap_prior_files.get().is_none()
+            || self.dispatcher.read_sessions.get().is_none()
+        {
+            return Err(IndexError::SnapshotUnavailable);
+        }
+        self.dispatcher
+            .repomap_graph_installation
+            .set(descriptor)
+            .map_err(|_| IndexError::Conflict)
     }
 
     pub fn configure_imported_repomap_graph(
@@ -2118,15 +2037,22 @@ impl NativeIndexService {
             .map_err(|_configuration| IndexError::Conflict)
     }
 
-    /// Acquire a bounded recovery handle before moving the service into `run`.
+    /// Acquire a bounded maintenance handle before moving the service into `run`.
     #[must_use]
     pub fn maintenance_handle(&self) -> NativeIndexMaintenance {
+        let maintenance_scheduler = if self.maintenance_enabled {
+            self.dispatcher
+                .resources
+                .scheduler(NativeResourceClass::MaintenanceControl)
+        } else {
+            Arc::clone(&self.dispatcher.control_scheduler)
+        };
         NativeIndexMaintenance {
             kernel: Arc::clone(&self.dispatcher.kernel),
             catalog: Arc::clone(&self.dispatcher.catalog),
             objects: Arc::clone(&self.dispatcher.objects),
-            control_scheduler: Arc::clone(&self.dispatcher.control_scheduler),
-            control_need: self.dispatcher.control_need,
+            maintenance_scheduler,
+            maintenance_need: self.dispatcher.control_need,
             io: Arc::clone(&self.dispatcher.io),
             wal_checkpoint_bytes: self.dispatcher.wal_checkpoint_bytes,
             _lease: Arc::clone(&self.lease),
@@ -2276,6 +2202,29 @@ impl NativeIndexService {
         )
     }
 
+    /// Binds native capabilities with an explicit measured-RSS gate on
+    /// publication start. The caller retains the admission handle for exact
+    /// refusal observation; regular bind factories keep this gate disabled.
+    pub fn bind_with_capabilities_and_process_memory_admission(
+        state_root: &Path,
+        socket_path: &Path,
+        limits: WorkLimits,
+        capabilities: NativeServiceCapabilities,
+        resources: &NativeServiceResources,
+        process_memory_admission: Arc<NativeProcessMemoryAdmission>,
+    ) -> Result<Self> {
+        Self::bind_with_retention_and_process_memory_admission(
+            state_root,
+            socket_path,
+            limits,
+            capabilities,
+            resources,
+            None,
+            None,
+            Some(process_memory_admission),
+        )
+    }
+
     /// Enable bounded service-owned reclaim of objects already queued by
     /// their custody authority. History retirement remains explicit.
     pub fn bind_with_capabilities_and_maintenance(
@@ -2308,6 +2257,28 @@ impl NativeIndexService {
         maintenance: Option<NativeReclaimConfig>,
         retention: Option<NativeRetentionConfig>,
     ) -> Result<Self> {
+        Self::bind_with_retention_and_process_memory_admission(
+            state_root,
+            socket_path,
+            limits,
+            capabilities,
+            resources,
+            maintenance,
+            retention,
+            None,
+        )
+    }
+
+    fn bind_with_retention_and_process_memory_admission(
+        state_root: &Path,
+        socket_path: &Path,
+        limits: WorkLimits,
+        capabilities: NativeServiceCapabilities,
+        resources: &NativeServiceResources,
+        maintenance: Option<NativeReclaimConfig>,
+        retention: Option<NativeRetentionConfig>,
+        process_memory_admission: Option<Arc<NativeProcessMemoryAdmission>>,
+    ) -> Result<Self> {
         let _needs = capabilities.validate_resources(resources, maintenance, retention.as_ref())?;
         let lease = Arc::new(StateRootLease::acquire(state_root)?);
         let authority = prepare_native_boot_authority(
@@ -2327,6 +2298,7 @@ impl NativeIndexService {
             resources,
             maintenance,
             retention,
+            process_memory_admission,
         )
     }
 
@@ -2338,6 +2310,7 @@ impl NativeIndexService {
         resources: &NativeServiceResources,
         maintenance: Option<NativeReclaimConfig>,
         retention: Option<NativeRetentionConfig>,
+        process_memory_admission: Option<Arc<NativeProcessMemoryAdmission>>,
     ) -> Result<Self> {
         let NativeSocketBinding {
             path: socket_path,
@@ -2372,16 +2345,22 @@ impl NativeIndexService {
             pump,
             provider_attempt_pool,
         } = capabilities;
-        let repository_path_queries = path_queries.with_query_reader(
-            quanta_index_repomap::native::NativeRepositoryPathReader::new,
-        )?;
+        let repository_path_queries = path_queries
+            .with_query_reader(quanta_index_repomap::native::NativeRepositoryPathReader::new)?;
         let ledger = NativeResourceLedger::with_maintenance(
             resources.execution,
             pump.is_some(),
             maintenance.is_some(),
         )?;
-        let catalog_cache_memory =
-            ledger.reserve_catalog_cache(resources.catalog_writer_cache.reservation_bytes()?)?;
+        let catalog_cache_bytes = resources.catalog_writer_cache.reservation_bytes()?;
+        let catalog_cache_memory = ledger.reserve_catalog_cache(catalog_cache_bytes)?;
+        // Share the remaining retained-data capacity with in-flight work.
+        let dsl_cache_bytes = (resources
+            .execution
+            .retained_memory_headroom(pump.is_some(), maintenance.is_some())?
+            .saturating_sub(catalog_cache_bytes)
+            / 2)
+        .min(resources.execution.interactive.memory_bytes);
         let NativeBootAuthority {
             lease,
             physical,
@@ -2438,6 +2417,17 @@ impl NativeIndexService {
                 &observation,
             );
         }
+        {
+            let scheduler = ledger.scheduler(NativeResourceClass::Control);
+            let reservation =
+                ReservationGuard::try_acquire(Arc::clone(&scheduler), resources.execution.control)
+                    .ok_or_else(|| scheduler.denial())?;
+            startup.bind_memory_scope(reservation.memory_scope());
+            let completed = catalog.complete_legacy_source_body_quarantines(&mut startup);
+            startup.bind_memory_scope(None);
+            completed
+                .context("complete native Source body quarantine before opening the listener")?;
+        }
         // Retire one bounded page before creating this process's session.
         // OS lock custody decides death; remaining backlog retains the existing
         // recovery cursor contract and explicit maintenance authority.
@@ -2475,11 +2465,17 @@ impl NativeIndexService {
             resources.read_ticket_lease,
         )
         .context("open admitted native Kernel read session")?
-        .with_object_map_backend(objects.clone());
+        .with_object_map_backend(objects.clone())
+        .with_projection_validator(Arc::new(
+            crate::native_read_session_transport::NativeDslCommitValidator,
+        ));
         drop(boot_funding);
         let read_sessions = Arc::new(OnceLock::new());
         let dispatcher = Arc::new(NativeDispatcher {
             read_sessions: Arc::clone(&read_sessions),
+            dsl_corpus_cache: crate::native_read_session_transport::NativeDslCorpusCache::new(
+                dsl_cache_bytes,
+            ),
             kernel: Arc::new(Kernel::new(services, registry)),
             catalog,
             literal_queries,
@@ -2503,11 +2499,15 @@ impl NativeIndexService {
             interaction: OnceLock::new(),
             graph: OnceLock::new(),
             repomap: OnceLock::new(),
+            repomap_prior_files: OnceLock::new(),
+            installation_config_sha256: OnceLock::new(),
+            repomap_graph_installation: OnceLock::new(),
             imported_repomap_graph: OnceLock::new(),
             overlay: OnceLock::new(),
             stub_ast: OnceLock::new(),
             root_lease: Arc::clone(&lease),
             wal_checkpoint_bytes: resources.physical.maintenance_reserved_bytes,
+            process_memory_admission,
             physical,
             io: Arc::clone(&io),
         });
@@ -2588,6 +2588,12 @@ impl NativeIndexService {
         self.dispatcher.resources.observation()
     }
 
+    /// Observe accepted connections until their response buffers have been released.
+    #[must_use]
+    pub fn transport_observation(&self) -> Arc<IpcServerCounters> {
+        self.server.counters()
+    }
+
     /// The configured regular-file authority; excludes device/RSS/total-FD claims.
     pub fn physical_observation(
         &self,
@@ -2598,51 +2604,6 @@ impl NativeIndexService {
     /// Unassigned byte/file reserve; this is not actual device free space.
     pub fn maintenance_reserve_available(&self) -> Result<(u64, u64)> {
         Ok(self.dispatcher.physical.maintenance_available()?)
-    }
-
-    pub fn run(mut self, accept_idle: Duration) -> Result<()> {
-        let accept_idle = if self.pump.is_some() {
-            accept_idle.min(Duration::from_millis(100))
-        } else {
-            accept_idle
-        };
-        let server_result = self.server.run::<NativeIndexRequestEnvelope, NativeIndexRequest,
-            crate::native_reply::NativeReplyEnvelope, crate::native_reply::NativeReply, NativeDispatcher>(
-                &self.dispatcher, IpcPlane::Control, accept_idle,
-            );
-        let read_sessions_result = crate::native_read_session_transport::drain(&self.dispatcher);
-        let pump_result = self.pump.take().map_or(Ok(()), |mut pump| pump.stop_join());
-        // The worker joins after the pump releases its receiver. Physical
-        // provider attempts retain their grant and root independently; logical
-        // worker quiescence is not a claim that transport IO has completed.
-        let worker_result = self.dispatcher.worker.stop_join();
-        let provider_result = self.provider_attempt_pool.take().map_or(Ok(()), |pool| {
-            // This is shutdown grace, never a renewed execution deadline.
-            // An unfinished attempt still owns the root through its lease.
-            let report = pool
-                .drain_and_handoff(Duration::from_secs(5))
-                .map_err(|error| IndexError::Storage(error.to_string()))?;
-            if report.unfinished.is_empty() && report.panicked.is_empty() {
-                Ok(())
-            } else {
-                Err(IndexError::Storage(format!(
-                    "native provider drain unfinished: [{}], panicked: [{}]",
-                    report.unfinished.join(","),
-                    report.panicked.join(",")
-                )))
-            }
-        });
-        let retirement = self.catalog_retirement.clone();
-        drop(self);
-        let retirement_result = retirement.retire();
-        finish_native_service(
-            server_result.map_err(Into::into),
-            read_sessions_result,
-            pump_result,
-            worker_result,
-            provider_result,
-            retirement_result,
-        )
     }
 }
 
@@ -2954,17 +2915,22 @@ mod native_closeout_tests {
                 }
                 NativeReply::Plain(_)
                 | NativeReply::Error(_)
-                | NativeReply::ReadSessionProfile { .. }
                 | NativeReply::RepositoryPath(_)
+                | NativeReply::ReadSessionProfile { .. }
                 | NativeReply::ReadSessionHistoryCut { .. }
                 | NativeReply::Text(_)
+                | NativeReply::TextPreview(_)
+                | NativeReply::TextPaths(_)
+                | NativeReply::TextPathPage(_)
                 | NativeReply::TextPage(_)
+                | NativeReply::DslPageV1(_)
                 | NativeReply::HistoryPage(_)
                 | NativeReply::HybridFile(_)
                 | NativeReply::Semantic(_)
                 | NativeReply::Graph(_)
-                | NativeReply::RepoMapRanked(_)
+                | NativeReply::RepoMapPriorFile(_)
                 | NativeReply::ImportedRepoMap(_)
+                | NativeReply::RepoMapRanked(_)
                 | NativeReply::Stub(_)
                 | NativeReply::Overlay(_)
                 | NativeReply::OverlayText(_)
@@ -2973,6 +2939,7 @@ mod native_closeout_tests {
                 | NativeReply::SourceOwners(_)
                 | NativeReply::ProducerSourceOwners(_)
                 | NativeReply::ProjectionOwners(_)
+                | NativeReply::ProducerProjectionOwnersV1(_)
                 | NativeReply::ProjectionSourceDiff(_)
                 | NativeReply::StagedSources(_) => {
                     return Err("unexpected page reply".into());

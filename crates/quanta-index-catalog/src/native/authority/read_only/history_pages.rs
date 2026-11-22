@@ -4,7 +4,6 @@
 use std::{io, mem};
 
 use quanta_index_contract::{
-    SearchPlaneErrorCodeV2,
     index::{
         CollectionId, HistorySnapshotPageV1, HistorySnapshotRowV1, IngressRef,
         MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1, MAX_HISTORY_SNAPSHOT_ROWS_PER_PAGE_V1, OperationKey,
@@ -15,7 +14,7 @@ use quanta_index_contract::{
     },
 };
 use quanta_index_core::{
-    AuxiliaryGenerationKeyV1, AuxiliaryRowV1, CoreError,
+    AuxiliaryGenerationKeyV1, AuxiliaryRowV1,
     index::{IndexError, MemoryLease, MemoryLifetime, WorkBudget, WorkUsage},
 };
 use quanta_index_ipc::{
@@ -28,23 +27,26 @@ use super::{
     observe_history_in_snapshot, with_quiescent_legacy_history_v1,
 };
 
-fn work_error(budget: &WorkBudget, error: IndexError) -> CoreError {
-    if let Err(interrupted) = budget.request().checkpoint("Catalog History page export") {
-        return interrupted;
-    }
-    match error {
-        IndexError::ResourceLimited | IndexError::WorkLimitExceeded => CoreError::Typed {
-            code: SearchPlaneErrorCodeV2::ServerOverloaded,
-            message: "Legacy History checkpoint page exceeds admitted work".into(),
-        },
-        other => CoreError::Storage(format!("Legacy History checkpoint page: {other}")),
-    }
+/// One provisional page from a quiescent Legacy History read. An oversized
+/// physical row keeps the same page ordinal while the caller encodes it as a
+/// bounded immutable object closure.
+#[derive(Clone, Copy)]
+pub enum LegacyHistoryCheckpointPageV1<'a> {
+    V1 {
+        page: &'a HistorySnapshotPageV1,
+        encoded_bytes: usize,
+    },
+    LargeRow {
+        generation: &'a AuxiliaryGenerationKeyV1,
+        ordinal: u32,
+        row: &'a HistorySnapshotRowV1,
+    },
 }
 
 struct CountWriter<'a> {
     bytes: usize,
     budget: &'a mut WorkBudget,
-    refusal: Option<CoreError>,
+    refusal: Option<IndexError>,
 }
 impl io::Write for CountWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -57,7 +59,7 @@ impl io::Write for CountWriter<'_> {
                 .map_err(|_| io::Error::other("History page chunk exceeds u64"))?,
             ..WorkUsage::default()
         }) {
-            self.refusal = Some(work_error(self.budget, error));
+            self.refusal = Some(error);
             return Err(io::Error::other("History page JSON sizing work refused"));
         }
         Ok(bytes.len())
@@ -67,7 +69,7 @@ impl io::Write for CountWriter<'_> {
     }
 }
 
-fn encoded_len(value: &impl Serialize, budget: &mut WorkBudget) -> Result<usize, CoreError> {
+fn encoded_len(value: &impl Serialize, budget: &mut WorkBudget) -> Result<usize, IndexError> {
     let mut count = CountWriter {
         bytes: 0,
         budget,
@@ -77,11 +79,11 @@ fn encoded_len(value: &impl Serialize, budget: &mut WorkBudget) -> Result<usize,
     if let Some(error) = count.refusal {
         return Err(error);
     }
-    result.map_err(|error| CoreError::Storage(format!("History page size: {error}")))?;
+    result.map_err(|error| IndexError::Storage(format!("History page size: {error}")))?;
     Ok(count.bytes)
 }
 
-fn stage_page_request(bytes: Vec<u8>) -> Result<NativeIndexRequestEnvelope, CoreError> {
+fn stage_page_request(bytes: Vec<u8>) -> Result<NativeIndexRequestEnvelope, IndexError> {
     // Size the canonical envelope at the largest encoding of every variable ID.
     Ok(NativeIndexRequestEnvelope {
         request_id: u64::MAX,
@@ -104,12 +106,12 @@ fn stage_page_request(bytes: Vec<u8>) -> Result<NativeIndexRequestEnvelope, Core
             },
             bytes,
             children: NativeProjectionOutputChildren::new(Vec::new())
-                .map_err(|error| CoreError::Storage(error.into()))?,
+                .map_err(|error| IndexError::Storage(error.into()))?,
         },
     })
 }
 
-fn maximum_staged_page_bytes(budget: &mut WorkBudget) -> Result<usize, CoreError> {
+fn packed_page_bytes(budget: &mut WorkBudget) -> Result<usize, IndexError> {
     let request = stage_page_request(Vec::new())?;
     let envelope_bytes = cbor_payload_len_with_progress_v1(&request, &mut |bytes| {
         budget.charge(WorkUsage {
@@ -118,18 +120,18 @@ fn maximum_staged_page_bytes(budget: &mut WorkBudget) -> Result<usize, CoreError
         })
     })
     .map_err(|error| match error {
-        CborPayloadLengthProgressErrorV1::Progress(error) => work_error(budget, error),
-        CborPayloadLengthProgressErrorV1::Codec(error) => CoreError::Storage(error.to_string()),
+        CborPayloadLengthProgressErrorV1::Progress(error) => error,
+        CborPayloadLengthProgressErrorV1::Codec(error) => IndexError::Storage(error.to_string()),
     })?;
-    // The admitted producer sends one CBOR frame. StageProjectionOutput encodes
-    // Vec<u8> as an array of integers, each up to two bytes. A frame-sized
-    // array needs at most four length bytes beyond the empty array header.
+    // Preserve the established grouping and immutable input IDs on retry.
+    // StageProjectionOutput encodes Vec<u8> as an array of integers, each up to
+    // two bytes. The frame-sized array needs at most four additional length bytes.
     let available = usize::try_from(envelope_bytes)
         .ok()
         .and_then(|bytes| bytes.checked_add(mem::size_of::<u32>()))
         .and_then(|bytes| MAX_FRAME_BODY_BYTES.checked_sub(bytes))
         .filter(|bytes| *bytes >= 2)
-        .ok_or_else(|| work_error(budget, IndexError::ResourceLimited))?;
+        .ok_or(IndexError::ResourceLimited)?;
     Ok((available / 2).min(MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1))
 }
 
@@ -138,20 +140,20 @@ struct PageBuffer {
     row_grants: Vec<Option<MemoryLease>>,
     _container_grant: Option<MemoryLease>,
     encoded_len: usize,
-    maximum_bytes: usize,
+    packing_bytes: usize,
 }
 
 impl PageBuffer {
     fn new(
         generation: &AuxiliaryGenerationKeyV1,
         ordinal: u32,
-        maximum_bytes: usize,
+        packing_bytes: usize,
         budget: &mut WorkBudget,
-    ) -> Result<Self, CoreError> {
+    ) -> Result<Self, IndexError> {
         if usize::try_from(ordinal).ok().is_none_or(|ordinal| {
             ordinal > quanta_index_contract::native_protocol::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN
         }) {
-            return Err(CoreError::Storage(
+            return Err(IndexError::Storage(
                 "History checkpoint page count exceeds Native child bound".into(),
             ));
         }
@@ -164,22 +166,19 @@ impl PageBuffer {
             .and_then(|bytes| bytes.checked_add(mem::size_of::<HistorySnapshotPageV1>() + 2048))
             .and_then(|bytes| bytes.checked_add(generation.repo_id.as_str().len()))
             .and_then(|bytes| bytes.checked_add(generation.revision_id.as_str().len()))
-            .ok_or_else(|| CoreError::Storage("History page backing overflow".into()))?;
-        let _container_grant = budget
-            .reserve_memory(
-                u64::try_from(bytes)
-                    .map_err(|_| CoreError::Storage("History page backing exceeds u64".into()))?,
-                MemoryLifetime::Temporary,
-            )
-            .map_err(|error| work_error(budget, error))?;
+            .ok_or_else(|| IndexError::Storage("History page backing overflow".into()))?;
+        let _container_grant = budget.reserve_memory(
+            u64::try_from(bytes)
+                .map_err(|_| IndexError::Storage("History page backing exceeds u64".into()))?,
+            MemoryLifetime::Temporary,
+        )?;
         let mut rows = Vec::new();
-        rows.try_reserve_exact(slots).map_err(|error| {
-            CoreError::Storage(format!("History page rows allocation: {error}"))
-        })?;
+        rows.try_reserve_exact(slots)
+            .map_err(|_| IndexError::ResourceLimited)?;
         let mut row_grants = Vec::new();
-        row_grants.try_reserve_exact(slots).map_err(|error| {
-            CoreError::Storage(format!("History page grants allocation: {error}"))
-        })?;
+        row_grants
+            .try_reserve_exact(slots)
+            .map_err(|_| IndexError::ResourceLimited)?;
         let page = HistorySnapshotPageV1 {
             wire_version: 1,
             generation: generation.clone(),
@@ -192,17 +191,24 @@ impl PageBuffer {
             row_grants,
             _container_grant,
             encoded_len,
-            maximum_bytes,
+            packing_bytes,
         })
     }
 
     fn can_accept(&self, row_bytes: usize) -> bool {
+        // Keep the established grouping for ordinary rows. A representable
+        // larger row retains a V1 page with the same canonical bytes.
+        let byte_limit = if self.page.rows.is_empty() {
+            MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1
+        } else {
+            self.packing_bytes
+        };
         self.page.rows.len() < MAX_HISTORY_SNAPSHOT_ROWS_PER_PAGE_V1
             && self
                 .encoded_len
                 .checked_add(row_bytes)
                 .and_then(|bytes| bytes.checked_add(usize::from(!self.page.rows.is_empty())))
-                .is_some_and(|bytes| bytes <= self.maximum_bytes)
+                .is_some_and(|bytes| bytes <= byte_limit)
     }
 
     fn push(
@@ -210,9 +216,9 @@ impl PageBuffer {
         row: HistorySnapshotRowV1,
         row_bytes: usize,
         grant: Option<MemoryLease>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<(), IndexError> {
         if !self.can_accept(row_bytes) {
-            return Err(CoreError::Storage(
+            return Err(IndexError::Storage(
                 "History snapshot row exceeds page bound".into(),
             ));
         }
@@ -225,31 +231,40 @@ impl PageBuffer {
 
 struct Pages<'a> {
     generation: &'a AuxiliaryGenerationKeyV1,
-    maximum_bytes: usize,
+    packing_bytes: usize,
     next_ordinal: u32,
     row_count: u64,
     active: Option<PageBuffer>,
-    sink: &'a mut dyn FnMut(&HistorySnapshotPageV1, &mut WorkBudget) -> Result<(), CoreError>,
+    sink: &'a mut dyn FnMut(
+        LegacyHistoryCheckpointPageV1<'_>,
+        &mut WorkBudget,
+    ) -> Result<(), IndexError>,
 }
 
 impl Pages<'_> {
-    fn flush(&mut self, budget: &mut WorkBudget) -> Result<(), CoreError> {
+    fn flush(&mut self, budget: &mut WorkBudget) -> Result<(), IndexError> {
         if let Some(page) = self.active.take() {
             page.page
                 .validate_shape()
-                .map_err(|error| CoreError::Storage(error.into()))?;
-            (self.sink)(&page.page, budget)?;
+                .map_err(|error| IndexError::Storage(error.into()))?;
+            (self.sink)(
+                LegacyHistoryCheckpointPageV1::V1 {
+                    page: &page.page,
+                    encoded_bytes: page.encoded_len,
+                },
+                budget,
+            )?;
             self.next_ordinal = self
                 .next_ordinal
                 .checked_add(1)
-                .ok_or_else(|| CoreError::Storage("History page ordinal overflow".into()))?;
+                .ok_or_else(|| IndexError::Storage("History page ordinal overflow".into()))?;
         }
         Ok(())
     }
 
-    fn accept(&mut self, row: AuxiliaryRowV1, budget: &mut WorkBudget) -> Result<(), CoreError> {
+    fn accept(&mut self, row: AuxiliaryRowV1, budget: &mut WorkBudget) -> Result<(), IndexError> {
         if row.key.generation != *self.generation {
-            return Err(CoreError::Storage("foreign History checkpoint row".into()));
+            return Err(IndexError::Storage("foreign History checkpoint row".into()));
         }
         let family = row.key.family.as_code_str();
         let backing = row
@@ -258,15 +273,13 @@ impl Pages<'_> {
             .capacity()
             .checked_add(row.value.capacity())
             .and_then(|bytes| bytes.checked_add(family.len() + 128))
-            .ok_or_else(|| CoreError::Storage("History checkpoint row backing overflow".into()))?;
-        let grant = budget
-            .reserve_memory(
-                u64::try_from(backing).map_err(|_| {
-                    CoreError::Storage("History checkpoint row backing exceeds u64".into())
-                })?,
-                MemoryLifetime::Temporary,
-            )
-            .map_err(|error| work_error(budget, error))?;
+            .ok_or_else(|| IndexError::Storage("History checkpoint row backing overflow".into()))?;
+        let grant = budget.reserve_memory(
+            u64::try_from(backing).map_err(|_| {
+                IndexError::Storage("History checkpoint row backing exceeds u64".into())
+            })?,
+            MemoryLifetime::Temporary,
+        )?;
         let payload = HistorySnapshotRowV1 {
             family: family.to_owned(),
             row_key: row.key.row_key,
@@ -277,7 +290,20 @@ impl Pages<'_> {
             self.active = Some(PageBuffer::new(
                 self.generation,
                 self.next_ordinal,
-                self.maximum_bytes,
+                self.packing_bytes,
+                budget,
+            )?);
+        }
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|page| !page.page.rows.is_empty() && !page.can_accept(row_bytes))
+        {
+            self.flush(budget)?;
+            self.active = Some(PageBuffer::new(
+                self.generation,
+                self.next_ordinal,
+                self.packing_bytes,
                 budget,
             )?);
         }
@@ -286,35 +312,52 @@ impl Pages<'_> {
             .as_ref()
             .is_some_and(|page| page.can_accept(row_bytes))
         {
-            self.flush(budget)?;
-            self.active = Some(PageBuffer::new(
-                self.generation,
-                self.next_ordinal,
-                self.maximum_bytes,
+            drop(self.active.take());
+            let delivered = (self.sink)(
+                LegacyHistoryCheckpointPageV1::LargeRow {
+                    generation: self.generation,
+                    ordinal: self.next_ordinal,
+                    row: &payload,
+                },
                 budget,
-            )?);
+            );
+            drop(payload);
+            drop(grant);
+            delivered?;
+            self.next_ordinal = self
+                .next_ordinal
+                .checked_add(1)
+                .ok_or_else(|| IndexError::Storage("History page ordinal overflow".into()))?;
+            self.row_count = self
+                .row_count
+                .checked_add(1)
+                .ok_or_else(|| IndexError::Storage("History page row count overflow".into()))?;
+            return Ok(());
         }
         self.active
             .as_mut()
-            .ok_or_else(|| CoreError::Storage("History page absent".into()))?
+            .ok_or_else(|| IndexError::Storage("History page absent".into()))?
             .push(payload, row_bytes, grant)?;
         self.row_count = self
             .row_count
             .checked_add(1)
-            .ok_or_else(|| CoreError::Storage("History page row count overflow".into()))?;
+            .ok_or_else(|| IndexError::Storage("History page row count overflow".into()))?;
         Ok(())
     }
 }
 
-/// Lend childless pages while the saved Legacy root and one quiescent SQL read
-/// transaction remain live. Every page is provisional until the returned
-/// observation and producer scope are authenticated by the candidate owner.
+/// Lend V1 pages and oversized physical rows while the saved Legacy root and
+/// one quiescent SQL read transaction remain live. Each item is provisional
+/// until the observation and producer scope are authenticated by the candidate.
 pub fn visit_legacy_history_checkpoint_pages_v1(
     state_root: &Path,
     io: &dyn CatalogReadOnlyIoAdmission,
     generation: &AuxiliaryGenerationKeyV1,
     budget: &mut WorkBudget,
-    sink: &mut dyn FnMut(&HistorySnapshotPageV1, &mut WorkBudget) -> Result<(), CoreError>,
+    sink: &mut dyn FnMut(
+        LegacyHistoryCheckpointPageV1<'_>,
+        &mut WorkBudget,
+    ) -> Result<(), IndexError>,
 ) -> Result<LegacyHistorySnapshotObservationV1, IndexError> {
     with_quiescent_legacy_history_v1(
         state_root,
@@ -324,7 +367,7 @@ pub fn visit_legacy_history_checkpoint_pages_v1(
         |connection, path, budget| {
             let mut pages = Pages {
                 generation,
-                maximum_bytes: maximum_staged_page_bytes(budget).map_err(super::core)?,
+                packing_bytes: packed_page_bytes(budget)?,
                 next_ordinal: 1,
                 row_count: 0,
                 active: None,
@@ -335,9 +378,9 @@ pub fn visit_legacy_history_checkpoint_pages_v1(
                 path,
                 generation,
                 budget,
-                &mut |row, budget| pages.accept(row, budget),
+                &mut |row, budget| pages.accept(row, budget).map_err(Into::into),
             )?;
-            pages.flush(budget).map_err(super::core)?;
+            pages.flush(budget)?;
             if pages.row_count != observation.row_count {
                 return Err(IndexError::DigestConflict);
             }
@@ -349,20 +392,28 @@ pub fn visit_legacy_history_checkpoint_pages_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quanta_index_core::index::WorkLimits;
+    use quanta_index_contract::{
+        DiffHunkSide, ManifestGeneration, RepoId, RevisionId, lex::DiffHunkRecord,
+    };
+    use quanta_index_core::{
+        AuxiliaryDomainV1, AuxiliaryRowFamilyV1, AuxiliaryRowKeyV1, index::WorkLimits,
+    };
 
-    #[test]
-    fn staged_history_page_bound_fits_one_canonical_cbor_frame() {
-        let mut budget = WorkBudget::new(
+    fn work() -> WorkBudget {
+        WorkBudget::new(
             WorkLimits {
                 reads: 1_000_000,
                 writes: 1_000_000,
                 bytes: 1_000_000_000,
                 mutations: 1_000_000,
             },
-            std::time::Instant::now() + std::time::Duration::from_secs(30),
-        );
-        let bound = maximum_staged_page_bytes(&mut budget)
+            std::time::Instant::now() + std::time::Duration::from_secs(90),
+        )
+    }
+
+    #[test]
+    fn ordinary_history_page_packing_fits_one_canonical_cbor_frame() {
+        let bound = packed_page_bytes(&mut work())
             .expect("determine the admitted History page payload bound");
         assert!(bound > 0);
         let within_request =
@@ -377,5 +428,186 @@ mod tests {
             .expect("IPC frame bound fits u64");
         assert!(within <= frame, "the admitted page must fit one CBOR frame");
         assert!(outside > frame, "the page bound must be maximal");
+    }
+
+    #[test]
+    fn legacy_history_isolates_a_large_row_and_preserves_ordinary_packing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let generation = AuxiliaryGenerationKeyV1 {
+            repo_id: RepoId::new("legacy-history")?,
+            revision_id: RevisionId::new("main")?,
+            generation: ManifestGeneration::new(1),
+        };
+        let mut budget = work();
+        let mut observed = Vec::new();
+        {
+            let mut sink = |page: LegacyHistoryCheckpointPageV1<'_>, _budget: &mut WorkBudget| {
+                let LegacyHistoryCheckpointPageV1::V1 { page, .. } = page else {
+                    return Err(IndexError::Storage(
+                        "representable History row required a large-row page".into(),
+                    ));
+                };
+                let keys = page
+                    .rows
+                    .iter()
+                    .map(|row| row.row_key[0])
+                    .collect::<Vec<_>>();
+                let payload = serde_json::to_vec(page)
+                    .map_err(|error| IndexError::Storage(error.to_string()))?;
+                let payload_len = payload.len();
+                let staged = quanta_index_ipc::cbor_payload_len(&stage_page_request(payload)?)
+                    .map_err(|error| IndexError::Storage(error.to_string()))?;
+                observed.push((page.ordinal, keys, payload_len, staged));
+                Ok(())
+            };
+            let mut pages = Pages {
+                generation: &generation,
+                packing_bytes: packed_page_bytes(&mut budget)?,
+                next_ordinal: 1,
+                row_count: 0,
+                active: None,
+                sink: &mut sink,
+            };
+            for key in 1_u8..=5 {
+                let width = if key == 3 { 3 * 1024 * 1024 } else { 1 };
+                let record = DiffHunkRecord {
+                    wire_version: 1,
+                    hunk_header: "@@".into(),
+                    side: DiffHunkSide::After,
+                    added_text: "x".repeat(width).into_boxed_str(),
+                    removed_text: "".into(),
+                    touched_text: "".into(),
+                    byte_start: 0,
+                    byte_end: u32::try_from(width)?,
+                };
+                let mut row_key = vec![key; 20];
+                row_key.extend_from_slice(b"\x1fsrc/file.rs");
+                pages.accept(
+                    AuxiliaryRowV1 {
+                        key: AuxiliaryRowKeyV1 {
+                            domain: AuxiliaryDomainV1::History,
+                            generation: generation.clone(),
+                            family: AuxiliaryRowFamilyV1::DiffHunk,
+                            row_key,
+                        },
+                        value: quanta_index_ipc::encode_cbor_payload(&record)?,
+                    },
+                    &mut budget,
+                )?;
+            }
+            pages.flush(&mut budget)?;
+            assert_eq!(pages.row_count, 5);
+        }
+
+        let [
+            (first, before, _, _),
+            (second, large, page_bytes, stage_bytes),
+            (third, after, _, _),
+        ] = observed.as_slice()
+        else {
+            return Err("expected ordinary, isolated, and ordinary History pages".into());
+        };
+        assert_eq!((*first, before.as_slice()), (1, &[1, 2][..]));
+        assert_eq!((*second, large.as_slice()), (2, &[3][..]));
+        assert_eq!((*third, after.as_slice()), (3, &[4, 5][..]));
+        assert!(
+            (MAX_FRAME_BODY_BYTES / 2..=MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1).contains(page_bytes)
+        );
+        assert!(*stage_bytes > u64::try_from(MAX_FRAME_BODY_BYTES)?);
+        assert!(
+            *stage_bytes <= u64::try_from(quanta_index_ipc::MAX_MULTIFRAME_REQUEST_BODY_BYTES)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_history_exports_an_unrepresentable_v1_row_at_its_original_ordinal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let generation = AuxiliaryGenerationKeyV1 {
+            repo_id: RepoId::new("legacy-history")?,
+            revision_id: RevisionId::new("main")?,
+            generation: ManifestGeneration::new(1),
+        };
+        let mut budget = work();
+        let mut observed = Vec::new();
+        {
+            let mut sink = |page: LegacyHistoryCheckpointPageV1<'_>, _budget: &mut WorkBudget| {
+                match page {
+                    LegacyHistoryCheckpointPageV1::V1 {
+                        page,
+                        encoded_bytes,
+                    } => {
+                        page.validate_shape()
+                            .map_err(|cause| IndexError::Storage(cause.into()))?;
+                        if page.rows.len() != 1
+                            || encoded_bytes > MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1
+                        {
+                            return Err(IndexError::DigestConflict);
+                        }
+                        observed.push((page.ordinal, page.rows[0].row_key[0], false));
+                    }
+                    LegacyHistoryCheckpointPageV1::LargeRow {
+                        generation: selected,
+                        ordinal,
+                        row,
+                    } => {
+                        if selected != &generation
+                            || row.family != AuxiliaryRowFamilyV1::DiffHunk.as_code_str()
+                            || row.value.len() <= 5 * 1024 * 1024
+                        {
+                            return Err(IndexError::DigestConflict);
+                        }
+                        observed.push((ordinal, row.row_key[0], true));
+                    }
+                }
+                Ok(())
+            };
+            let mut pages = Pages {
+                generation: &generation,
+                packing_bytes: packed_page_bytes(&mut budget)?,
+                next_ordinal: 1,
+                row_count: 0,
+                active: None,
+                sink: &mut sink,
+            };
+            for (key, width) in [
+                (1_u8, 1),
+                (2, 5 * 1024 * 1024),
+                (3, 5 * 1024 * 1024),
+                (4, 1),
+            ] {
+                let record = DiffHunkRecord {
+                    wire_version: 1,
+                    hunk_header: "@@".into(),
+                    side: DiffHunkSide::After,
+                    added_text: "x".repeat(width).into_boxed_str(),
+                    removed_text: "".into(),
+                    touched_text: "".into(),
+                    byte_start: 0,
+                    byte_end: u32::try_from(width)?,
+                };
+                let mut row_key = vec![key; 20];
+                row_key.extend_from_slice(b"\x1fsrc/file.rs");
+                pages.accept(
+                    AuxiliaryRowV1 {
+                        key: AuxiliaryRowKeyV1 {
+                            domain: AuxiliaryDomainV1::History,
+                            generation: generation.clone(),
+                            family: AuxiliaryRowFamilyV1::DiffHunk,
+                            row_key,
+                        },
+                        value: quanta_index_ipc::encode_cbor_payload(&record)?,
+                    },
+                    &mut budget,
+                )?;
+            }
+            pages.flush(&mut budget)?;
+            assert_eq!(pages.row_count, 4);
+        }
+        assert_eq!(
+            observed,
+            vec![(1, 1, false), (2, 2, true), (3, 3, true), (4, 4, false),]
+        );
+        Ok(())
     }
 }

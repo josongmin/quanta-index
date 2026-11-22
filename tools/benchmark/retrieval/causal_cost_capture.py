@@ -328,10 +328,11 @@ def _scale_command(
         command.extend(["--history-max-bytes", str(args.history_max_bytes)])
     if args.history_max_total_bytes is not None:
         command.extend(["--history-max-total-bytes", str(args.history_max_total_bytes)])
+    command.extend(["--backend", args.backend])
     if args.backend == "index-native":
         if native_daemon is None:
             raise ValueError("native capture command has no bound daemon")
-        command.extend(["--backend", "index-native", "--native-daemon-bin", str(native_daemon)])
+        command.extend(["--native-daemon-bin", str(native_daemon)])
     elif native_daemon is not None:
         raise ValueError("legacy capture cannot execute a native daemon")
     return command
@@ -659,6 +660,9 @@ def capture(args: argparse.Namespace) -> dict:
     out_root = Path(os.path.realpath(args.out_root))
     if out_root == cwd or cwd in out_root.parents:
         raise ValueError("causal output root must be outside the checkout")
+    managed = getattr(args, "managed_build", False)
+    if managed and args.backend == "legacy" and cwd == Path(__file__).resolve().parents[3]:
+        raise ValueError("Legacy managed capture requires a clean archived source checkout")
     if native_workload is not None:
         _preflight_native_socket_path(out_root)
     if _git(cwd, "status", "--porcelain"):
@@ -666,7 +670,6 @@ def capture(args: argparse.Namespace) -> dict:
     head = _git(cwd, "rev-parse", "HEAD")
     if head != args.source_revision:
         raise ValueError("source revision does not match the clean checkout")
-    managed = getattr(args, "managed_build", False)
     build = None
     build_input = None
     if managed:

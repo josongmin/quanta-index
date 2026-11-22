@@ -49,6 +49,7 @@ impl FileIdentity {
     }
 }
 
+#[derive(Clone)]
 struct Snapshot {
     identity: FileIdentity,
     sha256: String,
@@ -138,6 +139,7 @@ fn snapshot(path: &Path) -> Result<Snapshot> {
 }
 
 /// Observed path/content consistency across the first and reopened daemon.
+#[derive(Clone)]
 pub(super) struct NativeExecutable {
     path: PathBuf,
     initial: Snapshot,

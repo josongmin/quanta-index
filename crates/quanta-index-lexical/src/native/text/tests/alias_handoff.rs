@@ -9,6 +9,8 @@ struct ObservedObjects {
     inner: TestObjects,
     physical_gets: AtomicUsize,
     retained_reads: AtomicUsize,
+    refuse_get: AtomicBool,
+    corrupt_get: AtomicBool,
     refuse_retained: AtomicBool,
     corrupt_retained: AtomicBool,
 }
@@ -76,7 +78,21 @@ impl ImmutableObjectPort for ObservedObjects {
         budget: &mut WorkBudget,
     ) -> Result<StoredObject, IndexError> {
         let _old = self.physical_gets.fetch_add(1, Ordering::Relaxed);
-        self.inner.get(reference, budget)
+        if self.refuse_get.load(Ordering::Relaxed) {
+            return Err(IndexError::ResourceLimited);
+        }
+        let stored = self.inner.get(reference, budget)?;
+        if self.corrupt_get.load(Ordering::Relaxed) {
+            let mut payload = stored.payload.clone();
+            let first = payload.first_mut().ok_or(IndexError::ResourceLimited)?;
+            *first ^= 1;
+            return Ok(StoredObject::new(
+                stored.registration.clone(),
+                payload,
+                None,
+            ));
+        }
+        Ok(stored)
     }
 
     fn read_retained(
@@ -210,6 +226,7 @@ fn staged_two_aliases(
                         9
                     },
                     alias: Some(alias),
+                    shared: false,
                 },
             },
             budget,
@@ -217,6 +234,7 @@ fn staged_two_aliases(
         batch.ready.push(ReadyTextNext::default(), budget)?;
         batch.bases.push(EntryMap::default(), budget)?;
         batch.counts.push(1, budget)?;
+        batch.directory_receipts.push(None, budget)?;
         batch.inventory_edits.push_partition(
             InventoryPartition::Ready(
                 u32::try_from(slot).map_err(|_error| IndexError::ResourceLimited)?,
@@ -336,9 +354,54 @@ fn valid_two_owner_aliases_read_each_physical_block_once() -> Result<(), IndexEr
     check_eq!(root.docs, 2);
     check_eq!(root.indexed_tokens, 18);
     check_eq!(objects.physical_gets.load(Ordering::Relaxed), 2);
-    // Each owner authenticates one physical block and crosses one independent
-    // first-count admission while the same checked keys feed seal and diff.
-    check_eq!(objects.retained_reads.load(Ordering::Relaxed), 2);
+    // Each owner authenticates one physical block. The same checked DATA
+    // supplies its count, key seal and diff without a second port read.
+    check_eq!(objects.retained_reads.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[test]
+fn canonical_alias_uses_checked_get_even_when_retained_port_would_refuse() -> Result<(), IndexError>
+{
+    for corrupt_retained in [false, true] {
+        let fixture = visitor_fixture()?;
+        let mut objects = ObservedObjects::default();
+        let first = objects.add_canonical_block(nine_key_block(0))?;
+        let second = objects.add_canonical_block(nine_key_block(1))?;
+        objects
+            .refuse_retained
+            .store(!corrupt_retained, Ordering::Relaxed);
+        objects
+            .corrupt_retained
+            .store(corrupt_retained, Ordering::Relaxed);
+        let scratch = TestScratch::default();
+        let mut work = packet_budget()?;
+        let seal = nine_key_seal(&mut work)?;
+        let spool = TextSpool::new(&scratch, &mut work)?;
+        let attempt = test_attempt(fixture.ticket.view.identity.workspace);
+        let mut batch = staged_two_aliases(attempt, first, second, seal, None, &mut work)?;
+        let mut root = Root::default();
+        let mut contributions = ContributionWrites::cold()?;
+        let mut inventories = InventoryReuse::new(fixture.recipe, 64)?;
+        let mut context = AttemptContext {
+            attempt,
+            objects: &objects,
+            maps: &fixture.maps,
+            custody: &TestCustody,
+            scratch: &scratch,
+            budget: &mut work,
+        };
+        batch.flush(
+            &mut root,
+            &mut context,
+            &spool,
+            &mut contributions,
+            &mut inventories,
+        )?;
+        check_eq!((root.docs, root.indexed_tokens), (2, 18));
+        check_eq!(objects.physical_gets.load(Ordering::Relaxed), 2);
+        check_eq!(objects.retained_reads.load(Ordering::Relaxed), 0);
+    }
     Ok(())
 }
 
@@ -392,13 +455,13 @@ fn retained_fixture_charges_fixed_wire_and_decode_bytes_before_returning_data()
 }
 
 #[test]
-fn retained_read_refusal_or_changed_data_cannot_complete_a_cold_owner() -> Result<(), IndexError> {
+fn initial_get_refusal_or_changed_data_cannot_complete_a_cold_owner() -> Result<(), IndexError> {
     for corrupt in [false, true] {
         let fixture = visitor_fixture()?;
         let mut objects = ObservedObjects::default();
         let block = objects.add_canonical_block(nine_key_block(0))?;
-        objects.refuse_retained.store(!corrupt, Ordering::Relaxed);
-        objects.corrupt_retained.store(corrupt, Ordering::Relaxed);
+        objects.refuse_get.store(!corrupt, Ordering::Relaxed);
+        objects.corrupt_get.store(corrupt, Ordering::Relaxed);
         let scratch = TestScratch::default();
         let custody = TestCustody;
         let mut work = packet_budget()?;
@@ -430,7 +493,7 @@ fn retained_read_refusal_or_changed_data_cannot_complete_a_cold_owner() -> Resul
             check!(matches!(result, Err(IndexError::ResourceLimited)));
         }
         check_eq!(objects.physical_gets.load(Ordering::Relaxed), 1);
-        check_eq!(objects.retained_reads.load(Ordering::Relaxed), 1);
+        check_eq!(objects.retained_reads.load(Ordering::Relaxed), 0);
         check_eq!(root, Root::default());
         check_eq!(contributions.pending.len(), 0);
         check!(spool.top_cursor().next_edit(context.budget).is_err());
@@ -645,7 +708,7 @@ fn dropping_prepared_diff_poisoned_batch_and_spool_before_any_owner_transition()
         scratch: &scratch,
         budget: &mut work,
     };
-    let mut roots = entry_patch::apply(
+    let roots = entry_patch::apply(
         super::super::entry_map::EntryMapUse::ColdInventory,
         batch.bases.as_slice(),
         batch.counts.as_slice(),
@@ -656,7 +719,7 @@ fn dropping_prepared_diff_poisoned_batch_and_spool_before_any_owner_transition()
     )?;
     let prepared = super::super::prepared_inventory::PreparedInventoryChanges::prepare(
         &mut batch,
-        Some(roots.as_mut_slice()),
+        Some(roots.as_slice()),
         &mut context,
         &spool,
         &mut inventories,
@@ -714,7 +777,7 @@ fn second_completion_failure_poisoned_scratch_after_first_owner_local_effect()
         scratch: &scratch,
         budget: &mut work,
     };
-    let mut roots = entry_patch::apply(
+    let roots = entry_patch::apply(
         super::super::entry_map::EntryMapUse::ColdInventory,
         batch.bases.as_slice(),
         batch.counts.as_slice(),
@@ -725,7 +788,7 @@ fn second_completion_failure_poisoned_scratch_after_first_owner_local_effect()
     )?;
     let prepared = super::super::prepared_inventory::PreparedInventoryChanges::prepare(
         &mut batch,
-        Some(roots.as_mut_slice()),
+        Some(roots.as_slice()),
         &mut context,
         &spool,
         &mut inventories,

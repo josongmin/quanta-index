@@ -1,24 +1,40 @@
 //! Opt-in native incremental index control wire. No generic object CRUD.
 
 use crate::index::{
-    CatalogView, CoverageBinding, Digest, IndexInstanceId, IndexProfile, IngressRef, MapRoot,
-    ObjectRef, OperationKey, OperationReply, OperationStatus, OwnerKey, OwnerMutation,
+    CatalogView, CoverageBinding, Digest, IndexInstanceId, IndexKind, IndexProfile, IngressRef,
+    MapRoot, ObjectRef, OperationKey, OperationReply, OperationStatus, OwnerKey, OwnerMutation,
     OwnerMutationSet, ProducerId, ProjectionBinding, ProjectionCertificate, ProjectionId,
-    ProjectionOwnerContribution, SourceCut, SourceInput, SourceRecord, SourceTextAdmission,
-    StableOwnerId, SubmitOutcome, UpdateRequest, ViewRef, ViewSelection, WorkClaim, WorkIntent,
-    WorkStatus, WorkspaceKey,
+    ProjectionOwnerContribution, SchemaId, SourceCut, SourceInput, SourceRecord,
+    SourceTextAdmission, StableOwnerId, StorageFormatId, StreamId, SubmitOutcome, UpdateRequest,
+    ViewRef, ViewSelection, WorkClaim, WorkIntent, WorkStatus, WorkspaceKey,
 };
 use crate::{FiniteScore, RepoId, RevisionId, SemanticQueryRequest, TextQueryRequest};
 
+mod dsl;
+pub use dsl::{
+    NATIVE_DSL_HEADER_OWNER_V1, NATIVE_DSL_POLICY_V1, NATIVE_DSL_PRODUCER_V1, NATIVE_DSL_SCHEMA_V1,
+    NativeDslCorpusV1, NativeDslCursorV1, NativeDslFileV1, NativeDslKindV1, NativeDslMatchRangeV1,
+    NativeDslPageV1, NativeDslQueryV1, NativeDslReplayBasisV1, NativeDslReplayV1, NativeDslRowsV1,
+    NativeDslRuntimeCatalogV1, NativeDslRuntimeHitV1, NativeDslScopeV1, NativeDslStructuralHitV1,
+    native_dsl_context_v1, native_dsl_file_owner_v1, native_dsl_sequence_v1,
+};
 mod read_session;
+mod text_path;
+mod text_preview;
 pub use read_session::{
     MAX_NATIVE_READ_PROFILE_INSTANCES, NativeHistoryCursor, NativeHistoryPage,
-    NativeHistoryPageRef, NativeHybridFileHit, NativeHybridFileResult, NativeReadSessionId,
-    NativeReadSessionHistoryCutV1, NativeReadSessionHistoryGenerationV1, NativeReadSessionProfile, NativeReadSessionReply, NativeReadSessionRequest,
-    NativeReadSessionSettlement, NativeReadSessionState, NativeReadSessionStatus,
-    NativeReadSettlementState, NativeSemanticFileHit, NativeTextCursor, NativeTextPage,
-    native_history_query_digest, native_text_query_digest, rank_native_hybrid_files,
-    validate_native_history_query, validate_native_hybrid_file_query,
+    NativeHistoryPageRef, NativeHybridFileHit, NativeHybridFileResult,
+    NativeReadSessionHistoryCutV1, NativeReadSessionHistoryGenerationV1, NativeReadSessionProfile,
+    NativeReadSessionReply, NativeReadSessionRequest, NativeReadSessionSettlement,
+    NativeReadSessionState, NativeReadSessionStatus, NativeReadSettlementState,
+    NativeSemanticFileHit, NativeTextCursor, NativeTextPage, NativeTextPathCursorV1,
+    compare_native_text_path_rank_v1, native_history_query_digest, native_text_query_digest,
+    rank_native_hybrid_files, validate_native_history_query, validate_native_hybrid_file_query,
+};
+pub use text_path::{NativeTextPathPageV1, NativeTextPathRankingV1, NativeTextPathResultV1};
+pub use text_preview::{
+    MAX_NATIVE_TEXT_PREVIEW_BYTES, MAX_NATIVE_TEXT_PREVIEW_HIGHLIGHTS, NativeTextExcerpt,
+    NativeTextPreview, NativeTextPreviewEvidence, NativeTextPreviewResult,
 };
 mod graph;
 mod legacy_repomap;
@@ -27,8 +43,8 @@ pub use projection_children::NativeProjectionOutputChildren;
 mod immutable_children;
 pub use immutable_children::NativeImmutableObjectChildrenV1;
 mod immutable_payload;
-pub use immutable_payload::NativeImmutableObjectPayloadV1;
 pub use crate::index::MAX_NATIVE_IMMUTABLE_OBJECT_WIRE_BYTES_V1;
+pub use immutable_payload::NativeImmutableObjectPayloadV1;
 mod source_diff;
 pub use source_diff::{NativeProjectionSourceDiff, NativeSourceDiffRows};
 mod headless;
@@ -37,17 +53,15 @@ mod stub_certificate;
 mod stub_schema;
 pub use graph::{
     GraphEdge, GraphNode, GraphOwnerOutput, GraphProjectionRow, MAX_NATIVE_GRAPH_EDGES,
-    MAX_NATIVE_GRAPH_ITEMS, MAX_REPOMAP_RANK_FOCUS_SUBJECTS, MAX_REPOMAP_RANK_HITS,
-    MAX_REPOMAP_RANK_PATH_BYTES, MAX_REPOMAP_RANK_PROJECTION_LEAF_BYTES,
+    MAX_NATIVE_GRAPH_ITEMS, MAX_NATIVE_GRAPH_OUTPUT_BYTES, MAX_REPOMAP_RANK_FOCUS_SUBJECTS,
+    MAX_REPOMAP_RANK_HITS, MAX_REPOMAP_RANK_PATH_BYTES, MAX_REPOMAP_RANK_PROJECTION_LEAF_BYTES,
     MAX_REPOMAP_RANK_QUERY_BYTES, MAX_REPOMAP_RANK_SEARCH_TEXT_BYTES,
     MAX_REPOMAP_RANK_SUBJECT_BYTES, NATIVE_REPOMAP_RANK_POLICY_DESCRIPTOR, NativeGraphDirection,
-    NativeGraphQuery, NativeGraphResult, NativeGraphRow, NativeRepoMapHit, NativeRepoMapQuery,
-    NativeRepoMapResult, NativeRepoMapResultRef, native_repomap_rank_policy,
-};
-pub use legacy_repomap::{
-    NATIVE_LEGACY_REPOMAP_FORMAT_V1, NATIVE_LEGACY_REPOMAP_KIND_V1, NATIVE_LEGACY_REPOMAP_SCHEMA_V1,
-    NativeImportedRepoMapCursorV1, NativeImportedRepoMapEdgeV1, NativeImportedRepoMapNodeV1, NativeImportedRepoMapQueryV1,
-    NativeImportedRepoMapResultV1,
+    NativeGraphQuery, NativeGraphResult, NativeGraphRow, NativeRepoMapFileFactsV1,
+    NativeRepoMapFileOwnerProjectionV1, NativeRepoMapHit, NativeRepoMapOwnerError,
+    NativeRepoMapOwnerProjection, NativeRepoMapPriorFileResultV1, NativeRepoMapPriorFileV1,
+    NativeRepoMapPriorNodeDegreeV1, NativeRepoMapQuery, NativeRepoMapResult,
+    NativeRepoMapResultRef, native_repomap_rank_policy,
 };
 pub use headless::{
     NativeOverlayCorpusStamp, NativeOverlayDocument, NativeOverlayEffortContext, NativeOverlayMask,
@@ -56,6 +70,11 @@ pub use headless::{
     NativeOverlaySemanticHitOrigin, NativeOverlaySemanticResult, NativeOverlaySession,
     NativeOverlaySnapshot, NativeOverlayTextHit, NativeOverlayTextQuery, NativeOverlayTextResult,
     NativeOverlayTextSource,
+};
+pub use legacy_repomap::{
+    NATIVE_LEGACY_REPOMAP_FORMAT_V1, NATIVE_LEGACY_REPOMAP_KIND_V1,
+    NATIVE_LEGACY_REPOMAP_SCHEMA_V1, NativeImportedRepoMapCursorV1, NativeImportedRepoMapEdgeV1,
+    NativeImportedRepoMapNodeV1, NativeImportedRepoMapQueryV1, NativeImportedRepoMapResultV1,
 };
 pub use stub::{
     NativeStubBinding, NativeStubByteEdit, NativeStubCoordinateUnit, NativeStubEdit,
@@ -334,6 +353,119 @@ pub struct NativeProjectionOwnerLookup {
     pub rows: NativeProjectionOwnerRows,
 }
 
+/// One authenticated projection contribution in an exact producer page.
+/// Unlike an owner lookup, page rows are present and carry their immutable
+/// contribution's output-reuse inputs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeProducerProjectionOwnerV1 {
+    pub owner: OwnerKey,
+    pub contribution: ObjectRef,
+    pub source_owner: Option<OwnerKey>,
+    pub source: Option<ObjectRef>,
+    pub dependency_stamp: Digest,
+    pub output: Option<ObjectRef>,
+}
+crate::native_serde_struct!(NativeProducerProjectionOwnerV1 {
+    owner: OwnerKey,
+    contribution: ObjectRef,
+    source_owner: Option<OwnerKey>,
+    source: Option<ObjectRef>,
+    dependency_stamp: Digest,
+    output: Option<ObjectRef>
+});
+
+impl SourceOwnerItem for NativeProducerProjectionOwnerV1 {
+    fn owner(&self) -> OwnerKey {
+        self.owner
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeProducerProjectionOwnerRowsV1(Vec<NativeProducerProjectionOwnerV1>);
+
+impl NativeProducerProjectionOwnerRowsV1 {
+    pub fn new(rows: Vec<NativeProducerProjectionOwnerV1>) -> Result<Self, &'static str> {
+        validate_source_owner_items::<_, false>(&rows)?;
+        Ok(Self(rows))
+    }
+
+    pub fn as_slice(&self) -> &[NativeProducerProjectionOwnerV1] {
+        &self.0
+    }
+}
+
+impl serde::Serialize for NativeProducerProjectionOwnerRowsV1 {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for NativeProducerProjectionOwnerRowsV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_source_owner_items::<_, _, false>(deserializer).map(Self)
+    }
+}
+
+/// One bounded page of a producer's contributions under an exact projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeProducerProjectionOwnerPageV1 {
+    pub view: ViewRef,
+    pub binding: ProjectionBinding,
+    /// Source owner root used to authenticate every source-bound row.
+    pub source_records_root: MapRoot,
+    pub rows: Option<NativeProducerProjectionOwnerRowsV1>,
+    pub has_more: bool,
+}
+
+impl NativeProducerProjectionOwnerPageV1 {
+    pub fn rows(&self) -> &[NativeProducerProjectionOwnerV1] {
+        self.rows
+            .as_ref()
+            .map_or(&[], NativeProducerProjectionOwnerRowsV1::as_slice)
+    }
+
+    pub fn next_after(&self) -> Option<StableOwnerId> {
+        if self.has_more {
+            self.rows().last().map(|row| row.owner.stable_id)
+        } else {
+            None
+        }
+    }
+
+    pub fn matches_request(
+        &self,
+        view: ViewRef,
+        projection: ProjectionId,
+        producer: ProducerId,
+        after: Option<StableOwnerId>,
+        limit: u32,
+    ) -> bool {
+        let rows = self.rows();
+        let Ok(limit) = usize::try_from(limit) else {
+            return false;
+        };
+        (1..=MAX_NATIVE_SOURCE_OWNER_LOOKUP).contains(&limit)
+            && self.view == view
+            && self.binding.projection == projection
+            && self.binding.producer == producer
+            && self.source_records_root == self.binding.source.owners
+            && rows.len() <= limit
+            && (!self.has_more || rows.len() == limit)
+            && rows.iter().all(|row| {
+                row.owner.producer == producer
+                    && row.source_owner.is_some() == row.source.is_some()
+                    && after.is_none_or(|after| row.owner.stable_id > after)
+            })
+    }
+}
+crate::native_serde_struct!(NativeProducerProjectionOwnerPageV1 {
+    view: ViewRef,
+    binding: ProjectionBinding,
+    source_records_root: MapRoot,
+    rows: Option<NativeProducerProjectionOwnerRowsV1>,
+    has_more: bool
+});
+
 /// One existing source owner in a producer-scoped recovery page. Deleted or
 /// absent owners are omitted rather than represented by a nullable source.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -473,6 +605,12 @@ pub struct NativeIndexResponseEnvelope {
     pub payload: NativeIndexResponse,
 }
 
+/// Opaque identity of a server-owned retained read session.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct NativeReadSessionId(pub [u8; 32]);
+
+quanta_index_contract_base::native_serde_newtype!(NativeReadSessionId, [u8; 32]);
+
 /// One server-issued foreground publisher session. A new session receives a
 /// fresh opaque identity; an expired or ended identity cannot be renewed.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -519,6 +657,25 @@ pub struct NativeProjectionRead {
     pub binding: Option<ProjectionBinding>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceStageHistoryRefsV1 {
+    pub profile: ObjectRef,
+    pub root: ObjectRef,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceStageReplayContextV1 {
+    pub correlation: Digest,
+    pub history: Option<SourceStageHistoryRefsV1>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceStageReplayReceiptV1 {
+    pub ingress: IngressRef,
+    pub owners: OwnerMutationSet,
+    pub context: SourceStageReplayContextV1,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 #[expect(
     clippy::large_enum_variant,
@@ -539,6 +696,11 @@ pub enum NativeIndexRequest {
     },
     /// Opens or fences one durable operation-scoped ingress before any input write.
     BeginInput(OperationKey),
+    /// Reopen the same operation at a confirmed immutable stage root.
+    ReopenInputWithRootForSourceStageV1 {
+        operation: OperationKey,
+        root: ObjectRef,
+    },
     /// A staged record belongs to the ingress operation and must be retried
     /// with that operation key after an uncertain ACK.
     StageSource {
@@ -595,6 +757,18 @@ pub enum NativeIndexRequest {
         root: MapRoot,
         count: u64,
     },
+    /// Seal and retain one complete stage for exact pre-submit recovery.
+    SealMutationsForReplayV1 {
+        ingress: IngressRef,
+        root: MapRoot,
+        count: u64,
+        context: SourceStageReplayContextV1,
+    },
+    /// Read only the current ingress fence's retained stage.
+    ReadSealedMutationsForReplayV1 {
+        operation: OperationKey,
+        correlation: Digest,
+    },
     DiscardInput(IngressRef),
     /// Exact case-sensitive byte literal at one acquired view. `after` is an
     /// exclusive owner cursor from the previous page.
@@ -623,6 +797,12 @@ pub enum NativeIndexRequest {
     },
     /// Ranked native text search under one selected, ticket-pinned view.
     SearchText {
+        selection: ViewSelection,
+        instance: IndexInstanceId,
+        query: TextQueryRequest,
+    },
+    /// Ranked native text with an optional physical excerpt for each selected hit.
+    SearchTextPreview {
         selection: ViewSelection,
         instance: IndexInstanceId,
         query: TextQueryRequest,
@@ -667,6 +847,8 @@ pub enum NativeIndexRequest {
     Submit(UpdateRequest),
     /// Resume the original admitted operation from its immutable journal entry.
     Resume(OperationKey),
+    /// Resume only if the durable projection descriptor binds this caller.
+    ReplayDslV1(NativeDslReplayV1),
     Overlay(NativeOverlayRequest),
     Stub(NativeStubRequest),
     BindOverlaySave(NativeOverlaySaveIntent),
@@ -675,6 +857,12 @@ pub enum NativeIndexRequest {
         selection: ViewSelection,
         instance: IndexInstanceId,
         query: NativeGraphQuery,
+    },
+    /// Owner-only read of a certified predecessor file in one exact Graph view.
+    ReadRepoMapPriorFileV1 {
+        view: ViewRef,
+        instance: IndexInstanceId,
+        owner: OwnerKey,
     },
     /// Ranked certified `RepoMap` projection under one ticket-pinned view.
     QueryRepoMap {
@@ -691,14 +879,33 @@ pub enum NativeIndexRequest {
     /// Observe the selected view and actual held root identity in one daemon.
     /// This metadata grants no EX lease, Original admission or issuer authority.
     ObserveRootView(ViewSelection),
+    /// Observe the loaded config and held root before creating any workspace.
+    ObserveCandidateInstallationV1,
+    /// Observe the loaded Graph configuration and selected root on the same peer.
+    ObserveRepoMapGraphInstallationV1(ViewSelection),
+    /// Read one Graph event cursor fenced by the exact current catalog view.
+    ObserveRepoMapEventFrontierV1 {
+        view: ViewRef,
+        producer: ProducerId,
+        stream: StreamId,
+    },
     /// Resolve one protected source revision from the selected BOOT route.
     /// The request never supplies a route object or workspace identity.
-    ResolveProtectedSourceHead { repo_id: RepoId, revision_id: RevisionId },
+    ResolveProtectedSourceHead {
+        repo_id: RepoId,
+        revision_id: RevisionId,
+    },
     /// Resolve one protected RepoMap pair from the selected BOOT route.
-    ResolveProtectedRepoMapHead { repo_id: RepoId, revision_id: RevisionId },
+    ResolveProtectedRepoMapHead {
+        repo_id: RepoId,
+        revision_id: RevisionId,
+    },
     /// Observe one Published exact-view imported RepoMap member before route seal.
     /// This is data only; the installed receiver rechecks the old source root.
-    ReadImportedRepoMapMember { view: ViewRef, instance: IndexInstanceId },
+    ReadImportedRepoMapMember {
+        view: ViewRef,
+        instance: IndexInstanceId,
+    },
     /// Read the exact producer stamp; does not expose object CRUD.
     ReadProjection {
         selection: ViewSelection,
@@ -708,6 +915,13 @@ pub enum NativeIndexRequest {
     LookupSourceOwners {
         selection: ViewSelection,
         owners: NativeSourceOwnerKeys,
+    },
+    ListProducerProjectionOwnersV1 {
+        view: ViewRef,
+        projection: ProjectionId,
+        producer: ProducerId,
+        after: Option<StableOwnerId>,
+        limit: u32,
     },
     LookupProjectionOwners {
         selection: ViewSelection,
@@ -751,6 +965,7 @@ pub enum NativeIndexRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeIndexResponse {
+    DslPageV1(NativeDslPageV1),
     HistoryPage(NativeHistoryPage),
     HistoryCut(NativeReadSessionHistoryCutV1),
     HistoryGeneration(NativeReadSessionHistoryGenerationV1),
@@ -764,11 +979,16 @@ pub enum NativeIndexResponse {
     StagedSources(Vec<ObjectRef>),
     MutationPageStaged(MapRoot),
     MutationsStaged(OwnerMutationSet),
+    MutationsSealedForReplayV1(SourceStageReplayReceiptV1),
+    SealedMutationsForReplayV1(Option<SourceStageReplayReceiptV1>),
     InputDiscarded(IngressRef),
     LiteralPage(NativeLiteralPage),
     PathPage(NativePathPage),
     RepositoryPathPage(NativeRepositoryPathPage),
     TextRanked(NativeTextResult),
+    TextPreviewRanked(NativeTextPreviewResult),
+    TextPathRankedV1(NativeTextPathResultV1),
+    TextPathPageV1(NativeTextPathPageV1),
     OverlayTextRanked(NativeOverlayTextResult),
     SemanticRanked(NativeSemanticResult),
     OverlaySemanticRanked(NativeOverlaySemanticResult),
@@ -781,15 +1001,20 @@ pub enum NativeIndexResponse {
     Overlay(NativeOverlayReply),
     Stub(NativeStubReply),
     Graph(NativeGraphResult),
+    RepoMapPriorFileV1(NativeRepoMapPriorFileResultV1),
     RepoMapRanked(NativeRepoMapResult),
     ImportedRepoMap(NativeImportedRepoMapResultV1),
     SourceOwners(NativeSourceOwnerLookup),
     ProjectionOwners(NativeProjectionOwnerLookup),
+    ProducerProjectionOwnersV1(NativeProducerProjectionOwnerPageV1),
     ProducerSourceOwners(NativeProducerSourcePage),
     ProjectionSourceDiff(NativeProjectionSourceDiff),
     Status(OperationReply<OperationStatus>),
     PublishedViewMetadata(OperationReply<CatalogView>),
     RootScopedView(NativeRootScopedViewV1),
+    CandidateInstallationV1(NativeCandidateInstallationV1),
+    RepoMapGraphInstallationV1(NativeRepoMapGraphInstallationV1),
+    RepoMapEventFrontierV1(NativeRepoMapEventFrontierV1),
     ProtectedRepoMapHead(NativeProtectedRepoMapResolutionV1),
     ImportedRepoMapMember(NativeImportedRepoMapMemberReadV1),
     ReadyWork(Vec<WorkIntent>),
@@ -808,6 +1033,39 @@ pub struct NativeRootScopedViewV1 {
     pub root_nonce: Digest,
     pub root_device: u64,
     pub root_inode: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeRepoMapGraphDescriptorV1 {
+    pub kind: IndexKind,
+    pub schema: SchemaId,
+    pub format: StorageFormatId,
+}
+
+/// Facts about the loaded candidate process, independent of any workspace.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeCandidateInstallationV1 {
+    pub config_sha256: Digest,
+    pub root_nonce: Digest,
+    pub root_device: u64,
+    pub root_inode: u64,
+}
+
+/// Boot observations to compare with independently authenticated release inputs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeRepoMapGraphInstallationV1 {
+    pub root: NativeRootScopedViewV1,
+    pub config_sha256: Digest,
+    pub descriptor: NativeRepoMapGraphDescriptorV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeRepoMapEventFrontierV1 {
+    pub view: ViewRef,
+    pub root_nonce: Digest,
+    pub producer: ProducerId,
+    pub stream: StreamId,
+    pub cursor: Option<(u64, u64)>,
 }
 
 /// Exact query route for a preserved RepoMap pair. The server authenticates
@@ -845,6 +1103,7 @@ pub enum NativeIndexErrorCode {
     ResponseTooLarge,
     CapabilityUnavailable,
     FocusSubjectNotFound,
+    ProcessRssCeilingExceeded,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -933,9 +1192,11 @@ pub struct NativeTextHit {
 
 /// A fully scanned, ranked native text response.
 ///
-/// Hits are distinct owners, ordered by descending score (`total_cmp`) and
-/// ascending owner for equal scores. `matched` counts the full verified match
-/// set. The current native first path requires `exhaustive == true` and returns
+/// In owner-ranked replies, hits are distinct owners ordered by descending
+/// score (`total_cmp`) and ascending owner for equal scores. In a
+/// `NativeTextPathRankingV1`, the rows are representatives ordered by
+/// score, repository and path. `matched` counts the full verified match set
+/// for the chosen projection. The native first path requires `exhaustive == true` and returns
 /// exactly `min(matched, query.top_k, count)` hits when a bounded Native `count:N`
 /// is present, and `min(matched, query.top_k)` otherwise; a partial mode needs a new explicit
 /// contract before it can return fewer.
@@ -951,6 +1212,20 @@ pub struct NativeTextResult {
 }
 
 impl NativeIndexResponse {
+    pub fn serialize_text_path_ranked_ref<S: serde::Serializer>(
+        result: &NativeTextPathResultV1,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_newtype_variant("NativeIndexResponse", 47, "TextPathRankedV1", result)
+    }
+
+    pub fn serialize_text_path_page_ref<S: serde::Serializer>(
+        result: &NativeTextPathPageV1,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_newtype_variant("NativeIndexResponse", 48, "TextPathPageV1", result)
+    }
+
     /// Borrow source references while their retained allocation owner lives.
     /// Serialize a refusal without allocating another canonical response DTO.
     pub fn serialize_error_ref<S: serde::Serializer>(
@@ -1044,6 +1319,14 @@ impl NativeIndexResponse {
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         serializer.serialize_newtype_variant("NativeIndexResponse", 17, "TextRanked", result)
+    }
+
+    /// Borrow the optional preview result through synchronous wire emission.
+    pub fn serialize_text_preview_ranked_ref<S: serde::Serializer>(
+        result: &NativeTextPreviewResult,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_newtype_variant("NativeIndexResponse", 46, "TextPreviewRanked", result)
     }
 
     /// Serialize a canonical lookup while runtime-owned retained memory lives
@@ -1152,6 +1435,19 @@ pub struct NativeSemanticResult {
 }
 
 // Closed manual codecs preserve the named JSON/CBOR representation.
+quanta_index_contract_base::native_serde_struct!(SourceStageHistoryRefsV1 {
+    profile: ObjectRef,
+    root: ObjectRef
+});
+quanta_index_contract_base::native_serde_struct!(SourceStageReplayContextV1 {
+    correlation: Digest,
+    history: Option<SourceStageHistoryRefsV1>
+});
+quanta_index_contract_base::native_serde_struct!(SourceStageReplayReceiptV1 {
+    ingress: IngressRef,
+    owners: OwnerMutationSet,
+    context: SourceStageReplayContextV1
+});
 quanta_index_contract_base::native_serde_struct!(NativeIndexRequestEnvelope {
     request_id: u64,
     payload: NativeIndexRequest
@@ -1175,6 +1471,29 @@ quanta_index_contract_base::native_serde_struct!(NativeRootScopedViewV1 {
     root_device: u64,
     root_inode: u64
 });
+quanta_index_contract_base::native_serde_struct!(NativeRepoMapGraphDescriptorV1 {
+    kind: IndexKind,
+    schema: SchemaId,
+    format: StorageFormatId
+});
+quanta_index_contract_base::native_serde_struct!(NativeCandidateInstallationV1 {
+    config_sha256: Digest,
+    root_nonce: Digest,
+    root_device: u64,
+    root_inode: u64
+});
+quanta_index_contract_base::native_serde_struct!(NativeRepoMapGraphInstallationV1 {
+    root: NativeRootScopedViewV1,
+    config_sha256: Digest,
+    descriptor: NativeRepoMapGraphDescriptorV1
+});
+quanta_index_contract_base::native_serde_struct!(NativeRepoMapEventFrontierV1 {
+    view: ViewRef,
+    root_nonce: Digest,
+    producer: ProducerId,
+    stream: StreamId,
+    cursor: Option<(u64, u64)>
+});
 quanta_index_contract_base::native_serde_struct!(NativeProtectedRepoMapResolutionV1 {
     root: NativeRootScopedViewV1,
     instance: IndexInstanceId,
@@ -1185,8 +1504,8 @@ quanta_index_contract_base::native_serde_struct!(NativeImportedRepoMapMemberRead
     instance: IndexInstanceId,
     member_binding: ObjectRef
 });
-quanta_index_contract_base::native_serde_enum!(NativeIndexRequest { units {  } newtypes { Submit = 6 => UpdateRequest, Resume = 7 => OperationKey, ReadView = 8 => ViewSelection, Status = 9 => OperationKey, PublishedViewMetadata = 41 => OperationKey, ObserveRootView = 42 => ViewSelection, WorkStatus = 13 => WorkIntent, BeginInput = 14 => OperationKey, DiscardInput = 17 => IngressRef, Overlay = 31 => NativeOverlayRequest, Stub = 33 => NativeStubRequest, BindOverlaySave = 34 => NativeOverlaySaveIntent, CompleteOverlaySave = 35 => NativeOverlaySaveReceipt, SearchOverlayText = 36 => NativeOverlayTextQuery, ReadSession = 40 => NativeReadSessionRequest } records { CreateWorkspace = 0 { workspace: WorkspaceKey, epoch: u64 }, StageSource = 1 { ingress: IngressRef, path: String, bytes: Vec<u8>, text: SourceTextAdmission }, StageProfile = 2 { ingress: IngressRef, profile: IndexProfile }, StageProjectionOutput = 3 { ingress: IngressRef, bytes: Vec<u8>, children: NativeProjectionOutputChildren }, SealCandidateWithSourceRoutes = 46 { primary: OperationKey, ingress: IngressRef, routes: ObjectRef }, ResolveProtectedSourceHead = 47 { repo_id: RepoId, revision_id: RevisionId }, ResolveProtectedRepoMapHead = 49 { repo_id: RepoId, revision_id: RevisionId }, ReadImportedRepoMapMember = 50 { view: ViewRef, instance: IndexInstanceId }, StageImmutableObject = 45 { ingress: IngressRef, bytes: NativeImmutableObjectPayloadV1, children: NativeImmutableObjectChildrenV1 }, StageProjectionOwner = 4 { ingress: IngressRef, contribution: ProjectionOwnerContribution }, StageProjectionCertificate = 5 { ingress: IngressRef, certificate: ProjectionCertificate }, ReadyWork = 10 { workspace: WorkspaceKey, epoch: u64, limit: u32 }, ClaimWork = 11 { intent: WorkIntent, lease_millis: u64 }, RenewWork = 12 { claim: WorkClaim, lease_millis: u64 }, StageMutationPage = 15 { ingress: IngressRef, base: MapRoot, mutations: Vec<OwnerMutation> }, SealMutations = 16 { ingress: IngressRef, root: MapRoot, count: u64 }, SearchLiteral = 18 { selection: ViewSelection, instance: IndexInstanceId, literal: Vec<u8>, after: Option<Vec<u8>>, limit: u32 }, QueryPaths = 19 { selection: ViewSelection, instance: IndexInstanceId, prefix: String, after: Option<String>, limit: u32 }, QueryRepositoryPaths = 44 { selection: ViewSelection, instance: IndexInstanceId, prefix: String, after: Option<NativeRepositoryPathCursor>, limit: u32 }, StageSources = 20 { ingress: IngressRef, inputs: Vec<SourceInput> }, StageRepositorySources = 43 { ingress: IngressRef, repository: crate::RepoId, inputs: Vec<SourceInput> }, SearchText = 21 { selection: ViewSelection, instance: IndexInstanceId, query: TextQueryRequest }, SearchSemantic = 22 { selection: ViewSelection, instance: IndexInstanceId, query: SemanticQueryRequest }, QueryEffortStream = 23 { overlay: Option<NativeOverlayEffortContext>, selection: ViewSelection, text_instance: IndexInstanceId, semantic_instance: IndexInstanceId, text_query: TextQueryRequest, semantic_query: SemanticQueryRequest, preference: NativeEffortPreference }, InteractionBegin = 24 { window_millis: u64 }, InteractionActivity = 25 { publisher: NativeInteractionPublisherId, sequence: u64 }, InteractionRenew = 26 { publisher: NativeInteractionPublisherId, sequence: u64 }, InteractionEnd = 27 { publisher: NativeInteractionPublisherId, sequence: u64 }, LookupSourceOwners = 28 { selection: ViewSelection, owners: NativeSourceOwnerKeys }, ListProducerSourceOwners = 29 { selection: ViewSelection, producer: ProducerId, after: Option<StableOwnerId>, limit: u32 }, ReadProjection = 30 { selection: ViewSelection, projection: ProjectionId }, LookupProjectionOwners = 38 { selection: ViewSelection, projection: ProjectionId, owners: NativeSourceOwnerKeys }, DiffProjectionSourceOwners = 39 { selection: ViewSelection, projection: ProjectionId, producer: ProducerId, after: Option<StableOwnerId>, limit: u32 }, QueryGraph = 32 { selection: ViewSelection, instance: IndexInstanceId, query: NativeGraphQuery }, QueryRepoMap = 37 { selection: ViewSelection, instance: IndexInstanceId, query: NativeRepoMapQuery }, QueryImportedRepoMap = 48 { selection: ViewSelection, instance: IndexInstanceId, query: NativeImportedRepoMapQueryV1 } } });
-quanta_index_contract_base::native_serde_enum!(NativeIndexResponse { units { } newtypes { Created = 0 => ViewRef, Staged = 1 => ObjectRef, Submitted = 2 => OperationReply<SubmitOutcome>, View = 3 => CatalogView, Status = 4 => OperationReply<OperationStatus>, ReadyWork = 5 => Vec<WorkIntent>, Claimed = 6 => WorkClaim, Renewed = 7 => WorkClaim, WorkStatus = 8 => WorkStatus, Error = 9 => NativeIndexWireError, InputOpened = 10 => IngressRef, MutationPageStaged = 11 => MapRoot, MutationsStaged = 12 => OwnerMutationSet, InputDiscarded = 13 => IngressRef, LiteralPage = 14 => NativeLiteralPage, PathPage = 15 => NativePathPage, RepositoryPathPage = 42 => NativeRepositoryPathPage, StagedSources = 16 => Vec<ObjectRef>, TextRanked = 17 => NativeTextResult, SemanticRanked = 18 => NativeSemanticResult, EffortDone = 19 => NativeEffortDone, InteractionBegun = 20 => NativeInteractionPublisherId, InteractionAccepted = 21 => NativeInteractionPublisherId, SourceOwners = 22 => NativeSourceOwnerLookup, ProducerSourceOwners = 23 => NativeProducerSourcePage, Projection = 24 => NativeProjectionRead, Overlay = 25 => NativeOverlayReply, Graph = 26 => NativeGraphResult, Stub = 27 => NativeStubReply, OverlayTextRanked = 28 => NativeOverlayTextResult, OverlaySemanticRanked = 29 => NativeOverlaySemanticResult, RepoMapRanked = 30 => NativeRepoMapResult, ImportedRepoMap = 43 => NativeImportedRepoMapResultV1, ProjectionOwners = 31 => NativeProjectionOwnerLookup, ProjectionSourceDiff = 32 => NativeProjectionSourceDiff, ReadSession = 33 => NativeReadSessionReply, HybridFileRanked = 34 => NativeHybridFileResult, TextRankedPage = 35 => NativeTextPage, ReadSessionProfile = 36 => NativeReadSessionProfile, PublishedViewMetadata = 37 => OperationReply<CatalogView>, RootScopedView = 38 => NativeRootScopedViewV1, ProtectedRepoMapHead = 44 => NativeProtectedRepoMapResolutionV1, ImportedRepoMapMember = 45 => NativeImportedRepoMapMemberReadV1, HistoryPage = 39 => NativeHistoryPage, HistoryCut = 40 => NativeReadSessionHistoryCutV1, HistoryGeneration = 41 => NativeReadSessionHistoryGenerationV1 } records {  } });
+quanta_index_contract_base::native_serde_enum!(NativeIndexRequest { units { ObserveCandidateInstallationV1 = 68 } newtypes { Submit = 6 => UpdateRequest, Resume = 7 => OperationKey, ReplayDslV1 = 65 => NativeDslReplayV1, ReadView = 8 => ViewSelection, Status = 9 => OperationKey, PublishedViewMetadata = 41 => OperationKey, ObserveRootView = 42 => ViewSelection, ObserveRepoMapGraphInstallationV1 = 66 => ViewSelection, WorkStatus = 13 => WorkIntent, BeginInput = 14 => OperationKey, DiscardInput = 17 => IngressRef, Overlay = 31 => NativeOverlayRequest, Stub = 33 => NativeStubRequest, BindOverlaySave = 34 => NativeOverlaySaveIntent, CompleteOverlaySave = 35 => NativeOverlaySaveReceipt, SearchOverlayText = 36 => NativeOverlayTextQuery, ReadSession = 40 => NativeReadSessionRequest } records { ObserveRepoMapEventFrontierV1 = 67 { view: ViewRef, producer: ProducerId, stream: StreamId }, CreateWorkspace = 0 { workspace: WorkspaceKey, epoch: u64 }, StageSource = 1 { ingress: IngressRef, path: String, bytes: Vec<u8>, text: SourceTextAdmission }, StageProfile = 2 { ingress: IngressRef, profile: IndexProfile }, StageProjectionOutput = 3 { ingress: IngressRef, bytes: Vec<u8>, children: NativeProjectionOutputChildren }, SealCandidateWithSourceRoutes = 46 { primary: OperationKey, ingress: IngressRef, routes: ObjectRef }, ResolveProtectedSourceHead = 47 { repo_id: RepoId, revision_id: RevisionId }, ResolveProtectedRepoMapHead = 49 { repo_id: RepoId, revision_id: RevisionId }, ReadImportedRepoMapMember = 50 { view: ViewRef, instance: IndexInstanceId }, StageImmutableObject = 45 { ingress: IngressRef, bytes: NativeImmutableObjectPayloadV1, children: NativeImmutableObjectChildrenV1 }, StageProjectionOwner = 4 { ingress: IngressRef, contribution: ProjectionOwnerContribution }, StageProjectionCertificate = 5 { ingress: IngressRef, certificate: ProjectionCertificate }, ReadyWork = 10 { workspace: WorkspaceKey, epoch: u64, limit: u32 }, ClaimWork = 11 { intent: WorkIntent, lease_millis: u64 }, RenewWork = 12 { claim: WorkClaim, lease_millis: u64 }, StageMutationPage = 15 { ingress: IngressRef, base: MapRoot, mutations: Vec<OwnerMutation> }, SealMutations = 16 { ingress: IngressRef, root: MapRoot, count: u64 }, SealMutationsForReplayV1 = 69 { ingress: IngressRef, root: MapRoot, count: u64, context: SourceStageReplayContextV1 }, ReadSealedMutationsForReplayV1 = 70 { operation: OperationKey, correlation: Digest }, ReopenInputWithRootForSourceStageV1 = 71 { operation: OperationKey, root: ObjectRef }, SearchLiteral = 18 { selection: ViewSelection, instance: IndexInstanceId, literal: Vec<u8>, after: Option<Vec<u8>>, limit: u32 }, QueryPaths = 19 { selection: ViewSelection, instance: IndexInstanceId, prefix: String, after: Option<String>, limit: u32 }, QueryRepositoryPaths = 44 { selection: ViewSelection, instance: IndexInstanceId, prefix: String, after: Option<NativeRepositoryPathCursor>, limit: u32 }, StageSources = 20 { ingress: IngressRef, inputs: Vec<SourceInput> }, StageRepositorySources = 43 { ingress: IngressRef, repository: crate::RepoId, inputs: Vec<SourceInput> }, SearchText = 21 { selection: ViewSelection, instance: IndexInstanceId, query: TextQueryRequest }, SearchTextPreview = 51 { selection: ViewSelection, instance: IndexInstanceId, query: TextQueryRequest }, SearchSemantic = 22 { selection: ViewSelection, instance: IndexInstanceId, query: SemanticQueryRequest }, QueryEffortStream = 23 { overlay: Option<NativeOverlayEffortContext>, selection: ViewSelection, text_instance: IndexInstanceId, semantic_instance: IndexInstanceId, text_query: TextQueryRequest, semantic_query: SemanticQueryRequest, preference: NativeEffortPreference }, InteractionBegin = 24 { window_millis: u64 }, InteractionActivity = 25 { publisher: NativeInteractionPublisherId, sequence: u64 }, InteractionRenew = 26 { publisher: NativeInteractionPublisherId, sequence: u64 }, InteractionEnd = 27 { publisher: NativeInteractionPublisherId, sequence: u64 }, LookupSourceOwners = 28 { selection: ViewSelection, owners: NativeSourceOwnerKeys }, ListProducerSourceOwners = 29 { selection: ViewSelection, producer: ProducerId, after: Option<StableOwnerId>, limit: u32 }, ReadProjection = 30 { selection: ViewSelection, projection: ProjectionId }, LookupProjectionOwners = 38 { selection: ViewSelection, projection: ProjectionId, owners: NativeSourceOwnerKeys }, ListProducerProjectionOwnersV1 = 73 { view: ViewRef, projection: ProjectionId, producer: ProducerId, after: Option<StableOwnerId>, limit: u32 }, DiffProjectionSourceOwners = 39 { selection: ViewSelection, projection: ProjectionId, producer: ProducerId, after: Option<StableOwnerId>, limit: u32 }, QueryGraph = 32 { selection: ViewSelection, instance: IndexInstanceId, query: NativeGraphQuery }, ReadRepoMapPriorFileV1 = 72 { view: ViewRef, instance: IndexInstanceId, owner: OwnerKey }, QueryRepoMap = 37 { selection: ViewSelection, instance: IndexInstanceId, query: NativeRepoMapQuery }, QueryImportedRepoMap = 48 { selection: ViewSelection, instance: IndexInstanceId, query: NativeImportedRepoMapQueryV1 } } });
+quanta_index_contract_base::native_serde_enum!(NativeIndexResponse { units { } newtypes { Created = 0 => ViewRef, Staged = 1 => ObjectRef, Submitted = 2 => OperationReply<SubmitOutcome>, View = 3 => CatalogView, Status = 4 => OperationReply<OperationStatus>, ReadyWork = 5 => Vec<WorkIntent>, Claimed = 6 => WorkClaim, Renewed = 7 => WorkClaim, WorkStatus = 8 => WorkStatus, Error = 9 => NativeIndexWireError, InputOpened = 10 => IngressRef, MutationPageStaged = 11 => MapRoot, MutationsStaged = 12 => OwnerMutationSet, MutationsSealedForReplayV1 = 69 => SourceStageReplayReceiptV1, SealedMutationsForReplayV1 = 70 => Option<SourceStageReplayReceiptV1>, InputDiscarded = 13 => IngressRef, LiteralPage = 14 => NativeLiteralPage, PathPage = 15 => NativePathPage, RepositoryPathPage = 42 => NativeRepositoryPathPage, StagedSources = 16 => Vec<ObjectRef>, TextRanked = 17 => NativeTextResult, TextPreviewRanked = 46 => NativeTextPreviewResult, TextPathRankedV1 = 47 => NativeTextPathResultV1, TextPathPageV1 = 48 => NativeTextPathPageV1, SemanticRanked = 18 => NativeSemanticResult, EffortDone = 19 => NativeEffortDone, InteractionBegun = 20 => NativeInteractionPublisherId, InteractionAccepted = 21 => NativeInteractionPublisherId, SourceOwners = 22 => NativeSourceOwnerLookup, ProducerSourceOwners = 23 => NativeProducerSourcePage, Projection = 24 => NativeProjectionRead, Overlay = 25 => NativeOverlayReply, Graph = 26 => NativeGraphResult, RepoMapPriorFileV1 = 71 => NativeRepoMapPriorFileResultV1, Stub = 27 => NativeStubReply, OverlayTextRanked = 28 => NativeOverlayTextResult, OverlaySemanticRanked = 29 => NativeOverlaySemanticResult, RepoMapRanked = 30 => NativeRepoMapResult, ImportedRepoMap = 43 => NativeImportedRepoMapResultV1, ProjectionOwners = 31 => NativeProjectionOwnerLookup, ProducerProjectionOwnersV1 = 72 => NativeProducerProjectionOwnerPageV1, ProjectionSourceDiff = 32 => NativeProjectionSourceDiff, ReadSession = 33 => NativeReadSessionReply, HybridFileRanked = 34 => NativeHybridFileResult, TextRankedPage = 35 => NativeTextPage, ReadSessionProfile = 36 => NativeReadSessionProfile, PublishedViewMetadata = 37 => OperationReply<CatalogView>, RootScopedView = 38 => NativeRootScopedViewV1, CandidateInstallationV1 = 67 => NativeCandidateInstallationV1, RepoMapGraphInstallationV1 = 65 => NativeRepoMapGraphInstallationV1, RepoMapEventFrontierV1 = 66 => NativeRepoMapEventFrontierV1, ProtectedRepoMapHead = 44 => NativeProtectedRepoMapResolutionV1, ImportedRepoMapMember = 45 => NativeImportedRepoMapMemberReadV1, HistoryPage = 39 => NativeHistoryPage, HistoryCut = 40 => NativeReadSessionHistoryCutV1, HistoryGeneration = 41 => NativeReadSessionHistoryGenerationV1, DslPageV1 = 64 => NativeDslPageV1 } records {  } });
 quanta_index_contract_base::native_serde_struct!(NativeProjectionRead { view: ViewRef, binding: Option<ProjectionBinding> });
 quanta_index_contract_base::native_serde_struct!(NativeProjectionOwnerBinding { owner: OwnerKey, contribution: Option<ObjectRef> });
 quanta_index_contract_base::native_serde_struct!(NativeProjectionOwnerLookup { view: ViewRef, projection: ProjectionId, binding: Option<ProjectionBinding>, rows: NativeProjectionOwnerRows });
@@ -1208,7 +1527,7 @@ quanta_index_contract_base::native_serde_struct!(NativeSourceOwnerLookup {
     source: SourceCut,
     rows: NativeSourceOwnerRows
 });
-quanta_index_contract_base::native_serde_enum!(NativeIndexErrorCode { units { Denied = 0, InvalidInput = 1, Conflict = 2, DigestConflict = 3, FenceLost = 4, ResourceLimited = 5, Cancelled = 6, SnapshotUnavailable = 7, CorruptObject = 8, BackendViolation = 9, Storage = 10, RebuildRequired = 11, MaintenanceRequired = 12, Overloaded = 13, ResponseTooLarge = 14, CapabilityUnavailable = 15, FocusSubjectNotFound = 16 } newtypes {  } records {  } });
+quanta_index_contract_base::native_serde_enum!(NativeIndexErrorCode { units { Denied = 0, InvalidInput = 1, Conflict = 2, DigestConflict = 3, FenceLost = 4, ResourceLimited = 5, Cancelled = 6, SnapshotUnavailable = 7, CorruptObject = 8, BackendViolation = 9, Storage = 10, RebuildRequired = 11, MaintenanceRequired = 12, Overloaded = 13, ResponseTooLarge = 14, CapabilityUnavailable = 15, FocusSubjectNotFound = 16, ProcessRssCeilingExceeded = 17 } newtypes {  } records {  } });
 quanta_index_contract_base::native_serde_struct!(NativeIndexWireError {
     code: NativeIndexErrorCode,
     message: String
@@ -2019,7 +2338,12 @@ mod tests {
             let mut repository_record = record;
             repository_record.source_repo_id = Some(crate::RepoId::new("corp-a")?);
             let scoped_json = serde_json::to_value(&repository_record)?;
-            check!(scoped_json.get("source_repo_id").and_then(serde_json::Value::as_str) == Some("corp-a"));
+            check!(
+                scoped_json
+                    .get("source_repo_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("corp-a")
+            );
             check!(serde_json::from_value::<SourceRecord>(scoped_json)? == repository_record);
             check!(
                 record_json
@@ -2860,6 +3184,10 @@ mod tests {
         check_eq!(
             serde_json::to_value(NativeIndexErrorCode::CapabilityUnavailable)?,
             "CapabilityUnavailable"
+        );
+        check_eq!(
+            serde_json::to_value(NativeIndexErrorCode::ProcessRssCeilingExceeded)?,
+            "ProcessRssCeilingExceeded"
         );
         check!(serde_json::from_str::<NativeIndexErrorCode>("\"Invented\"").is_err());
         Ok(())

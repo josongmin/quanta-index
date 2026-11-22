@@ -507,7 +507,6 @@ fn source_file_window_uses_best_vector_and_id_tie_before_file_cap()
         &SearchQuery {
             source_files: true,
             lexical_eligibility: None,
-            lexical_owners: None,
             exact_path: None,
             coverage: &coverage,
             projection: None,

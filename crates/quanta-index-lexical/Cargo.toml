@@ -4,17 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Native lexical index and optional Legacy Tantivy adapter"
+description = "Native lexical index and read-only Legacy DATA support"
 
 [lints]
 workspace = true
 
 [lib]
 path = "src/lib.rs"
-
-[features]
-default = []
-legacy-tantivy = ["dep:tantivy", "dep:tantivy-fst"]
 
 [dependencies]
 ciborium = { workspace = true }
@@ -33,14 +29,14 @@ rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-tantivy = { workspace = true, optional = true }
-tantivy-fst = { workspace = true, optional = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]
 nix = { workspace = true, features = ["resource"] }
 regex = { workspace = true }
+quanta-index-searchd-harness = { version = "0.1.0", path = "../quanta-index-searchd-harness", default-features = false }
+quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk", default-features = false }
 
 [target.'cfg(unix)'.dev-dependencies]
 # Owned-FD retirement fixtures must not depend on Runtime feature unification.
-libsqlite3-sys = { version = "=0.38.2", features = ["quanta-capacity-vfs"] }
+libsqlite3-sys = { workspace = true, features = ["quanta-capacity-vfs"] }

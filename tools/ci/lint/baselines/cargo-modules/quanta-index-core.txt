@@ -63,7 +63,6 @@ crate quanta_index_core
 │   │   ├── trait QuarantinedGenerationDiscardPort: pub
 │   │   ├── struct QuarantinedGenerationV1: pub
 │   │   ├── struct RetentionMeasurementPolicy: pub
-│   │   ├── struct SealedArtifactCommitmentV1: pub
 │   │   ├── trait SealedGenerationByteSession: pub
 │   │   ├── struct SealedGenerationBytesV1: pub
 │   │   ├── trait SealedGenerationIdentityProbePort: pub
@@ -72,7 +71,6 @@ crate quanta_index_core
 │   │   ├── trait SealedGenerationReclaimPort: pub
 │   │   ├── trait SealedGenerationScanPort: pub
 │   │   ├── trait TrackPhysicalByteSession: pub
-│   │   ├── enum TreeCommitmentMismatchV1: pub
 │   │   ├── struct TreeCommitmentV1: pub
 │   │   ├── struct TreeScrubStepV1: pub
 │   │   └── enum TreeScrubVerdictV1: pub
@@ -350,7 +348,9 @@ crate quanta_index_core
 │   │   ├── struct WorkBudget: pub
 │   │   ├── enum WorkBudgetDenial: pub
 │   │   ├── struct WorkLimits: pub
-│   │   └── struct WorkUsage: pub
+│   │   ├── struct WorkUsage: pub
+│   │   └── mod scoped_memory: pub(super)
+│   │       └── struct ScopedMemoryBudget: pub
 │   ├── mod effort: pub
 │   │   ├── struct AdmittedEffort: pub
 │   │   ├── enum CancellationStatus: pub
@@ -387,11 +387,11 @@ crate quanta_index_core
 │   │   ├── struct StageOffer: pub
 │   │   └── enum UnknownReason: pub
 │   ├── mod error: pub(self)
+│   │   ├── enum ExistingFileReadFailureV1: pub
 │   │   └── enum IndexError: pub
 │   ├── mod existing_file: pub
 │   │   ├── struct ExistingFileBytesV1: pub
 │   │   ├── struct ExistingFileIdentityV1: pub
-│   │   ├── enum ExistingFileReadFailureV1: pub
 │   │   ├── struct Identity: pub(self)
 │   │   ├── enum ReadPolicy: pub(self)
 │   │   └── mod hash: pub(self)
@@ -409,6 +409,11 @@ crate quanta_index_core
 │   │   │   └── type Grant: pub(self)
 │   │   ├── struct ReadOnlyTreeLayoutV1: pub
 │   │   └── struct TreeEntryV1: pub(crate)
+│   ├── mod history_checkpoint: pub
+│   │   └── struct LegacyHistoryCheckpointPageRefV2: pub
+│   ├── mod install_ports: pub(self)
+│   │   ├── trait ObjectWriteSink: pub
+│   │   └── trait PreparedObjectMapBatch: pub
 │   ├── mod lifetime: pub(self)
 │   │   ├── trait ReadSessionLease: pub
 │   │   ├── struct ReadSessionRecoveryPage: pub
@@ -432,8 +437,7 @@ crate quanta_index_core
 │   │   ├── trait MemoryLeaseOwner: pub
 │   │   ├── enum MemoryLifetime: pub
 │   │   ├── struct MemoryScope: pub
-│   │   ├── trait MemoryScopePort: pub
-│   │   └── struct ScopedMemoryBudget: pub
+│   │   └── trait MemoryScopePort: pub
 │   ├── mod metadata: pub(self)
 │   ├── mod mutations: pub(self)
 │   │   ├── enum MutationPosition: pub(self)
@@ -493,14 +497,12 @@ crate quanta_index_core
 │   │   ├── trait ObjectReadFile: pub
 │   │   ├── trait ObjectReadIoPort: pub
 │   │   ├── trait ObjectWriteIoPort: pub
-│   │   ├── trait ObjectWriteSink: pub
 │   │   ├── struct ObjectWriteSyncDirectories: pub
 │   │   ├── trait ObjectWriteTicket: pub
 │   │   ├── enum OperationInspectAccess: pub
 │   │   ├── trait OperationJournalPort: pub
 │   │   ├── enum OwnerMapCompletion: pub
 │   │   ├── trait PersistentMapPort: pub
-│   │   ├── trait PreparedObjectMapBatch: pub
 │   │   ├── trait PreparedOwnerMapScope: pub
 │   │   ├── enum RootPackingMode: pub
 │   │   ├── struct RootPackingPlan: pub
@@ -592,6 +594,7 @@ crate quanta_index_core
 │   │   ├── enum SourcePathOwners: pub
 │   │   ├── struct SourcePathRepositoryKey: pub
 │   │   ├── struct SourceRecordOwner: pub
+│   │   ├── struct SourceRecordWire: pub(self)
 │   │   ├── struct StagedObjectReferenceIter: pub
 │   │   ├── struct StagedObjectReferences: pub
 │   │   ├── struct StoredObject: pub
@@ -603,6 +606,9 @@ crate quanta_index_core
 │   │   ├── struct RegisteredObjectData: pub
 │   │   ├── struct RegisteredObjectIter: pub
 │   │   └── struct RegistrationWire: pub(self)
+│   ├── mod repository_key: pub(self)
+│   │   └── struct RepositoryKeyAdmission: pub(super)
+│   │       └── type Error: pub(self)
 │   ├── mod scratch: pub(self)
 │   │   ├── trait ScratchAllocation: pub
 │   │   ├── trait ScratchIoBinding: pub
@@ -714,4 +720,7 @@ crate quanta_index_core
 │   ├── enum SourcePublicationUploadCleanupDisposition: pub
 │   ├── trait SourcePublicationUploadFileAdmissionPort: pub
 │   └── trait SourcePublicationUploadPort: pub
-└── mod timeref: pub
+├── mod timeref: pub
+└── mod tree_commitment: pub(crate)
+    ├── struct SealedArtifactCommitmentV1: pub
+    └── enum TreeCommitmentMismatchV1: pub

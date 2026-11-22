@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Structural manifest discipline for workspace crates.
+"""Structural manifest discipline for first-party workspace crates.
 
-Every crate listed in `[workspace.members]` must obey:
+Every crate listed in `[workspace.members]` is checked. First-party crates
+must obey the full inheritance and dependency policy:
 
-  1. `[package]` inherits `version`, `edition`, `license`, `publish` from the
-     workspace (either dotted or table form).
+  1. First-party `[package]` fields inherit `version`, `edition`, `license`,
+     `publish` from the workspace (either dotted or table form). The shared
+     signed-artifact crate and the upstream vendored CBOR crate retain their
+     own exact published package metadata.
   2. `[lints]` inherits from workspace. (Cross-checked here, primary enforcement
      remains `scripts/check_workspace_lints.py`.)
-  3. Every external dependency (anything not named `quanta-index-*`) MUST use
+  3. Every first-party external dependency (anything not named `quanta-index-*`)
+     MUST use
      the workspace form — `{ workspace = true [, features = [...]] }` — so the
      version, default-features posture, and audit surface are pinned in the
      root manifest. Inline-version deps (`foo = "1.0"`) are banned because they
@@ -16,7 +20,9 @@ Every crate listed in `[workspace.members]` must obey:
      `{ version = "...", path = "../quanta-index-..." }` form. No bare path,
      no workspace-true on internal deps.
   5. No `git = "..."` source.
-  6. No `path = "..."` deps to anything outside `crates/`.
+  6. No `path = "..."` deps to anything outside `crates/`. The upstream
+     ciborium manifest retains its own inline dependency metadata, but may
+     not introduce a git or path dependency.
 
 Failure modes this catches in practice:
   - copy-pasted manifest ad-hoc adds (`serde = "1.0"`) that fork the version
@@ -47,6 +53,27 @@ REQUIRED_PACKAGE_INHERITS: tuple[str, ...] = (
     "license",
     "publish",
 )
+
+# These packages are workspace members for dependency and lint unification,
+# but their original edition/license (and ciborium's version) differ from this
+# product workspace. Pin the exceptions rather than rewriting their identity.
+PACKAGE_METADATA_EXCEPTIONS: dict[str, dict[str, object]] = {
+    "shared/quanta-installed-artifact-trust/Cargo.toml": {
+        "name": "quanta-installed-artifact-trust",
+        "version": "0.1.0",
+        "edition": "2021",
+        "license": "MIT OR Apache-2.0",
+        "publish": False,
+    },
+    "vendor/ciborium-0.2.2/Cargo.toml": {
+        "name": "ciborium",
+        "version": "0.2.2",
+        "edition": "2021",
+        "license": "Apache-2.0",
+        "publish": None,
+    },
+}
+VENDORED_CIBORIUM = "vendor/ciborium-0.2.2/Cargo.toml"
 
 DEP_SECTIONS: tuple[str, ...] = (
     "dependencies",
@@ -88,6 +115,22 @@ def check_package_inherits(cargo_toml: Path, data: dict) -> list[Violation]:
                 )
             )
     return violations
+
+
+def check_package_metadata(cargo_toml: Path, data: dict) -> list[Violation]:
+    try:
+        relative = cargo_toml.relative_to(ROOT).as_posix()
+    except ValueError:
+        return check_package_inherits(cargo_toml, data)
+    expected = PACKAGE_METADATA_EXCEPTIONS.get(relative)
+    if expected is None:
+        return check_package_inherits(cargo_toml, data)
+    package = data.get("package", {})
+    return [
+        Violation(cargo_toml, f"[package].{field} must remain {value!r}")
+        for field, value in expected.items()
+        if package.get(field) != value
+    ]
 
 
 def check_lints_inherits(cargo_toml: Path, data: dict) -> list[Violation]:
@@ -132,6 +175,18 @@ def check_dependencies(cargo_toml: Path, data: dict) -> list[Violation]:
         for name, value in block.items():
             internal = name.startswith("quanta-index-")
             violations.extend(check_single_dep(cargo_toml, section, name, value, internal))
+    return violations
+
+
+def check_vendored_dependency_sources(cargo_toml: Path, data: dict) -> list[Violation]:
+    """Keep upstream's inline versions/features while banning source escapes."""
+    violations: list[Violation] = []
+    for section, block in dependency_sections(data):
+        for name, value in block.items():
+            if isinstance(value, dict) and ("git" in value or "path" in value):
+                violations.append(
+                    Violation(cargo_toml, f"[{section}] vendored dep {name!r} changes source")
+                )
     return violations
 
 
@@ -248,11 +303,16 @@ def audit_crate(cargo_toml: Path) -> list[Violation]:
     if not cargo_toml.is_file():
         return [Violation(cargo_toml, "manifest missing for workspace member")]
     data = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
-    return (
-        check_package_inherits(cargo_toml, data)
-        + check_lints_inherits(cargo_toml, data)
-        + check_dependencies(cargo_toml, data)
+    package_and_lints = check_package_metadata(cargo_toml, data) + check_lints_inherits(
+        cargo_toml, data
     )
+    try:
+        relative = cargo_toml.relative_to(ROOT).as_posix()
+    except ValueError:
+        relative = ""
+    if relative == VENDORED_CIBORIUM:
+        return package_and_lints + check_vendored_dependency_sources(cargo_toml, data)
+    return package_and_lints + check_dependencies(cargo_toml, data)
 
 
 def main() -> int:

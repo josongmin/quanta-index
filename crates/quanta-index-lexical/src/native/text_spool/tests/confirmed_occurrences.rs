@@ -266,7 +266,7 @@ fn confirmed_count_rejects_malformed_sql_values_and_out_of_bound_setters() -> Re
     let candidate = reference(85);
     for count in [
         0,
-        crate::native::text::MAX_POSITIONS_PER_TERM
+        crate::native::text_occurrence::positions::MAX_POSITIONS_PER_TERM
             .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?,
     ] {
@@ -284,7 +284,7 @@ fn confirmed_count_rejects_malformed_sql_values_and_out_of_bound_setters() -> Re
         );
     }
     let key = reference_bytes(&candidate)?;
-    let over = i64::try_from(crate::native::text::MAX_POSITIONS_PER_TERM)
+    let over = i64::try_from(crate::native::text_occurrence::positions::MAX_POSITIONS_PER_TERM)
         .map_err(|_error| IndexError::ResourceLimited)?
         .checked_add(1)
         .ok_or(IndexError::ResourceLimited)?;

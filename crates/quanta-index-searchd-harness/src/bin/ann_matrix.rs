@@ -14,7 +14,10 @@
 //! below the floor, a score that is not the exact cosine, or a short page
 //! is a non-zero exit after the artifact is written.
 
-use std::path::{Path, PathBuf};
+#[path = "common/artifact_out_dir.rs"]
+mod artifact_out_dir;
+
+use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Result as AnyResult;
@@ -22,14 +25,6 @@ use quanta_index_searchd_harness::ann::{
     AnnRailConfig, AnnReport, run_ann_report, write_artifacts,
 };
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
-
-fn parse_out_dir() -> PathBuf {
-    let mut args = std::env::args().skip(1);
-    match (args.next().as_deref(), args.next()) {
-        (Some("--out-dir"), Some(path)) => PathBuf::from(path),
-        _ => PathBuf::from("artifacts/search-quality/ann/latest"),
-    }
-}
 
 fn run(out_dir: &Path) -> AnyResult<AnnReport> {
     // Provenance first: a run that cannot be attributed is not started.
@@ -47,7 +42,16 @@ fn run(out_dir: &Path) -> AnyResult<AnnReport> {
     reason = "rail binary reports rail status on stdout/stderr by design"
 )]
 fn main() -> ExitCode {
-    let out_dir = parse_out_dir();
+    let out_dir = match artifact_out_dir::parse(
+        std::env::args_os().skip(1),
+        "artifacts/search-quality/ann/latest",
+    ) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("ann_matrix: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let report = match run(&out_dir) {
         Ok(report) => report,
         Err(err) => {

@@ -5,15 +5,20 @@
 use std::{io, os::fd::AsFd as _};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
+use quanta_index_catalog::LegacyHistoryCheckpointPageV1;
 use quanta_index_contract::{
     RepoId,
     index::{
-        AuxiliaryGenerationKeyV1, Digest, HistorySnapshotPageV1, MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1,
+        AuxiliaryGenerationKeyV1, Digest, HistorySnapshotPageV1,
+        MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1, ObjectRef, native_immutable_object_ref_with_work_v1,
     },
 };
 use quanta_index_core::{
     RequestBudgetV1,
-    index::{IndexError, WorkBudget, WorkUsage},
+    index::{
+        IndexError, MemoryLifetime, WorkBudget, WorkUsage,
+        history_checkpoint::{LegacyHistoryCheckpointPageRefV2, encode_large_row_v2},
+    },
 };
 use quanta_index_searchd::cli::{NativeHistoryExportCommandV1, NativeHistoryExportScopeV1};
 use serde::Serialize;
@@ -61,7 +66,7 @@ enum ExportFrame<'a> {
         repo_id: &'a RepoId,
         count: u64,
     },
-    Page(&'a HistorySnapshotPageV1),
+    CheckpointPage(LegacyHistoryCheckpointPageRefV2),
     InventoryKey {
         generation: &'a AuxiliaryGenerationKeyV1,
     },
@@ -134,6 +139,52 @@ fn write_frame<T: Serialize>(
     Ok(())
 }
 
+fn emit_v1_checkpoint_page(
+    page: &HistorySnapshotPageV1,
+    encoded_bytes: usize,
+    output: &mut impl io::Write,
+    budget: &mut WorkBudget,
+) -> std::result::Result<ObjectRef, IndexError> {
+    if encoded_bytes == 0 || encoded_bytes > MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1 {
+        return Err(IndexError::ResourceLimited);
+    }
+    page.validate_shape()
+        .map_err(|cause| IndexError::Storage(cause.into()))?;
+    let _payload_memory = budget.reserve_memory(
+        u64::try_from(encoded_bytes).map_err(|_| IndexError::ResourceLimited)?,
+        MemoryLifetime::Temporary,
+    )?;
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(encoded_bytes)
+        .map_err(|_| IndexError::ResourceLimited)?;
+    if payload.capacity() > encoded_bytes {
+        return Err(IndexError::ResourceLimited);
+    }
+    payload.resize(encoded_bytes, 0);
+    let mut remaining = payload.as_mut_slice();
+    serde_json::to_writer(&mut remaining, page)
+        .map_err(|cause| IndexError::Storage(format!("History page encode: {cause}")))?;
+    if !remaining.is_empty() {
+        return Err(IndexError::DigestConflict);
+    }
+    budget.charge(WorkUsage {
+        bytes: u64::try_from(payload.len()).map_err(|_| IndexError::ResourceLimited)?,
+        ..WorkUsage::default()
+    })?;
+    let reference =
+        native_immutable_object_ref_with_work_v1(&payload, &[], &mut || budget.checkpoint())?
+            .ok_or(IndexError::DigestConflict)?;
+    native_v1::write_native_object_v1(reference, &payload, &[], output, budget).map_err(
+        |cause| {
+            cause.downcast::<IndexError>().unwrap_or_else(|cause| {
+                IndexError::Storage(format!("History page object stream: {cause}"))
+            })
+        },
+    )?;
+    Ok(reference)
+}
+
 pub fn run(command: &NativeHistoryExportCommandV1, request: RequestBudgetV1) -> Result<()> {
     command.validate()?;
     ensure!(
@@ -179,18 +230,52 @@ pub fn run(command: &NativeHistoryExportCommandV1, request: RequestBudgetV1) -> 
                                             catalog,
                                             generation,
                                             budget,
-                                            &mut |page: &HistorySnapshotPageV1, budget| {
+                                            &mut |page: LegacyHistoryCheckpointPageV1<'_>, budget| {
+                                                let (reference, ordinal, row_count) = match page {
+                                                    LegacyHistoryCheckpointPageV1::V1 { page, encoded_bytes } => {
+                                                        let reference = emit_v1_checkpoint_page(
+                                                            page, encoded_bytes, &mut output, budget,
+                                                        )?;
+                                                        (reference, page.ordinal, page.rows.len() as u64)
+                                                    }
+                                                    LegacyHistoryCheckpointPageV1::LargeRow {
+                                                        generation, ordinal, row,
+                                                    } => {
+                                                        let reference = encode_large_row_v2(
+                                                            generation, ordinal, row, budget,
+                                                            |reference, payload, children, budget| {
+                                                                native_v1::write_native_object_v1(
+                                                                    reference, payload, children,
+                                                                    &mut output, budget,
+                                                                ).map_err(|cause| {
+                                                                    cause.downcast::<IndexError>()
+                                                                        .unwrap_or_else(|cause| {
+                                                                            IndexError::Storage(format!(
+                                                                                "History large row object stream: {cause}"
+                                                                            ))
+                                                                        })
+                                                                })
+                                                            },
+                                                        )?;
+                                                        (reference, ordinal, 1)
+                                                    }
+                                                };
                                                 page_count = page_count.checked_add(1).ok_or_else(|| {
-                                                    quanta_index_core::CoreError::Storage(
-                                                        "History page count overflow".into(),
-                                                    )
+                                                    IndexError::Storage("History page count overflow".into())
                                                 })?;
-                                                write_frame(&mut output, &ExportFrame::Page(page), budget)
-                                                    .map_err(|error| {
-                                                        quanta_index_core::CoreError::Storage(format!(
-                                                            "History page stream: {error}"
-                                                        ))
+                                                write_frame(
+                                                    &mut output,
+                                                    &ExportFrame::CheckpointPage(
+                                                        LegacyHistoryCheckpointPageRefV2 {
+                                                            reference, ordinal, row_count,
+                                                        },
+                                                    ),
+                                                    budget,
+                                                ).map_err(|cause| {
+                                                    cause.downcast::<IndexError>().unwrap_or_else(|cause| {
+                                                        IndexError::Storage(format!("History page marker stream: {cause}"))
                                                     })
+                                                })
                                             },
                                         )?;
                                     ensure!(page_count > 0, "History export contains no pages");
@@ -245,4 +330,76 @@ pub fn run(command: &NativeHistoryExportCommandV1, request: RequestBudgetV1) -> 
             )
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quanta_index_contract::index::{HistorySnapshotExportFrameV1, HistorySnapshotRowV1};
+    use quanta_index_contract::{ManifestGeneration, RevisionId};
+    use quanta_index_core::index::WorkLimits;
+
+    #[test]
+    fn v1_checkpoint_object_stream_keeps_canonical_bytes_and_reference()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let page = HistorySnapshotPageV1 {
+            wire_version: 1,
+            generation: AuxiliaryGenerationKeyV1 {
+                repo_id: RepoId::new("legacy")?,
+                revision_id: RevisionId::new("main")?,
+                generation: ManifestGeneration::new(1),
+            },
+            ordinal: 1,
+            rows: vec![HistorySnapshotRowV1 {
+                family: "epoch".into(),
+                row_key: Vec::new(),
+                value: vec![1, 2, 3],
+            }],
+        };
+        let canonical = serde_json::to_vec(&page)?;
+        let expected =
+            quanta_index_contract::index::native_immutable_object_ref_v1(&canonical, &[])
+                .ok_or("V1 page reference is invalid")?;
+        let mut budget = WorkBudget::new(
+            WorkLimits {
+                reads: 1_000_000,
+                writes: 1_000_000,
+                bytes: 1_000_000_000,
+                mutations: 1_000_000,
+            },
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        );
+        let mut stream = Vec::new();
+        let actual = emit_v1_checkpoint_page(&page, canonical.len(), &mut stream, &mut budget)?;
+        assert_eq!(actual, expected);
+        let mut decoded = Vec::new();
+        let mut frames = stream.as_slice();
+        while !frames.is_empty() {
+            let width = usize::try_from(u32::from_le_bytes(frames[..4].try_into()?))?;
+            let frame: HistorySnapshotExportFrameV1 =
+                serde_json::from_slice(&frames[4..4 + width])?;
+            frames = &frames[4 + width..];
+            match frame {
+                HistorySnapshotExportFrameV1::NativeObjectBegin {
+                    reference,
+                    payload_bytes,
+                    children,
+                } => {
+                    assert_eq!(reference, expected);
+                    assert_eq!(payload_bytes, canonical.len() as u64);
+                    assert!(children.is_empty());
+                }
+                HistorySnapshotExportFrameV1::NativeObjectChunk { offset, bytes } => {
+                    assert_eq!(offset, decoded.len() as u64);
+                    decoded.extend_from_slice(&bytes);
+                }
+                HistorySnapshotExportFrameV1::NativeObjectEnd { reference } => {
+                    assert_eq!(reference, expected);
+                }
+                _ => return Err("V1 page stream emitted an unexpected frame".into()),
+            }
+        }
+        assert_eq!(decoded, canonical);
+        Ok(())
+    }
 }

@@ -39,7 +39,7 @@ struct PathRegex {
 
 // RegexExecutor keeps the pattern and HIR after compilation. Keep their
 // admission leases alive for the same lifetime as the compiled automaton.
-struct RegexMemory {
+pub(super) struct RegexMemory {
     _pattern: Option<MemoryLease>,
     _prepared: Option<MemoryLease>,
     _engine: Option<MemoryLease>,
@@ -60,9 +60,10 @@ fn map_regex_error(error: &RegexError) -> IndexError {
     }
 }
 
-fn compile_one(
+pub(super) fn compile_one(
     source: &str,
     case: Option<CaseMode>,
+    full_match: bool,
     budget: &mut WorkBudget,
 ) -> Result<(RegexExecutor, u64, RegexMemory), IndexError> {
     if source.len() > MAX_NATIVE_REGEX_PATTERN_BYTES {
@@ -89,6 +90,13 @@ fn compile_one(
     };
     let prepared: RegexCompilationPlan =
         RegexExecutor::prepare(&pattern).map_err(|error| map_regex_error(&error))?;
+    let prepared = if full_match {
+        prepared
+            .into_full_match()
+            .map_err(|error| map_regex_error(&error))?
+    } else {
+        prepared
+    };
     let states = prepared.estimated_states();
     budget.charge(WorkUsage {
         bytes: states
@@ -113,6 +121,12 @@ fn compile_one(
 }
 
 impl NativeRegexProgram {
+    pub(super) fn content_executor(&self, index: usize) -> Result<(&RegexExecutor, u64), IndexError> {
+        self.content.get(index).map(|regex| (&regex.executor, regex.estimated_states)).ok_or_else(|| {
+            IndexError::BackendViolation("native preview regex is missing from prepared program".into())
+        })
+    }
+
     pub(super) fn compile(
         content: &[&str],
         paths: &[PathConstraint],
@@ -170,7 +184,8 @@ impl NativeRegexProgram {
             .try_reserve_exact(count)
             .map_err(|_error| IndexError::ResourceLimited)?;
         for source in content {
-            let (executor, estimated_states, memory) = compile_one(source, Some(case), budget)?;
+            let (executor, estimated_states, memory) =
+                compile_one(source, Some(case), false, budget)?;
             program.content.push(ContentRegex {
                 executor,
                 estimated_states,
@@ -178,7 +193,8 @@ impl NativeRegexProgram {
             program.engine_memory.push(memory);
         }
         for path in paths {
-            let (executor, estimated_states, memory) = compile_one(&path.pattern, None, budget)?;
+            let (executor, estimated_states, memory) =
+                compile_one(&path.pattern, None, false, budget)?;
             program.paths.push(PathRegex {
                 executor,
                 scope: path.scope,
@@ -311,6 +327,7 @@ impl NativeRegexProgram {
         index: &NativeTextIndex,
         owner: OwnerKey,
         source: ObjectRef,
+        allow_excluded_path: bool,
         context: &mut TextReadContext<'_>,
     ) -> Result<(u8, bool), IndexError> {
         context.budget.checkpoint()?;
@@ -330,9 +347,10 @@ impl NativeRegexProgram {
             context.budget,
             MemoryLifetime::Temporary,
         )?;
+        let admitted = index.validate_selected_source(&record)?;
         if stored.registration.reference != source
             || stored.registration.children.as_slice() != [record.bytes]
-            || !index.validate_selected_source(&record)?
+            || (!admitted && !allow_excluded_path)
             || record.path.is_empty()
             || record.path.starts_with('/')
             || record.path.contains('\0')
@@ -346,7 +364,9 @@ impl NativeRegexProgram {
             ));
         }
         let path_match = self.matches_path(&record.path, context.budget)?;
-        if self.content.is_empty() {
+        // An excluded source can satisfy a path filter, but has no text body
+        // in this index. Never open its bytes for a content regex.
+        if self.content.is_empty() || !admitted {
             return Ok((0, path_match));
         }
         let body = context.objects.get(record.bytes, context.budget)?;

@@ -1,9 +1,9 @@
 //! Pure owner-codec admission regressions, not a sealed dataset or permission.
 use super::*;
-use crate::legacy::{
+use crate::{
     generation_contract::GenerationContract,
+    legacy::sealed::SemanticSealedManifestV1,
     manifest::{SemanticManifest, VectorIndexSealV1},
-    sealed::SemanticSealedManifestV1,
 };
 use quanta_index_contract::{
     BatchIngestMode, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,

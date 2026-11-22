@@ -82,6 +82,8 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
         vec![chunk.clone()],
         vec![symbol.clone()],
     );
+    let reservation = ok_or_fail!(batch.generation_reservation_request());
+    assert_ne!(reservation.source_event.payload_sha256, [0; 32]);
     let observed = ok_or_fail!(client.search_corpus().publish(&batch));
     let expected = BatchPublishReceipt {
         batch_digest: ok_or_fail!(batch.batch_digest()),
@@ -100,6 +102,9 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
     let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire) = &captured.payload else {
         return;
     };
+    assert_eq!(reservation.repo_id, wire.repo_id);
+    assert_eq!(reservation.revision_id, wire.revision_id);
+    assert_eq!(reservation.source_event, wire.source_event);
     assert_eq!(wire.repo_id, repo_id());
     assert_eq!(wire.manifest_digest, "manifest:feed");
     assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));

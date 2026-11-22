@@ -36,10 +36,10 @@ impl<G> Grants<G> {
         };
         let backing = u64::try_from(
             Layout::array::<G>(growth)
-                .map_err(|_| invalid("closure grant layout overflow"))?
+                .map_err(|_error| invalid("closure grant layout overflow"))?
                 .size(),
         )
-        .map_err(|_| invalid("closure grant width overflow"))?;
+        .map_err(|_error| invalid("closure grant width overflow"))?;
         let lease = control.reserve(
             bytes
                 .checked_add(backing)
@@ -48,7 +48,7 @@ impl<G> Grants<G> {
         if growth > 0 {
             self.leases
                 .try_reserve_exact(growth.saturating_sub(self.leases.len()))
-                .map_err(|_| invalid("reserve closure grants"))?;
+                .map_err(|_error| invalid("reserve closure grants"))?;
         }
         self.leases.push(lease);
         Ok(())
@@ -76,14 +76,14 @@ fn grow<T, C: ClosureControl>(
             .max(needed)
             .min(limit);
         let bytes = Layout::array::<T>(growth)
-            .map_err(|_| invalid("closure vector layout overflow"))?
+            .map_err(|_error| invalid("closure vector layout overflow"))?
             .size();
         grants.reserve(
-            u64::try_from(bytes).map_err(|_| invalid("closure vector width overflow"))?,
+            u64::try_from(bytes).map_err(|_error| invalid("closure vector width overflow"))?,
             control,
         )?;
         v.try_reserve_exact(growth.saturating_sub(v.len()))
-            .map_err(|_| invalid("reserve closure work"))?;
+            .map_err(|_error| invalid("reserve closure work"))?;
     }
     Ok(())
 }

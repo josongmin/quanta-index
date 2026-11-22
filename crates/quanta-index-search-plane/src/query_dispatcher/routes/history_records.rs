@@ -12,11 +12,13 @@
 use crate::query_dispatcher::errors::{history_invalid_request, history_invalid_timeref};
 use crate::query_dispatcher::text_plane::{expr_matches, leaf_matches_text, matches_text};
 use crate::query_dispatcher::timeref::{parse_history_timeref_ms, unix_seconds_from_ms};
-use crate::readiness::{HistoryAuthorityState, history_diff_search_text};
+use crate::readiness::{
+    HistoryAuthorityState, history_diff_search_text, history_diff_search_text_len,
+};
 use quanta_index_contract::lex::CommitSha;
 use quanta_index_contract::{
-    CommitCandidate, DiffCandidate, HistoryCursor, HistoryScoreV1, LqFilter, LqQuery, LqType,
-    QueryResultWindowV1,
+    CommitCandidate, DiffCandidate, HistoryCursor, HistoryScoreV1, LqFilter, LqLeaf, LqOptions,
+    LqQuery, LqType, QueryResultWindowV1,
 };
 use quanta_index_core::CoreError;
 
@@ -101,11 +103,72 @@ pub(crate) fn history_commit_matches(
     state: &HistoryAuthorityState,
     record: &quanta_index_contract::lex::CommitRecord,
 ) -> Result<bool, CoreError> {
-    if !history_commit_filters_match(query, state, record)? {
+    history_commit_matches_with(query, state, record, &mut LegacyHistoryTextMatcher)
+}
+
+/// Use the same History row predicate with an admitted text implementation.
+/// Native's original DATA budget can supply a bounded matcher here while the
+/// legacy route retains its existing text semantics.
+pub(crate) trait HistoryTextMatcher {
+    fn begin_row(&mut self) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    fn reserve_diff_text(
+        &mut self,
+        _bytes: u64,
+    ) -> Result<Option<quanta_index_core::index::MemoryLease>, CoreError> {
+        Ok(None)
+    }
+
+    fn leaf_matches(
+        &mut self,
+        leaf: &LqLeaf,
+        text: &str,
+        options: &LqOptions,
+    ) -> Result<bool, CoreError>;
+
+    fn matches(
+        &mut self,
+        needle: &str,
+        haystack: &str,
+        options: &LqOptions,
+    ) -> Result<bool, CoreError>;
+}
+
+pub(crate) struct LegacyHistoryTextMatcher;
+
+impl HistoryTextMatcher for LegacyHistoryTextMatcher {
+    fn leaf_matches(
+        &mut self,
+        leaf: &LqLeaf,
+        text: &str,
+        options: &LqOptions,
+    ) -> Result<bool, CoreError> {
+        leaf_matches_text("history", leaf, text, options)
+    }
+
+    fn matches(
+        &mut self,
+        needle: &str,
+        haystack: &str,
+        options: &LqOptions,
+    ) -> Result<bool, CoreError> {
+        Ok(matches_text(needle, haystack, options))
+    }
+}
+
+pub(crate) fn history_commit_matches_with(
+    query: &LqQuery,
+    state: &HistoryAuthorityState,
+    record: &quanta_index_contract::lex::CommitRecord,
+    matcher: &mut impl HistoryTextMatcher,
+) -> Result<bool, CoreError> {
+    if !history_commit_filters_match(query, state, record, matcher)? {
         return Ok(false);
     }
     expr_matches(&query.expr, &mut |leaf| {
-        leaf_matches_text("history", leaf, record.message.as_ref(), &query.options)
+        matcher.leaf_matches(leaf, record.message.as_ref(), &query.options)
     })
 }
 
@@ -115,6 +178,7 @@ fn history_commit_filters_match(
     query: &LqQuery,
     state: &HistoryAuthorityState,
     record: &quanta_index_contract::lex::CommitRecord,
+    matcher: &mut impl HistoryTextMatcher,
 ) -> Result<bool, CoreError> {
     for filter in &query.filters {
         match filter {
@@ -130,22 +194,22 @@ fn history_commit_filters_match(
                 }
             }
             LqFilter::Author { pattern } => {
-                if !matches_text(pattern, record.author.as_ref(), &query.options) {
+                if !matcher.matches(pattern, record.author.as_ref(), &query.options)? {
                     return Ok(false);
                 }
             }
             LqFilter::Committer { pattern } => {
-                if !matches_text(pattern, record.committer.as_ref(), &query.options) {
+                if !matcher.matches(pattern, record.committer.as_ref(), &query.options)? {
                     return Ok(false);
                 }
             }
             LqFilter::Message { pattern } => {
-                if !matches_text(pattern, record.message.as_ref(), &query.options) {
+                if !matcher.matches(pattern, record.message.as_ref(), &query.options)? {
                     return Ok(false);
                 }
             }
             LqFilter::Content { leaf } => {
-                if !leaf_matches_text("history", leaf, record.message.as_ref(), &query.options)? {
+                if !matcher.leaf_matches(leaf, record.message.as_ref(), &query.options)? {
                     return Ok(false);
                 }
             }
@@ -208,13 +272,70 @@ pub(crate) fn history_diff_matches(
     record: &quanta_index_contract::lex::DiffHunkRecord,
     commit: &quanta_index_contract::lex::CommitRecord,
 ) -> Result<bool, CoreError> {
-    if !history_diff_filters_match(query, state, key, record, commit)? {
+    history_diff_matches_with(
+        query,
+        state,
+        key,
+        record,
+        commit,
+        &mut LegacyHistoryTextMatcher,
+    )
+}
+
+pub(crate) fn history_diff_matches_with(
+    query: &LqQuery,
+    state: &HistoryAuthorityState,
+    key: &crate::readiness::HistoryDiffKey,
+    record: &quanta_index_contract::lex::DiffHunkRecord,
+    commit: &quanta_index_contract::lex::CommitRecord,
+    matcher: &mut impl HistoryTextMatcher,
+) -> Result<bool, CoreError> {
+    let mut diff_text = HistoryDiffText::new(key, record);
+    if !history_diff_filters_match(query, state, key, record, commit, &mut diff_text, matcher)? {
         return Ok(false);
     }
-    let diff_text = history_diff_search_text(key, record);
     expr_matches(&query.expr, &mut |leaf| {
-        leaf_matches_text("history", leaf, &diff_text, &query.options)
+        let text = diff_text.get(matcher)?;
+        matcher.leaf_matches(leaf, text, &query.options)
     })
+}
+
+pub(crate) struct HistoryDiffText<'a> {
+    key: &'a crate::readiness::HistoryDiffKey,
+    record: &'a quanta_index_contract::lex::DiffHunkRecord,
+    // Text is released before its original memory grant.
+    loaded: Option<(String, Option<quanta_index_core::index::MemoryLease>)>,
+}
+
+impl<'a> HistoryDiffText<'a> {
+    pub(crate) fn new(
+        key: &'a crate::readiness::HistoryDiffKey,
+        record: &'a quanta_index_contract::lex::DiffHunkRecord,
+    ) -> Self {
+        Self {
+            key,
+            record,
+            loaded: None,
+        }
+    }
+
+    pub(crate) fn get(&mut self, matcher: &mut impl HistoryTextMatcher) -> Result<&str, CoreError> {
+        if self.loaded.is_none() {
+            let bytes = history_diff_search_text_len(self.key, self.record)
+                .and_then(|size| u64::try_from(size).ok())
+                .ok_or_else(|| {
+                    CoreError::InvalidContract("History diff text length overflow".into())
+                })?;
+            let loan = matcher.reserve_diff_text(bytes)?;
+            self.loaded = Some((history_diff_search_text(self.key, self.record), loan));
+        }
+        self.loaded
+            .as_ref()
+            .map(|(text, _)| text.as_str())
+            .ok_or_else(|| {
+                CoreError::Storage("History diff text missing after materialization".into())
+            })
+    }
 }
 
 /// Whether a diff hunk passes every filter of the query, the text
@@ -225,6 +346,8 @@ fn history_diff_filters_match(
     key: &crate::readiness::HistoryDiffKey,
     record: &quanta_index_contract::lex::DiffHunkRecord,
     commit: &quanta_index_contract::lex::CommitRecord,
+    diff_text: &mut HistoryDiffText<'_>,
+    matcher: &mut impl HistoryTextMatcher,
 ) -> Result<bool, CoreError> {
     for filter in &query.filters {
         match filter {
@@ -234,7 +357,7 @@ fn history_diff_filters_match(
                 }
             }
             LqFilter::File { pattern, .. } => {
-                if !matches_text(pattern, key.file_path(), &query.options) {
+                if !matcher.matches(pattern, key.file_path(), &query.options)? {
                     return Ok(false);
                 }
             }
@@ -244,27 +367,23 @@ fn history_diff_filters_match(
                 }
             }
             LqFilter::Author { pattern } => {
-                if !matches_text(pattern, commit.author.as_ref(), &query.options) {
+                if !matcher.matches(pattern, commit.author.as_ref(), &query.options)? {
                     return Ok(false);
                 }
             }
             LqFilter::Committer { pattern } => {
-                if !matches_text(pattern, commit.committer.as_ref(), &query.options) {
+                if !matcher.matches(pattern, commit.committer.as_ref(), &query.options)? {
                     return Ok(false);
                 }
             }
             LqFilter::Message { pattern } => {
-                if !matches_text(pattern, commit.message.as_ref(), &query.options) {
+                if !matcher.matches(pattern, commit.message.as_ref(), &query.options)? {
                     return Ok(false);
                 }
             }
             LqFilter::Content { leaf } => {
-                if !leaf_matches_text(
-                    "history",
-                    leaf,
-                    &history_diff_search_text(key, record),
-                    &query.options,
-                )? {
+                let text = diff_text.get(matcher)?;
+                if !matcher.leaf_matches(leaf, text, &query.options)? {
                     return Ok(false);
                 }
             }
@@ -289,17 +408,17 @@ fn history_diff_filters_match(
                 }
             }
             LqFilter::DiffAdded { pattern } => {
-                if !matches_text(pattern, record.added_text.as_ref(), &query.options) {
+                if !matcher.matches(pattern, record.added_text.as_ref(), &query.options)? {
                     return Ok(false);
                 }
             }
             LqFilter::DiffRemoved { pattern } => {
-                if !matches_text(pattern, record.removed_text.as_ref(), &query.options) {
+                if !matcher.matches(pattern, record.removed_text.as_ref(), &query.options)? {
                     return Ok(false);
                 }
             }
             LqFilter::DiffTouched { pattern } => {
-                if !matches_text(pattern, record.touched_text.as_ref(), &query.options) {
+                if !matcher.matches(pattern, record.touched_text.as_ref(), &query.options)? {
                     return Ok(false);
                 }
             }
@@ -373,22 +492,24 @@ pub(crate) fn diff_candidate_from_record(
         side: record.side,
         line_start: record.byte_start,
         line_end: record.byte_end,
-        snippet: history_diff_snippet(record),
+        snippet: history_diff_snippet_text(record).to_string(),
         score,
     }
 }
 
-fn history_diff_snippet(record: &quanta_index_contract::lex::DiffHunkRecord) -> String {
+pub(crate) fn history_diff_snippet_text(
+    record: &quanta_index_contract::lex::DiffHunkRecord,
+) -> &str {
     if !record.touched_text.is_empty() {
-        return record.touched_text.to_string();
+        return &record.touched_text;
     }
     if !record.added_text.is_empty() {
-        return record.added_text.to_string();
+        return &record.added_text;
     }
     if !record.removed_text.is_empty() {
-        return record.removed_text.to_string();
+        return &record.removed_text;
     }
-    record.hunk_header.to_string()
+    &record.hunk_header
 }
 
 fn history_committer_time_before(committer_time_ms: u64, timeref: &str) -> Result<bool, CoreError> {

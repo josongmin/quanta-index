@@ -14,9 +14,13 @@ use std::{
 use quanta_index_core::index::{
     IndexError, NativeReadSettlement, NativeReadSettlementBlocker, NativeReadSettlementStatus,
     OperationKey, OperationStatus, OwnedWorkGrant, OwnedWorkReport, OwnedWorkTerminal, Refusal,
-    SubmitOutcome, UpdateKind, WorkBudget, WorkClaim, WorkIntent, ports::TerminalCustodyPage,
+    SubmitOutcome, UpdateKind, WorkBudget, WorkClaim, WorkIntent, WorkUsage,
+    ports::TerminalCustodyPage,
 };
-use quanta_index_core::{DiagnosticCaptureIdV1, DiagnosticTraceRefV1};
+use quanta_index_core::{
+    DiagnosticCaptureIdV1, DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1,
+    DiagnosticTraceRefV1,
+};
 use quanta_index_kernel::QueryExecutionTimings;
 use serde::Serialize;
 
@@ -722,6 +726,14 @@ pub(super) fn record_if_enabled(
     budget: &WorkBudget,
     result: &Result<SubmitOutcome, IndexError>,
 ) {
+    if matches!(
+        result,
+        Ok(SubmitOutcome::Terminal(OperationStatus::Published(_)))
+    ) && budget.request().diagnostic_context().is_some()
+        && std::env::var_os(ENV).as_deref() == Some(OsStr::new("1"))
+    {
+        record_published_budget_span(budget);
+    }
     let Some(outcome) = outcome_name(result) else {
         return;
     };
@@ -733,6 +745,22 @@ pub(super) fn record_if_enabled(
     };
     line.push(b'\n');
     let _written = std::io::stderr().lock().write_all(&line);
+}
+
+/// One closed terminal span carries cumulative accepted work for the direct request.
+/// It does not add charges or sum overlapping phase counters.
+fn record_published_budget_span(budget: &WorkBudget) {
+    let Some(context) = budget.request().diagnostic_context() else {
+        return;
+    };
+    let Some(span) = crate::runtime_diagnostic_span(
+        context,
+        context.enter(DiagnosticStageV1::Operation, DiagnosticLaneV1(2)),
+    ) else {
+        return;
+    };
+    budget.record_diagnostic_usage_delta(WorkUsage::default(), &span);
+    let _finished = span.finish(DiagnosticTerminalV1::Ok);
 }
 
 /// Observe the original refusal before its execution/credit custody unwinds.
@@ -964,7 +992,8 @@ fn encode_owned(
                 | UpdateKind::ProjectionAdvance(_)
                 | UpdateKind::HistoryAdvance(_)
                 | UpdateKind::HistoryAppend(_)
-                | UpdateKind::Reconfigure { .. } => None,
+                | UpdateKind::Reconfigure { .. }
+                | UpdateKind::CompactSourceLocal { .. } => None,
             };
             (
                 grant.assignment.request.operation,
@@ -1343,13 +1372,15 @@ mod tests {
     use std::{sync::atomic::AtomicUsize, time::Duration};
 
     use quanta_index_core::{
-        DiagnosticSpanIdV1, RequestBudgetV1,
+        DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticSpanIdV1, DiagnosticTerminalV1,
+        RequestBudgetV1,
         index::{
             CollectionId, Digest, IndexInstanceId, MapRoot, OwnedWorkAssignment, OwnedWorkPolicy,
             ProducerId, ProjectionId, SlotId, SourceCut, StreamId, TenantId, UpdateRequest,
             ViewRef, WorkIntent, WorkLimits, WorkScope, WorkUsage, WorkspaceKey, WorktreeId,
         },
     };
+    use quanta_index_searchd::{DiagnosticCaptureLimitsV1, DiagnosticCaptureV1};
 
     use super::*;
 
@@ -2227,6 +2258,121 @@ mod tests {
         {
             return Err("pregrant work block diagnostic claimed execution or a receipt".into());
         }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions compare fixed terminal budget and trace counter goldens"
+    )]
+    fn published_budget_span_closes_with_exact_cumulative_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let trace = directory.path().join("published-budget.jsonl");
+        let mut recorder =
+            DiagnosticCaptureV1::start(trace.clone(), DiagnosticCaptureLimitsV1::default())?;
+        let lease = recorder.lease().ok_or("capture lease absent")?;
+        let root = lease
+            .context()
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
+        let request = RequestBudgetV1::for_duration(Duration::from_secs(30))
+            .with_diagnostic_context(lease.context().child_context(&root));
+        let mut budget = WorkBudget::with_request(
+            WorkLimits {
+                reads: 10,
+                writes: 10,
+                bytes: 100,
+                mutations: 10,
+            },
+            request,
+        );
+        budget.charge(WorkUsage {
+            reads: 2,
+            writes: 3,
+            bytes: 40,
+            mutations: 4,
+        })?;
+        record_published_budget_span(&budget);
+        drop(budget);
+        root.finish(DiagnosticTerminalV1::Ok)?;
+        drop(lease);
+        let closed = recorder.close(Duration::from_secs(2))?;
+        assert_eq!(
+            closed.status,
+            quanta_index_searchd::DiagnosticCaptureStatusV1::Complete
+        );
+        let rows: Vec<serde_json::Value> = std::fs::read_to_string(trace)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()?;
+        let schema = rows
+            .first()
+            .and_then(|row| row.get("schema_version"))
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("capture schema absent")?;
+        let rows: Vec<serde_json::Value> = rows
+            .into_iter()
+            .map(|row| quanta_index_searchd::trace_wire::normalize_record(schema, row))
+            .collect::<Result<_, _>>()?;
+        let span = rows
+            .iter()
+            .find(|row| {
+                row.pointer("/kind/type")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("span_begin")
+                    && row
+                        .pointer("/kind/stage")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("operation")
+                    && row
+                        .pointer("/kind/lane_id")
+                        .and_then(serde_json::Value::as_u64)
+                        == Some(2)
+            })
+            .ok_or("published budget span absent")?;
+        let span_id = span["kind"]["span_id"].as_u64().ok_or("span ID absent")?;
+        for (key, value) in [
+            ("work_reads", 2),
+            ("work_writes", 3),
+            ("work_bytes", 40),
+            ("work_mutations", 4),
+        ] {
+            let observed: Vec<_> = rows
+                .iter()
+                .filter(|row| {
+                    row.pointer("/kind/type")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("counter")
+                        && row
+                            .pointer("/kind/span_id")
+                            .and_then(serde_json::Value::as_u64)
+                            == Some(span_id)
+                        && row.pointer("/kind/key").and_then(serde_json::Value::as_str) == Some(key)
+                })
+                .collect();
+            assert_eq!(observed.len(), 1);
+            assert_eq!(
+                observed
+                    .first()
+                    .and_then(|row| row.pointer("/kind/value"))
+                    .and_then(serde_json::Value::as_u64),
+                Some(value)
+            );
+        }
+        assert!(rows.iter().any(|row| {
+            row.pointer("/kind/type")
+                .and_then(serde_json::Value::as_str)
+                == Some("span_end")
+                && row
+                    .pointer("/kind/span_id")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(span_id)
+                && row
+                    .pointer("/kind/outcome")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("ok")
+        }));
         Ok(())
     }
 

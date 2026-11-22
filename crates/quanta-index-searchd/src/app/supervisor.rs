@@ -463,13 +463,6 @@ impl SupervisorGuards for () {
     }
 }
 
-impl SupervisorGuards for crate::app::runtime::StateRootLease {
-    fn retire(self) -> Result<(), quanta_index_core::CoreError> {
-        drop(self);
-        Ok(())
-    }
-}
-
 /// The single owner of daemon child threads and runtime guards.
 ///
 /// Guards remain here until every child joins, or transfer with unfinished

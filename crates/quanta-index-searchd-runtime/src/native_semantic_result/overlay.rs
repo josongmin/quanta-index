@@ -123,18 +123,28 @@ pub(crate) fn convert(
         u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
         MemoryLifetime::Retained,
     )?;
-    let (corpus, corpus_memory) = crate::native_overlay_query::stamp(snapshot, &reserve)?;
+    let stamped = crate::native_overlay_query::stamp(snapshot, &reserve)?;
+    let corpus_memory = stamped.1;
+    let corpus = stamped.0;
     let traversal = result.traversal;
     let scanned_owners = result.scanned_owners;
     let skipped_stale = result.skipped_stale;
-    let (input_hits, old_memory) = result.into_parts();
+    let parts = result.into_parts();
+    let old_memory = parts.1;
+    let input_hits = parts.0;
     let mut hits = Vec::new();
     hits.try_reserve_exact(count)
         .map_err(|_error| IndexError::ResourceLimited)?;
+    if hits.capacity() > count {
+        return Err(IndexError::ResourceLimited);
+    }
     let mut payload_memory = Vec::new();
     payload_memory
         .try_reserve_exact(leases)
         .map_err(|_error| IndexError::ResourceLimited)?;
+    if payload_memory.capacity() > leases {
+        return Err(IndexError::ResourceLimited);
+    }
     let mut output = ResultValue {
         result: NativeOverlaySemanticResult {
             view,
@@ -152,6 +162,7 @@ pub(crate) fn convert(
     };
     output.payload_memory.push(corpus_memory);
     for hit in input_hits {
+        let score = super::checked_score(hit.cosine)?;
         let overlay = hit.overlay.map(|origin| NativeOverlaySemanticHitOrigin {
             revision: origin.revision,
             chunk: origin.chunk.map(|chunk| NativeOverlaySemanticChunk {
@@ -161,11 +172,11 @@ pub(crate) fn convert(
                 end: chunk.end,
             }),
         });
-        let (owner, vector_id, cosine, chunk, memory) = hit.into_parts();
+        let (owner, vector_id, _cosine, chunk, memory) = hit.into_parts();
         output.result.hits.push(NativeOverlaySemanticHit {
             owner,
             vector_id,
-            score: super::checked_score(cosine)?,
+            score,
             chunk,
             overlay,
         });

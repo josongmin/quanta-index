@@ -1,16 +1,18 @@
 //! `ops_matrix` — operator-ergonomics rail artifact producer + gate (J7Q-05).
 //!
-//! Boots one `E2eRuntime`, seeds a single document, and captures the read-only
+//! Boots the pinned Legacy daemon, seeds a document via SDK, and captures the read-only
 //! operator-diagnosis surfaces (route/generation provenance, typed-error code,
 //! perf metrics) machine-readably, writing the canonical artifacts under
-//! `artifacts/search-quality/ops/latest/`. Authority behind
+//! `artifacts/search-quality/ops/latest/`. Diagnostic behind
 //! `just rust-verify-quality-ops`.
 //!
-//! Fail-closed: a surface that swallows its provenance (empty engine set,
-//! generation mismatch, blank typed-error code, no metrics) records
+//! Fail-closed: a surface that swallows its provenance (generation mismatch,
+//! wrong typed refusal, missing query metrics) records
 //! `provenance_ok=false` and the rail exits non-zero — never a fabricated pass.
 
-use std::path::PathBuf;
+#[path = "common/artifact_out_dir.rs"]
+mod artifact_out_dir;
+
 use std::process::ExitCode;
 
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
@@ -26,21 +28,22 @@ fn provenance()
     ))
 }
 
-fn parse_out_dir() -> PathBuf {
-    let mut args = std::env::args().skip(1);
-    match (args.next().as_deref(), args.next()) {
-        (Some("--out-dir"), Some(path)) => PathBuf::from(path),
-        _ => PathBuf::from("artifacts/search-quality/ops/latest"),
-    }
-}
-
 #[expect(
     clippy::print_stderr,
     clippy::print_stdout,
     reason = "rail binary reports rail status on stdout/stderr by design"
 )]
 fn main() -> ExitCode {
-    let out_dir = parse_out_dir();
+    let out_dir = match artifact_out_dir::parse(
+        std::env::args_os().skip(1),
+        "artifacts/search-quality/ops/latest",
+    ) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("ops_matrix: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let (git_head, host) = match provenance() {
         Ok(value) => value,
         Err(err) => {

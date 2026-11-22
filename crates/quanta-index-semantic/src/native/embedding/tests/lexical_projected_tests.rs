@@ -28,6 +28,19 @@ impl quanta_index_core::index::MemoryLeaseOwner for BoundedSelectionMemory {
 
 struct BoundedSelectionScope(Arc<BoundedSelectionMemory>);
 
+// This fixture meters one live envelope. Promotion needs no second charge.
+struct BoundedSelectionLease(Arc<BoundedSelectionMemory>);
+
+impl quanta_index_core::index::MemoryLeaseOwner for BoundedSelectionLease {
+    fn release(&self, bytes: u64) {
+        quanta_index_core::index::MemoryLeaseOwner::release(self.0.as_ref(), bytes);
+    }
+
+    fn try_retain(&mut self, _bytes: u64) -> Result<bool, IndexError> {
+        Ok(true)
+    }
+}
+
 impl quanta_index_core::index::MemoryScopePort for BoundedSelectionScope {
     fn reserve(&self, bytes: u64, _lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
         if self.0.deny_reservation == Some(bytes) {
@@ -45,7 +58,10 @@ impl quanta_index_core::index::MemoryScopePort for BoundedSelectionScope {
             .checked_add(bytes)
             .ok_or(IndexError::ResourceLimited)?;
         let _previous_peak = self.0.peak.fetch_max(next, AtomicOrdering::SeqCst);
-        Ok(MemoryLease::new(bytes, self.0.clone()))
+        Ok(MemoryLease::new(
+            bytes,
+            Arc::new(BoundedSelectionLease(Arc::clone(&self.0))),
+        ))
     }
 }
 
@@ -644,21 +660,29 @@ fn projected_lexical_reverse_selects_shared_source_members_and_refuses_forgery()
         source: NativeTextHitSource::Durable(fixture.source_a),
     };
     let view = fixture.ticket.view.identity;
-    let run = |request: &SemanticReadRequest, maps: &TestMap, work: &mut WorkBudget| {
-        reader.query(
-            request,
-            &mut QueryReadContext {
-                ticket: &fixture.ticket,
-                instance: &fixture.spec,
-                objects: &fixture.store,
-                maps,
-                budget: work,
-            },
-        )
-    };
+    let run =
+        |request: &SemanticReadRequest, maps: &dyn PersistentMapPort, work: &mut WorkBudget| {
+            reader.query(
+                request,
+                &mut QueryReadContext {
+                    ticket: &fixture.ticket,
+                    instance: &fixture.spec,
+                    objects: &fixture.store,
+                    maps,
+                    budget: work,
+                },
+            )
+        };
     let mut scoped = super::lexical_scope_tests::scoped_request(view, vec![entry], 1)?;
     scoped.query.top_k = 2;
-    let result = run(&scoped, &fixture.maps, &mut work)?;
+    let mut source_reads = super::ann_product_tests::RecordingMap::new(
+        &fixture.maps,
+        fixture.ticket.view.source.owners,
+        false,
+    );
+    source_reads.observe_lookup_key(owner_map_key(fixture.source_owner_a));
+    let result = run(&scoped, &source_reads, &mut work)?;
+    check_eq!(source_reads.take_lookup_count(), 1);
     check_eq!(result.result().hits.len(), 2);
     check_eq!(
         result
@@ -689,7 +713,8 @@ fn projected_lexical_reverse_selects_shared_source_members_and_refuses_forgery()
     exact.query.constraints.repo_relative_path_exact = Some(
         quanta_index_contract::ExactRepoRelativePathV1::new("src/a.rs")?,
     );
-    let direct = run(&exact, &fixture.maps, &mut work)?;
+    let direct = run(&exact, &source_reads, &mut work)?;
+    check_eq!(source_reads.take_lookup_count(), 1);
     check_eq!(direct.result().hits.len(), 2);
     check_eq!(
         direct
@@ -740,6 +765,40 @@ fn projected_lexical_reverse_selects_shared_source_members_and_refuses_forgery()
         inline_rooted_entries: fixture.maps.inline_rooted_entries.clone(),
         fail: false,
     };
+    // This row has a valid coverage value under a different source.
+    let source_key = owner_map_key(fixture.source_owner_a);
+    let (_, reverse_rows) = forged
+        .rooted_entries
+        .iter_mut()
+        .find(|(root, _)| *root == fixture.reverse_root)
+        .ok_or("reverse map root")?;
+    let (foreign_key, foreign_coverage) = reverse_rows
+        .iter()
+        .find(|(key, _)| !key.starts_with(&source_key))
+        .ok_or("foreign reverse row")?;
+    let mut wrong_key = source_key.to_vec();
+    wrong_key.extend_from_slice(
+        foreign_key
+            .get(source_key.len()..)
+            .ok_or("foreign semantic owner key")?,
+    );
+    let foreign_coverage = *foreign_coverage;
+    reverse_rows.push((wrong_key.clone(), foreign_coverage));
+    reverse_rows.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    check_eq!(
+        run(&scoped, &forged, &mut work).err(),
+        Some(IndexError::CorruptObject(
+            "projected reverse source stamp differs".into()
+        ))
+    );
+    check_eq!(calls.load(AtomicOrdering::SeqCst), 3);
+    let (_, reverse_rows) = forged
+        .rooted_entries
+        .iter_mut()
+        .find(|(root, _)| *root == fixture.reverse_root)
+        .ok_or("reverse map root")?;
+    reverse_rows.retain(|(key, _)| key != &wrong_key);
+
     let original_reverse_value = fixture
         .maps
         .rooted_entries
@@ -1064,9 +1123,12 @@ fn current_empty_projection_output_is_exhaustive_for_lexical_and_direct_path()
 fn projected_small_source_selection_fits_one_mib_with_large_owner_cap()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut work = budget()?;
+    let unused_owner_backing = std::mem::size_of::<super::super::selected_owner::SelectedOwner>()
+        .checked_mul(64)
+        .ok_or("unused owner backing overflow")?;
     let memory = Arc::new(BoundedSelectionMemory {
         limit: 1_048_576,
-        deny_reservation: None,
+        deny_reservation: Some(u64::try_from(unused_owner_backing)?),
         live: AtomicU64::new(0),
         peak: AtomicU64::new(0),
         denied: AtomicU64::new(0),
@@ -1120,6 +1182,7 @@ fn projected_small_source_selection_fits_one_mib_with_large_owner_cap()
     check!(result.exhaustive());
     drop(result);
     check_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+    check_eq!(memory.denied.load(AtomicOrdering::SeqCst), 0);
     check_eq!(work.first_denial(), None);
     check!(!memory.invalid.load(AtomicOrdering::SeqCst));
     check_eq!(memory.live.load(AtomicOrdering::SeqCst), 0);

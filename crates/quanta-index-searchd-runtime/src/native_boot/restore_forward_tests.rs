@@ -394,7 +394,14 @@ fn held_previous_native_reads_selected_boot_and_refuses_stale_identity_v1() -> T
             "foreign selected BOOT nonce authenticated actual root",
         )
     })?;
-    let service = bind(&old.config, compose(&old.config)?, None, &request(), false)?;
+    let service = bind(
+        &old.config,
+        old.config_digest,
+        compose(&old.config)?,
+        None,
+        &request(),
+        false,
+    )?;
     let shutdown = service.shutdown_handle();
     let running = thread::Builder::new()
         .name("previous-native-pending".into())
@@ -410,4 +417,251 @@ fn held_previous_native_reads_selected_boot_and_refuses_stale_identity_v1() -> T
             "unsettled previous Native ingress passed held-root quiescence",
         )
     })
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn cold_settlement_rechecks_not_applicable_on_the_original_legacy_scope() -> TestResult {
+    use crate::deployment_selection::{
+        DeploymentSelectionBeforeDocumentV1, LegacyPublishedRecoveryWitnessV1,
+        PublishedRecoveryRootWitnessV1, with_locked_deployment_selection_reconciliation_v1,
+        with_locked_published_recovery_v1,
+    };
+    use quanta_index_contract::{
+        FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
+        RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
+        RepoMapItemIndexAvailability, RepoMapNode, RepoMapPublishBundleRequestV2,
+        RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
+        native_cutover_evidence_v1::{
+            NativeCutoverControlBeginV1, NativeCutoverDigest64V1,
+            NativeCutoverEvidenceLegacyRepoMapV1, NativeCutoverRecoveryModeV1,
+        },
+    };
+    use quanta_index_core::publication_capacity::InodeKey;
+    use quanta_index_searchd_harness::legacy_reference::{
+        LegacySearchdBinary, publish_legacy_source,
+    };
+    use std::{collections::BTreeMap, sync::Arc};
+
+    for add_active_repomap_after_publication in [false, true] {
+        let mut native = prepare_native_fixture()?;
+        native.running.stop()?;
+        select_native_fixture_v1(&native)?;
+
+        let old_root = native.base.join("original-legacy");
+        let old_binary = LegacySearchdBinary::from_environment()?;
+        let old_process = old_binary.start(&old_root, 8)?;
+        let old_client = old_process.connect()?;
+        let repo = RepoId::new("original-repo")?;
+        let revision = RevisionId::new("original-revision")?;
+        let (head, source_receipt) = publish_legacy_source(
+            &old_client,
+            &repo,
+            &revision,
+            1,
+            None,
+            &[("src/original.rs", "fn original() {}", 1)],
+            None,
+        )?;
+        drop(old_client);
+        old_process.stop()?;
+        old_binary.verify()?;
+
+        let installed_old_binary = old_binary.installer_binary()?;
+        let old_binary_path = installed_old_binary.path().to_path_buf();
+        installed_old_binary.verify()?;
+        let old_binary_sha256 = hex(sha_file(&old_binary_path)?);
+        let environment =
+            legacy_physical_fixture::legacy_physical_env().collect::<BTreeMap<_, _>>();
+        let mut old_selection = serde_json::json!({
+            "schema_version": 2,
+            "mode": "legacy",
+            "binary": old_binary_path,
+            "binary_sha256": old_binary_sha256,
+            "state_root": old_root,
+            "environment": environment,
+        });
+        old_selection.sort_all_objects();
+        let mut before_bytes = serde_json::to_vec(&old_selection)?;
+        before_bytes.push(b'\n');
+        let after_bytes = selected_native_wire_v1(&native)?;
+        let selection = native.base.join("cold-selection.json");
+        let candidate = native.base.join("cold-candidate.json");
+        for (path, bytes) in [
+            (&selection, before_bytes.as_slice()),
+            (&candidate, after_bytes.as_slice()),
+        ] {
+            fs::write(path, bytes)?;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+        let before_inode = fs::metadata(&selection)?;
+        let before_sha256 = Digest(Sha256::digest(&before_bytes).into());
+        let after_sha256 = Digest(Sha256::digest(&after_bytes).into());
+        let request_v1 = DeploymentSelectionRequestV1 {
+            selection_path_v1: &selection,
+            expected_current_sha256_v1: before_sha256,
+            candidate_path_v1: &candidate,
+            expected_candidate_sha256_v1: after_sha256,
+            mode_v1: DeploymentRecoveryModeV1::RestoreForward,
+        };
+        let before = DeploymentSelectionBeforeDocumentV1 {
+            operation_id_v1: "original-not-applicable-cold-settlement",
+            bytes_v1: &before_bytes,
+            raw_sha256_v1: before_sha256,
+            file_version_v1: Some(
+                quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceBeforeSelectionV1::file_version_v1(&before_inode),
+            ),
+            retained_terminal_v1: None,
+        };
+        let begin = NativeCutoverControlBeginV1 {
+            format_version: 1,
+            operation_id: before.operation_id_v1.to_owned(),
+            mode: NativeCutoverRecoveryModeV1::RestoreForward,
+            current_selection_sha256: before_sha256,
+            candidate_selection_sha256: after_sha256,
+            deadline_ns: 1,
+            evidence_length: 1,
+            evidence_sha256: Digest([9; 32]),
+            nonce: Digest([10; 32]),
+        };
+        let disposition = NativeCutoverEvidenceLegacyRepoMapV1::NotApplicable {
+            reason_code: "no-repomap".into(),
+            policy_digest: NativeCutoverDigest64V1([b'a'; 64]),
+            product_scope_digest: NativeCutoverDigest64V1([b'b'; 64]),
+        };
+        let root_metadata = fs::metadata(&native.root)?;
+        let native_root = InodeKey {
+            device: root_metadata.dev(),
+            inode: root_metadata.ino(),
+        };
+        let published =
+            boot::with_admitted_control_budget(&native.config, request(), false, |budget, _| {
+                Ok(with_locked_deployment_selection_reconciliation_v1(
+                    &request_v1,
+                    &before,
+                    budget,
+                    |locked, budget| {
+                        let legacy = LegacyPublishedRecoveryWitnessV1 {
+                            repo_id: &repo,
+                            revision_id: &revision,
+                            durable_sequence: source_receipt.durable_sequence,
+                            activation:
+                                crate::deployment_selection::legacy_recovery_activation_digest_v1(
+                                    &head, budget,
+                                )
+                                .map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?,
+                        };
+                        locked
+                            .bind_recovery_witness_v1(
+                                &begin,
+                                native.config_digest,
+                                native.binary_digest,
+                            )
+                            .and_then(|()| {
+                                locked.prepare_recovery_witness_v1(
+                                    None,
+                                    native_root,
+                                    Some(legacy),
+                                    &disposition,
+                                    budget,
+                                )
+                            })
+                            .map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?;
+                        locked.publish_with_custody_v1(budget, &mut |_| Ok(()))
+                    },
+                ))
+            })??;
+        require(
+            published.after_sha256_v1() == after_sha256,
+            "fixture did not publish the selected Native root",
+        )?;
+        let selected_inode = fs::metadata(&selection)?;
+        require(
+            fs::read(&selection)? == after_bytes && selected_inode.ino() != before_inode.ino(),
+            "fixture did not retain the actual Native selection inode",
+        )?;
+
+        if add_active_repomap_after_publication {
+            let catalog = Arc::new(quanta_index_catalog::SqliteCatalog::open(
+                &old_root,
+                Duration::ZERO,
+            )?);
+            let store = quanta_index_repomap::RepoMapGenerationStore::open(
+                old_root.join("repo-map"),
+                catalog,
+            )?
+            .store;
+            let bundle = RepoMapSourceBundle::new(
+                repo.clone(),
+                revision.clone(),
+                ManifestGeneration::new(2),
+                "a".repeat(64),
+                "original-snapshot",
+                1,
+                "b".repeat(64),
+                RepoMapGraphCoverage {
+                    item_index_availability: RepoMapItemIndexAvailability::Available,
+                    graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+                },
+                RepoMapExactnessSummary::Exact,
+                RepoMapRedactionState::Unredacted,
+            )
+            .with_node(RepoMapNode::File(RepoMapFileNode {
+                file_id: FileId::new("file://src/original.rs"),
+                repo_relative_path: RepoRelativePath::new("src/original.rs"),
+                line_count: 1,
+            }));
+            let _publish =
+                store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle.clone())?)?;
+            let _activate = store.activate_generation_v2(
+                &RepoMapActivateGenerationRequestV2::for_bundle(&bundle)?,
+            )?;
+        }
+
+        let mut sync_entered = false;
+        let outcome =
+            boot::with_admitted_control_budget(&native.config, request(), false, |budget, _| {
+                Ok(with_locked_published_recovery_v1(
+                    &request_v1,
+                    &before,
+                    native.config_digest,
+                    budget,
+                    |locked, _, witness: PublishedRecoveryRootWitnessV1<'_>, budget, sync| {
+                        boot::with_verified_settlement_root_v1(
+                            locked,
+                            &native.config,
+                            witness,
+                            budget,
+                            |budget| {
+                                sync_entered = true;
+                                sync(budget, &mut |_| Ok(()))
+                            },
+                        )
+                    },
+                ))
+            })?;
+        if add_active_repomap_after_publication {
+            require(
+                matches!(outcome, Err(DeploymentSelectionErrorV1::PersistenceUncertain(error))
+                    if error.downcast_ref::<IndexError>() == Some(&IndexError::DigestConflict))
+                    && !sync_entered,
+                "cold NotApplicable settlement accepted the original scope's active RepoMap",
+            )?;
+        } else {
+            require(
+                outcome?.publication.resolution_v1()
+                    == crate::deployment_selection::DeploymentSelectionResolutionV1::Reconciled
+                    && sync_entered,
+                "cold NotApplicable settlement did not reconcile an empty RepoMap scope",
+            )?;
+        }
+        let after_settlement = fs::metadata(&selection)?;
+        require(
+            fs::read(&selection)? == after_bytes
+                && (after_settlement.dev(), after_settlement.ino())
+                    == (selected_inode.dev(), selected_inode.ino()),
+            "cold settlement changed the selected Native bytes or inode",
+        )?;
+    }
+    Ok(())
 }

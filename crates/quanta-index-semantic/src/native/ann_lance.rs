@@ -3,14 +3,14 @@
 //! The caller owns the admitted staging connection, the selected-view member
 //! directory, and physical-file custody. This module cannot publish a region.
 
-use std::{future::Future, sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use arrow_array::{
     Array, BinaryArray, FixedSizeBinaryArray, FixedSizeListArray, Float32Array, RecordBatch,
     builder::{BinaryBuilder, FixedSizeBinaryBuilder},
 };
 use arrow_schema::{DataType, Field, Schema};
-use futures::TryStreamExt as _;
+use futures::{Stream, StreamExt as _, TryStreamExt as _};
 use lancedb::{
     DistanceType,
     query::{ExecutableQuery as _, QueryBase as _, Select},
@@ -18,16 +18,14 @@ use lancedb::{
 use quanta_index_contract::native_protocol::{
     MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES, NativeSemanticTraversal,
 };
-use quanta_index_core::RequestBudgetV1;
 use quanta_index_core::domains::semantic::DenseIndexV1;
-#[cfg(test)]
-use quanta_index_core::index::MemoryLease;
 use quanta_index_core::index::{
-    Digest, IndexError, MemoryLifetime, OwnerInputBinding, OwnerKey, ProducerId, StableOwnerId,
-    WorkBudget, WorkUsage,
+    Digest, IndexError, MemoryLease, MemoryLifetime, OwnerInputBinding, OwnerKey, ProducerId,
+    StableOwnerId, WorkBudget, WorkUsage,
 };
 use sha2::{Digest as _, Sha256};
 
+use super::ann_region_policy::{MAX_REGION_CELLS, MAX_REGION_DIMENSION, MAX_REGION_ROWS};
 use crate::{
     manifest::VectorIndexSealV1,
     vector_index::{
@@ -53,9 +51,6 @@ mod write_settle;
 
 /// A region can contain multiple owners; the cap is independent of corpus size.
 /// Regions smaller than this project's index floor seal as bounded exact.
-pub(super) const MAX_REGION_ROWS: usize = 8192;
-pub(super) const MAX_REGION_DIMENSION: usize = 4096;
-pub(super) const MAX_REGION_CELLS: usize = 1_048_576;
 pub(super) const MAX_REGION_CANDIDATES: usize = 1024;
 
 #[derive(Clone, Copy, Debug)]
@@ -93,7 +88,6 @@ pub(super) struct RegionCandidate {
     pub member: Digest,
     pub vector_id: Vec<u8>,
     pub input_stamp: Digest,
-    pub cosine: f32,
 }
 
 /// Traversal describes only this immutable region, independently of durable
@@ -104,12 +98,21 @@ pub(super) struct RegionPage {
     pub traversal: NativeSemanticTraversal,
 }
 
-/// One region query's verified decisions across widening backend prefixes.
-/// The temporary memory grant in `query_region` covers both bounded vectors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RefillProgress {
+    Vector,
+    SourceFile(OwnerKey),
+}
+
+/// One region query's verified candidates across widening backend prefixes.
+/// File identities are retained only when file results require refill.
 struct RefillDecisions {
     candidates: Vec<RegionCandidate>,
-    accepted: Vec<bool>,
+    file_owners: Vec<OwnerKey>,
+    _file_owners_memory: Option<MemoryLease>,
     accepted_count: usize,
+    rescored: usize,
+    skipped_after_rescore_cap: bool,
 }
 
 impl RefillDecisions {
@@ -118,17 +121,16 @@ impl RefillDecisions {
         candidates
             .try_reserve_exact(capacity)
             .map_err(|_error| IndexError::ResourceLimited)?;
-        let mut accepted = Vec::new();
-        accepted
-            .try_reserve_exact(capacity)
-            .map_err(|_error| IndexError::ResourceLimited)?;
-        if candidates.capacity() > capacity || accepted.capacity() > capacity {
+        if candidates.capacity() > capacity {
             return Err(IndexError::ResourceLimited);
         }
         Ok(Self {
             candidates,
-            accepted,
+            file_owners: Vec::new(),
+            _file_owners_memory: None,
             accepted_count: 0,
+            rescored: 0,
+            skipped_after_rescore_cap: false,
         })
     }
 
@@ -136,9 +138,14 @@ impl RefillDecisions {
         &mut self,
         candidate: &RegionCandidate,
         budget: &mut WorkBudget,
-        accept: &mut impl FnMut(&RegionCandidate, &mut WorkBudget) -> Result<bool, IndexError>,
-    ) -> Result<bool, IndexError> {
-        if let Some((index, prior)) = self.candidates.iter().enumerate().find(|(_, prior)| {
+        top_k: usize,
+        rescore_cap: usize,
+        accept: &mut impl FnMut(
+            &RegionCandidate,
+            &mut WorkBudget,
+        ) -> Result<Option<RefillProgress>, IndexError>,
+    ) -> Result<(), IndexError> {
+        if let Some(prior) = self.candidates.iter().find(|prior| {
             prior.owner == candidate.owner
                 && prior.member == candidate.member
                 && prior.vector_id == candidate.vector_id
@@ -148,23 +155,61 @@ impl RefillDecisions {
                     "Native ANN refill changed immutable candidate input",
                 ));
             }
-            return Ok(self.accepted[index]);
+            return Ok(());
         }
         if self.candidates.len() == self.candidates.capacity() {
             return Err(IndexError::BackendViolation(
                 "Native ANN refill exceeded candidate capacity".into(),
             ));
         }
+        // A rejected row does not spend the original-vector window. Once
+        // enough distinct results exist, do not rank further new rows in an
+        // already started backend batch. The physical batch is still drained.
+        if self.rescored >= rescore_cap && self.accepted_count >= top_k {
+            self.skipped_after_rescore_cap = true;
+            return Ok(());
+        }
         let decision = accept(candidate, budget)?;
+        if decision.is_some() {
+            self.rescored = self
+                .rescored
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
+        }
+        let new_result = match decision {
+            Some(RefillProgress::Vector) if self.accepted_count < top_k => true,
+            Some(RefillProgress::SourceFile(owner))
+                if self.accepted_count < top_k && !self.file_owners.contains(&owner) =>
+            {
+                if self.file_owners.is_empty() {
+                    let bytes = top_k
+                        .checked_mul(std::mem::size_of::<OwnerKey>())
+                        .ok_or(IndexError::ResourceLimited)?;
+                    let memory = budget.reserve_memory(
+                        u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+                        MemoryLifetime::Temporary,
+                    )?;
+                    self.file_owners
+                        .try_reserve_exact(top_k)
+                        .map_err(|_error| IndexError::ResourceLimited)?;
+                    if self.file_owners.capacity() > top_k {
+                        return Err(IndexError::ResourceLimited);
+                    }
+                    self._file_owners_memory = memory;
+                }
+                self.file_owners.push(owner);
+                true
+            }
+            _ => false,
+        };
         self.candidates.push(candidate.clone());
-        self.accepted.push(decision);
-        if decision {
+        if new_result {
             self.accepted_count = self
                 .accepted_count
                 .checked_add(1)
                 .ok_or(IndexError::ResourceLimited)?;
         }
-        Ok(decision)
+        Ok(())
     }
 }
 
@@ -367,27 +412,6 @@ fn arrow_batch(rows: &[RegionRow<'_>], dimension: usize) -> Result<RecordBatch, 
     .map_err(backend)
 }
 
-async fn interruptible<T>(
-    request: &RequestBudgetV1,
-    future: impl Future<Output = Result<T, IndexError>>,
-) -> Result<T, IndexError> {
-    let future = future;
-    tokio::pin!(future);
-    let mut poll = tokio::time::interval(Duration::from_millis(25));
-    loop {
-        if request.is_cancelled() {
-            return Err(IndexError::Cancelled);
-        }
-        if request.remaining().is_zero() {
-            return Err(IndexError::ResourceLimited);
-        }
-        tokio::select! {
-            result = &mut future => return result,
-            _ = poll.tick() => {}
-        }
-    }
-}
-
 /// Build in a caller-owned, admitted and unpublished staging connection.
 ///
 /// The caller must persist `RegionSeal` and register the resulting Lance files
@@ -447,7 +471,7 @@ pub(super) async fn build_region(
             .map_err(backend)
     })
     .await?;
-    let vector_index = interruptible(&request, async {
+    let vector_index = write_settle::settle_write(&request, async {
         seal_vector_index_v1(
             &table,
             VectorIndexSealInputV1 {
@@ -498,19 +522,16 @@ pub(super) async fn open_region(
     seal.vector_index
         .validate(u64::from(seal.rows), seal.generation)
         .map_err(backend)?;
-    let actual = interruptible(budget.request(), async {
-        table.schema().await.map_err(backend)
-    })
-    .await?;
-    if actual.as_ref() != schema(dimension)?.as_ref() {
+    let actual = table.schema().await.map_err(backend);
+    budget.checkpoint()?;
+    if actual?.as_ref() != schema(dimension)?.as_ref() {
         return Err(corrupt("Native ANN physical schema differs from seal"));
     }
-    let index = interruptible(budget.request(), async {
-        verify_vector_index_v1(&table, &seal.vector_index, u64::from(seal.rows))
-            .await
-            .map_err(backend)
-    })
-    .await?;
+    let index = verify_vector_index_v1(&table, &seal.vector_index, u64::from(seal.rows))
+        .await
+        .map_err(backend);
+    budget.checkpoint()?;
+    let index = index?;
     budget.charge(WorkUsage {
         reads: 1,
         ..WorkUsage::default()
@@ -568,7 +589,9 @@ fn id(bytes: &[u8]) -> [u8; 16] {
 /// Repeated materialized rows count again against `candidate_cap`; every query
 /// charges the same original work budget. Backend probes/distance evaluations
 /// are separate costs. A capped or approximate prefix never proves exhaustion.
-/// `accept` must use the pinned selected-view owner/member/input binding.
+/// `accept` returns vector progress or the authenticated source-file owner
+/// after validating the pinned selected-view owner/member/input binding.
+/// Multiple vectors of one file count once in file search.
 pub(super) async fn query_region(
     region: &OpenRegion,
     vector: &[f32],
@@ -576,7 +599,10 @@ pub(super) async fn query_region(
     initial_candidate_cap: usize,
     candidate_cap: usize,
     budget: &mut WorkBudget,
-    mut accept: impl FnMut(&RegionCandidate, &mut WorkBudget) -> Result<bool, IndexError>,
+    mut accept: impl FnMut(
+        &RegionCandidate,
+        &mut WorkBudget,
+    ) -> Result<Option<RefillProgress>, IndexError>,
 ) -> Result<RegionPage, IndexError> {
     budget.checkpoint()?;
     validate_region_query(region, vector, top_k, candidate_cap)?;
@@ -588,7 +614,17 @@ pub(super) async fn query_region(
     let rows = usize::try_from(region.seal.rows).map_err(|_error| IndexError::ResourceLimited)?;
     // A single-prefix policy needs no extra retained merge buffer.
     if initial_candidate_cap == candidate_cap || rows <= initial_candidate_cap {
-        return query_prefix(region, vector, initial_candidate_cap, budget, accept).await;
+        return query_prefix(
+            region,
+            vector,
+            initial_candidate_cap,
+            budget,
+            |candidate, budget| {
+                let _progress = accept(candidate, budget)?;
+                Ok(())
+            },
+        )
+        .await;
     }
     let capacity = candidate_cap.min(rows);
     let result_bytes = capacity
@@ -596,7 +632,6 @@ pub(super) async fn query_region(
         .and_then(|bytes| {
             bytes.checked_add(capacity.checked_mul(MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES)?)
         })
-        .and_then(|bytes| bytes.checked_add(capacity.checked_mul(std::mem::size_of::<bool>())?))
         .ok_or(IndexError::ResourceLimited)?;
     let _decisions_memory = budget.reserve_memory(
         u64::try_from(result_bytes).map_err(|_error| IndexError::ResourceLimited)?,
@@ -609,7 +644,7 @@ pub(super) async fn query_region(
     let mut traversal;
     loop {
         let page = query_prefix(region, vector, fetch, budget, |candidate, budget| {
-            decisions.admit(candidate, budget, &mut accept)
+            decisions.admit(candidate, budget, top_k, initial_candidate_cap, &mut accept)
         })
         .await?;
         requested = requested
@@ -618,7 +653,17 @@ pub(super) async fn query_region(
         inspected = inspected
             .checked_add(page.inspected)
             .ok_or(IndexError::ResourceLimited)?;
-        traversal = page.traversal;
+        traversal = if decisions.skipped_after_rescore_cap {
+            match page.traversal {
+                NativeSemanticTraversal::ExactExhausted => NativeSemanticTraversal::ExactCapped,
+                NativeSemanticTraversal::Approximate { .. } => {
+                    NativeSemanticTraversal::Approximate { capped: true }
+                }
+                other => other,
+            }
+        } else {
+            page.traversal
+        };
         if decisions.accepted_count >= top_k || traversal == NativeSemanticTraversal::ExactExhausted
         {
             break;
@@ -664,13 +709,29 @@ fn validate_region_query(
     Ok(())
 }
 
+// A consumer refusal can arrive with a vendor batch already being prepared.
+// Drive the stream to completion under the existing execution grant, keeping
+// the first error and admitting no further candidates.
+async fn settle_query_batches(
+    mut batches: impl Stream<Item = Result<RecordBatch, IndexError>> + Unpin,
+    mut accept: impl FnMut(Result<RecordBatch, IndexError>) -> Result<(), IndexError>,
+) -> Result<(), IndexError> {
+    let mut result = Ok(());
+    while let Some(batch) = batches.next().await {
+        if result.is_ok() {
+            result = accept(batch);
+        }
+    }
+    result
+}
+
 /// One immutable prefix. The caller owns the cumulative refill ceiling.
 async fn query_prefix(
     region: &OpenRegion,
     vector: &[f32],
     candidate_cap: usize,
     budget: &mut WorkBudget,
-    mut accept: impl FnMut(&RegionCandidate, &mut WorkBudget) -> Result<bool, IndexError>,
+    mut accept: impl FnMut(&RegionCandidate, &mut WorkBudget) -> Result<(), IndexError>,
 ) -> Result<RegionPage, IndexError> {
     let rows = usize::try_from(region.seal.rows).map_err(|_error| IndexError::ResourceLimited)?;
     let fetch = candidate_cap.min(rows);
@@ -736,16 +797,18 @@ async fn query_prefix(
             COLUMN_INPUT,
         ]));
     let query = region.index.apply(query, fetch).map_err(backend)?;
-    let mut batches = interruptible(budget.request(), async {
-        query.execute().await.map_err(backend)
-    })
-    .await?;
+    budget.checkpoint()?;
+    let batches = match query.execute().await.map_err(backend) {
+        Ok(batches) => batches,
+        Err(error) => {
+            budget.checkpoint()?;
+            return Err(error);
+        }
+    };
     let mut inspected = 0usize;
-    while let Some(batch) = interruptible(budget.request(), async {
-        batches.try_next().await.map_err(backend)
-    })
-    .await?
-    {
+    settle_query_batches(batches.map_err(backend), |batch| {
+        budget.checkpoint()?;
+        let batch = batch?;
         if batch.num_rows() > fetch.saturating_sub(inspected) {
             return Err(IndexError::BackendViolation(
                 "Native ANN batch exceeded remaining candidate cap".into(),
@@ -798,7 +861,6 @@ async fn query_prefix(
                 member: digest(member.value(row)),
                 vector_id,
                 input_stamp: digest(input.value(row)),
-                cosine: distance.mul_add(-1.0, 1.0),
             };
             if seen.iter().any(|prior| {
                 prior.owner == candidate.owner
@@ -807,10 +869,12 @@ async fn query_prefix(
             }) {
                 return Err(corrupt("Native ANN duplicate logical candidate"));
             }
-            let _accepted = accept(&candidate, budget)?;
+            accept(&candidate, budget)?;
             seen.push(candidate);
         }
-    }
+        Ok(())
+    })
+    .await?;
     budget.checkpoint()?;
     let approximate = matches!(
         region.index.contract().index,
@@ -838,7 +902,7 @@ mod tests {
     };
     use std::{
         sync::atomic::{AtomicU64, Ordering},
-        time::Instant,
+        time::{Duration, Instant},
     };
 
     #[derive(Default)]
@@ -889,6 +953,62 @@ mod tests {
         ))
     }
 
+    #[test]
+    fn cancelled_ann_query_settles_started_batch_before_returning()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        crate::run_blocking(&runtime, async {
+            let work = budget()?;
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
+            let running_batch = batch.clone();
+            let child = tokio::task::spawn_blocking(move || {
+                started_tx.send(()).map_err(|_closed| {
+                    IndexError::BackendViolation("ANN batch start receiver closed".into())
+                })?;
+                release_rx.blocking_recv().map_err(|_closed| {
+                    IndexError::BackendViolation("ANN batch release sender closed".into())
+                })?;
+                Ok(running_batch)
+            });
+            started_rx.await?;
+
+            let remaining = futures::stream::once(async move {
+                child
+                    .await
+                    .map_err(|error| IndexError::Storage(format!("ANN batch task: {error}")))?
+            });
+            let batches = Box::pin(futures::StreamExt::chain(
+                futures::stream::iter([Ok(batch)]),
+                remaining,
+            ));
+            work.request().cancel_handle().cancel();
+            let mut callbacks = 0;
+            let mut settle = Box::pin(settle_query_batches(batches, |_batch| {
+                callbacks += 1;
+                work.checkpoint()
+            }));
+            verify(
+                futures::poll!(settle.as_mut()).is_pending(),
+                "ANN cancellation returned while the next batch was still running",
+            )?;
+            release_tx
+                .send(())
+                .map_err(|_closed| "ANN batch ended early")?;
+            verify(
+                settle.await == Err(IndexError::Cancelled),
+                "ANN drain discarded the original cancellation",
+            )?;
+            verify(
+                callbacks == 1,
+                "ANN drain admitted more batches after refusal",
+            )
+        })
+    }
+
     fn owner() -> OwnerKey {
         OwnerKey {
             producer: ProducerId([1; 16]),
@@ -916,7 +1036,7 @@ mod tests {
     }
 
     #[test]
-    fn refill_reuses_verified_decision_and_refuses_changed_stamp() -> Result<(), IndexError> {
+    fn refill_skips_repeated_candidate_and_refuses_changed_stamp() -> Result<(), IndexError> {
         let mut budget = budget()?;
         let mut decisions = RefillDecisions::with_capacity(2)?;
         let candidate = RegionCandidate {
@@ -924,25 +1044,82 @@ mod tests {
             member: Digest([7; 32]),
             vector_id: b"chunk-a".to_vec(),
             input_stamp: Digest([8; 32]),
-            cosine: 0.75,
         };
         let mut calls = 0;
         let mut accept = |_: &RegionCandidate, _: &mut WorkBudget| {
             calls += 1;
-            Ok(true)
+            Ok(Some(RefillProgress::SourceFile(owner())))
         };
-        assert!(decisions.admit(&candidate, &mut budget, &mut accept)?);
-        assert!(decisions.admit(&candidate, &mut budget, &mut accept)?);
+        decisions.admit(&candidate, &mut budget, 2, 2, &mut accept)?;
+        decisions.admit(&candidate, &mut budget, 2, 2, &mut accept)?;
+        let mut same_file = candidate.clone();
+        same_file.vector_id = b"chunk-b".to_vec();
+        decisions.admit(&same_file, &mut budget, 2, 2, &mut accept)?;
         let mut changed = candidate.clone();
         changed.input_stamp = Digest([9; 32]);
         assert!(matches!(
-            decisions.admit(&changed, &mut budget, &mut accept),
+            decisions.admit(&changed, &mut budget, 2, 2, &mut accept),
             Err(IndexError::CorruptObject(_))
         ));
-        assert_eq!(calls, 1);
-        assert_eq!(decisions.candidates, vec![candidate]);
-        assert_eq!(decisions.accepted, vec![true]);
+        assert_eq!(calls, 2);
+        assert_eq!(decisions.candidates, vec![candidate, same_file]);
+        assert_eq!(decisions.file_owners, vec![owner()]);
         assert_eq!(decisions.accepted_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn vector_refill_counts_rows_without_file_state() -> Result<(), IndexError> {
+        let mut budget = budget()?;
+        let mut decisions = RefillDecisions::with_capacity(2)?;
+        let mut candidate = RegionCandidate {
+            owner: owner(),
+            member: Digest([7; 32]),
+            vector_id: b"chunk-a".to_vec(),
+            input_stamp: Digest([8; 32]),
+        };
+        let mut calls = 0;
+        let mut accept = |_: &RegionCandidate, _: &mut WorkBudget| {
+            calls += 1;
+            Ok(Some(RefillProgress::Vector))
+        };
+        decisions.admit(&candidate, &mut budget, 2, 2, &mut accept)?;
+        candidate.vector_id = b"chunk-b".to_vec();
+        decisions.admit(&candidate, &mut budget, 2, 2, &mut accept)?;
+        assert_eq!(calls, 2);
+        assert_eq!(decisions.accepted_count, 2);
+        assert_eq!(decisions.file_owners.capacity(), 0);
+        assert!(decisions._file_owners_memory.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn rescore_window_still_checks_repeated_candidate_stamp() -> Result<(), IndexError> {
+        let mut budget = budget()?;
+        let mut decisions = RefillDecisions::with_capacity(2)?;
+        let candidate = RegionCandidate {
+            owner: owner(),
+            member: Digest([7; 32]),
+            vector_id: b"chunk-a".to_vec(),
+            input_stamp: Digest([8; 32]),
+        };
+        let mut calls = 0;
+        let mut accept = |_: &RegionCandidate, _: &mut WorkBudget| {
+            calls += 1;
+            Ok(Some(RefillProgress::Vector))
+        };
+        decisions.admit(&candidate, &mut budget, 1, 1, &mut accept)?;
+        let mut changed = candidate.clone();
+        changed.input_stamp = Digest([9; 32]);
+        assert!(matches!(
+            decisions.admit(&changed, &mut budget, 1, 1, &mut accept),
+            Err(IndexError::CorruptObject(_))
+        ));
+        let mut next = candidate;
+        next.vector_id = b"chunk-b".to_vec();
+        decisions.admit(&next, &mut budget, 1, 1, &mut accept)?;
+        assert_eq!(calls, 1);
+        assert!(decisions.skipped_after_rescore_cap);
         Ok(())
     }
 
@@ -955,7 +1132,6 @@ mod tests {
             member: Digest([8; 32]),
             vector_id: b"whole-file".to_vec(),
             input_stamp: owner_input_stamp(original),
-            cosine: 1.0,
         };
         assert!(selected_input_matches(
             &candidate,
@@ -1149,9 +1325,9 @@ mod tests {
                 .map_err(|error| IndexError::Storage(error.to_string()))?;
                 if candidate.vector_id != b"chunk-a" {
                     accepted.push(candidate.clone());
-                    Ok(true)
+                    Ok(Some(RefillProgress::Vector))
                 } else {
-                    Ok(false)
+                    Ok(None)
                 }
             },
         )
@@ -1200,9 +1376,9 @@ mod tests {
             |candidate, _| {
                 if candidate.vector_id != b"chunk-a" {
                     reopened_accepted.push(candidate.clone());
-                    Ok(true)
+                    Ok(Some(RefillProgress::Vector))
                 } else {
-                    Ok(false)
+                    Ok(None)
                 }
             },
         )
@@ -1279,9 +1455,9 @@ mod tests {
             }
             if hit.vector_id == b"h" {
                 accepted.push(hit.vector_id.clone());
-                Ok(true)
+                Ok(Some(RefillProgress::Vector))
             } else {
-                Ok(false)
+                Ok(None)
             }
         })
         .await?;
@@ -1303,15 +1479,79 @@ mod tests {
             "completed refill retained scratch memory",
         )?;
 
+        let mut second_file = owner();
+        second_file.stable_id.0[0] ^= 1;
+        let mut reached_tail = false;
+        let page = query_region(&opened, &[1.0, 0.0, 0.0], 2, 4, 12, &mut work, |hit, _| {
+            if hit.vector_id == b"h" {
+                reached_tail = true;
+                Ok(Some(RefillProgress::SourceFile(second_file)))
+            } else {
+                // Seven distinct rows belong to the same source file.
+                Ok(Some(RefillProgress::SourceFile(owner())))
+            }
+        })
+        .await?;
+        verify(
+            reached_tail
+                && page.inspected == 12
+                && page.traversal == NativeSemanticTraversal::ExactExhausted,
+            "same-file rows stopped refill before a second file",
+        )?;
+        verify(
+            memory.live.load(Ordering::SeqCst) == 0,
+            "same-file refill retained scratch memory",
+        )?;
+
+        let mut vector_work = WorkBudget::new(
+            WorkLimits {
+                reads: 1,
+                writes: 0,
+                bytes: 100_000_000,
+                mutations: 0,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(60))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        vector_work.bind_memory_scope(Some(MemoryScope::new(Arc::new(CountedScope(
+            memory.clone(),
+        )))));
+        let mut vector_callbacks = 0usize;
+        let page = query_region(
+            &opened,
+            &[1.0, 0.0, 0.0],
+            2,
+            4,
+            12,
+            &mut vector_work,
+            |_, _| {
+                vector_callbacks += 1;
+                Ok(Some(RefillProgress::Vector))
+            },
+        )
+        .await?;
+        verify(
+            page.inspected == 4
+                && page.traversal == NativeSemanticTraversal::ExactCapped
+                && vector_callbacks == 4
+                && vector_work.usage().reads == 1,
+            "distinct vectors of one owner widened beyond the funded first prefix",
+        )?;
+        verify(
+            memory.live.load(Ordering::SeqCst) == 0,
+            "vector refill retained scratch memory",
+        )?;
+
         let mut calls = 0u32;
         let mut accepted = Vec::new();
         let page = query_region(&opened, &[1.0, 0.0, 0.0], 1, 2, 8, &mut work, |hit, _| {
             calls = calls.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             if hit.vector_id == b"h" {
                 accepted.push(hit.vector_id.clone());
-                Ok(true)
+                Ok(Some(RefillProgress::Vector))
             } else {
-                Ok(false)
+                Ok(None)
             }
         })
         .await?;
@@ -1332,9 +1572,9 @@ mod tests {
         let page = query_region(&opened, &[1.0, 0.0, 0.0], 2, 4, 12, &mut work, |hit, _| {
             if hit.vector_id == b"a" || hit.vector_id == b"h" {
                 accepted.push(hit.vector_id.clone());
-                Ok(true)
+                Ok(Some(RefillProgress::Vector))
             } else {
-                Ok(false)
+                Ok(None)
             }
         })
         .await?;
@@ -1355,9 +1595,9 @@ mod tests {
         let page = query_region(&opened, &[1.0, 0.0, 0.0], 1, 8, 8, &mut work, |hit, _| {
             if hit.vector_id == b"h" {
                 accepted.push(hit.vector_id.clone());
-                Ok(true)
+                Ok(Some(RefillProgress::Vector))
             } else {
-                Ok(false)
+                Ok(None)
             }
         })
         .await?;
@@ -1370,6 +1610,75 @@ mod tests {
         verify(
             memory.live.load(Ordering::SeqCst) == 0,
             "one-prefix query leaked memory",
+        )?;
+
+        // Refill can inspect a full physical prefix after the selected
+        // original-vector window has been funded. The remaining rows must be
+        // drained without another rank callback or an exactness claim.
+        let reads_before = work.usage().reads;
+        let mut rescored_ids = Vec::new();
+        let mut callback_ids = Vec::new();
+        let page = query_region(&opened, &[1.0, 0.0, 0.0], 2, 2, 14, &mut work, |hit, _| {
+            callback_ids.push(hit.vector_id.clone());
+            if hit.vector_id == b"c" || hit.vector_id == b"e" {
+                rescored_ids.push(hit.vector_id.clone());
+                Ok(Some(RefillProgress::Vector))
+            } else {
+                Ok(None)
+            }
+        })
+        .await?;
+        verify(
+            rescored_ids == [b"c".to_vec(), b"e".to_vec()]
+                && callback_ids
+                    == [
+                        b"a".to_vec(),
+                        b"b".to_vec(),
+                        b"c".to_vec(),
+                        b"d".to_vec(),
+                        b"e".to_vec(),
+                    ]
+                && page.inspected == 14
+                && page.traversal == NativeSemanticTraversal::ExactCapped
+                && work.usage().reads == reads_before + 3,
+            "refill ranked past the selected window or failed to drain its physical prefix",
+        )?;
+
+        // Two vectors of the same source file cannot satisfy two file slots.
+        // Refill may cross the rescore window until a second file is found.
+        let mut file_ids = Vec::new();
+        let mut second_file = owner();
+        second_file.stable_id.0[0] ^= 1;
+        let page = query_region(&opened, &[1.0, 0.0, 0.0], 2, 2, 14, &mut work, |hit, _| {
+            file_ids.push(hit.vector_id.clone());
+            let progress =
+                if hit.vector_id == b"c" || hit.vector_id == b"d" || hit.vector_id == b"e" {
+                    Some(RefillProgress::SourceFile(owner()))
+                } else if hit.vector_id == b"f" {
+                    Some(RefillProgress::SourceFile(second_file))
+                } else {
+                    None
+                };
+            Ok(progress)
+        })
+        .await?;
+        verify(
+            file_ids
+                == [
+                    b"a".to_vec(),
+                    b"b".to_vec(),
+                    b"c".to_vec(),
+                    b"d".to_vec(),
+                    b"e".to_vec(),
+                    b"f".to_vec(),
+                ]
+                && page.inspected == 14
+                && page.traversal == NativeSemanticTraversal::ExactCapped,
+            "same-file duplicates stopped refill or ranked past its complete file result",
+        )?;
+        verify(
+            memory.live.load(Ordering::SeqCst) == 0,
+            "window-limited refill retained scratch memory",
         )?;
 
         let mut denied = WorkBudget::new(
@@ -1389,7 +1698,7 @@ mod tests {
         let mut calls = 0u32;
         let refused = query_region(&opened, &[1.0, 0.0, 0.0], 1, 2, 14, &mut denied, |_, _| {
             calls = calls.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-            Ok(false)
+            Ok(None)
         })
         .await;
         verify(

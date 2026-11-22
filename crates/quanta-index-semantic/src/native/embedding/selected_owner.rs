@@ -12,7 +12,7 @@ use super::{
 };
 use quanta_index_core::index::{
     CoverageBinding, Digest, IndexError, MapPage, MapRoot, MapValue, MemoryLifetime,
-    ObjectChildren, OwnerCoverage, OwnerMemberBinding, ProjectionBinding,
+    ObjectChildren, ObjectRef, OwnerCoverage, OwnerKey, OwnerMemberBinding, ProjectionBinding,
     ProjectionOwnerContribution, decode_owner_member_binding, decode_projection_owner,
     owner_map_key,
 };
@@ -61,9 +61,35 @@ pub(super) fn scan_ordered_page(
     Ok(page)
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct SelectedOwner {
     pub(super) coverage: OwnerCoverage,
     pub(super) contribution: Option<ProjectionOwnerContribution>,
+    source_owners: MapRoot,
+}
+
+/// A source pair authenticated against the selected immutable map.
+pub(super) struct AuthenticatedSource {
+    pub(super) root: MapRoot,
+    pub(super) owner: OwnerKey,
+    pub(super) reference: ObjectRef,
+}
+
+/// Input authority for the selected view. A reverse traversal can reuse
+/// the immutable source pair authenticated before opening its owner rows.
+#[derive(Clone, Copy)]
+pub(super) enum SourceScope<'a> {
+    Lookup(MapRoot),
+    VerifiedProjection(&'a AuthenticatedSource),
+}
+
+impl SourceScope<'_> {
+    const fn root(self) -> MapRoot {
+        match self {
+            Self::Lookup(root) => root,
+            Self::VerifiedProjection(source) => source.root,
+        }
+    }
 }
 
 impl SelectedOwner {
@@ -148,7 +174,7 @@ impl SelectedOwner {
             reference,
             query.coverage,
             query.projection.as_ref(),
-            query.source_owners,
+            SourceScope::Lookup(query.source_owners),
             context,
         )
     }
@@ -160,7 +186,7 @@ impl SelectedOwner {
         reference: impl Into<MapValue>,
         coverage: &CoverageBinding,
         projection: Option<&ProjectionBinding>,
-        source_owners: MapRoot,
+        source_scope: SourceScope<'_>,
         context: &mut ReadContext<'_>,
     ) -> Result<Self, IndexError> {
         let owner = quanta_index_core::index::read_owner_coverage(
@@ -169,7 +195,7 @@ impl SelectedOwner {
             context.objects,
             context.budget,
         )?;
-        Self::authenticate(key, owner, coverage, projection, source_owners, context)
+        Self::authenticate(key, owner, coverage, projection, source_scope, context)
     }
 
     /// Join a decoded coverage row whose owning map and key were already checked.
@@ -178,7 +204,7 @@ impl SelectedOwner {
         owner: OwnerCoverage,
         coverage: &CoverageBinding,
         projection: Option<&ProjectionBinding>,
-        source_owners: MapRoot,
+        source_scope: SourceScope<'_>,
         context: &mut ReadContext<'_>,
     ) -> Result<Self, IndexError> {
         if owner.desired.derivation_policy != coverage.desired.policy {
@@ -186,6 +212,7 @@ impl SelectedOwner {
                 "selected semantic owner policy mismatch".into(),
             ));
         }
+        let source_owners = source_scope.root();
         let contribution = if let Some(binding) = projection {
             let actual = context
                 .maps
@@ -213,26 +240,45 @@ impl SelectedOwner {
                     "projection owner stamp mismatch".into(),
                 ));
             }
-            if let (Some(source_owner), Some(source)) =
-                (contribution.source_owner, contribution.source)
-                && context.maps.lookup_object(
-                    source_owners,
-                    &owner_map_key(source_owner),
-                    context.budget,
-                )? != Some(source)
-            {
-                return Err(IndexError::CorruptObject(
-                    "projection source owner stamp mismatch".into(),
-                ));
+            match source_scope {
+                SourceScope::VerifiedProjection(source) => {
+                    if contribution.source_owner != Some(source.owner)
+                        || contribution.source != Some(source.reference)
+                    {
+                        return Err(IndexError::CorruptObject(
+                            "projected reverse source stamp differs".into(),
+                        ));
+                    }
+                }
+                SourceScope::Lookup(source_owners) => {
+                    if let (Some(source_owner), Some(source)) =
+                        (contribution.source_owner, contribution.source)
+                        && context.maps.lookup_object(
+                            source_owners,
+                            &owner_map_key(source_owner),
+                            context.budget,
+                        )? != Some(source)
+                    {
+                        return Err(IndexError::CorruptObject(
+                            "projection source owner stamp mismatch".into(),
+                        ));
+                    }
+                }
             }
             Some(contribution)
         } else {
+            if matches!(source_scope, SourceScope::VerifiedProjection(_)) {
+                return Err(IndexError::CorruptObject(
+                    "projected reverse owner lacks contribution".into(),
+                ));
+            }
             Self::validate_source_local(&owner, key, source_owners, context)?;
             None
         };
         Ok(Self {
             coverage: owner,
             contribution,
+            source_owners,
         })
     }
 
@@ -243,7 +289,14 @@ impl SelectedOwner {
         source_owners: MapRoot,
         context: &mut ReadContext<'_>,
     ) -> Result<Self, IndexError> {
-        Self::load_selected(key, reference, coverage, None, source_owners, context)
+        Self::load_selected(
+            key,
+            reference,
+            coverage,
+            None,
+            SourceScope::Lookup(source_owners),
+            context,
+        )
     }
 
     fn validate_source_local(
@@ -312,6 +365,22 @@ impl SelectedOwner {
         {
             return Err(IndexError::CorruptObject(
                 "selected semantic member binding mismatch".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reuse the immutable source-owner lookup from authentication only
+    /// for the same selected root and the member it authorized.
+    pub(super) fn validate_file_scope(
+        &self,
+        member: &OwnerMemberBinding,
+        query: &SearchQuery<'_>,
+    ) -> Result<(), IndexError> {
+        self.validate_member_identity(member, query)?;
+        if self.source_owners != query.source_owners {
+            return Err(IndexError::CorruptObject(
+                "file semantic source is outside the selected view".into(),
             ));
         }
         Ok(())

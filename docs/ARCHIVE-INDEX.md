@@ -12,6 +12,39 @@ Dated sections describe their then-current paths. The Oct-22 epics own full-prod
 
 ## Historical record recovery
 
+### 2026-11-17 RFC source and current SDK reconciliation
+
+The RFC's stale Lexical-default statement now follows the actual empty
+default features and the existing engine-retirement ADR. No R01–R40,
+performance, installed or deletion criterion changed.
+D's November-15 missing-API and fixture intake is compacted to historical
+routes. The ADR retains ordinary initial Source and completed Watch custody;
+D1–D3 retain owning, CP2 mixed and signed installation.
+Text's old top-level candidate/failure table now yields to its latest original
+Record and Off ledger. Original commands, hashes, prior refusals, partial
+results and trace limits remain in these exact preimages. The active tracker
+retains the fixed etcd funding conflict and affected final-candidate checks.
+B's intake revision and top summary no longer imply a current frozen source
+or active runner. No old or new execution is promoted beyond its source scope.
+
+Exact dirty preimages and SHA-256 manifest:
+`/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov17-rfc-source-and-current-sdk-reconciliation-m37josbo`.
+
+### 2026-11-17 Upper-plan and retired-audit consolidation
+
+E04's implemented SearchablePreparation, non-seal delta/coverage and deferred
+owner-install contracts now live in the [Native ADR](adr/NOV-07-001-native-index-execution-and-custody.md#prepared-searchable-installation).
+Its R18–R22, original ANN4K and remaining product DoD are unchanged.
+The Tantivy plan routes current History/Source/Text/Hybrid/retirement status to
+the six active tickets instead of maintaining another gap table. The original
+T phase, benchmarks, signed installation and deletion conditions remain.
+F's November-15 static/trace and design audits are historical scoped indexes.
+Their source hashes, measured failure table, withdrawn proposals and references
+are retained in the exact preimages. No historical or current gate is promoted.
+
+Exact dirty preimages and SHA-256 manifest:
+`/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov17-upper-plan-and-retired-audit-99gzyuez`.
+
 ### 2026-11-17 Six-ticket historical body compaction
 
 B112–B119, F105–F109, the D Nov-14 retry windows, the earlier History

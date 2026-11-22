@@ -1502,6 +1502,55 @@ fn read_attempt_commit_cancellation_settles_follower_and_allows_next_attempt() -
 }
 
 #[test]
+fn read_observation_refuses_unfunded_pin_scratch_before_advancing_clock() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let clock = Arc::new(ManualClock::new(1_000));
+    let (catalog, view) = setup_with_clock(root.path(), clock.clone())?;
+    let session = catalog.open_read_session()?;
+    let ticket = ticket(&catalog, session.as_ref(), &view)?;
+    start(&catalog, session.as_ref(), ticket, &admission_budget())?.abort();
+    clock.set(1_001);
+
+    // The group already exists. Admit the attempt and the observation entry,
+    // leaving no bytes for its copy of the persisted pin.
+    let entry_bytes = std::mem::size_of::<Observation>() + std::mem::size_of::<[usize; 2]>() + 16;
+    let limit = u64::try_from(std::mem::size_of::<ReadAttempt<'_>>() + entry_bytes)?;
+    let bytes = Arc::new(AtomicU64::new(0));
+    let limit = Arc::new(AtomicU64::new(limit));
+    let memory = quanta_index_core::index::MemoryScope::new(Arc::new(CappedMemoryAudit {
+        gate: Mutex::new(()),
+        limit: Arc::clone(&limit),
+        audit: MemoryAudit {
+            bytes: Arc::clone(&bytes),
+            retained: Arc::new(AtomicUsize::new(0)),
+            refuse: false,
+        },
+    }));
+    let mut work = admission_budget();
+    work.bind_memory_scope(Some(memory.clone()));
+    check!(matches!(
+        start(&catalog, session.as_ref(), ticket, &work),
+        Err(IndexError::ResourceLimited)
+    ));
+    check_eq!(
+        work.first_denial(),
+        Some(quanta_index_core::index::WorkBudgetDenial::Memory)
+    );
+    check_eq!(bytes.load(Ordering::SeqCst), 0);
+    check_eq!(floor(&catalog)?, 1_000);
+    check_eq!(pin_count(&catalog)?, 1);
+
+    limit.store(u64::MAX, Ordering::SeqCst);
+    let mut retry = admission_budget();
+    retry.bind_memory_scope(Some(memory));
+    start(&catalog, session.as_ref(), ticket, &retry)?.finalize()?;
+    check_eq!(bytes.load(Ordering::SeqCst), 0);
+    check_eq!(floor(&catalog)?, 1_001);
+    catalog.release_ticket(session.as_ref(), ticket)?;
+    Ok(())
+}
+
+#[test]
 fn read_attempt_memory_admission_is_required_and_every_terminal_path_releases_charges() -> TestResult
 {
     let root = tempfile::tempdir()?;

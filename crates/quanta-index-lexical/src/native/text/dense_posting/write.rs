@@ -7,6 +7,7 @@ use super::wire::{
 };
 use crate::native::text::entry_map::EntryMap;
 use crate::native::text_memory::PreparedRows;
+use crate::native::text_spool::TextSpool;
 use quanta_index_core::index::{
     AttemptContext, AttemptRef, IndexError, MemoryCreditLimits, MemoryLease, MemoryLifetime,
     ObjectRef, RegisteredObject, StagedObjectBatch, WorkBudget, WorkUsage,
@@ -14,20 +15,25 @@ use quanta_index_core::index::{
 };
 use sha2::{Digest as _, Sha256};
 
+const COLD_ROWS_DOMAIN: &[u8] = b"quanta-index/cold-dense-rows/v1\0";
+
 /// Disposable DATA about fully confirmed cold roots. Catalog child admission
 /// remains authoritative when the caller installs the final term map.
-pub(in crate::native::text) struct ConfirmedColdRoots {
+pub(in crate::native::text) struct ConfirmedColdRoots<'spool> {
+    spool: &'spool TextSpool,
     attempt: AttemptRef,
     entries: Vec<Option<([u8; 32], ObjectRef)>>,
     pending: Vec<Option<[u8; 32]>>,
-    // Entry backing must drop before its Original grant.
+    found: Vec<Option<ObjectRef>>,
+    // All three backings drop before their Original grant.
     _memory: MemoryLease,
 }
 
-impl ConfirmedColdRoots {
+impl<'spool> ConfirmedColdRoots<'spool> {
     pub(in crate::native::text) fn try_new(
+        spool: &'spool TextSpool,
         attempt: AttemptRef,
-        budget: &WorkBudget,
+        budget: &mut WorkBudget,
     ) -> Result<Option<Self>, IndexError> {
         let bytes = MAX_OBJECT_INSTALL_BATCH
             .checked_mul(std::mem::size_of::<Option<([u8; 32], ObjectRef)>>())
@@ -35,6 +41,12 @@ impl ConfirmedColdRoots {
                 bytes.checked_add(
                     quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
                         .checked_mul(std::mem::size_of::<Option<[u8; 32]>>())?,
+                )
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+                        .checked_mul(std::mem::size_of::<Option<ObjectRef>>())?,
                 )
             })
             .ok_or(IndexError::ResourceLimited)?;
@@ -61,10 +73,30 @@ impl ConfirmedColdRoots {
             return Ok(None);
         }
         pending.resize(quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS, None);
+        let mut found = Vec::new();
+        if found
+            .try_reserve_exact(quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS)
+            .is_err()
+            || found.capacity() > quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+        {
+            return Ok(None);
+        }
+        budget.charge(WorkUsage {
+            bytes: u64::try_from(
+                quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+                    .checked_mul(std::mem::size_of::<Option<ObjectRef>>())
+                    .ok_or(IndexError::ResourceLimited)?,
+            )
+            .map_err(|_error| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        found.resize(quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS, None);
         Ok(Some(Self {
+            spool,
             attempt,
             entries,
             pending,
+            found,
             _memory: memory,
         }))
     }
@@ -83,7 +115,11 @@ impl ConfirmedColdRoots {
         if attempt != self.attempt {
             return Err(IndexError::FenceLost);
         }
-        Ok(self.entries[Self::slot(key)]
+        Ok(self
+            .entries
+            .get(Self::slot(key))
+            .copied()
+            .ok_or(IndexError::ResourceLimited)?
             .filter(|(candidate, _)| *candidate == key)
             .map(|(_, root)| root))
     }
@@ -105,7 +141,10 @@ impl ConfirmedColdRoots {
                 "cold posting identity changed".into(),
             ));
         }
-        self.entries[Self::slot(key)] = Some((key, root));
+        *self
+            .entries
+            .get_mut(Self::slot(key))
+            .ok_or(IndexError::ResourceLimited)? = Some((key, root));
         Ok(())
     }
 
@@ -122,7 +161,8 @@ impl ConfirmedColdRoots {
             ));
         }
         self.pending.fill(None);
-        for (slot, (draft, output)) in drafts.iter_mut().zip(outputs).enumerate() {
+        self.found.fill(None);
+        for (slot, (draft, output)) in drafts.iter_mut().zip(outputs.iter_mut()).enumerate() {
             let key = draft
                 .as_ref()
                 .map(|draft| draft.cold_key(context.budget))
@@ -132,8 +172,56 @@ impl ConfirmedColdRoots {
             {
                 *output = EntryMap::PostingPages(root);
                 *draft = None;
+                continue;
             }
-            self.pending[slot] = key;
+            *self
+                .pending
+                .get_mut(slot)
+                .ok_or(IndexError::ResourceLimited)? = key;
+        }
+        if self
+            .pending
+            .get(..drafts.len())
+            .ok_or(IndexError::ResourceLimited)?
+            .iter()
+            .any(Option::is_some)
+        {
+            self.spool.confirmed_cold_roots_lookup(
+                self.pending
+                    .get(..drafts.len())
+                    .ok_or(IndexError::ResourceLimited)?,
+                self.found
+                    .get_mut(..drafts.len())
+                    .ok_or(IndexError::ResourceLimited)?,
+                context.attempt,
+                context.budget,
+            )?;
+        }
+        for (slot, (draft, output)) in drafts.iter_mut().zip(outputs.iter_mut()).enumerate() {
+            if let Some(root) = self
+                .found
+                .get(slot)
+                .copied()
+                .ok_or(IndexError::ResourceLimited)?
+            {
+                let expected = draft
+                    .as_ref()
+                    .ok_or_else(|| {
+                        IndexError::BackendViolation("cold posting SQL hit lacks a draft".into())
+                    })?
+                    .expected_cold_root(context)?;
+                if root != expected {
+                    return Err(IndexError::CorruptObject(
+                        "cold posting SQL root differs from draft".into(),
+                    ));
+                }
+                *output = EntryMap::PostingPages(root);
+                *draft = None;
+                *self
+                    .pending
+                    .get_mut(slot)
+                    .ok_or(IndexError::ResourceLimited)? = None;
+            }
         }
         Ok(())
     }
@@ -141,21 +229,54 @@ impl ConfirmedColdRoots {
     pub(in crate::native::text) fn remember_installed(
         &mut self,
         outputs: &[EntryMap],
-        context: &AttemptContext<'_>,
+        context: &mut AttemptContext<'_>,
     ) -> Result<(), IndexError> {
         if outputs.len() > self.pending.len() {
             return Err(IndexError::BackendViolation(
                 "cold memo outputs exceed page".into(),
             ));
         }
+        self.found.fill(None);
         for (slot, output) in outputs.iter().enumerate() {
-            if let Some(key) = self.pending[slot] {
+            if self
+                .pending
+                .get(slot)
+                .ok_or(IndexError::ResourceLimited)?
+                .is_some()
+            {
                 let EntryMap::PostingPages(root) = output else {
                     return Err(IndexError::BackendViolation(
                         "cold posting receipt lacks directory".into(),
                     ));
                 };
-                self.remember(key, *root, context.attempt, context.budget)?;
+                *self
+                    .found
+                    .get_mut(slot)
+                    .ok_or(IndexError::ResourceLimited)? = Some(*root);
+            }
+        }
+        self.spool.record_confirmed_cold_roots(
+            self.pending
+                .get(..outputs.len())
+                .ok_or(IndexError::ResourceLimited)?,
+            self.found
+                .get(..outputs.len())
+                .ok_or(IndexError::ResourceLimited)?,
+            context.attempt,
+            context.budget,
+        )?;
+        for slot in 0..outputs.len() {
+            if let (Some(key), Some(root)) = (
+                self.pending
+                    .get(slot)
+                    .copied()
+                    .ok_or(IndexError::ResourceLimited)?,
+                self.found
+                    .get(slot)
+                    .copied()
+                    .ok_or(IndexError::ResourceLimited)?,
+            ) {
+                self.remember(key, root, context.attempt, context.budget)?;
             }
         }
         self.pending.fill(None);
@@ -175,7 +296,7 @@ pub(in crate::native::text) struct Draft {
     rows: PreparedRows<PostingRow>,
     expected: usize,
     plans: Vec<PagePlan>,
-    _plan_memory: Option<MemoryLease>,
+    plan_memory: Option<MemoryLease>,
     local: bool,
     planned_rows: usize,
     planned_total: usize,
@@ -183,6 +304,67 @@ pub(in crate::native::text) struct Draft {
 }
 
 impl Draft {
+    /// Reconstruct the cold physical identity without installing objects. A
+    /// scratch SQL hit is DATA, so its root must match this canonical draft.
+    fn expected_cold_root(
+        &self,
+        context: &mut AttemptContext<'_>,
+    ) -> Result<ObjectRef, IndexError> {
+        if !self.finished || self.local || self.prior.is_some() || self.plans.is_empty() {
+            return Err(IndexError::BackendViolation(
+                "posting identity requires finished cold draft".into(),
+            ));
+        }
+        let mut fences =
+            PreparedRows::<PageFence>::with_capacity(self.plans.len(), context.budget)?;
+        let mut children =
+            PreparedRows::<ObjectRef>::with_capacity(self.plans.len(), context.budget)?;
+        for plan in &self.plans {
+            context.budget.checkpoint()?;
+            if plan.fence.is_some() || plan.reference.is_some() {
+                return Err(IndexError::BackendViolation(
+                    "cold posting plan contains installed page".into(),
+                ));
+            }
+            let rows = self
+                .rows
+                .as_slice()
+                .get(plan.start..plan.end)
+                .ok_or(IndexError::ResourceLimited)?;
+            let bytes = page_payload_bytes(rows.len())?;
+            context.budget.charge(WorkUsage {
+                bytes: u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+                ..WorkUsage::default()
+            })?;
+            let (payload, fence) = page_payload(rows, context.budget)?;
+            let reference = context
+                .objects
+                .identify(&payload.bytes, &[], context.budget)?
+                .reference;
+            context.budget.charge(WorkUsage {
+                bytes: u64::try_from(
+                    std::mem::size_of::<PageFence>()
+                        .checked_add(std::mem::size_of::<ObjectRef>())
+                        .ok_or(IndexError::ResourceLimited)?,
+                )
+                .map_err(|_error| IndexError::ResourceLimited)?,
+                ..WorkUsage::default()
+            })?;
+            fences.push(fence, context.budget)?;
+            children.push(reference, context.budget)?;
+        }
+        let bytes = directory_payload_bytes(fences.len())?;
+        context.budget.charge(WorkUsage {
+            bytes: u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        let payload = directory_payload(fences.as_slice(), context.budget)?;
+        Ok(context
+            .objects
+            .identify(&payload.bytes, children.as_slice(), context.budget)?
+            .reference)
+    }
+
     /// Only the fixed cold packing is a function of these rows. Warm drafts
     /// retain historical fences and cannot use this memo key.
     pub(in crate::native::text) fn cold_key(
@@ -194,21 +376,28 @@ impl Draft {
                 "posting memo requires finished cold draft".into(),
             ));
         }
-        const DOMAIN: &[u8] = b"quanta-index/cold-dense-rows/v1\0";
         let bytes = self
             .rows
             .len()
             .checked_mul(64)
-            .and_then(|bytes| bytes.checked_add(DOMAIN.len() + 16))
+            .and_then(|bytes| bytes.checked_add(COLD_ROWS_DOMAIN.len().checked_add(16)?))
             .ok_or(IndexError::ResourceLimited)?;
         budget.charge(WorkUsage {
             bytes: u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
         let mut hash = Sha256::new();
-        hash.update(DOMAIN);
-        hash.update((PAGE_ROWS as u64).to_be_bytes());
-        hash.update((self.rows.len() as u64).to_be_bytes());
+        hash.update(COLD_ROWS_DOMAIN);
+        hash.update(
+            u64::try_from(PAGE_ROWS)
+                .map_err(|_error| IndexError::ResourceLimited)?
+                .to_be_bytes(),
+        );
+        hash.update(
+            u64::try_from(self.rows.len())
+                .map_err(|_error| IndexError::ResourceLimited)?
+                .to_be_bytes(),
+        );
         for row in self.rows.as_slice() {
             budget.checkpoint()?;
             hash.update(row.owner);
@@ -243,7 +432,7 @@ impl Draft {
             rows,
             expected,
             plans: Vec::new(),
-            _plan_memory: None,
+            plan_memory: None,
             local: false,
             planned_rows: 0,
             planned_total: 0,
@@ -271,7 +460,7 @@ impl Draft {
             rows: PreparedRows::new(expected)?,
             expected,
             plans: Vec::new(),
-            _plan_memory: None,
+            plan_memory: None,
             local: true,
             planned_rows: 0,
             planned_total: 0,
@@ -297,7 +486,7 @@ impl Draft {
         self.plans
             .try_reserve_exact(MAX_PAGES)
             .map_err(|_error| IndexError::ResourceLimited)?;
-        self._plan_memory = lease;
+        self.plan_memory = lease;
         Ok(())
     }
 
@@ -386,7 +575,7 @@ impl Draft {
             let last = self
                 .rows
                 .as_slice()
-                .get(end - 1)
+                .get(end.checked_sub(1).ok_or(IndexError::ResourceLimited)?)
                 .ok_or(IndexError::ResourceLimited)?
                 .owner;
             if self
@@ -399,7 +588,7 @@ impl Draft {
                     "posting local range is not ordered".into(),
                 ));
             }
-            let count = end - cursor;
+            let count = end.checked_sub(cursor).ok_or(IndexError::ResourceLimited)?;
             let total = self
                 .planned_total
                 .checked_add(count)
@@ -498,7 +687,7 @@ impl Draft {
 
     pub(in crate::native::text) fn finish(
         &mut self,
-        context: &mut AttemptContext<'_>,
+        context: &AttemptContext<'_>,
     ) -> Result<(), IndexError> {
         context.budget.checkpoint()?;
         if self.finished || self.local {
@@ -512,7 +701,10 @@ impl Draft {
             ));
         }
         let prior_pages = self.prior.as_ref().map_or(0, Directory::len);
-        let capacity = (prior_pages + self.rows.len().div_ceil(PAGE_ROWS)).min(MAX_PAGES);
+        let capacity = prior_pages
+            .checked_add(self.rows.len().div_ceil(PAGE_ROWS))
+            .ok_or(IndexError::ResourceLimited)?
+            .min(MAX_PAGES);
         let bytes = capacity
             .checked_mul(std::mem::size_of::<PagePlan>())
             .ok_or(IndexError::ResourceLimited)?;
@@ -523,7 +715,7 @@ impl Draft {
         self.plans
             .try_reserve_exact(capacity)
             .map_err(|_error| IndexError::ResourceLimited)?;
-        self._plan_memory = lease;
+        self.plan_memory = lease;
 
         // Old high fences define stable ranges. An edit only repacks its own
         // range, so neighboring immutable leaves can keep their identities.
@@ -544,7 +736,7 @@ impl Draft {
                 .get(end)
                 .is_some_and(|row| row.owner <= fence.last)
             {
-                end += 1;
+                end = end.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             }
             if !self.plan_range(start, end) {
                 stable = false;
@@ -591,7 +783,7 @@ struct PendingLeaf {
 }
 
 fn flush_leaves(
-    batch: &mut StagedObjectBatch,
+    batch: &StagedObjectBatch,
     pending: &mut Vec<PendingLeaf>,
     drafts: &mut [Option<Draft>],
     context: &mut AttemptContext<'_>,
@@ -634,10 +826,18 @@ fn reused_leaf(
     let mut low = 0;
     let mut high = prior.len();
     while low < high {
-        let mid = low + (high - low) / 2;
+        let mid = low
+            .checked_add(
+                high.checked_sub(low)
+                    .ok_or(IndexError::ResourceLimited)?
+                    .div_euclid(2),
+            )
+            .ok_or(IndexError::ResourceLimited)?;
         let (candidate, reference) = prior.descriptor(mid)?;
         match candidate.first.cmp(&fence.first) {
-            std::cmp::Ordering::Less => low = mid + 1,
+            std::cmp::Ordering::Less => {
+                low = mid.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+            }
             std::cmp::Ordering::Greater => high = mid,
             std::cmp::Ordering::Equal => {
                 return Ok(candidate.last == fence.last
@@ -764,7 +964,7 @@ fn install_separate(
                 continue;
             }
             if pending.len() == MAX_OBJECT_INSTALL_BATCH {
-                flush_leaves(&mut batch, &mut pending, drafts, context)?;
+                flush_leaves(&batch, &mut pending, drafts, context)?;
                 drop(batch);
                 batch = StagedObjectBatch::for_install_packet(
                     MAX_OBJECT_INSTALL_BATCH,
@@ -779,7 +979,7 @@ fn install_separate(
             });
         }
     }
-    flush_leaves(&mut batch, &mut pending, drafts, context)?;
+    flush_leaves(&batch, &mut pending, drafts, context)?;
     drop(batch);
     drop(pending);
     drop(pending_memory);
@@ -943,13 +1143,17 @@ fn coalesced_credit(
         Ok(None) | Err(IndexError::ResourceLimited) => return Ok(None),
         Err(error) => return Err(error),
     };
+    let leaf_backing = backing_bytes::<PendingLeaf>(leaves)?;
+    let slot_backing = backing_bytes::<(usize, ObjectRef)>(directories)?;
+    let fence_backing = backing_bytes::<PageFence>(max_pages)?;
+    let child_backing = backing_bytes::<ObjectRef>(max_pages)?;
     let temporary_data_bytes = u64::try_from(shape.maximum_total_payload_bytes)
         .map_err(|_error| IndexError::ResourceLimited)?
         .checked_add(backing_bytes::<ObjectRef>(leaves)?)
-        .and_then(|bytes| bytes.checked_add(backing_bytes::<PendingLeaf>(leaves).ok()?))
-        .and_then(|bytes| bytes.checked_add(backing_bytes::<(usize, ObjectRef)>(directories).ok()?))
-        .and_then(|bytes| bytes.checked_add(backing_bytes::<PageFence>(max_pages).ok()?))
-        .and_then(|bytes| bytes.checked_add(backing_bytes::<ObjectRef>(max_pages).ok()?))
+        .and_then(|bytes| bytes.checked_add(leaf_backing))
+        .and_then(|bytes| bytes.checked_add(slot_backing))
+        .and_then(|bytes| bytes.checked_add(fence_backing))
+        .and_then(|bytes| bytes.checked_add(child_backing))
         .ok_or(IndexError::ResourceLimited)?;
     let live_leases = shape
         .maximum_inputs
@@ -1048,7 +1252,11 @@ fn install_coalesced(
         first = end;
     }
     let installed = context.put_batch(batch.inputs())?;
-    if installed.len() != leaves + directories {
+    if installed.len()
+        != leaves
+            .checked_add(directories)
+            .ok_or(IndexError::ResourceLimited)?
+    {
         return Err(IndexError::BackendViolation(
             "posting combined batch lost ordinal output".into(),
         ));

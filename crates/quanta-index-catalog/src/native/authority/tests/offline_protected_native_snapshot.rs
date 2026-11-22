@@ -28,7 +28,7 @@ impl MemoryLeaseOwner for SnapshotMemory {
 
 impl MemoryScopePort for SnapshotMemory {
     fn reserve(&self, bytes: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
-        self.0.fetch_add(bytes, Ordering::AcqRel);
+        let _previous_live = self.0.fetch_add(bytes, Ordering::AcqRel);
         Ok(MemoryLease::new(bytes, Arc::new(self.clone())))
     }
 }
@@ -64,7 +64,7 @@ impl CatalogReadOnlyIoAdmission for SnapshotReadIo {
         _: u64,
         _: u64,
     ) -> Box<dyn CatalogIoScope> {
-        self.entered.fetch_add(1, Ordering::AcqRel);
+        let _previous_entries = self.entered.fetch_add(1, Ordering::AcqRel);
         assert_eq!(self.active.fetch_add(1, Ordering::AcqRel), 0);
         Box::new(SnapshotReadScope(Arc::clone(&self.active)))
     }

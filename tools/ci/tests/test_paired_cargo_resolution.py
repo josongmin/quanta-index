@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 import os
 import shlex
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -115,20 +117,87 @@ def test_binary_custody_refuses_symlink_and_nonprivate_destination(tmp_path):
     assert not pinned.exists()
 
 
+@pytest.mark.parametrize("failure", ["file-sync", "source-drift"])
+def test_binary_custody_retry_requires_no_output_from_failed_pin(tmp_path, monkeypatch, failure):
+    built = tmp_path / "built"
+    raw = b"#!/bin/sh\nexit 0\n"
+    built.write_bytes(raw)
+    built.chmod(0o700)
+    directory = tmp_path / "custody"
+    directory.mkdir(mode=0o700)
+    pinned = directory / "daemon"
+    with monkeypatch.context() as patch:
+        if failure == "file-sync":
+            def fail_regular_sync(fd):
+                if stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError("injected executable sync failure")
+                real_fsync(fd)
+
+            real_fsync = os.fsync
+            patch.setattr(binary_custody.os, "fsync", fail_regular_sync)
+            error = pytest.raises(OSError, match="executable sync failure")
+        else:
+            def drift_before_final_verification(digest, paths, *, archive=None):
+                if pinned in paths:
+                    built.write_bytes(b"changed after copy")
+                real_verify(digest, paths, archive=archive)
+
+            real_verify = binary_custody.verify
+            patch.setattr(binary_custody, "verify", drift_before_final_verification)
+            error = pytest.raises(ValueError, match="changed during proof")
+        with error:
+            binary_custody.pin(built, built, pinned)
+    assert list(directory.iterdir()) == []
+
+    built.write_bytes(raw)
+    binary_custody.verify(binary_custody.pin(built, built, pinned), [pinned])
+    with pytest.raises(FileExistsError):
+        binary_custody.pin(built, built, pinned)
+    assert pinned.read_bytes() == raw
+
+
+def test_p10_archive_pin_rejects_changed_bytes_before_copy(tmp_path):
+    archive = tmp_path / "archive"
+    archive.write_bytes(b"changed archive")
+    archive.chmod(0o600)
+    directory = tmp_path / "custody"
+    directory.mkdir(mode=0o700)
+    pinned = directory / "daemon"
+
+    with pytest.raises(ValueError, match="P10 archived daemon differs"):
+        binary_custody.pin(
+            archive, archive, pinned, archive_sha256=hashlib.sha256(b"approved archive").hexdigest()
+        )
+    assert not pinned.exists()
+
+
 @pytest.mark.parametrize("mutate", [False, True])
 @pytest.mark.parametrize("temporary", ["default", "custom", "alias"])
 @pytest.mark.parametrize("preflight_failure", [False, True])
+@pytest.mark.parametrize(("use_p10", "use_recorded"), [(False, False), (True, False), (False, True)])
 def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
-    resolution, tmp_path, monkeypatch, mutate, temporary, preflight_failure
+    resolution, tmp_path, monkeypatch, mutate, temporary, preflight_failure, use_p10, use_recorded,
 ):
+    import socket
+
     quanta, paired, _, _ = resolution
     repo_root = Path(__file__).resolve().parents[3]
+    monkeypatch.chdir(tmp_path)
+    with socket.socket(socket.AF_UNIX) as signer:
+        signer.bind("signer")
+    (tmp_path / "signer-alias").symlink_to(tmp_path / "signer")
+    monkeypatch.setenv("QUANTA_P11_SIGNER_SOCKET", str(tmp_path / "signer"))
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "signer-alias"))
     python_env = paired / "scripts/lib/python-env.sh"
     python_env.parent.mkdir(parents=True)
     python_env.write_text(
-        "cg_resolve_python_bin() { printf '%s\\n' " + shlex.quote(sys.executable) + "; }\n"
+        "cg_resolve_python_bin() {\n"
+        '  test -z "${SSH_AUTH_SOCK:-}${QUANTA_P11_SIGNER_SOCKET:-}" || exit 86\n'
+        "  printf '%s\\n' " + shlex.quote(sys.executable) + "\n}\n"
     )
     monkeypatch.delenv("QUANTA_P11_R5_EVIDENCE_ROOT", raising=False)
+    monkeypatch.delenv("QUANTA_RETIREMENT_DAEMON_BUILD", raising=False)
+    monkeypatch.delenv("QUANTA_RETIREMENT_DAEMON_RECEIPT_SHA256", raising=False)
     if temporary == "default":
         monkeypatch.delenv("TMPDIR", raising=False)
         temporary_root = Path("/tmp").resolve()
@@ -145,12 +214,20 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         "scripts/verify-repomap-cross-repo.sh",
         "tools/ci/paired_cargo_resolution.py",
         "tools/ci/binary_custody.py",
+        "tools/ci/daemon_execution_evidence.py",
         "tools/ci/lint/handoff_validation.py",
+        "tools/ci/proof-authority.toml",
         "tools/ci/proof_json.py",
     ):
         target = quanta / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((repo_root / relative).read_bytes())
+    if not use_p10:
+        registry = quanta / "tools/ci/proof-authority.toml"
+        registry.write_text(registry.read_text().replace(
+            'features = "index-sdk-ingress-surface"',
+            'features = "index-sdk-ingress-surface,fixture-replay-owner"',
+        ))
     # This scenario owns binary custody; resolver/selected-run behavior has
     # independent tests and is stubbed so no QBC lane or Rust build is needed.
     (quanta / "tools/ci/paired_cargo_resolution.py").write_text(
@@ -160,38 +237,84 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         "p.add_argument('--paired-root'); p.add_argument('--feature'); p.add_argument('--qbc-lane')\n"
         "a=p.parse_args(); print(json.dumps({'consumer':a.consumer,'feature':a.feature}))\n"
     )
-    target_dir = tmp_path / "target"
+    target_dir = tmp_path / "target with spaces"
     (target_dir / "release").mkdir(parents=True)
     built = target_dir / "release/quanta-index-searchd"
     built.write_bytes(b"#!/bin/sh\nprintf original\n")
     built.chmod(0o700)
+    select_marker = tmp_path / "select-called.txt"
+    if use_recorded:
+        monkeypatch.setenv("QUANTA_RETIREMENT_DAEMON_BUILD", str(built.parent))
+        monkeypatch.setenv("QUANTA_RETIREMENT_DAEMON_RECEIPT_SHA256", "d" * 64)
+        (quanta / "tools/ci/check-tantivy-retirement.py").write_text(
+            "import pathlib, sys\n"
+            "assert sys.argv[1:] == [\n"
+            "    '--select-captured-daemon', '--release-build', " + repr(str(built.parent)) + ",\n"
+            "    '--expected-build-receipt-sha256', '" + "d" * 64 + "',\n"
+            "]\n"
+            f"pathlib.Path({str(select_marker)!r}).touch()\n"
+            f"print({hashlib.sha256(built.read_bytes()).hexdigest()!r})\n"
+            f"print({str(built)!r})\n"
+        )
+    archive = quanta / "artifacts/proof-authority/binaries" / hashlib.sha256(
+        built.read_bytes()
+    ).hexdigest()
+    if use_p10:
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(built.read_bytes())
+        archive.chmod(0o600)
+    archive_path = archive.relative_to(quanta).as_posix()
     evidence_parent_record = tmp_path / "evidence-parent.txt"
     (quanta / "tools/ci/paired_r5_result.py").write_text(
-        "import argparse, os, pathlib, subprocess, sys\n"
-        "p=argparse.ArgumentParser()\n"
-        "p.add_argument('--verify-resolution-only', action='store_true')\n"
-        "for k in ('quanta-root','semantica-root','evidence-root','qbc-lane','quanta-head',"
-        "'semantica-head','daemon-digest','built-binary','provided-binary','custody-binary',"
-        "'runtime-resolution','kernel-resolution'): p.add_argument('--'+k)\n"
-        "a=p.parse_args()\n"
-        f"if a.verify_resolution_only: sys.exit({7 if preflight_failure else 0})\n"
-        "pinned=pathlib.Path(a.custody_binary)\n"
-        "assert pinned != pathlib.Path(a.built_binary)\n"
-        "assert subprocess.check_output([str(pinned)]) == b'original'\n"
-        "evidence=pathlib.Path(a.evidence_root)\n"
-        f"assert evidence.parent.parent == pathlib.Path({str(temporary_root)!r})\n"
-        "assert evidence == evidence.resolve() and evidence.parent.is_dir()\n"
-        f"pathlib.Path({str(evidence_parent_record)!r}).write_text(str(evidence.parent))\n"
-        f"if {mutate!r}: pathlib.Path({str(built)!r}).write_bytes(b'changed release bytes')\n"
+        "import hashlib, json, pathlib, subprocess, sys\n"
+        f"sys.path.insert(0, {str(repo_root)!r})\n"
+        "from tools.ci import paired_r5_result as runner, paired_r5_release as release\n"
+        "from tools.ci.daemon_execution_evidence import R5_PROOF, live_proof\n"
+        "def local_phase(pair, root, evidence, pair_head, head, case, completed, completion, "
+        "owner, daemon_digest, binary_paths, lane, *, archive, cases):\n"
+        f"    assert archive == (root / {archive_path!r} if {use_p10!r} else None)\n"
+        "    assert case in cases\n"
+        "    pinned = binary_paths['custody']\n"
+        "    assert hashlib.sha256(pinned.read_bytes()).hexdigest() == daemon_digest\n"
+        f"    assert pinned != pathlib.Path({str(built)!r})\n"
+        f"    if {use_p10!r}: assert binary_paths['built'] == root / {archive_path!r}\n"
+        "    assert subprocess.check_output([str(pinned)]) == b'original'\n"
+        f"    assert evidence.parent.parent == pathlib.Path({str(temporary_root)!r})\n"
+        "    assert evidence == evidence.resolve() and evidence.is_dir()\n"
+        f"    pathlib.Path({str(evidence_parent_record)!r}).write_text(str(evidence.parent))\n"
+        f"    if {(mutate and not use_p10)!r}: pathlib.Path({str(built)!r}).write_bytes(b'changed release bytes')\n"
+        "    if case[0] != 'caller': return {}\n"
+        "    event = f'{case[1]}::{case[3]}${case[5]}'\n"
+        "    nonce = 'd' * 32\n"
+        "    witness = json.dumps(dict(schema_version=1, test=event, nonce=nonce, "
+        "executables=[daemon_digest, daemon_digest])).encode()\n"
+        "    (evidence / runner.R5_WITNESS_FILE).write_bytes(witness)\n"
+        "    return dict(event_name=event, executions=dict(run=dict(nonce=nonce, "
+        "daemon_witness_sha256=hashlib.sha256(witness).hexdigest())))\n"
+        "def qbc_modules(_):\n"
+        f"    if {preflight_failure!r}: raise SystemExit(7)\n"
+        "    return None, None, None\n"
+        "runner._qbc_modules = qbc_modules\n"
+        "runner._one = local_phase\n"
+        "runner._verify_resolution_files = lambda *args, **kwargs: None\n"
+        "runner._resolved_after = lambda root, pair, consumer, feature, lane: dict(consumer=consumer, feature=feature)\n"
+        "def admit_release(root, pair, daemon, **options):\n"
+        f"    if not {use_p10!r}: return None\n"
+        f"    assert daemon is None or daemon == {archive.name!r}\n"
+        f"    return {{'binary_path': {archive_path!r}, 'proof': live_proof(root, R5_PROOF)}}\n"
+        "release.admit_release = admit_release\n"
+        "release.prepare_terminal = lambda *args, **kwargs: pathlib.Path('fixture-terminal')\n"
+        "raise SystemExit(runner.main())\n"
     )
-    (quanta / "scripts/cargow").write_text(
-        "#!/bin/sh\nprintf '%s\\n' '" + json.dumps({"target_directory": str(target_dir)}) + "'\n"
-    )
-    (quanta / "scripts/cargow").chmod(0o700)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     build_marker = tmp_path / "build-called.txt"
-    (bin_dir / "just").write_text(f'#!/bin/sh\ntouch "{build_marker}"\nexit 0\n')
+    (bin_dir / "just").write_text(
+        f'#!/bin/sh\ntouch "{build_marker}"\n'
+        'if [ "$1" != "rust-build-release-native-daemon" ]; then exit 86; fi\n'
+        f'printf "%s\\n" {shlex.quote("Verified Native daemon " + str(built))}\n'
+        f'exit {79 if use_p10 else 0}\n'
+    )
     (bin_dir / "just").chmod(0o700)
     for root in (quanta, paired):
         (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
@@ -210,7 +333,12 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         ):
             subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
-    monkeypatch.setenv("QUANTA_INDEX_SEARCHD_BIN", str(built))
+    if use_p10 and mutate:
+        built.write_bytes(b"#!/bin/sh\nprintf different\n")
+    if use_p10 and not mutate and temporary == "default":
+        monkeypatch.delenv("QUANTA_INDEX_SEARCHD_BIN", raising=False)
+    else:
+        monkeypatch.setenv("QUANTA_INDEX_SEARCHD_BIN", str(built))
     monkeypatch.setenv("QUANTA_P11_R5_QBC_LANE", "registered-resolution")
     completed = subprocess.run(
         ["bash", str(quanta / "scripts/verify-repomap-cross-repo.sh"), str(paired)],
@@ -218,10 +346,17 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         capture_output=True,
     )
     if evidence_parent_record.exists():
-        # The stub does not emit a result. Remove only its recorded fresh parent.
+        # Remove only this invocation's fresh candidate and its two directories.
         evidence_parent = Path(evidence_parent_record.read_text())
         assert evidence_parent.parent == temporary_root
+        candidate = evidence_parent / "result" / "paired-r5-result.json"
+        assert candidate.exists() == (not mutate)
+        candidate.unlink(missing_ok=True)
+        (candidate.parent / "r5-caller-daemon.json").unlink()
+        candidate.parent.rmdir()
         evidence_parent.rmdir()
+    if preflight_failure or mutate:
+        assert "paired-daemon-sha256:" not in completed.stdout
     if preflight_failure:
         assert completed.returncode == 7
         assert not build_marker.exists()
@@ -229,9 +364,13 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
     elif mutate:
         assert completed.returncode != 0
         assert "release daemon bytes changed" in completed.stderr
+        assert evidence_parent_record.exists() == (not use_p10)
     else:
         assert completed.returncode == 0, completed.stderr
         assert "paired-daemon-sha256:" in completed.stdout
+        assert ("paired-r5-release-terminal:" in completed.stdout) == use_p10
+    assert select_marker.exists() == (use_recorded and not preflight_failure)
+    assert build_marker.exists() == (not use_p10 and not use_recorded and not preflight_failure)
 
 
 def validate(resolution):

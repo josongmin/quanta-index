@@ -27,7 +27,9 @@ use crate::history_text::HistoryTextIndexParts;
 use crate::ingest_dispatcher::ports::{
     HistoryIngestPort, RuntimeMetadataIngestPort, StructuralIngestPort,
 };
-use crate::readiness::{HistoryAuthorityState, HistoryDelta, history_diff_search_text};
+use crate::readiness::{
+    HistoryAuthorityState, HistoryDelta, HistoryDiffKey, history_diff_search_text,
+};
 
 /// Serializes the validate → persist → apply protocol of every auxiliary
 /// mutation (QI-BB-020) under the durable `MutationCoordinatorV1`
@@ -237,7 +239,7 @@ impl DirectHistoryMaterializer {
 fn plan_history_text_build(
     port: &dyn HistoryTextIndexPort,
     current: Option<(AuxEpochV1, &HistoryAuthorityState)>,
-    delta: &HistoryDelta,
+    delta: &HistoryDelta<'_>,
     budget: &quanta_index_core::RequestBudgetV1,
 ) -> Result<HistoryTextBuildV1, CoreError> {
     budget.checkpoint("history text planning admission")?;
@@ -301,44 +303,47 @@ fn commit_text_doc(record: &quanta_index_contract::lex::CommitRecord) -> History
 /// time (from the delta, else from the state the delta was validated
 /// against).
 fn history_text_docs_of_delta(
-    delta: &HistoryDelta,
+    delta: &HistoryDelta<'_>,
     state: Option<&HistoryAuthorityState>,
     budget: &quanta_index_core::RequestBudgetV1,
 ) -> Result<Vec<HistoryTextDocV1>, CoreError> {
     let mut docs = Vec::new();
-    for commit in &delta.commits {
+    for commit in delta.commits {
         budget.checkpoint("history new commit planning")?;
         docs.push(commit_text_doc(commit));
     }
-    for (key, record) in &delta.diff_hunks {
+    for hunk in delta.diff_hunks {
         budget.checkpoint("history new hunk planning")?;
         let committer_time_ms = delta
             .commits
             .iter()
-            .find(|commit| commit.sha == key.commit_sha())
+            .find(|commit| commit.sha == hunk.commit_sha)
             .map(|commit| commit.committer_time_ms)
             .or_else(|| {
                 state.and_then(|state| {
                     state
                         .commits()
-                        .get(&key.commit_sha())
+                        .get(&hunk.commit_sha)
                         .map(|commit| commit.committer_time_ms)
                 })
             })
             .ok_or_else(|| {
                 CoreError::Storage(format!(
                     "history text index: diff hunk {}:{} names a commit the transition did not validate",
-                    key.commit_sha(),
-                    key.file_path()
+                    hunk.commit_sha,
+                    hunk.file_path
                 ))
             })?;
         docs.push(HistoryTextDocV1 {
             key: HistoryTextDocKeyV1::Diff {
-                sha: key.commit_sha(),
-                file_path: key.file_path().to_string(),
+                sha: hunk.commit_sha,
+                file_path: hunk.file_path.to_string(),
             },
             committer_time_ms,
-            text: history_diff_search_text(key, record),
+            text: history_diff_search_text(
+                &HistoryDiffKey::new(hunk.commit_sha, &hunk.file_path),
+                &hunk.record,
+            ),
         });
     }
     Ok(docs)
@@ -519,6 +524,7 @@ impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
                 guard.runtime_state(&batch.repo_id, &batch.revision_id, batch.generation),
                 epoch,
                 batch,
+                || Ok(()),
             )?
         };
         let _durable = self

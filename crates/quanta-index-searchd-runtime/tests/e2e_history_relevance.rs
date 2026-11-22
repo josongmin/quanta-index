@@ -17,12 +17,18 @@ use std::error::Error;
 
 use quanta_index_contract::lex::{CommitRecord, CommitSha};
 use quanta_index_contract::{
-    AuxEpochV1, CandidateCountV1, ContinuationTokenV2, HistoryIngestBatch, HistoryOrderV1,
-    ManifestGeneration, TextQuerySyntax,
+    AuxEpochV1, CandidateCountV1, ContinuationTokenV2, GenerationPin, HistoryIngestBatch,
+    HistoryOrderV1, HistoryQueryRequest, ManifestGeneration, QueryConstraintSetV1, RepoId,
+    RevisionId, SearchPlaneErrorCodeV2, SearchPlaneHistoryQueryResponse, TextQueryRequest,
+    TextQuerySyntax,
 };
-use quanta_index_searchd_harness as e2e_harness;
-
-use e2e_harness::{E2eHistoryFixtureSpec, E2eHistoryResult, E2eRuntime};
+use quanta_index_ipc::stamp_batch_digest_v1;
+use quanta_index_sdk::{QuantaIndex, SdkError};
+use quanta_index_searchd_harness::{
+    history_fixture::HistoryFixtureSpec,
+    legacy_reference::{LegacySearchdBinary, publish_legacy_source, request_when_ready},
+    private_tempdir as private_root,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -147,21 +153,27 @@ fn time_of(index: u64) -> u64 {
     1_000_u64.saturating_add(index.saturating_mul(10))
 }
 
-fn ingest_fixture(rt: &mut E2eRuntime) -> Result<ManifestGeneration, Box<dyn Error>> {
-    for commit in FIXTURE {
+fn publish_history(client: &QuantaIndex, mut batch: HistoryIngestBatch) -> TestResult {
+    stamp_batch_digest_v1(&mut batch)?;
+    let receipt = client.history().publish_history_borrowed_v1(&batch)?;
+    if receipt.generation != batch.generation || !receipt.applied || receipt.durable_sequence == 0 {
+        return Err("History batch was not durably applied to the requested generation".into());
+    }
+    Ok(())
+}
+
+fn ingest_fixture(client: &QuantaIndex, generation: &GenerationPin) -> TestResult {
+    let mut files = Vec::with_capacity(FIXTURE.len());
+    for (offset, commit) in FIXTURE.iter().enumerate() {
         let path = format!("src/relevance_{}.rs", commit.index);
-        rt.ingest_text(
-            "repo",
-            &path,
-            &format!("fn relevance_{}() {{}}", commit.index),
-        )?;
+        let text = format!("fn relevance_{}() {{}}", commit.index);
         // The hunk text repeats the term as often as the message, so the
         // diff index ranks like the commit index.
         let needles = commit.message.matches("needle").count();
         let touched = std::iter::repeat_n("needle", needles)
             .collect::<Vec<_>>()
             .join(" ");
-        rt.ingest_history_fixture_spec(&E2eHistoryFixtureSpec {
+        let batch = HistoryFixtureSpec {
             commit_sha: &sha_of(commit.index),
             file_path: &path,
             author: "alice",
@@ -179,11 +191,30 @@ fn ingest_fixture(rt: &mut E2eRuntime) -> Result<ManifestGeneration, Box<dyn Err
             } else {
                 &touched
             },
-        })?;
+        }
+        .build_batch(
+            generation.repo_id.clone(),
+            generation.revision_id.clone(),
+            generation.manifest_generation,
+        )?;
+        publish_history(client, batch)?;
+        // The original harness allocated one chunk ID, then one History request ID.
+        files.push((path, text, u64::try_from(offset)? * 2 + 1));
     }
-    let sealed = rt.seal()?;
-    rt.activate_last_sealed_generation()?;
-    Ok(sealed)
+    let source_files = files
+        .iter()
+        .map(|(path, text, id)| (path.as_str(), text.as_str(), *id))
+        .collect::<Vec<_>>();
+    let _published = publish_legacy_source(
+        client,
+        &generation.repo_id,
+        &generation.revision_id,
+        generation.manifest_generation.get(),
+        None,
+        &source_files,
+        None,
+    )?;
+    Ok(())
 }
 
 /// The shared normalizer's boundaries and fold for ASCII text.
@@ -250,31 +281,70 @@ fn fixture_messages() -> Vec<(u64, String)> {
         .collect()
 }
 
-fn served(page: E2eHistoryResult, what: &str) -> Result<E2eHistoryResult, Box<dyn Error>> {
-    if let Some(error) = &page.typed_error {
-        return Err(format!("{what}: history page refused: {error}").into());
+struct PinnedHistory<'a> {
+    client: &'a QuantaIndex,
+    generation: &'a GenerationPin,
+}
+
+impl PinnedHistory<'_> {
+    fn query_history_page(
+        &self,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+        top_k: u32,
+        order: HistoryOrderV1,
+        cursor: Option<ContinuationTokenV2>,
+    ) -> Result<SearchPlaneHistoryQueryResponse, SdkError> {
+        let request = HistoryQueryRequest {
+            text_query: TextQueryRequest {
+                syntax,
+                query_text: query_text.into(),
+                constraints: QueryConstraintSetV1::unconstrained(),
+                generation: Some(self.generation.clone()),
+                generation_selector: None,
+                top_k,
+                cursor: None,
+            },
+            order,
+            cursor,
+        };
+        request_when_ready(|| self.client.history().query_request(request.clone()))
     }
-    Ok(page)
+
+    fn served(
+        &self,
+        page: Result<SearchPlaneHistoryQueryResponse, SdkError>,
+        what: &str,
+    ) -> Result<SearchPlaneHistoryQueryResponse, Box<dyn Error>> {
+        let page = page.map_err(|error| format!("{what}: history page refused: {error}"))?;
+        if page.generation != *self.generation {
+            return Err(format!("{what}: history page used another generation").into());
+        }
+        Ok(page)
+    }
 }
 
 /// `(sha, score)` per row of a relevance page.
-fn scored_rows(page: &E2eHistoryResult, what: &str) -> Result<Vec<(String, f32)>, Box<dyn Error>> {
-    if page.order != Some(HistoryOrderV1::Relevance) {
+fn scored_rows(
+    page: &SearchPlaneHistoryQueryResponse,
+    what: &str,
+) -> Result<Vec<(String, f32)>, Box<dyn Error>> {
+    if page.order != HistoryOrderV1::Relevance {
         return Err(format!(
             "{what}: the page echoes the relevance order, got {:?}",
             page.order
         )
         .into());
     }
-    if page.scores.len() != page.commit_ids.len() {
-        return Err(format!("{what}: one score per row").into());
+    if !page.diffs.is_empty() {
+        return Err(format!("{what}: relevance commit page returned diff rows").into());
     }
-    page.commit_ids
+    page.commits
         .iter()
-        .zip(&page.scores)
-        .map(|(sha, score)| {
-            score
-                .map(|score| (sha.clone(), score.get()))
+        .map(|commit| {
+            commit
+                .score
+                .map(|score| (commit.sha.to_hex(), score.get()))
                 .ok_or_else(|| format!("{what}: a relevance row carries its score").into())
         })
         .collect()
@@ -317,7 +387,7 @@ struct RelevanceWalk {
 
 /// Walk relevance pages from the start.
 fn walk_relevance(
-    rt: &mut E2eRuntime,
+    history: &PinnedHistory<'_>,
     expected_total: u64,
     what: &str,
 ) -> Result<RelevanceWalk, Box<dyn Error>> {
@@ -326,8 +396,8 @@ fn walk_relevance(
     let mut epoch: Option<AuxEpochV1> = None;
     let mut walked = Vec::new();
     for _page in 0..16 {
-        let page = served(
-            rt.query_history_page(
+        let page = history.served(
+            history.query_history_page(
                 TextQuerySyntax::Sourcegraph,
                 QUERY,
                 PAGE,
@@ -336,10 +406,7 @@ fn walk_relevance(
             ),
             what,
         )?;
-        let window = page
-            .window
-            .as_ref()
-            .ok_or("a served page carries a window")?;
+        let window = &page.window;
         let remaining = expected_total.saturating_sub(u64::try_from(walked.len())?);
         if window.candidate_count() != CandidateCountV1::Exact(remaining) {
             return Err(format!(
@@ -348,8 +415,8 @@ fn walk_relevance(
             .into());
         }
         if epoch.is_none() {
-            epoch = page.read_epoch;
-        } else if page.read_epoch != epoch {
+            epoch = Some(page.read_epoch);
+        } else if Some(page.read_epoch) != epoch {
             return Err(format!("{what}: every page of one walk reads one epoch").into());
         }
         walked.extend(scored_rows(&page, what)?);
@@ -377,14 +444,11 @@ fn walk_relevance(
     Err(format!("{what}: pagination did not terminate").into())
 }
 
-fn late_commit_batch(
-    rt: &E2eRuntime,
-    generation: ManifestGeneration,
-) -> Result<HistoryIngestBatch, Box<dyn Error>> {
+fn late_commit_batch(generation: &GenerationPin) -> Result<HistoryIngestBatch, Box<dyn Error>> {
     Ok(HistoryIngestBatch {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
-        generation,
+        repo_id: generation.repo_id.clone(),
+        revision_id: generation.revision_id.clone(),
+        generation: generation.manifest_generation,
         manifest_digest: None,
         batch_digest: "history-relevance-late".to_string(),
         commits: vec![CommitRecord {
@@ -412,10 +476,13 @@ fn late_commit_batch(
     })
 }
 
-#[test]
-fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingests() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let sealed = ingest_fixture(&mut rt)?;
+struct BeforeRestart {
+    matching: u64,
+    epoch: AuxEpochV1,
+    cursor: ContinuationTokenV2,
+}
+
+fn verify_before_restart(history: &PinnedHistory<'_>) -> Result<BeforeRestart, Box<dyn Error>> {
     let reference = reference_ranking(&fixture_messages(), "needle");
     let matching = u64::try_from(reference.len())?;
     if matching != 20 {
@@ -426,8 +493,8 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
 
     // Relevance top-3 is the reference's top-3, scored; recency top-3 is
     // the newest three, unscored; the two disagree at the head.
-    let top = served(
-        rt.query_history_page(
+    let top = history.served(
+        history.query_history_page(
             TextQuerySyntax::Sourcegraph,
             QUERY,
             3,
@@ -442,7 +509,7 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         reference.get(..3).ok_or("three expected")?,
         "relevance top-3",
     )?;
-    let top_window = top.window.ok_or("a window")?;
+    let top_window = &top.window;
     if top_window.candidate_count() != CandidateCountV1::Exact(matching)
         || top_window.has_more() != Some(true)
     {
@@ -451,8 +518,8 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
     if top.examined < matching {
         return Err(format!("every matching commit is examined, saw {}", top.examined).into());
     }
-    let newest = served(
-        rt.query_history_page(
+    let newest = history.served(
+        history.query_history_page(
             TextQuerySyntax::Sourcegraph,
             QUERY,
             3,
@@ -461,13 +528,20 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         ),
         "recency top-3",
     )?;
-    if newest.commit_ids != vec![sha_of(22), sha_of(21), sha_of(20)] {
-        return Err(format!("recency serves the newest three: {:?}", newest.commit_ids).into());
+    let newest_shas = newest
+        .commits
+        .iter()
+        .map(|commit| commit.sha.to_hex())
+        .collect::<Vec<_>>();
+    if newest_shas != [sha_of(22), sha_of(21), sha_of(20)] {
+        return Err(format!("recency serves the newest three: {newest_shas:?}").into());
     }
-    if newest.order != Some(HistoryOrderV1::Recency) || newest.scores.iter().any(Option::is_some) {
+    if newest.order != HistoryOrderV1::Recency
+        || newest.commits.iter().any(|commit| commit.score.is_some())
+    {
         return Err("a recency page echoes its order and carries no score".into());
     }
-    if top.commit_ids.first() == newest.commit_ids.first() {
+    if top.commits.first().map(|row| row.sha) == newest.commits.first().map(|row| row.sha) {
         return Err("the fixture must make the two orders disagree at the head".into());
     }
 
@@ -476,7 +550,7 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         rows: walked,
         first_cursor,
         epoch,
-    } = walk_relevance(&mut rt, matching, "walk")?;
+    } = walk_relevance(history, matching, "walk")?;
     assert_rows_match_reference(&walked, &reference, "walk")?;
     let distinct: BTreeSet<&String> = walked.iter().map(|(sha, _)| sha).collect();
     if distinct.len() != walked.len() {
@@ -486,8 +560,8 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
     let epoch = epoch.ok_or("a served page names its epoch")?;
 
     // The diff index ranks the hunks the same way, scored.
-    let diffs = served(
-        rt.query_history_page(
+    let diffs = history.served(
+        history.query_history_page(
             TextQuerySyntax::Sourcegraph,
             "type:diff needle",
             3,
@@ -496,17 +570,17 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         ),
         "diff relevance",
     )?;
-    if diffs.order != Some(HistoryOrderV1::Relevance)
-        || diffs.diff_paths.len() != 3
-        || diffs.scores.iter().any(Option::is_none)
+    if diffs.order != HistoryOrderV1::Relevance
+        || diffs.diffs.len() != 3
+        || !diffs.commits.is_empty()
+        || diffs.diffs.iter().any(|row| row.score.is_none())
     {
         return Err(format!("diff relevance serves scored hunks: {diffs:?}").into());
     }
     let diff_scores: Vec<f32> = diffs
-        .scores
+        .diffs
         .iter()
-        .flatten()
-        .map(|score| score.get())
+        .filter_map(|row| row.score.map(|score| score.get()))
         .collect();
     if diff_scores
         .windows(2)
@@ -519,9 +593,9 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
     // flight nor changes its scores: the continuation is served at its
     // epoch from that epoch's index. A fresh walk sees the new commit
     // first at the next epoch.
-    rt.publish_history_batch(late_commit_batch(&rt, sealed)?)?;
-    let continued = served(
-        rt.query_history_page(
+    publish_history(history.client, late_commit_batch(history.generation)?)?;
+    let continued = history.served(
+        history.query_history_page(
             TextQuerySyntax::Sourcegraph,
             QUERY,
             PAGE,
@@ -530,7 +604,7 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         ),
         "continuation after ingest",
     )?;
-    if continued.read_epoch != Some(epoch) {
+    if continued.read_epoch != epoch {
         return Err(format!(
             "the continuation reads epoch {epoch}, got {:?}",
             continued.read_epoch
@@ -552,8 +626,8 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         )
         .into());
     }
-    let fresh = served(
-        rt.query_history_page(
+    let fresh = history.served(
+        history.query_history_page(
             TextQuerySyntax::Sourcegraph,
             QUERY,
             1,
@@ -562,8 +636,8 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         ),
         "fresh walk after ingest",
     )?;
-    if fresh.read_epoch != Some(AuxEpochV1::new(epoch.get().saturating_add(1)))
-        || fresh.commit_ids != vec![sha_of(99)]
+    if fresh.read_epoch != AuxEpochV1::new(epoch.get().saturating_add(1))
+        || !matches!(fresh.commits.as_slice(), [row] if row.sha.to_hex() == sha_of(99))
     {
         return Err(format!(
             "a fresh walk reads the next epoch and ranks the dense commit first: {fresh:?}"
@@ -571,19 +645,26 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         .into());
     }
 
+    Ok(BeforeRestart {
+        matching,
+        epoch,
+        cursor: first_cursor,
+    })
+}
+
+fn verify_after_restart(history: &PinnedHistory<'_>, before: BeforeRestart) -> TestResult {
     // A restart serves the same pages with the same scores: the index is
     // a durable property of the epoch. The walk in flight is gone with
     // the restart (retention is in-memory) and refused typed.
-    let mut rt = rt.reopen();
     let RelevanceWalk {
         rows: after_restart,
         first_cursor: _,
         epoch: restarted_epoch,
-    } = walk_relevance(&mut rt, matching.saturating_add(1), "after restart")?;
+    } = walk_relevance(history, before.matching.saturating_add(1), "after restart")?;
     let Some(restarted_epoch) = restarted_epoch else {
         return Err("a served page names its epoch".into());
     };
-    if restarted_epoch != AuxEpochV1::new(epoch.get().saturating_add(1)) {
+    if restarted_epoch != AuxEpochV1::new(before.epoch.get().saturating_add(1)) {
         return Err(format!(
             "the persisted epoch is served after a restart, got {restarted_epoch}"
         )
@@ -595,17 +676,15 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         reference_ranking(&messages, "needle")
     };
     assert_rows_match_reference(&after_restart, &reference_after, "after restart")?;
-    let stale = rt.query_history_page(
+    let stale = history.query_history_page(
         TextQuerySyntax::Sourcegraph,
         QUERY,
         PAGE,
         HistoryOrderV1::Relevance,
-        Some(first_cursor),
+        Some(before.cursor),
     );
-    match stale.typed_error {
-        Some(error)
-            if error.code
-                == e2e_harness::E2eErrorCode::Remote(quanta_index_core::AUX_EPOCH_EXPIRED_CODE) => {
+    match stale {
+        Err(SdkError::Remote { code, .. }) if code == quanta_index_core::AUX_EPOCH_EXPIRED_CODE => {
         }
         other => {
             return Err(format!("a pre-restart cursor is refused expired, got {other:?}").into());
@@ -613,8 +692,8 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
     }
 
     // A recency cursor cannot continue a relevance walk, nor the reverse.
-    let recency = served(
-        rt.query_history_page(
+    let recency = history.served(
+        history.query_history_page(
             TextQuerySyntax::Sourcegraph,
             QUERY,
             3,
@@ -624,15 +703,18 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         "recency for a cursor",
     )?;
     let recency_cursor = recency.next_cursor.ok_or("recency continues")?;
-    let mismatch = rt.query_history_page(
+    let mismatch = history.query_history_page(
         TextQuerySyntax::Sourcegraph,
         QUERY,
         3,
         HistoryOrderV1::Relevance,
         Some(recency_cursor),
     );
-    match mismatch.typed_error {
-        Some(error) if error.code.as_str() == "HISTORY_CURSOR_ORDER_MISMATCH" => {}
+    match mismatch {
+        Err(SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::HistoryCursorOrderMismatch,
+            ..
+        }) => {}
         other => {
             return Err(format!(
                 "a recency cursor on a relevance walk is refused typed, got {other:?}"
@@ -642,27 +724,24 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
     }
     // A raw string has no BM25 score: refused under relevance, a filter
     // under recency.
-    let unscorable = rt.query_history_page(
+    let unscorable = history.query_history_page(
         TextQuerySyntax::Native,
         "type:commit 'needle'",
         3,
         HistoryOrderV1::Relevance,
         None,
     );
-    match unscorable.typed_error {
-        Some(error)
-            if error.code
-                == e2e_harness::E2eErrorCode::Remote(
-                    quanta_index_core::HISTORY_TEXT_QUERY_UNSCORABLE_CODE,
-                ) => {}
+    match unscorable {
+        Err(SdkError::Remote { code, .. })
+            if code == quanta_index_core::HISTORY_TEXT_QUERY_UNSCORABLE_CODE => {}
         other => {
             return Err(
                 format!("a raw string is unscorable under relevance, got {other:?}").into(),
             );
         }
     }
-    let filtered = served(
-        rt.query_history_page(
+    let filtered = history.served(
+        history.query_history_page(
             TextQuerySyntax::Native,
             "type:commit 'needle'",
             3,
@@ -671,8 +750,49 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         ),
         "raw string under recency",
     )?;
-    if filtered.commit_ids.len() != 3 {
+    if filtered.commits.len() != 3 || !filtered.diffs.is_empty() {
         return Err(format!("a raw string filters under recency: {filtered:?}").into());
     }
     Ok(())
+}
+
+#[test]
+fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingests() -> TestResult {
+    let parent = private_root()?;
+    let state_root = parent.path().join("state");
+    let binary = LegacySearchdBinary::from_environment()?;
+    let generation = GenerationPin::new(
+        RepoId::new("repo-e2e")?,
+        RevisionId::new("rev-e2e")?,
+        ManifestGeneration::new(1),
+    );
+
+    let first = binary.start(&state_root, 8)?;
+    let before = (|| {
+        let client = first.connect()?;
+        ingest_fixture(&client, &generation)?;
+        verify_before_restart(&PinnedHistory {
+            client: &client,
+            generation: &generation,
+        })
+    })();
+    let stopped = first.stop();
+    let before = before?;
+    stopped?;
+    binary.verify()?;
+
+    let second = binary.start(&state_root, 8)?;
+    let restarted = (|| {
+        let client = second.connect()?;
+        verify_after_restart(
+            &PinnedHistory {
+                client: &client,
+                generation: &generation,
+            },
+            before,
+        )
+    })();
+    let stopped = second.stop();
+    restarted.and(stopped)?;
+    binary.verify()
 }

@@ -3,10 +3,10 @@ use quanta_index_contract::index::{
     MemberBinding, ObjectRef, OperationStatus, OwnerKey, OwnerMutationSet, ProducerId, SourceCut,
     SourceEvent, SourceRecord, SourceTextAdmission, StableOwnerId, ViewRef, WorkClaim,
 };
+use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     NativeIdentityConstructionErrorV1, NativeNormalizationErrorV1, RepoId,
 };
-use quanta_index_contract::lex::LanguageCode;
 use std::{ops::Deref, sync::Arc};
 
 /// An admitted temporary key in the canonical source-path namespace.
@@ -146,45 +146,6 @@ impl SourcePathOwners {
             }
             _ => Err(super::IndexError::CorruptObject(
                 "path owner data shape differs".into(),
-            )),
-        }
-    }
-
-    /// Reverse-check an already selected SourceRecord. The caller obtained this
-    /// value using the record's path and still checks the returned OwnerKey.
-    /// Legacy rows carry only their single owner. Bucket rows use the actual
-    /// repository of the record, including the distinct unscoped legacy slot.
-    pub fn owner_for_record(
-        self,
-        record: &SourceRecord,
-        maps: &dyn super::ports::PersistentMapPort,
-        budget: &mut super::WorkBudget,
-    ) -> Result<Option<OwnerKey>, super::IndexError> {
-        match self {
-            Self::LegacyOwner(owner) => Ok(Some(owner)),
-            Self::Repositories(root) => {
-                let key = SourcePathRepositoryKey::new(record.source_repo_id.as_ref())?;
-                Self::repository_owner(root, key.as_slice()?, maps, budget)
-            }
-        }
-    }
-
-    /// Read a leaf from a repository bucket using a canonical child key.
-    pub fn repository_owner(
-        root: ObjectRef,
-        key: &[u8],
-        maps: &dyn super::ports::PersistentMapPort,
-        budget: &mut super::WorkBudget,
-    ) -> Result<Option<OwnerKey>, super::IndexError> {
-        let marker = maps.lookup(MapRoot(Some(root)), key, budget)?;
-        match marker
-            .map(|value| Self::decode(value, budget))
-            .transpose()?
-        {
-            Some(Self::LegacyOwner(owner)) => Ok(Some(owner)),
-            None => Ok(None),
-            Some(Self::Repositories(_)) => Err(super::IndexError::CorruptObject(
-                "repository path owner must not have another child map".into(),
             )),
         }
     }
@@ -337,7 +298,7 @@ impl SourceRecordOwner {
             let source_repo_id = wire
                 .source_repo_id
                 .map(|value| {
-                    let mut admission = super::source_paths::RepositoryKeyAdmission::new(budget);
+                    let mut admission = super::repository_key::RepositoryKeyAdmission::new(budget);
                     RepoId::try_from_owned_with_native_admission_v1(value, &mut admission).map_err(
                         |error| match error {
                             NativeIdentityConstructionErrorV1::Validation(cause) => {
@@ -368,8 +329,9 @@ impl SourceRecordOwner {
             let language = wire
                 .language
                 .map(|code| {
-                    LanguageCode::try_from_boxed_v1(code)
-                        .map_err(|error| super::IndexError::CorruptObject(format!("source record: {error}")))
+                    LanguageCode::try_from_boxed_v1(code).map_err(|error| {
+                        super::IndexError::CorruptObject(format!("source record: {error}"))
+                    })
                 })
                 .transpose()?;
             Ok(SourceRecord {
@@ -922,7 +884,13 @@ mod source_record_owner_tests {
         invalid_language.extend_from_slice(b",\"language\":\"Rust\"}");
         let mut duplicate_language = strict_prefix.to_vec();
         duplicate_language.extend_from_slice(b",\"language\":null,\"language\":\"rust\"}");
-        for wire in [b"{}".to_vec(), unknown_wire, duplicate_wire, invalid_language, duplicate_language] {
+        for wire in [
+            b"{}".to_vec(),
+            unknown_wire,
+            duplicate_wire,
+            invalid_language,
+            duplicate_language,
+        ] {
             if !matches!(
                 SourceRecordOwner::decode_json(&wire, &mut budget, MemoryLifetime::Temporary),
                 Err(IndexError::CorruptObject(_))

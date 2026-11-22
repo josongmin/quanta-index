@@ -32,7 +32,7 @@ members = [
     "benchmarks/bench-protocol",
     "vendor/ciborium-0.2.2",
 ]
-exclude = ["shared/quanta-explicit-fd-process", "vendor/tree-sitter-typescript", "vendor/tree-sitter-go", "vendor/tree-sitter-rust", "vendor/tree-sitter-python", "vendor/tree-sitter-javascript", "vendor/tantivy-0.22.1", "vendor/libsqlite3-sys-0.38.2", "vendor/rusqlite-0.40.2", "vendor/lance-io-7.0.0", "vendor/lance-7.0.0", "vendor/object_store-0.13.2", "vendor/lancedb-0.30.0"]
+exclude = ["shared/quanta-explicit-fd-process", "vendor/tree-sitter-typescript", "vendor/tree-sitter-go", "vendor/tree-sitter-rust", "vendor/tree-sitter-python", "vendor/tree-sitter-javascript", "vendor/libsqlite3-sys-0.38.2", "vendor/rusqlite-0.40.2", "vendor/lance-io-7.0.0", "vendor/lance-7.0.0", "vendor/object_store-0.13.2", "vendor/lancedb-0.30.0"]
 resolver = "2"
 
 [workspace.package]
@@ -118,15 +118,19 @@ use_self = "allow"
 wildcard_enum_match_arm = "deny"
 
 [workspace.dependencies]
-quanta-explicit-fd-process = { path = "shared/quanta-explicit-fd-process" }
-quanta-installed-artifact-trust = { path = "shared/quanta-installed-artifact-trust" }
+quanta-explicit-fd-process = { version = "0.1.0", path = "shared/quanta-explicit-fd-process" }
+quanta-installed-artifact-trust = { version = "0.1.0", path = "shared/quanta-installed-artifact-trust" }
 anyhow = "1.0.100"
+async-trait = "0.1.89"
 # arrow-array / arrow-schema pinned to the major version lancedb 0.30 uses
 # internally; mismatched majors silently fail downcast_ref::<StringArray>() etc.
 # at runtime. Bump in lockstep with lancedb on upgrade.
 arrow-array = "58"
+arrow-buffer = "58"
+arrow-data = "58"
 arrow-schema = "58"
 blake3 = { version = "1.5", default-features = false, features = ["pure"] }
+bytes = "1.12.0"
 ciborium = { version = "=0.2.2", path = "vendor/ciborium-0.2.2" }
 ciborium-ll = "0.2.2"
 crc32fast = "1.4.2"
@@ -134,6 +138,7 @@ criterion = { version = "0.5.1", default-features = false, features = ["cargo_be
 fs2 = "0.4.3"
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast", "zeroize", "rand_core"] }
 libc = "0.2.186"
+libsqlite3-sys = "=0.38.2"
 libproc = "=0.14.11"
 # Persistent (structurally shared) ordered maps for the auxiliary authority
 # snapshots: a retained epoch shares every unchanged node with the current
@@ -156,6 +161,7 @@ memchr = "2.8"
 memory-stats = { version = "=1.2.0", default-features = false }
 memmap2 = "0.9.5"
 model2vec-rs = { version = "=0.3.0", default-features = false, features = ["wasm"] }
+object_store = { version = "=0.13.2", default-features = false }
 # Safe `getpeereid(3)` wrapper for the socket peer-credential check on the
 # BSDs (macOS included); Linux uses rustix's `SO_PEERCRED`. Only `socket` +
 # `user` are enabled — the two features `nix::unistd::getpeereid` sits behind.
@@ -177,8 +183,6 @@ serde = { version = "1.0", default-features = false, features = ["std"] }
 serde_json = "1.0"
 rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup"] }
 sha2 = "0.10"
-tantivy = "=0.22.1"
-tantivy-fst = "=0.5.0"
 tempfile = "3.16.0"
 thiserror = "1.0.69"
 toml = "0.8"
@@ -198,6 +202,7 @@ tree-sitter-typescript = { version = "=0.23.2", path = "vendor/tree-sitter-types
 # Path custody also applies when another workspace consumes the contract crate;
 # Cargo does not inherit this workspace's [patch.crates-io] entries there.
 unicode-normalization = { version = "=0.1.25", path = "vendor/unicode-normalization-0.1.25" }
+url = "2.5.8"
 
 [profile.dev]
 # Keep backtraces useful while avoiding full DWARF rebuild churn on every edit.
@@ -242,7 +247,6 @@ codegen-units = 16
 ciborium = { path = "vendor/ciborium-0.2.2" }
 # The pinned 0.22.1 merger counts surviving posting frequencies exactly after
 # deletes; upstream approximates token totals from quantized fieldnorms.
-tantivy = { path = "vendor/tantivy-0.22.1" }
 # Native identity admission shares the pinned canonical NFC producer.
 unicode-normalization = { path = "vendor/unicode-normalization-0.1.25" }
 

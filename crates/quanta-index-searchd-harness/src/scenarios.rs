@@ -40,6 +40,8 @@ pub const NATIVE_TEXT_FILE_SCENARIOS: &[(&str, &[&str])] = &[
     ),
     ("lexical.phrase.native", &["src/lib.rs"]),
     ("lexical.regex.native", &["src/lib.rs"]),
+    ("lexical.file_contains.native", &["src/lib.rs"]),
+    ("lexical.repo_has_file.sourcegraph", &["src/lib.rs"]),
     (
         "structural.mixed_or.native",
         &[

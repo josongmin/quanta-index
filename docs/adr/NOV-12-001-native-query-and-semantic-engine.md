@@ -9,25 +9,23 @@ the current source, installed product, default switch or performance.
 
 ## Context
 
-The Nov-12 Native work replaces the Native ANN build/query adapter and joins
-file-ranked lexical and semantic readers. The Legacy semantic generation still
-uses the LanceDB backend recorded in
+Native joins file-ranked lexical and semantic readers under Catalog-owned
+selected views. On 2026-11-20, the Native product ANN backend was switched to
+LanceDB. The Legacy generation authority remains recorded in
 [MAY-31-001](MAY-31-001-lancedb-semantic-generation-authority.md).
-The earlier Native Lance implementation and its fixed-cohort results remain
-historical evidence. They do not describe the current Native graph consumer.
 
 ## Decision
 
 1. **Native ANN representation.** Native semantic publication uses bounded,
-   immutable HNSW regions and a persistent region directory alongside the
-   existing exact vectors and sealed delta. Deterministic recipe/input binding,
-   selected membership, original-vector re-scoring and explicit traversal/cap
-   results remain required. Catalog owns publication and retained-view lifetime;
-   the graph does not publish or reclaim selected state independently. Region
-   routing, graph visits, authentication and re-scoring share the original work
-   and memory admission. This choice makes no universal quality, scaling or
-   comparative speed claim. See
-   [graph](../../crates/quanta-index-semantic/src/native/embedding/native_graph.rs),
+   immutable LanceDB filesets under the Native region directory (format 5).
+   Catalog owns publication, selected-view membership and retention. Exact
+   vectors and the sealed delta remain part of the coverage binding. Region
+   routing, file authentication and original-vector re-scoring use the
+   original work and memory admission. Format 4 directories retain the native
+   HNSW reader. The LanceDB writer refuses a format 4 directory with
+   `RebuildRequired` before adding a region. Create a fresh Native root from
+   source when moving that workspace to LanceDB. See
+   [LanceDB regions](../../crates/quanta-index-semantic/src/native/ann_lance.rs),
    [materialization](../../crates/quanta-index-semantic/src/native/embedding/ann_materialization.rs)
    and [query](../../crates/quanta-index-semantic/src/native/embedding/ann_query.rs).
 2. **Prepared publication.** The producer lends or moves the existing canonical
@@ -210,7 +208,9 @@ unlink or aggregate terminal completion. The candidate reader lends the bounded
 inventory under one producer writer fence, after comparing the complete
 generation list with the authorized selection. The candidate path appends a
 History FULL for each selected generation after the attested AST publication
-and binds the terminal operation before BOOT.
+and binds the terminal operation before BOOT. FULL and DELTA recompute every
+replay advance from the original batch and complete ACK under the request's
+work budget before applying rows.
 
 Q captures the ordered candidate publications in one Catalog transaction and
 checks the exact predecessor and History profile addition at every step. Under
@@ -261,6 +261,12 @@ fragment wire when its CBOR envelope exceeds one frame. The encoder serializes
 the counted CBOR body into the retained Original allocation and inserts
 fragment headers in place. The same allocation backs the write. The
 History source object keeps its existing storage and producer admission bounds.
+The receiver admits the existing canonical JSON and a compact CBOR replay
+object. S uses the compact object when the same carrier's JSON exceeds the
+immutable ceiling and its canonical CBOR fits. This preserves object IDs for
+existing JSON inputs and lets operation retry derive the same reference from
+the original inventory. Q validates the compact bytes under the original work
+and memory budget before lending the same typed replay to FULL, DELTA or BOOT.
 S checks the returned immutable object reference in both source modes. A
 failure during profile or input staging attempts to discard the exact ingress
 while its request budget is live. After Submit, S reconciles by operation key.
@@ -275,16 +281,111 @@ preservation of active sibling SearchCorpus and RepoMap heads. The Source and
 RepoMap owners must verify the complete active inventory and carry it into the
 candidate or retain a verified serving route for each head.
 
-Replacing an already-installed Native root is a separate path. Its current
-Published-operation census accepts signed SourceAdvance and AST work. Roots
-with published History FULL, append or SourceHistoryAdvance require a History
-carry-over contract before that path can replace them.
+Replacing an installed Native root holds the previous root lease while exporting
+the selected History members and the exact protected Source/RepoMap Catalog
+rows. The logical protected snapshot remains bounded at 32 MiB. A payload up
+to 16 MiB keeps its original single-object identity. A larger payload has two
+ordered immutable pages and a manifest that binds their references and total
+length. The first page holds the original closure roots and the second page is
+childless. Each physical payload fits the 16 MiB storage limit even when all
+4,096 original child slots are in use.
+
+The candidate stages these objects in one ingress. Seal checks the staged
+view markers and candidate root, verifies the ordered pages and joins the
+snapshot nonce and old route before importing the Catalog rows. For paged
+snapshots, one admitted 64 KiB buffer serves token preflight and decoding.
+Seal authenticates each file's ordered edges, wire digest and EOF on its held
+descriptor and checks its namespace binding. The first descriptor closes
+before the second opens. Both file checks and the canonical snapshot check
+precede import. If JSON decoding fails first, Seal completes the remaining
+physical checks with bounded scratch to preserve any object authentication
+failure. I/O, cancellation and work refusal end the attempt immediately.
+Inline snapshots use a single owned payload. The decoder reserves backing
+as decoded vectors grow. Length and digest serialization check the original
+request at 64 KiB intervals. The Catalog bounds the snapshot row count
+before allocation and validates and writes canonical operation bytes with one
+row's scratch at a time. Census and restore share the claim check for
+published events. That check matches each claim to its exact operation and
+event without rereading a SQL operation per claim. Exact retry checks stored
+bytes and digest with SQL projections bounded by the authenticated input.
+Frontier and Source authority comparisons borrow only fixed-size digest BLOBs.
+Protected route validation admits each row by measured size.
+Route encoding checks the request between heads and at 64 KiB serialization
+intervals. Catalog reuses the canonical children from the identity pass for
+its registration comparison. The route decoder checks the request during
+head counting and deserialization as well. It uses the slice parser for
+bodies up to 64 KiB and a checkpoint reader for larger borrowed inputs.
+Raw authentication of borrowed route bytes and owned snapshot bytes uses
+64 KiB hash chunks with the same immutable-object prefix and child order.
+For a Native successor whose direct route children would exceed 4,096, the
+old route and snapshot retain the closure.
+In-limit routes keep their existing child list. BOOT computes the original
+snapshot and page references and ordered row digests from the held
+predecessor. It releases those rows, authenticates the candidate object
+files with bounded scratch and compares the counts and digests to the
+installed rows in a bounded SQL scan. Operation and claim keys retain the
+V1 byte order. The scan admits
+each operation and claim BLOB by measured length before its indexed fetch.
+SQLite projects bounded frontier and authority fields. The predecessor and
+installed scans and both import branches reject claims whose operation key
+has no matching row before joining claims to workspace. The installed census
+checks complete row coverage and verifies the retained Exact views in the
+same transaction. Candidate
+resume, protected import and route selection check the fixed ingress widths
+before decoding and use an indexed existence check for an already submitted
+operation. Exact view verification borrows the route declarations and
+checks each workspace's head and any map-only genesis using fixed scratch.
+Exact retirement follows the selected route's authenticated marker edges. A
+compact Native route can own its markers through a previous route. Its BOOT
+selection authenticates the inline or paged snapshot chain and records the
+direct marker carrier. Retirement authenticates that registration and edge
+ledger once per page under the original work budget. The marker relation
+survives terminal custody release. An older compact BOOT record without the
+carrier reference uses the bounded ancestry reader.
+A BOOT-named marker carrier with missing ancestry is a custody error during
+orphan reclamation. The Catalog preserves the object for recovery.
+The protected BOOT and quiescence readers share the measured operation
+admission and retain its loan through the callback. View and BOOT metadata
+readers bound their SQLite projections before loading the BLOBs.
+The read-only VFS attaches preflight main/WAL lengths to native handles so
+SQLite's WAL recovery uses the admitted input range. For a verified main
+handle the pager cache setting applies before schema loading. SQLite bounds
+single rows and aggregate schema input before parsing DDL under the same
+read transaction. Verification uses a private cache and default planner
+estimates throughout. The root lease remains held until the deployment
+check completes. The 32 MiB encoding bound and per-request memory admission
+are separate limits.
+The protected Catalog export closes and rechecks its SQLite input before
+the snapshot visitor runs. Its funded rows remain live through serialization.
+The exporter hashes the canonical physical pages before streaming their bytes
+through one 64 KiB buffer. It emits pages before the manifest with the same
+ordered children and object references used by BOOT.
+The S receiver borrows its funded staging bytes for the shared Core route and
+inline snapshot decoders. It verifies the inline origin before Seal and keeps
+the decoded route heads funded through successor route staging.
+The exporter visits the entire root set in one postorder traversal and
+transfers each immutable object once. Parent frames retain the original child
+order and repeated references. The frontier and visit table acquire their own
+backing under the configured inventory ceiling. A back edge refuses the
+transfer as a digest conflict.
+[Snapshot contract](../../crates/quanta-index-contract/src/index/protected_native_snapshot.rs) ·
+[BOOT verification](../../crates/quanta-index-searchd-runtime/src/native_boot/restore_forward/preserved_native_v1.rs)
 
 Installed acceptance also covers the interruption after History commits and
 before the launcher receives the handoff. The shared candidate caller checks
 Latest against the exact published History operation before resuming the
 authenticated Source/AST replay and original inventory. The retry uses durable
 Published metadata for the AST anchor and each checked predecessor.
+The Previous Native publication visitor resolves those joins through a
+reader borrowed from its existing exclusive Catalog transaction. The settled
+publication scan can supply an in-memory index of exact predecessor views.
+A lookup checks the durable Published operation. The workspace and epoch
+scan remains available when the budget discards the index.
+The visitor resolves signed Reservation, Replay and AST facts through a
+funded operation-key lookup that retains every matching row. Runtime checks
+the root, phase and duplicate rules for those rows.
+The offline settlement census verifies the exact stored operation and work
+keys so each scanned row supplies its own custody evidence.
 For an existing History operation, S recomputes the input reference from
 retained originals or from the authenticated snapshot export without opening
 an ingress. It reissues the exact Submit so Q compares the immutable request
@@ -342,35 +443,35 @@ S CLI callback and signed Native V5 terminal recovery have separate acceptance.
 
 Ordinary [SDK queries](../../crates/quanta-index-sdk/src/client.rs) and
 [searchctl dispatch](../../crates/quanta-index-searchctl/src/lib.rs) select
-Native. Lexical and Runtime have empty default feature lists. The current
-default graph omits Tantivy. Explicit `legacy-tantivy` and `legacy-bench`
-builds still supply Legacy execution and comparisons. The workspace dep/patch,
-nine Tantivy-family lock entries and vendor sources remain. F owns their
-coherent removal and release qualification and retains the existing physical
-recovery readers for Legacy state.
-[Lexical features](../../crates/quanta-index-lexical/Cargo.toml) ·
-[Runtime features](../../crates/quanta-index-searchd-runtime/Cargo.toml)
-[F retirement scope](../plans/nov-12-native-cutover/tickets/NC-F-integration.md#tantivy-separation-and-remaining-removal)
+Native. The workspace removed the `legacy-tantivy` and `legacy-bench` features,
+the Tantivy-family dependencies and the vendored engine. Read-only Legacy
+state verification and Source export retain the physical DATA commitments.
+Compatibility cases that need the historical engine use a pinned external
+old-Q daemon. The retirement ledger tracks the corresponding Native and DATA
+assertions. Final qualification binds the release build, signed installation
+and operational proofs to one Q/S candidate. The signed installed recovery
+suite covers both pre-publication rollback and restore-forward.
+[Retirement and qualification](../plans/nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md) ·
+[Maintained test migration](../plans/nov-20-native-cutover-closeout/tickets/04-maintained-test-migration.md) ·
+[Signed installed recovery](../plans/nov-20-native-cutover-closeout/tickets/03-signed-published-cp2.md)
 
 ## Scope of prior decisions
 
-- MAY-31-001 remains the Legacy generation decision. Native graph selection
-  does not mean LanceDB, Lance I/O or Tantivy have left the shipped dependency
-  closure or that default callers have migrated.
+- MAY-31-001 remains the Legacy generation decision. Native uses its own
+  Catalog-managed filesets and selected-view authority with the LanceDB library.
 - The `ann_lance` link in
   [NOV-07-001 decision 11](NOV-07-001-native-index-execution-and-custody.md#decision)
-  records the earlier Native adapter's admission/refill boundary. That module
-  is now test-only; current production build/query follows the graph path above.
-  Original work, identity and custody requirements remain in force.
+  records the Native adapter's admission and refill boundary. Original work,
+  identity and custody requirements remain in force.
 - The [Native RFC](../rfc/oct-10-native-incremental-vnext.md#92-semantic-native-incremental)
   and [E04](../plans/oct-22-finalizing/E04-semantic-ann.md#original-4k-gate)
   keep their original correctness, resource and product acceptance criteria.
 
 ## Semantic mutation and admission
 
-Native graph/directory/file readers are implemented; old B compile/mount and
-Lance-replacement dispatch is historical. Reuse the existing graph, exact oracle,
-source-file authentication and selected-view publication/pin contract above.
+The Native directory dispatches LanceDB and retained graph reads by format.
+Both reuse the exact oracle, source-file authentication and selected-view
+publication and pinning contract above.
 The [graph decoder](../../crates/quanta-index-semantic/src/native/embedding/native_graph.rs)
 charges original byte Work before header interpretation or decoded allocation.
 Ranking/seal scratch must fit original admission. After comparing a better
@@ -513,11 +614,9 @@ quality and engine removal retain their existing acceptance and owners.
 
 ## Native search design basis
 
-- Immutable HNSW regions use bounded exact evaluation for eligible vectors when
-  the remaining budget can cover them. Compare Recall and total query and merge
-  cost across multiple regions, sparse and correlated filters, and accumulated
-  deletes. Consider ACORN if measured filter traversal fails, or DiskANN if
-  resident memory or SSD I/O fails its gate. [HNSW](https://arxiv.org/abs/1603.09320) ·
+- Immutable LanceDB regions use Flat or IVF-HNSW-SQ according to region size.
+  Compare Recall and total query and merge cost across multiple regions,
+  sparse and correlated filters, and accumulated deletes. [HNSW](https://arxiv.org/abs/1603.09320) ·
   [Lucene kNN](https://lucene.apache.org/core/9_8_0/core/org/apache/lucene/search/KnnFloatVectorQuery.html) ·
   [Qdrant segment optimization](https://qdrant.tech/documentation/ops-optimization/optimizer/) ·
   [ACORN](https://arxiv.org/abs/2403.04871) ·

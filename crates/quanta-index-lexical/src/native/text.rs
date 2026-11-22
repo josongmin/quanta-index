@@ -1,9 +1,12 @@
 //! Token-only native text member. BM25, regex and DSL query routes require
 //! separate query admission and are not capabilities of this builder.
 
+mod cold_inventory_cursor;
+mod cold_posting_run;
 mod cold_tokens;
 mod contribution;
 mod dense_posting;
+mod entry_edits;
 mod entry_map;
 mod entry_patch;
 mod occurrence_pack;
@@ -11,37 +14,55 @@ mod occurrence_run;
 mod posting_witness;
 mod prepared_inventory;
 mod small_posting_block;
+mod term_dictionary;
+mod term_dictionary_write;
+#[path = "text_segment/mod.rs"]
+mod text_segment;
+pub(super) use text_segment::read::DocumentCursor as SegmentOwnerCursor;
+mod token_prefix_cache;
+mod token_prefix_prepare;
 pub(super) use entry_map::EntryMap;
-pub(super) use entry_map::directory::inventory_reference;
 use posting_witness::OccurrenceDigestWitness;
 
-use super::text_memory::{PreparedKey, PreparedRows};
-use super::text_occurrence::{OccurrenceCount, OccurrenceReader};
+use super::text_inventory_descriptor::inventory_reference;
+use super::text_memory::{
+    IndexedTokenCursor, MAX_NFC_BYTES, MAX_NFC_WORK_BYTES, PreparedKey, PreparedRows,
+    prepare_indexed_token_cursor,
+};
+use super::text_occurrence::{
+    OccurrenceCount, OccurrenceReader,
+    positions::{MAX_POSITIONS_PER_TERM, PreparedPositions},
+};
+#[cfg(test)]
+use super::text_occurrence::positions::{Occurrence, Positions};
 use super::text_spool::{
     InventoryPartition, MAX_INVENTORY_ROOTS, MAX_TERM_KEY_BYTES, PostingCasePages,
     PostingScratchRow, PostingTermKey, TextSpool,
 };
+pub use super::text_statistics::TextStatistics;
+use super::text_token_batch::{SourceRun, TokenBatch};
+#[cfg(test)]
+use super::text_token_batch::TokenRow;
 use quanta_index_core::DiagnosticStageV1;
 use quanta_index_core::index::{
     AttemptContext, BaseMember, DeltaInput, Digest, IndexError, MAX_SOURCE_PATH_BYTES, MapEdit,
-    MapRoot, MapValue, MemberBinding, ObjectBatchInput, ObjectRef, OwnerKey, PlanContext,
-    PlanDecision, ProducerId, QueryReadContext, SourceDelta, SourceInputCursor, SourceRecord,
-    SourceTextAdmission, StableOwnerId, TicketRecord, ViewRef, WorkBudget, WorkUsage,
-    member_map_key, owner_map_key,
+    MapRoot, MapValue, MemberBinding, MemoryLifetime, ObjectBatchInput, ObjectRef, OwnerKey,
+    PlanContext, PlanDecision, ProducerId, QueryReadContext, SourceDelta, SourceInputCursor,
+    SourcePathOwners, SourceRecord, SourceRecordOwner, SourceTextAdmission, StableOwnerId,
+    TicketRecord, ViewRef, WorkBudget, WorkUsage, member_map_key, owner_map_key,
     ports::{ImmutableObjectPort, IndexBuildPort, IndexFuture, PersistentMapPort},
 };
 use quanta_index_core::index::{MapPageCursor, MapPageEntry};
 pub use quanta_index_lq_text_normalizer::CaseMode;
-use quanta_index_lq_text_normalizer::{
-    TEXT_NORMALIZER_VERSION, TextQueryError, TokenCursor, case_chars,
-};
-use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use quanta_index_lq_text_normalizer::case_chars;
+use quanta_index_lq_text_normalizer::{TEXT_NORMALIZER_VERSION, TextQueryError, TokenCursor};
+use serde::Deserialize;
+#[cfg(test)]
+use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_NFC_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_NFC_WORK_BYTES: u64 = 64 * 1024 * 1024;
-pub(super) const MAX_POSITIONS_PER_TERM: u64 = 8_192;
 const PAGE: u32 = 64;
 const POSTING_PAGE_CAPACITY: usize = 64;
 const DENSE_POSTING_TAG: u8 = 1;
@@ -58,12 +79,49 @@ pub const MAX_TEXT_INSPECT_TERM_BYTES: usize = 4_096;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TextRecipe {
     pub admission_policy: Digest,
+    layout: TextLayout,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TextLayout {
+    Tree,
+    SegmentFullV1,
+    SegmentLayeredV2,
 }
 
 impl TextRecipe {
     #[must_use]
     pub const fn new(admission_policy: Digest) -> Self {
-        Self { admission_policy }
+        Self {
+            admission_policy,
+            layout: TextLayout::Tree,
+        }
+    }
+
+    /// Select the isolated immutable-segment FULL format.
+    #[must_use]
+    pub const fn segmented_full(admission_policy: Digest) -> Self {
+        Self {
+            admission_policy,
+            layout: TextLayout::SegmentFullV1,
+        }
+    }
+
+    /// Select the layered immutable-segment format with durable live documents.
+    #[must_use]
+    pub const fn segmented_layered(admission_policy: Digest) -> Self {
+        Self {
+            admission_policy,
+            layout: TextLayout::SegmentLayeredV2,
+        }
+    }
+
+    const fn is_layered(self) -> bool {
+        matches!(self.layout, TextLayout::SegmentLayeredV2)
+    }
+
+    const fn segment_child_recipe(self) -> Self {
+        Self::segmented_full(self.admission_policy)
     }
 
     #[must_use]
@@ -79,10 +137,22 @@ impl TextRecipe {
         hash.update(MAX_POSITIONS_PER_TERM.to_le_bytes());
         hash.update(MAX_TERM_KEY_BYTES.to_le_bytes());
         hash.update(b"sensitive+folded;indexed-runs-only;u32-positions");
-        hash.update(entry_map::LAYOUT_POLICY);
-        hash.update(contribution::LAYOUT_POLICY);
-        hash.update(super::text_occurrence::block::LAYOUT_POLICY);
-        hash.update(small_posting_block::LAYOUT_POLICY);
+        match self.layout {
+            TextLayout::Tree => {
+                hash.update(entry_map::LAYOUT_POLICY);
+                hash.update(contribution::LAYOUT_POLICY);
+                hash.update(super::text_occurrence::block::LAYOUT_POLICY);
+                hash.update(small_posting_block::LAYOUT_POLICY);
+                hash.update(term_dictionary::LAYOUT_POLICY);
+                hash.update(super::text_path::PATH_POLICY);
+            }
+            TextLayout::SegmentFullV1 => hash.update(text_segment::wire::POLICY),
+            TextLayout::SegmentLayeredV2 => {
+                hash.update(text_segment::wire_v2::POLICY);
+                hash.update(text_segment::wire::POLICY);
+                hash.update(super::text_path::LAYERED_PATH_POLICY);
+            }
+        }
         Digest(hash.finalize().into())
     }
 }
@@ -118,14 +188,14 @@ impl BoundTextMember {
         &self,
         index: &NativeTextIndex,
         context: &mut TextReadContext<'_>,
-    ) -> Result<Root, IndexError> {
+    ) -> Result<SelectedTextRoot, IndexError> {
         if self.view != context.ticket.view.identity
             || self.member.input.policy != index.recipe().output_policy()
             || self.member.input.root != context.ticket.view.source.owners
         {
             return Err(IndexError::Conflict);
         }
-        read_root(&self.member, context.objects, context.budget)
+        index.read_selected_root(&self.member, context)
     }
 }
 
@@ -200,12 +270,6 @@ impl NativeTextIndex {
 
 #[cfg(test)]
 mod tests {
-    #[path = "count_integration_tests.rs"]
-    mod count_integration_tests;
-    #[path = "overlay_tests.rs"]
-    mod overlay_tests;
-    #[path = "universe_tests.rs"]
-    mod universe_tests;
     use std::collections::BTreeMap;
     use std::future::Future;
     use std::path::Path;
@@ -267,11 +331,19 @@ mod tests {
     }
 
     mod alias_handoff;
+    #[path = "cold_inventory_cursor.rs"]
+    mod cold_inventory_cursor_tests;
+    #[path = "cold_posting_run.rs"]
+    mod cold_posting_run_tests;
     mod confirmed_cold_postings;
     mod confirmed_reuse_tests;
+    #[path = "count_integration_tests.rs"]
+    mod count_integration_tests;
     mod count_spill_tests;
     mod descriptor_transcript;
     mod diff_trace_tests;
+    #[path = "file_contains.rs"]
+    mod file_contains_tests;
     mod install_envelope;
     mod inventory_shape_tests;
     mod inventory_trace_tests;
@@ -279,9 +351,21 @@ mod tests {
     mod occurrence_blocks;
     mod occurrence_packets;
     mod occurrence_validation_trace_tests;
+    #[path = "overlay_tests.rs"]
+    mod overlay_tests;
     mod prepared_union;
+    #[path = "repo_has_file.rs"]
+    mod repo_has_file_tests;
     mod shared_entry_maps;
+    #[path = "term_dictionary.rs"]
+    mod term_dictionary_tests;
+    #[path = "term_dictionary_write.rs"]
+    mod term_dictionary_write_tests;
+    #[path = "token_prefix_reuse.rs"]
+    mod token_prefix_reuse;
     mod token_spool_batch;
+    #[path = "universe_tests.rs"]
+    mod universe_tests;
 
     #[test]
     fn compact_contribution_has_fixed_data_all_edges_and_needs_no_object_read()
@@ -588,6 +672,7 @@ mod tests {
     #[derive(Default)]
     struct TestObjects {
         stored: BTreeMap<ObjectRef, StoredObject>,
+        generated: Option<Mutex<BTreeMap<ObjectRef, StoredObject>>>,
         counted_body: Option<ObjectRef>,
         cancel_after_get: Option<ObjectRef>,
         body_reads: AtomicUsize,
@@ -596,6 +681,7 @@ mod tests {
         installs: AtomicUsize,
         install_batches: AtomicUsize,
         install_batch_inputs: AtomicUsize,
+        small_posting_batch_inputs: AtomicUsize,
         install_outputs: Option<Vec<ObjectRef>>,
         token_memory_at_install: Option<(Arc<TokenMemory>, u64)>,
         json_at_install: Option<JsonInstallObservation>,
@@ -611,6 +697,29 @@ mod tests {
     }
 
     impl TestObjects {
+        fn store_generated(
+            &self,
+            payload: &[u8],
+            children: &[ObjectRef],
+            sink: &dyn ObjectWriteSink,
+            budget: &mut WorkBudget,
+        ) -> Result<RegisteredObject, IndexError> {
+            let generated = self.generated.as_ref().ok_or_else(|| {
+                IndexError::BackendViolation("generated fixture store disabled".into())
+            })?;
+            let object = self.identify(payload, children, budget)?;
+            sink.reserve(&object)?;
+            let _previous = generated
+                .lock()
+                .map_err(|_error| IndexError::BackendViolation("generated fixture lock".into()))?
+                .insert(
+                    object.reference,
+                    StoredObject::new(object.clone(), payload.to_vec(), None),
+                );
+            sink.installed(&object)?;
+            Ok(object)
+        }
+
         fn add(
             &mut self,
             reference: ObjectRef,
@@ -697,6 +806,9 @@ mod tests {
             if self.trace_install_budget {
                 observe_port_budget(budget, 90)?;
             }
+            if self.generated.is_some() {
+                return self.store_generated(payload, children, sink, budget);
+            }
             if let Some(observed) = &self.json_at_install {
                 check_eq!(payload, observed.payload);
                 check!(children.is_empty());
@@ -725,8 +837,8 @@ mod tests {
         fn install_batch(
             &self,
             inputs: &[ObjectBatchInput],
-            _: &dyn ObjectWriteSink,
-            _: &mut WorkBudget,
+            sink: &dyn ObjectWriteSink,
+            budget: &mut WorkBudget,
         ) -> Result<quanta_index_core::index::RegisteredObjectBatch, IndexError> {
             if let Some((memory, expected_live)) = &self.token_memory_at_install {
                 check_eq!(memory.live.load(Ordering::Relaxed), *expected_live);
@@ -735,6 +847,24 @@ mod tests {
             let _previous = self
                 .install_batch_inputs
                 .fetch_add(inputs.len(), Ordering::Relaxed);
+            let small_posting_inputs = inputs
+                .iter()
+                .filter(|input| input.payload.starts_with(small_posting_block::MAGIC))
+                .count();
+            let _previous = self
+                .small_posting_batch_inputs
+                .fetch_add(small_posting_inputs, Ordering::Relaxed);
+            if self.generated.is_some() {
+                let registrations = inputs
+                    .iter()
+                    .map(|input| {
+                        self.store_generated(&input.payload, &input.children, sink, budget)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok(quanta_index_core::index::RegisteredObjectBatch::unscoped(
+                    registrations,
+                ));
+            }
             if let Some(outputs) = &self.install_outputs {
                 return Ok(quanta_index_core::index::RegisteredObjectBatch::unscoped(
                     outputs
@@ -780,6 +910,16 @@ mod tests {
             if self.cancel_after_get == Some(reference) {
                 budget.request().cancel_handle().cancel();
             }
+            if let Some(generated) = &self.generated
+                && let Some(object) = generated
+                    .lock()
+                    .map_err(|_error| {
+                        IndexError::BackendViolation("generated fixture lock".into())
+                    })?
+                    .get(&reference)
+            {
+                return Ok(object.clone());
+            }
             self.stored
                 .get(&reference)
                 .cloned()
@@ -800,6 +940,7 @@ mod tests {
         batch_lookups: AtomicUsize,
         map_applies: AtomicUsize,
         trace_stream_budget: bool,
+        allow_empty_path_stream: AtomicBool,
     }
 
     impl TestMaps {
@@ -956,11 +1097,27 @@ mod tests {
 
         fn apply_stream(
             &self,
-            _: &[MapRoot],
-            _: &mut dyn MapEditCursor,
+            bases: &[MapRoot],
+            input: &mut dyn MapEditCursor,
             _: &dyn ObjectWriteSink,
             budget: &mut WorkBudget,
         ) -> Result<quanta_index_core::index::StagedMapRoots, IndexError> {
+            if bases == [MapRoot(None)]
+                && self.allow_empty_path_stream.swap(false, Ordering::Relaxed)
+            {
+                if self.trace_stream_budget {
+                    observe_port_budget(budget, 94)?;
+                }
+                let _previous = self.map_applies.fetch_add(1, Ordering::Relaxed);
+                if input.next_edit(budget)?.is_some() {
+                    return Err(IndexError::BackendViolation(
+                        "test path stream unexpectedly changed its empty root".into(),
+                    ));
+                }
+                let mut roots = quanta_index_core::index::StagedMapRoots::prepare(1, budget)?;
+                roots.push(MapRoot(None))?;
+                return roots.finish();
+            }
             if self.trace_stream_budget {
                 observe_port_budget(budget, 91)?;
             }
@@ -1071,6 +1228,43 @@ mod tests {
         posting_root: MapRoot,
     }
 
+    fn seed_fixture_term_dictionary(
+        fixture: &mut VisitorFixture,
+        entries: &[(Vec<u8>, ObjectRef)],
+    ) -> Result<(), IndexError> {
+        let mut work = budget()?;
+        let mut sorted = entries.to_vec();
+        sorted.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut draft = term_dictionary::PageDraft::new(&mut work)?;
+        for (key, reference) in &sorted {
+            check!(draft.try_push(key, MapValue::Object(*reference), &mut work)?);
+        }
+        let page = draft.finish(&mut work)?;
+        let fence = page.fence.as_slice().to_vec();
+        let page_ref = ObjectRef(Digest(Sha256::digest(&page.input.payload).into()));
+        let bytes = quanta_index_core::index::NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1
+            .checked_add(page.input.payload.len())
+            .and_then(|bytes| bytes.checked_add(page.input.children.len().checked_mul(32)?))
+            .ok_or(IndexError::ResourceLimited)?;
+        let _previous = fixture.objects.stored.insert(
+            page_ref,
+            StoredObject::new(
+                RegisteredObject::unscoped(
+                    page_ref,
+                    u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+                    page.input.children,
+                ),
+                page.input.payload,
+                None,
+            ),
+        );
+        let _previous = fixture.maps.roots.remove(&reference(4));
+        fixture
+            .maps
+            .add(MapRoot(Some(reference(4))), fence, page_ref)?;
+        Ok(())
+    }
+
     fn visitor_fixture() -> Result<VisitorFixture, IndexError> {
         let recipe = TextRecipe::new(Digest([21; 32]));
         let owner = OwnerKey {
@@ -1134,6 +1328,8 @@ mod tests {
             terms: terms_root,
             docs: 1,
             indexed_tokens: 2,
+            path_docs: 1,
+            ..Root::default()
         };
         let payload = encode(&root)?;
         objects.add(
@@ -1166,7 +1362,6 @@ mod tests {
             member_ref,
         )?;
         maps.add(owners_root, owner_key(owner).to_vec(), contribution_ref)?;
-        maps.add(terms_root, term.clone(), posting_ref)?;
         maps.add(
             posting_root,
             owner_key(owner).to_vec(),
@@ -1199,7 +1394,7 @@ mod tests {
                 projections: MapRoot(None),
             },
         };
-        Ok(VisitorFixture {
+        let mut fixture = VisitorFixture {
             objects,
             maps,
             ticket,
@@ -1213,7 +1408,10 @@ mod tests {
             term,
             posting_ref,
             posting_root,
-        })
+        };
+        let canonical_term = fixture.term.clone();
+        seed_fixture_term_dictionary(&mut fixture, &[(canonical_term, posting_ref)])?;
+        Ok(fixture)
     }
 
     #[test]
@@ -1243,8 +1441,7 @@ mod tests {
         check_eq!(fixture.objects.body_reads.load(Ordering::Relaxed), 1);
         let direct = index.pinned_root(&fixture.member, &mut text)?;
         check_eq!(fixture.objects.body_reads.load(Ordering::Relaxed), 2);
-        check_eq!(root.owners, direct.owners);
-        check_eq!(root.terms, direct.terms);
+        check_eq!(root, direct);
 
         text.ticket = &different;
         check!(matches!(
@@ -1252,6 +1449,654 @@ mod tests {
             Err(IndexError::Conflict)
         ));
         check_eq!(fixture.objects.body_reads.load(Ordering::Relaxed), 2);
+        Ok(())
+    }
+
+    fn segmented_phrase_fixture() -> Result<(VisitorFixture, ObjectRef), IndexError> {
+        use text_segment::wire::{self, Doc, SegmentEdge};
+
+        let mut fixture = phrase_fixture()?;
+        fixture.recipe = TextRecipe::segmented_full(fixture.recipe.admission_policy);
+        let policy = fixture.recipe.output_policy();
+        let source = fixture.ticket.view.source;
+        let doc = Doc {
+            owner: owner_key(fixture.owner),
+            source: fixture.source_ref,
+            tokens: 6,
+        };
+        let page = reference(71);
+        let segment = reference(72);
+        let mut payload = b"QTXPOST1".to_vec();
+        for case in [0, 1] {
+            for (term, posting) in [
+                (b"gap".as_slice(), &[0, 1, 2][..]),
+                (b"one".as_slice(), &[0, 3, 0, 3, 1][..]),
+                (b"three".as_slice(), &[0, 1, 5][..]),
+                (b"two".as_slice(), &[0, 1, 1][..]),
+            ] {
+                wire::push_count(&mut payload, term.len().saturating_add(1))?;
+                payload.push(case);
+                payload.extend_from_slice(term);
+                payload.extend_from_slice(&1_u16.to_be_bytes());
+                payload.extend_from_slice(
+                    &u32::try_from(posting.len())
+                        .map_err(|_error| IndexError::ResourceLimited)?
+                        .to_be_bytes(),
+                );
+                payload.extend_from_slice(posting);
+            }
+        }
+        fixture.objects.add(page, payload, Vec::new())?;
+        let mut payload = Vec::new();
+        let mut routes = page.0.0.to_vec();
+        routes.extend_from_slice(b"\0\x04\x00gap\0\x04\x01two");
+        wire::write_segment(&mut payload, policy, &[doc], 1, &routes)?;
+        fixture.objects.add(segment, payload, vec![page])?;
+        let mut payload = Vec::new();
+        wire::write_root(
+            &mut payload,
+            policy,
+            source,
+            &[SegmentEdge {
+                reference: segment,
+                first: doc.owner,
+                last: doc.owner,
+                docs: 1,
+                tokens: 6,
+            }],
+        )?;
+        fixture.objects.add(
+            fixture.member.artifact,
+            payload,
+            wire::source_edges(source).chain([segment]).collect(),
+        )?;
+        fixture.member.input.policy = policy;
+        fixture.member.logical_commitment = wire::logical_commitment(policy, source, 1, 6);
+        fixture.objects.add(
+            fixture.member_ref,
+            encode(&fixture.member)?,
+            std::iter::once(fixture.member.artifact)
+                .chain(source.owners.0)
+                .collect(),
+        )?;
+
+        Ok((fixture, page))
+    }
+
+    #[test]
+    fn segmented_full_ranker_uses_exact_term_and_phrase_positions() -> Result<(), IndexError> {
+        use quanta_index_contract::{LqExpr, LqLeaf};
+
+        let (fixture, _page) = segmented_phrase_fixture()?;
+        for (leaf, expected_hits) in [
+            (LqLeaf::Keyword("one".into()), 1),
+            (LqLeaf::Phrase("one two".into()), 1),
+            (LqLeaf::Phrase("two one".into()), 0),
+        ] {
+            let plan = planned_phrase_query(LqExpr::Leaf(leaf))?;
+            let ranking = search_phrase_plan(&fixture, &plan, 2)?;
+            check_eq!(ranking.matched, expected_hits);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn segmented_full_unanchored_and_regex_use_pinned_document_tables() -> Result<(), IndexError> {
+        use quanta_index_contract::{LqExpr, LqLeaf};
+
+        let (mut fixture, page) = segmented_phrase_fixture()?;
+        // Neither query needs a posting page. The regex matches the pinned
+        // Source body, and NOT of an absent term walks the admitted census.
+        fixture.objects.add(page, Vec::new(), Vec::new())?;
+        let unanchored = planned_phrase_query(LqExpr::Not(Box::new(LqExpr::Leaf(
+            LqLeaf::Keyword("alpha".into()),
+        ))))?;
+        let regex = planned_phrase_query(LqExpr::Leaf(LqLeaf::Regex("two +gap".into())))?;
+        let search_regex = |fixture: &VisitorFixture| {
+            // The regex compiler accounts for both HIR preparation and its
+            // bounded automaton. Keep that charge visible in this fixture.
+            let deadline = Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?;
+            let mut work = WorkBudget::new(
+                WorkLimits {
+                    reads: 100,
+                    writes: 100,
+                    bytes: 32 * 1024 * 1024,
+                    mutations: 100,
+                },
+                deadline,
+            );
+            search_phrase_plan_with_budget(fixture, &regex, 2, &mut work)
+        };
+        check!(matches!(
+            search_phrase_plan(&fixture, &regex, 2),
+            Err(IndexError::ResourceLimited)
+        ));
+        for ranking in [
+            search_phrase_plan(&fixture, &unanchored, 2)?,
+            search_regex(&fixture)?,
+        ] {
+            check_eq!(ranking.matched, 1);
+            check!(matches!(ranking.hits.as_slice(), [hit] if hit.owner == fixture.owner));
+        }
+
+        // A document in the segment cannot populate the census through a
+        // different pinned source record, even when its owner key matches.
+        fixture.maps.add(
+            fixture.ticket.view.source.owners,
+            owner_map_key(fixture.owner).to_vec(),
+            reference(91),
+        )?;
+        check!(matches!(
+            search_regex(&fixture),
+            Err(IndexError::CorruptObject(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn segmented_full_overlay_replaces_prior_statistics_and_term_membership()
+    -> Result<(), IndexError> {
+        use super::super::text_overlay::TextOverlayInput;
+
+        let (fixture, _) = segmented_phrase_fixture()?;
+        let index = NativeTextIndex::new(fixture.recipe);
+        let mut work = budget()?;
+        let mut context = TextReadContext {
+            ticket: &fixture.ticket,
+            objects: &fixture.objects,
+            maps: &fixture.maps,
+            budget: &mut work,
+        };
+        let corpus = index.prepare_overlay_corpus(
+            &fixture.member,
+            &[TextOverlayInput {
+                owner: fixture.owner,
+                revision: 3,
+                text: Some("two replacement"),
+            }],
+            &mut context,
+        )?;
+        check_eq!(
+            corpus.statistics(),
+            TextStatistics {
+                docs: 1,
+                indexed_tokens: 2
+            }
+        );
+        check!(corpus.masks(fixture.owner));
+        for (term, durable_df, overlay_df) in [("one", 1, 0), ("two", 1, 1), ("replacement", 0, 1)]
+        {
+            let key = stored_term_key(term, CaseMode::Sensitive)?;
+            check_eq!(
+                corpus.adjusted_df(&fixture.member, &key, durable_df, &mut context)?,
+                overlay_df
+            );
+        }
+        Ok(())
+    }
+
+    fn two_segment_read_fixture() -> Result<(VisitorFixture, OwnerKey), IndexError> {
+        use text_segment::wire::{self, Doc, SegmentEdge};
+        use text_segment::wire_v2::{self, PartitionKind, RootRow};
+
+        fn page(
+            fixture: &mut VisitorFixture,
+            reference: ObjectRef,
+            terms: &[(&[u8], u16, &[u8])],
+        ) -> Result<(), IndexError> {
+            let mut payload = wire::PAGE_MAGIC.to_vec();
+            for case in [0, 1] {
+                for &(term, df, postings) in terms {
+                    wire::push_count(&mut payload, term.len() + 1)?;
+                    payload.push(case);
+                    payload.extend_from_slice(term);
+                    payload.extend_from_slice(&df.to_be_bytes());
+                    payload.extend_from_slice(
+                        &u32::try_from(postings.len())
+                            .map_err(|_error| IndexError::ResourceLimited)?
+                            .to_be_bytes(),
+                    );
+                    payload.extend_from_slice(postings);
+                }
+            }
+            fixture.objects.add(reference, payload, Vec::new())
+        }
+
+        let (mut fixture, _first_page) = segmented_phrase_fixture()?;
+        let second = OwnerKey {
+            producer: fixture.owner.producer,
+            stable_id: StableOwnerId([31; 16]),
+        };
+        let second_body = reference(90);
+        let second_source = reference(91);
+        let second_page = reference(92);
+        let second_segment = reference(93);
+        let second_record = SourceRecord {
+            path: "b".into(),
+            bytes: second_body,
+            byte_len: 7,
+            text: SourceTextAdmission::Utf8 {
+                policy: fixture.recipe.admission_policy,
+            },
+            source_repo_id: None,
+            language: None,
+        };
+        fixture
+            .objects
+            .add(second_body, b"one two".to_vec(), Vec::new())?;
+        fixture
+            .objects
+            .add(second_source, encode(&second_record)?, vec![second_body])?;
+        fixture.maps.add(
+            fixture.ticket.view.source.owners,
+            owner_map_key(second).to_vec(),
+            second_source,
+        )?;
+        page(
+            &mut fixture,
+            second_page,
+            &[(b"one", 1, &[0, 1, 0]), (b"two", 1, &[0, 1, 1])],
+        )?;
+        let mut routes = Vec::new();
+        wire::write_route(&mut routes, second_page, b"\0one", b"\x01two")?;
+        let second_doc = Doc {
+            owner: owner_key(second),
+            source: second_source,
+            tokens: 2,
+        };
+        let mut payload = Vec::new();
+        wire::write_segment(
+            &mut payload,
+            fixture.recipe.output_policy(),
+            &[second_doc],
+            1,
+            &routes,
+        )?;
+        fixture
+            .objects
+            .add(second_segment, payload, vec![second_page])?;
+
+        let source = fixture.ticket.view.source;
+        let artifact = fixture.member.artifact;
+        let first_edge = SegmentEdge {
+            reference: reference(72),
+            first: owner_key(fixture.owner),
+            last: owner_key(fixture.owner),
+            docs: 1,
+            tokens: 6,
+        };
+        let second_edge = SegmentEdge {
+            reference: second_segment,
+            first: second_doc.owner,
+            last: second_doc.owner,
+            docs: 1,
+            tokens: 2,
+        };
+        fixture.recipe = TextRecipe::segmented_layered(fixture.recipe.admission_policy);
+        let path = super::super::text_path::PathIndex {
+            postings: MapRoot(None),
+            statistics: TextStatistics {
+                docs: 2,
+                indexed_tokens: 0,
+            },
+        };
+        let mut payload = Vec::new();
+        check_eq!(
+            wire_v2::encode_root(
+                &mut payload,
+                fixture.recipe.output_policy(),
+                source,
+                path,
+                &[
+                    RootRow {
+                        upper: first_edge.last,
+                        kind: PartitionKind::DirectAll,
+                        reference: first_edge.reference,
+                        live_docs: 1,
+                        live_tokens: 6,
+                    },
+                    RootRow {
+                        upper: [0xff; 32],
+                        kind: PartitionKind::DirectAll,
+                        reference: second_edge.reference,
+                        live_docs: 1,
+                        live_tokens: 2,
+                    },
+                ],
+            )?,
+            (2, 8)
+        );
+        fixture.objects.add(
+            artifact,
+            payload,
+            wire::source_edges(source)
+                .chain([first_edge.reference, second_edge.reference])
+                .collect(),
+        )?;
+        fixture.member.logical_commitment =
+            wire_v2::logical_commitment(fixture.recipe.output_policy(), source, 2, 8, path);
+        fixture.member.input.policy = fixture.recipe.output_policy();
+        fixture.objects.add(
+            fixture.member_ref,
+            encode(&fixture.member)?,
+            std::iter::once(artifact).chain(source.owners.0).collect(),
+        )?;
+        Ok((fixture, second))
+    }
+
+    #[test]
+    fn layered_two_segments_preserve_overlay_regex_and_continuation() -> Result<(), IndexError> {
+        use super::super::text_overlay::TextOverlayInput;
+        use super::super::text_query::{Bm25Policy, TextContentExecution, TextOverlaySource};
+        use quanta_index_contract::{FiniteScore, LqExpr, LqLeaf};
+
+        let (layered, second) = two_segment_read_fixture()?;
+        let keyword = planned_phrase_query(LqExpr::Leaf(LqLeaf::Keyword("one".into())))?;
+        let regex = planned_phrase_query(LqExpr::Leaf(LqLeaf::Regex("two +gap".into())))?;
+        let constraints = quanta_index_contract::QueryConstraintSetV1::unconstrained();
+        let policy = Bm25Policy { k1: 1.2, b: 0.75 };
+        let page = |fixture: &VisitorFixture, after: Option<(FiniteScore, OwnerKey)>| {
+            let mut work = budget()?;
+            NativeTextIndex::new(fixture.recipe).search_content_with_overlay(
+                &fixture.member,
+                &keyword,
+                &constraints,
+                TextContentExecution {
+                    top_k: 1,
+                    policy,
+                    rank_after: after,
+                },
+                None,
+                TextReadContext {
+                    ticket: &fixture.ticket,
+                    objects: &fixture.objects,
+                    maps: &fixture.maps,
+                    budget: &mut work,
+                },
+            )
+        };
+        let mut previous = None;
+        for (expected_owner, expected_remaining) in [(layered.owner, 2), (second, 1)] {
+            let result = page(&layered, previous)?;
+            check_eq!((result.matched, result.remaining), (2, expected_remaining));
+            let [hit] = result.hits.as_slice() else {
+                return Err(IndexError::BackendViolation("layered page lost hit".into()));
+            };
+            check_eq!(hit.owner, expected_owner);
+            check!(hit.score > 0.0);
+            previous = Some((
+                FiniteScore::new(hit.score)
+                    .map_err(|error| IndexError::BackendViolation(error.to_string()))?,
+                hit.owner,
+            ));
+        }
+        let terminal = page(&layered, previous)?;
+        check_eq!(
+            (terminal.matched, terminal.remaining, terminal.hits.len()),
+            (2, 0, 0)
+        );
+        let mut work = WorkBudget::new(
+            WorkLimits {
+                reads: 100,
+                writes: 100,
+                bytes: 32 * 1024 * 1024,
+                mutations: 100,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        let ranking = search_phrase_plan_with_budget(&layered, &regex, 2, &mut work)?;
+        check_eq!(ranking.matched, 1);
+        check!(matches!(ranking.hits.as_slice(), [hit] if hit.owner == layered.owner));
+
+        let index = NativeTextIndex::new(layered.recipe);
+        let mut overlay_work = budget()?;
+        let corpus = index.prepare_overlay_corpus(
+            &layered.member,
+            &[TextOverlayInput {
+                owner: layered.owner,
+                revision: 3,
+                text: Some("two replacement"),
+            }],
+            &mut TextReadContext {
+                ticket: &layered.ticket,
+                objects: &layered.objects,
+                maps: &layered.maps,
+                budget: &mut overlay_work,
+            },
+        )?;
+        check_eq!(
+            corpus.statistics(),
+            TextStatistics {
+                docs: 2,
+                indexed_tokens: 4
+            }
+        );
+        check_eq!(
+            corpus.adjusted_df(
+                &layered.member,
+                &stored_term_key("one", CaseMode::Sensitive)?,
+                2,
+                &mut TextReadContext {
+                    ticket: &layered.ticket,
+                    objects: &layered.objects,
+                    maps: &layered.maps,
+                    budget: &mut overlay_work,
+                },
+            )?,
+            1
+        );
+        let overlay_sources = [TextOverlaySource {
+            owner: layered.owner,
+            revision: 3,
+            path: "a",
+            body: "two replacement",
+        }];
+        let ranking = index.search_content_with_overlay(
+            &layered.member,
+            &keyword,
+            &constraints,
+            TextContentExecution {
+                top_k: 2,
+                policy,
+                rank_after: None,
+            },
+            Some((&corpus, &overlay_sources)),
+            TextReadContext {
+                ticket: &layered.ticket,
+                objects: &layered.objects,
+                maps: &layered.maps,
+                budget: &mut overlay_work,
+            },
+        )?;
+        check_eq!(ranking.matched, 1);
+        check!(matches!(ranking.hits.as_slice(), [hit] if hit.owner == second));
+        let mut regex_work = WorkBudget::new(
+            WorkLimits {
+                reads: 100,
+                writes: 100,
+                bytes: 32 * 1024 * 1024,
+                mutations: 100,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        let ranking = index.search_content_with_overlay(
+            &layered.member,
+            &regex,
+            &constraints,
+            TextContentExecution {
+                top_k: 2,
+                policy,
+                rank_after: None,
+            },
+            Some((&corpus, &overlay_sources)),
+            TextReadContext {
+                ticket: &layered.ticket,
+                objects: &layered.objects,
+                maps: &layered.maps,
+                budget: &mut regex_work,
+            },
+        )?;
+        check_eq!((ranking.matched, ranking.hits.len()), (0, 0));
+        Ok(())
+    }
+
+    #[test]
+    fn segmented_full_owner_lookup_reuses_authenticated_directory_and_document_table()
+    -> Result<(), IndexError> {
+        let (fixture, _) = segmented_phrase_fixture()?;
+        let mut work = budget()?;
+        let mut context = TextReadContext {
+            ticket: &fixture.ticket,
+            objects: &fixture.objects,
+            maps: &fixture.maps,
+            budget: &mut work,
+        };
+        let mut lookup =
+            text_segment::read::DocumentLookup::new(fixture.member.artifact, fixture.recipe);
+        let (_, first) = lookup
+            .locate(fixture.owner, &mut context)?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        check_eq!(first.source, fixture.source_ref);
+        let opening = context.budget.usage();
+        check!(opening.bytes > 0);
+        let (_, second) = lookup
+            .locate(fixture.owner, &mut context)?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        check_eq!(second, first);
+        check_eq!(context.budget.usage(), opening);
+        let mut foreign = fixture.ticket.clone();
+        foreign.view.source.frontiers = MapRoot(Some(reference(91)));
+        context.ticket = &foreign;
+        check!(matches!(
+            lookup.locate(fixture.owner, &mut context),
+            Err(IndexError::Conflict)
+        ));
+        check_eq!(context.budget.usage(), opening);
+        Ok(())
+    }
+
+    #[test]
+    fn segmented_full_seal_rejects_corrupt_posting_child() -> Result<(), IndexError> {
+        let (mut fixture, page) = segmented_phrase_fixture()?;
+        let verify = |fixture: &VisitorFixture| {
+            let scratch = TestScratch::default();
+            let custody = TestCustody;
+            let mut work = budget()?;
+            let mut context = AttemptContext {
+                attempt: test_attempt(fixture.ticket.view.identity.workspace),
+                objects: &fixture.objects,
+                maps: &fixture.maps,
+                custody: &custody,
+                scratch: &scratch,
+                budget: &mut work,
+            };
+            let index = NativeTextIndex::new(fixture.recipe);
+            ready(index.verify_and_seal(
+                TextCandidate {
+                    binding: fixture.member.clone(),
+                    prepared_attempt: None,
+                },
+                &mut context,
+            ))
+        };
+        check_eq!(verify(&fixture)?, fixture.member);
+
+        // Registration still names the page, but its authenticated route has
+        // no matching first/last key in the page body.
+        fixture
+            .objects
+            .add(page, b"QTXPOST1".to_vec(), Vec::new())?;
+        check!(matches!(
+            verify(&fixture),
+            Err(IndexError::CorruptObject(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn segmented_full_spills_large_single_document_without_retokenizing() -> Result<(), IndexError>
+    {
+        use quanta_index_contract::{LqExpr, LqLeaf};
+        use std::fmt::Write as _;
+
+        let mut fixture = visitor_fixture()?;
+        fixture.recipe = TextRecipe::segmented_full(fixture.recipe.admission_policy);
+        fixture.objects.generated = Some(Mutex::default());
+        let token_count = 32_769_u64;
+        let mut body = String::new();
+        for ordinal in 0..token_count {
+            write!(&mut body, "{ordinal:04x} ")
+                .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+        }
+        let mut record = fixture_record(&fixture)?;
+        record.byte_len =
+            u64::try_from(body.len()).map_err(|_error| IndexError::ResourceLimited)?;
+        fixture
+            .objects
+            .add(record.bytes, body.into_bytes(), Vec::new())?;
+        fixture
+            .objects
+            .add(fixture.source_ref, encode(&record)?, vec![record.bytes])?;
+
+        let scratch = TestScratch::default();
+        let custody = TestCustody;
+        let mut work = WorkBudget::new(
+            WorkLimits {
+                reads: 1_000_000,
+                writes: 1_000_000,
+                bytes: 512 * 1024 * 1024,
+                mutations: 1_000_000,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(60))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        let source = fixture.ticket.view.source;
+        let mut attempt = AttemptContext {
+            attempt: test_attempt(fixture.ticket.view.identity.workspace),
+            objects: &fixture.objects,
+            maps: &fixture.maps,
+            custody: &custody,
+            scratch: &scratch,
+            budget: &mut work,
+        };
+        let (artifact, logical) = text_segment::build::build(
+            fixture.recipe,
+            source,
+            DeltaInput::Bootstrap,
+            &mut attempt,
+        )?;
+        check_eq!(attempt.budget.usage().mutations, token_count);
+        check_eq!(scratch.allocations.load(Ordering::Relaxed), 1);
+        check!(fixture.objects.install_batch_inputs.load(Ordering::Relaxed) > 1);
+        fixture.member.artifact = artifact;
+        fixture.member.logical_commitment = logical;
+        fixture.member.input.policy = fixture.recipe.output_policy();
+        let index = NativeTextIndex::new(fixture.recipe);
+        let member = ready(index.verify_and_seal(
+            TextCandidate {
+                binding: fixture.member.clone(),
+                prepared_attempt: None,
+            },
+            &mut attempt,
+        ))?;
+        check_eq!(member, fixture.member);
+        fixture.objects.add(
+            fixture.member_ref,
+            encode(&member)?,
+            std::iter::once(artifact).chain(source.owners.0).collect(),
+        )?;
+
+        for (phrase, hits) in [("7fff 8000", 1), ("8000 7fff", 0)] {
+            let plan = planned_phrase_query(LqExpr::Leaf(LqLeaf::Phrase(phrase.into())))?;
+            check_eq!(search_phrase_plan(&fixture, &plan, 2)?.matched, hits);
+        }
         Ok(())
     }
 
@@ -1282,6 +2127,7 @@ mod tests {
             ("gap", vec![2], 44, 45, 46),
             ("three", vec![5], 47, 48, 49),
         ];
+        let mut dictionary_entries = vec![(fixture.term.clone(), fixture.posting_ref)];
         for (term, positions, occurrence_id, root_id, posting_id) in terms {
             let key = stored_term_key(term, CaseMode::Sensitive)?;
             let occurrence_ref = reference(occurrence_id);
@@ -1308,13 +2154,12 @@ mod tests {
                 owner_key(fixture.owner).to_vec(),
                 OccurrenceDigestWitness::from_reference(occurrence_ref).into_value()?,
             )?;
-            fixture
-                .maps
-                .add(MapRoot(Some(reference(4))), key.clone(), posting_ref)?;
+            dictionary_entries.push((key.clone(), posting_ref));
             fixture
                 .maps
                 .add(fixture.inventory_root, key, occurrence_ref)?;
         }
+        seed_fixture_term_dictionary(&mut fixture, &dictionary_entries)?;
         let contribution = Contribution {
             record: fixture.source_ref,
             inventory: fixture.inventory_root.into(),
@@ -1339,6 +2184,8 @@ mod tests {
             terms: MapRoot(Some(reference(4))),
             docs,
             indexed_tokens,
+            path_docs: docs,
+            ..Root::default()
         };
         let payload = encode(&root)?;
         fixture.objects.add(
@@ -1728,9 +2575,9 @@ mod tests {
             context: context(fixture.recipe, MapRoot(None)),
             input: DeltaInput::Bootstrap,
         };
-        // A non-null source root whose existing fake scan returns no rows
-        // reaches the empty postings apply path; TestMaps then refuses its
-        // stream install. This checks span closure without a new fake map.
+        // A non-null source root whose fake scan returns no rows produces an
+        // unchanged empty path stream, then reaches the postings dictionary
+        // stream that TestMaps refuses. This checks both span boundaries.
         let empty_postings = TextPlan {
             base: None,
             context: context(fixture.recipe, MapRoot(Some(reference(200)))),
@@ -1760,6 +2607,10 @@ mod tests {
                 budget: &mut off_work,
             },
         ))?;
+        fixture
+            .maps
+            .allow_empty_path_stream
+            .store(true, Ordering::Relaxed);
         let mut off_postings_work = WorkBudget::with_request(
             limits,
             RequestBudgetV1::for_duration(Duration::from_secs(30)),
@@ -1817,6 +2668,10 @@ mod tests {
             .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
         let _finished = restored_success.finish(DiagnosticTerminalV1::Ok);
 
+        fixture
+            .maps
+            .allow_empty_path_stream
+            .store(true, Ordering::Relaxed);
         let mut recorded_postings_work = WorkBudget::with_request(
             limits,
             RequestBudgetV1::for_duration(Duration::from_secs(30))
@@ -1906,6 +2761,9 @@ mod tests {
         let mut postings_outcomes = Vec::new();
         let mut postings_parent = None;
         let mut posting_steps = Vec::new();
+        let mut path_spans = Vec::new();
+        let mut path_outcomes = Vec::new();
+        let mut path_port_spans = Vec::new();
         let mut root_outcomes = Vec::new();
         for event in events.iter() {
             if let DiagnosticEventKindV1::SpanBegin {
@@ -1920,8 +2778,12 @@ mod tests {
                 let _previous = parents.insert(span_id, parent_span_id);
                 if stage == DiagnosticStageV1::Operation && matches!(lane.0, 90 | 91) {
                     port_spans.push((lane.0, parent_span_id));
+                } else if stage == DiagnosticStageV1::Operation && lane.0 == 94 {
+                    path_port_spans.push(parent_span_id);
                 } else if stage == DiagnosticStageV1::NativeTextPostings && lane.0 == 2 {
                     check!(postings_parent.replace(span_id).is_none());
+                } else if stage == DiagnosticStageV1::NativeTextPostings && lane.0 == 49 {
+                    path_spans.push((parent_span_id, span_id));
                 } else if stage == DiagnosticStageV1::NativeTextPostings
                     && matches!(lane.0, 35..=39)
                 {
@@ -1935,6 +2797,10 @@ mod tests {
                     && postings_parent == Some(span_id)
                 {
                     postings_outcomes.push(outcome);
+                } else if stage == Some(&DiagnosticStageV1::NativeTextPostings)
+                    && path_spans.iter().any(|(_, path_id)| *path_id == span_id)
+                {
+                    path_outcomes.push(outcome);
                 } else if stage == Some(&DiagnosticStageV1::NativeTextRoot) {
                     root_outcomes.push(outcome);
                 }
@@ -1952,6 +2818,36 @@ mod tests {
             postings_outcomes,
             vec![DiagnosticTerminalV1::Error { code: 1 }]
         );
+        let [(path_parent, path_span)] = path_spans.as_slice() else {
+            return Err(IndexError::BackendViolation(
+                "expected one native text path postings span".into(),
+            ));
+        };
+        check_eq!(path_outcomes, vec![DiagnosticTerminalV1::Ok]);
+        check_eq!(path_port_spans, vec![Some(*path_span)]);
+        check_eq!(
+            path_parent.and_then(|id| stages.get(&id).copied()),
+            Some(DiagnosticStageV1::LexicalBuild)
+        );
+        for key in [
+            DiagnosticCounterV1::WorkReads,
+            DiagnosticCounterV1::WorkWrites,
+            DiagnosticCounterV1::WorkBytes,
+            DiagnosticCounterV1::WorkMutations,
+            DiagnosticCounterV1::ThreadCpuNs,
+        ] {
+            check_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event.kind,
+                        DiagnosticEventKindV1::Counter { span_id, key: observed, .. }
+                            if span_id == *path_span && observed == key
+                    ))
+                    .count(),
+                1
+            );
+        }
         check_eq!(
             posting_steps
                 .iter()
@@ -2108,6 +3004,114 @@ mod tests {
             check_eq!(
                 stages.get(&lexical_id),
                 Some(&DiagnosticStageV1::LexicalBuild)
+            );
+        }
+
+        // An excluded source still writes its Layered V2 path. The fixture
+        // refuses that map write, so the path span must own the refusal.
+        let mut layered = visitor_fixture()?;
+        let record = SourceRecord {
+            text: SourceTextAdmission::Excluded,
+            ..fixture_record(&layered)?
+        };
+        layered
+            .objects
+            .add(layered.source_ref, encode(&record)?, vec![record.bytes])?;
+        let recipe = TextRecipe::segmented_layered(layered.recipe.admission_policy);
+        let index = NativeTextIndex::new(recipe);
+        let plan = TextPlan {
+            base: None,
+            context: context(recipe, layered.ticket.view.source.owners),
+            input: DeltaInput::Bootstrap,
+        };
+        let prepare = |fixture: &VisitorFixture, budget: &mut WorkBudget| {
+            ready(index.prepare(
+                plan.clone(),
+                &mut AttemptContext {
+                    attempt: test_attempt(fixture.ticket.view.identity.workspace),
+                    objects: &fixture.objects,
+                    maps: &fixture.maps,
+                    custody: &custody,
+                    scratch: &scratch,
+                    budget,
+                },
+            ))
+        };
+        let mut off_work = WorkBudget::with_request(
+            limits,
+            RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        );
+        check!(matches!(
+            prepare(&layered, &mut off_work),
+            Err(IndexError::BackendViolation(message)) if message == "unexpected test map write"
+        ));
+        layered.maps.trace_stream_budget = true;
+        let sink = Arc::new(RecordingSink::default());
+        let trace = DiagnosticContextV1::new(DiagnosticCaptureIdV1([32; 16]), clock, sink.clone());
+        let root = trace
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
+            .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+        let mut recorded_work = WorkBudget::with_request(
+            limits,
+            RequestBudgetV1::for_duration(Duration::from_secs(30))
+                .with_diagnostic_context(trace.child_context(&root)),
+        );
+        check!(matches!(
+            prepare(&layered, &mut recorded_work),
+            Err(IndexError::BackendViolation(message)) if message == "unexpected test map write"
+        ));
+        let _finished = root.finish(DiagnosticTerminalV1::Error { code: 1 });
+        check_eq!(recorded_work.usage(), off_work.usage());
+        check_eq!(layered.objects.installs.load(Ordering::Relaxed), 0);
+        let events = sink
+            .0
+            .lock()
+            .map_err(|_error| IndexError::BackendViolation("layered trace lock".into()))?;
+        let (span, parent) = events
+            .iter()
+            .find_map(|event| match event.kind {
+                DiagnosticEventKindV1::SpanBegin {
+                    span_id,
+                    parent_span_id: Some(parent),
+                    stage: DiagnosticStageV1::NativeTextPostings,
+                    lane: DiagnosticLaneV1(49),
+                    ..
+                } => Some((span_id, parent)),
+                _ => None,
+            })
+            .ok_or_else(|| IndexError::BackendViolation("layered path span absent".into()))?;
+        check!(events.iter().any(|event| matches!(
+            event.kind,
+            DiagnosticEventKindV1::SpanBegin {
+                span_id, stage: DiagnosticStageV1::LexicalBuild, ..
+            } if span_id == parent
+        )));
+        check!(events.iter().any(|event| matches!(
+            event.kind,
+            DiagnosticEventKindV1::SpanBegin {
+                parent_span_id: Some(owner),
+                stage: DiagnosticStageV1::Operation,
+                lane: DiagnosticLaneV1(91),
+                ..
+            } if owner == span
+        )));
+        check!(events.iter().any(|event| matches!(
+            event.kind,
+            DiagnosticEventKindV1::SpanEnd {
+                span_id, outcome: DiagnosticTerminalV1::Error { code: 1 },
+            } if span_id == span
+        )));
+        for key in keys {
+            check_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event.kind,
+                        DiagnosticEventKindV1::Counter { span_id, key: observed, .. }
+                            if span_id == span && observed == key
+                    ))
+                    .count(),
+                1
             );
         }
         Ok(())
@@ -3077,6 +4081,8 @@ mod tests {
             terms: MapRoot(Some(reference(4))),
             docs: 2,
             indexed_tokens: 2,
+            path_docs: 2,
+            ..Root::default()
         };
         let payload = encode(&root)?;
         fixture.objects.add(
@@ -3290,6 +4296,15 @@ mod tests {
         plan: &crate::plan::LexicalPlan,
         top_k: u32,
     ) -> Result<super::super::text_query::NativeTextRanking, IndexError> {
+        search_phrase_plan_with_budget(fixture, plan, top_k, &mut budget()?)
+    }
+
+    fn search_phrase_plan_with_budget(
+        fixture: &VisitorFixture,
+        plan: &crate::plan::LexicalPlan,
+        top_k: u32,
+        work: &mut WorkBudget,
+    ) -> Result<super::super::text_query::NativeTextRanking, IndexError> {
         NativeTextIndex::new(fixture.recipe).search_content(
             &fixture.member,
             plan,
@@ -3300,7 +4315,7 @@ mod tests {
                 ticket: &fixture.ticket,
                 objects: &fixture.objects,
                 maps: &fixture.maps,
-                budget: &mut budget()?,
+                budget: work,
             },
         )
     }
@@ -3722,15 +4737,18 @@ mod tests {
                 .ok_or_else(|| IndexError::CorruptObject("fixture source missing".into()))?;
             let mut record: SourceRecord = decode(&stored.payload)?;
             record.path = "a".into();
-            record.source_repo_id =
-                Some(RepoId::new(repo).map_err(|error| IndexError::InvalidInput(error.to_string()))?);
+            record.source_repo_id = Some(
+                RepoId::new(repo).map_err(|error| IndexError::InvalidInput(error.to_string()))?,
+            );
             let key = SourcePathRepositoryKey::new(record.source_repo_id.as_ref())?;
             fixture.maps.add(
                 MapRoot(Some(bucket)),
                 key.as_slice()?.to_vec(),
                 quanta_index_core::index::path_owner_map_value(owner)?,
             )?;
-            fixture.objects.add(source, encode(&record)?, vec![record.bytes])?;
+            fixture
+                .objects
+                .add(source, encode(&record)?, vec![record.bytes])?;
         }
         fixture.maps.add(
             paths,
@@ -3739,7 +4757,8 @@ mod tests {
         )?;
         fixture.ticket.view.source.paths = paths;
         let plan = planned_phrase_query(LqExpr::Leaf(LqLeaf::Phrase("one two".into())))?;
-        let result = search_phrase_with_constraints(&fixture, &plan, &exact_path_constraint("a")?, 1)?;
+        let result =
+            search_phrase_with_constraints(&fixture, &plan, &exact_path_constraint("a")?, 1)?;
         check_eq!(result.matched, 2);
         check_eq!(result.hits.len(), 1);
         check_eq!(result.hits.first().map(|hit| hit.owner), Some(second));
@@ -3871,7 +4890,10 @@ mod tests {
                 budget: &mut budget()?,
             },
         )?;
-        check!(matches!(selected, super::super::text_filter::OwnerSelection::Absent));
+        check!(matches!(
+            selected,
+            super::super::text_filter::OwnerSelection::Absent
+        ));
         Ok(())
     }
 
@@ -3959,7 +4981,10 @@ mod tests {
                     budget: &mut work,
                 },
             )?;
-            check!(matches!(selected, super::super::text_filter::OwnerSelection::Absent));
+            check!(matches!(
+                selected,
+                super::super::text_filter::OwnerSelection::Absent
+            ));
             check_eq!(work.usage().reads, 0);
         }
         Ok(())
@@ -4318,7 +5343,7 @@ mod tests {
         let mut fixture = visitor_fixture()?;
         let record = fixture_record(&fixture)?;
         fixture.objects.counted_body = Some(record.bytes);
-        let setup = budget()?;
+        let mut setup = budget()?;
         let change = SourceChange {
             owner: fixture.owner,
             prior: None,
@@ -4326,7 +5351,7 @@ mod tests {
                 fixture.source_ref,
                 quanta_index_core::index::SourceRecordOwner::decode_json(
                     &encode(&record)?,
-                    &setup,
+                    &mut setup,
                     quanta_index_core::index::MemoryLifetime::Temporary,
                 )?,
             )),
@@ -4680,9 +5705,9 @@ mod tests {
             if ceiling < floor {
                 check!(matches!(result, Err(IndexError::ResourceLimited)));
             } else {
-                let root = result?;
-                check_eq!(root.docs, 1);
-                check_eq!(root.indexed_tokens, 2);
+                let statistics = result?.statistics();
+                check_eq!(statistics.docs, 1);
+                check_eq!(statistics.indexed_tokens, 2);
                 check_eq!(memory.peak.load(Ordering::Relaxed), floor);
             }
             check_eq!(memory.live.load(Ordering::Relaxed), 0);
@@ -5673,7 +6698,7 @@ mod tests {
             batch.prepare(input, &one_source_run(input, 37), &work)?;
             for (row, expected) in batch.rows().iter().zip([sensitive, folded]) {
                 check_eq!(batch.term(row)?, expected);
-                check_eq!(row.position, 37);
+                check_eq!(row.position(), 37);
             }
             check_eq!(batch.rows().len(), 2);
             let key_bytes = sensitive
@@ -5731,7 +6756,7 @@ mod tests {
             ));
         }
         check_eq!(memory.calls.load(Ordering::Relaxed), 1);
-        check!(batch.keys.is_empty());
+        check!(batch.key_bytes().is_empty());
         let input = "A".repeat(1023);
         batch.prepare(&input, &one_source_run(&input, 0), &work)?;
         for row in batch.rows() {
@@ -5759,7 +6784,7 @@ mod tests {
             u64::try_from(64 * std::mem::size_of::<TokenRow>())
                 .map_err(|_error| IndexError::ResourceLimited)?
         );
-        let capacity = batch.rows.capacity();
+        let capacity = batch.row_capacity();
         let full = backing
             .checked_add(128)
             .ok_or(IndexError::ResourceLimited)?;
@@ -5785,14 +6810,14 @@ mod tests {
             batch.prepare(&input, &oversized, &work),
             Err(IndexError::ResourceLimited)
         ));
-        check_eq!(batch.rows.len(), 64);
-        check_eq!(batch.rows.capacity(), capacity);
+        check_eq!(batch.rows().len(), 64);
+        check_eq!(batch.row_capacity(), capacity);
         check_eq!(memory.live.load(Ordering::Relaxed), full);
         check_eq!(memory.calls.load(Ordering::Relaxed), 2);
         batch.clear();
         check_eq!(memory.live.load(Ordering::Relaxed), full);
         batch.prepare("İ", &one_source_run("İ", 65), &work)?;
-        check_eq!(batch.rows.capacity(), capacity);
+        check_eq!(batch.row_capacity(), capacity);
         check_eq!(memory.live.load(Ordering::Relaxed), full);
         check_eq!(memory.calls.load(Ordering::Relaxed), 2);
         drop(batch);
@@ -5810,8 +6835,8 @@ mod tests {
         let result = (|| -> Result<(), IndexError> {
             let mut batch = TokenBatch::new(&work)?;
             let result = batch.prepare("İ", &one_source_run("İ", 0), &work);
-            check!(batch.keys.is_empty());
-            check!(batch.rows.is_empty());
+            check!(batch.key_bytes().is_empty());
+            check!(batch.rows().is_empty());
             result?;
             Ok(())
         })();
@@ -6007,7 +7032,7 @@ mod tests {
         for position in [0, 9, u32::MAX] {
             positions.push(position, &work)?;
         }
-        let payload = super::super::text_memory::encode(&positions.occurrence, &work)?;
+        let payload = super::super::text_memory::encode(positions.as_occurrence(), &work)?;
         let gold = br#"{"positions":[0,9,4294967295]}"#;
         check_eq!(payload.as_slice(), gold);
         drop(positions);
@@ -7156,7 +8181,9 @@ mod tests {
                 Err(IndexError::BackendViolation(_))
             ));
             check_eq!(maps.map_applies.load(Ordering::Relaxed), 1);
-            check_eq!(objects.install_batches.load(Ordering::Relaxed), 1);
+            // The Small posting block and the term dictionary page use
+            // separate immutable-object install batches.
+            check_eq!(objects.install_batches.load(Ordering::Relaxed), 2);
             let after = context.budget.usage();
             let work = WorkUsage {
                 reads: after.reads - before.reads,
@@ -7191,7 +8218,7 @@ mod tests {
             };
             Ok((
                 work,
-                objects.install_batch_inputs.load(Ordering::Relaxed),
+                objects.small_posting_batch_inputs.load(Ordering::Relaxed),
                 same_ref,
                 first_child.is_some() && first_child == second_child,
             ))
@@ -7491,125 +8518,330 @@ pub(super) struct Root {
     terms: MapRoot,
     docs: u64,
     indexed_tokens: u64,
+    path_postings: MapRoot,
+    path_docs: u64,
+    path_indexed_tokens: u64,
 }
 impl Root {
     pub(super) fn owner_universe(self) -> (MapRoot, u64, u64) {
         (self.owners, self.docs, self.indexed_tokens)
     }
+
+    fn path_index(self) -> super::text_path::PathIndex {
+        super::text_path::PathIndex {
+            postings: self.path_postings,
+            statistics: TextStatistics {
+                docs: self.path_docs,
+                indexed_tokens: self.path_indexed_tokens,
+            },
+        }
+    }
 }
 
-pub(super) fn selected_overlay_prior(
-    root: Root,
+/// A pinned read carries one explicit physical layout and common corpus statistics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SelectedTextRoot {
+    Tree(Root),
+    Segment {
+        artifact: ObjectRef,
+        statistics: TextStatistics,
+        path: Option<super::text_path::PathIndex>,
+    },
+}
+
+impl SelectedTextRoot {
+    pub(super) fn statistics(self) -> TextStatistics {
+        match self {
+            Self::Tree(root) => TextStatistics {
+                docs: root.docs,
+                indexed_tokens: root.indexed_tokens,
+            },
+            Self::Segment { statistics, .. } => statistics,
+        }
+    }
+
+    pub(super) fn path_field(
+        self,
+    ) -> Result<(MapRoot, TextStatistics, super::text_path::PathPostingValue), IndexError> {
+        use super::text_path::PathPostingValue;
+        match self {
+            Self::Tree(root) => {
+                let path = root.path_index();
+                Ok((path.postings, path.statistics, PathPostingValue::Object))
+            }
+            Self::Segment { path: Some(path), .. } => Ok((
+                path.postings,
+                path.statistics,
+                PathPostingValue::SourceCutDigest,
+            )),
+            Self::Segment { path: None, .. } => Err(IndexError::InvalidInput(
+                "native segmented FULL candidate has no path index".into(),
+            )),
+        }
+    }
+
+    pub(super) fn tree(self) -> Result<Root, IndexError> {
+        match self {
+            Self::Tree(root) => Ok(root),
+            Self::Segment { .. } => Err(IndexError::InvalidInput(
+                "native text FULL segment candidate requires an anchored term or phrase".into(),
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OverlayPriorProof {
+    Tree(EntryMap),
+    Segment(text_segment::read::DocumentLocation),
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct OverlayPrior {
+    pub(super) indexed_tokens: u64,
+    proof: OverlayPriorProof,
+}
+
+enum OverlayPriorLayout {
+    Tree(Root),
+    Segment(text_segment::read::DocumentLookup),
+}
+
+pub(super) struct OverlayPriorReader {
+    layout: OverlayPriorLayout,
     recipe: TextRecipe,
+}
+
+impl OverlayPriorReader {
+    pub(super) fn new(root: SelectedTextRoot, recipe: TextRecipe) -> Self {
+        let layout = match root {
+            SelectedTextRoot::Tree(root) => OverlayPriorLayout::Tree(root),
+            SelectedTextRoot::Segment { artifact, .. } => OverlayPriorLayout::Segment(
+                text_segment::read::DocumentLookup::new(artifact, recipe),
+            ),
+        };
+        Self { layout, recipe }
+    }
+
+    pub(super) fn prior(
+        &mut self,
+        owner: OwnerKey,
+        context: &mut TextReadContext<'_>,
+    ) -> Result<Option<OverlayPrior>, IndexError> {
+        let key = owner_key(owner);
+        match &mut self.layout {
+            OverlayPriorLayout::Tree(root) => {
+                if let Some(reference) = context.maps.lookup(root.owners, &key, context.budget)? {
+                    let validated =
+                        validate_universe_owner(&key, reference, *root, self.recipe, context)?;
+                    let contribution =
+                        read_contribution(reference, context.objects, context.budget)?;
+                    if validated.owner != owner
+                        || validated.doc_indexed_tokens != contribution.indexed_tokens
+                    {
+                        return Err(IndexError::CorruptObject(
+                            "selected text overlay contribution differs from owner".into(),
+                        ));
+                    }
+                    return Ok(Some(OverlayPrior {
+                        indexed_tokens: contribution.indexed_tokens,
+                        proof: OverlayPriorProof::Tree(contribution.inventory),
+                    }));
+                }
+            }
+            OverlayPriorLayout::Segment(lookup) => {
+                if let Some((location, doc)) = lookup.locate(owner, context)? {
+                    let validated = validate_segment_document(doc, self.recipe, context)?;
+                    return Ok(Some(OverlayPrior {
+                        indexed_tokens: validated.doc_indexed_tokens,
+                        proof: OverlayPriorProof::Segment(location),
+                    }));
+                }
+            }
+        }
+        require_overlay_owner_absent_or_excluded(owner, context)?;
+        Ok(None)
+    }
+}
+
+fn require_overlay_owner_absent_or_excluded(
     owner: OwnerKey,
     context: &mut TextReadContext<'_>,
-) -> Result<Option<(EntryMap, u64)>, IndexError> {
-    let key = owner_key(owner);
-    let Some(reference) = context.maps.lookup(root.owners, &key, context.budget)? else {
-        let selected = context.maps.lookup_object(
-            context.ticket.view.source.owners,
-            &owner_map_key(owner),
-            context.budget,
-        )?;
-        let Some(source) = selected else {
-            return Ok(None);
-        };
-        let stored = context.objects.get(source, context.budget)?;
-        let record = quanta_index_core::index::SourceRecordOwner::decode_json(
-            &stored.payload,
-            context.budget,
-            quanta_index_core::index::MemoryLifetime::Temporary,
-        )?;
-        if stored.registration.reference != source
-            || stored.registration.children.as_slice() != [record.bytes]
-            || record.path.is_empty()
-            || record.path.len() > MAX_SOURCE_PATH_BYTES
-            || record.path.starts_with('/')
-            || record.path.contains('\0')
-            || record
-                .path
-                .split('/')
-                .any(|part| part.is_empty() || part == "." || part == "..")
-        {
-            return Err(IndexError::CorruptObject(
-                "selected overlay source record or path is invalid".into(),
-            ));
-        }
-        if !matches!(record.text, SourceTextAdmission::Excluded) {
-            return Err(IndexError::SnapshotUnavailable);
-        }
-        return Ok(None);
+) -> Result<(), IndexError> {
+    let selected = context.maps.lookup_object(
+        context.ticket.view.source.owners,
+        &owner_map_key(owner),
+        context.budget,
+    )?;
+    let Some(source) = selected else {
+        return Ok(());
     };
-    let validated = validate_universe_owner(&key, reference, root, recipe, context)?;
-    let contribution = read_contribution(reference, context.objects, context.budget)?;
-    if validated.owner != owner || validated.doc_indexed_tokens != contribution.indexed_tokens {
+    let stored = context.objects.get(source, context.budget)?;
+    let record = quanta_index_core::index::SourceRecordOwner::decode_json(
+        &stored.payload,
+        context.budget,
+        quanta_index_core::index::MemoryLifetime::Temporary,
+    )?;
+    if stored.registration.reference != source
+        || stored.registration.children.as_slice() != [record.bytes]
+        || record.path.is_empty()
+        || record.path.len() > MAX_SOURCE_PATH_BYTES
+        || record.path.starts_with('/')
+        || record.path.contains('\0')
+        || record
+            .path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
         return Err(IndexError::CorruptObject(
-            "selected text overlay contribution differs from owner".into(),
+            "selected overlay source record or path is invalid".into(),
         ));
     }
-    Ok(Some((contribution.inventory, contribution.indexed_tokens)))
+    if !matches!(record.text, SourceTextAdmission::Excluded) {
+        return Err(IndexError::SnapshotUnavailable);
+    }
+    Ok(())
 }
 
-pub(super) fn validate_overlay_term_membership(
+/// Resolve the selected term once before checking its masked owners.
+/// The immutable posting is scoped to this member/root and borrowed full key.
+pub(super) struct OverlayTermMembership<'a> {
+    backend: OverlayMembershipBackend<'a>,
+}
+
+enum OverlayMembershipBackend<'a> {
+    Tree(TreeOverlayTermMembership<'a>),
+    Segment(text_segment::read::TermMembership<'a>),
+}
+
+impl<'a> OverlayTermMembership<'a> {
+    pub(super) fn new(
+        root: SelectedTextRoot,
+        recipe: TextRecipe,
+        key: &'a [u8],
+        context: &mut TextReadContext<'_>,
+    ) -> Result<Self, IndexError> {
+        check_term_key(key)?;
+        let backend = match root {
+            SelectedTextRoot::Tree(root) => OverlayMembershipBackend::Tree(
+                TreeOverlayTermMembership::new(root, recipe, key, context)?,
+            ),
+            SelectedTextRoot::Segment { .. } => OverlayMembershipBackend::Segment(
+                text_segment::read::TermMembership::new(recipe, key),
+            ),
+        };
+        Ok(Self { backend })
+    }
+
+    pub(super) fn validate(
+        &mut self,
+        owner: OwnerKey,
+        prior: OverlayPrior,
+        context: &mut TextReadContext<'_>,
+    ) -> Result<bool, IndexError> {
+        match (&mut self.backend, prior.proof) {
+            (OverlayMembershipBackend::Tree(tree), OverlayPriorProof::Tree(inventory)) => {
+                let inventory_ref =
+                    inventory.lookup(context.objects, context.maps, tree.key, context.budget)?;
+                tree.validate(owner, inventory_ref, context)
+            }
+            (OverlayMembershipBackend::Segment(segment), OverlayPriorProof::Segment(location)) => {
+                segment.contains(location, context)
+            }
+            _ => Err(IndexError::Conflict),
+        }
+    }
+}
+
+struct TreeOverlayTermMembership<'a> {
     root: Root,
     recipe: TextRecipe,
-    owner: OwnerKey,
-    key: &[u8],
-    inventory_ref: Option<ObjectRef>,
-    context: &mut TextReadContext<'_>,
-) -> Result<bool, IndexError> {
-    check_term_key(key)?;
-    let posting = context
-        .maps
-        .lookup(root.terms, key, context.budget)?
+    key: &'a [u8],
+    posting: Option<Posting>,
+}
+
+impl<'a> TreeOverlayTermMembership<'a> {
+    fn new(
+        root: Root,
+        recipe: TextRecipe,
+        key: &'a [u8],
+        context: &mut TextReadContext<'_>,
+    ) -> Result<Self, IndexError> {
+        let posting = term_dictionary::lookup(
+            context.objects,
+            context.maps,
+            root.terms,
+            key,
+            context.budget,
+        )?
         .map(|reference| read_posting(key, reference, context.objects, context.budget))
         .transpose()?;
-    let owner_key = owner_key(owner);
-    let posting_witness = posting
-        .map(|posting| {
-            posting.root.posting_lookup(
-                context.objects,
-                context.maps,
-                &owner_key,
-                posting.df,
-                context.budget,
-            )
-        })
-        .transpose()?
-        .flatten();
-    match (inventory_ref, posting_witness) {
-        (None, None) => {}
-        (Some(reference), Some(witness)) if witness.matches(reference) => {}
-        _ => {
-            return Err(IndexError::CorruptObject(
-                "overlay owner inventory differs from selected term posting".into(),
-            ));
-        }
-    }
-    if let Some(witness) = posting_witness {
-        let mut occurrences = OccurrenceReader::new(1)?;
-        let hit = validate_posting_hit(
-            &owner_key,
-            witness,
-            key,
+        Ok(Self {
             root,
             recipe,
-            context,
-            &mut occurrences,
-        )?;
-        if hit.owner != owner {
-            return Err(IndexError::CorruptObject(
-                "overlay selected posting owner changed".into(),
-            ));
-        }
+            key,
+            posting,
+        })
     }
-    Ok(posting_witness.is_some())
+
+    fn validate(
+        &self,
+        owner: OwnerKey,
+        inventory_ref: Option<ObjectRef>,
+        context: &mut TextReadContext<'_>,
+    ) -> Result<bool, IndexError> {
+        let owner_key = owner_key(owner);
+        let posting_witness = self
+            .posting
+            .map(|posting| {
+                posting.root.posting_lookup(
+                    context.objects,
+                    context.maps,
+                    &owner_key,
+                    posting.df,
+                    context.budget,
+                )
+            })
+            .transpose()?
+            .flatten();
+        match (inventory_ref, posting_witness) {
+            (None, None) => {}
+            (Some(reference), Some(witness)) if witness.matches(reference) => {}
+            _ => {
+                return Err(IndexError::CorruptObject(
+                    "overlay owner inventory differs from selected term posting".into(),
+                ));
+            }
+        }
+        if let Some(witness) = posting_witness {
+            let mut occurrences = OccurrenceReader::new(1)?;
+            let hit = validate_posting_hit(
+                &owner_key,
+                witness,
+                self.key,
+                self.root,
+                self.recipe,
+                context,
+                &mut occurrences,
+            )?;
+            if hit.owner != owner {
+                return Err(IndexError::CorruptObject(
+                    "overlay selected posting owner changed".into(),
+                ));
+            }
+        }
+        Ok(posting_witness.is_some())
+    }
 }
+
 quanta_index_contract::native_serde_struct!(Root {
     owners: MapRoot,
     terms: MapRoot,
     docs: u64,
     indexed_tokens: u64,
+    path_postings: MapRoot,
+    path_docs: u64,
+    path_indexed_tokens: u64,
 });
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -7623,147 +8855,6 @@ quanta_index_contract::native_serde_struct!(Contribution {
     inventory: EntryMap,
     indexed_tokens: u64,
 });
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Occurrence {
-    pub(super) positions: Positions,
-}
-quanta_index_contract::native_serde_struct!(Occurrence {
-    positions: Positions,
-});
-
-/// Same sequence wire shape; enforce its leaf envelope while decoding, before
-/// an attacker-controlled sequence length can reserve a corpus-sized vector.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Positions(pub(super) Vec<u32>);
-
-pub(super) struct PreparedPositions {
-    occurrence: Occurrence,
-    maximum: usize,
-    memory: Option<quanta_index_core::index::MemoryLease>,
-}
-
-impl PreparedPositions {
-    pub(super) fn new(maximum: usize) -> Result<Self, IndexError> {
-        if maximum == 0
-            || u64::try_from(maximum).map_err(|_error| IndexError::ResourceLimited)?
-                > MAX_POSITIONS_PER_TERM
-        {
-            return Err(IndexError::ResourceLimited);
-        }
-        Ok(Self {
-            occurrence: Occurrence {
-                positions: Positions(Vec::new()),
-            },
-            maximum,
-            memory: None,
-        })
-    }
-
-    pub(super) fn as_slice(&self) -> &[u32] {
-        &self.occurrence.positions
-    }
-
-    pub(super) fn push(&mut self, position: u32, budget: &WorkBudget) -> Result<(), IndexError> {
-        let needed = self
-            .as_slice()
-            .len()
-            .checked_add(1)
-            .ok_or(IndexError::ResourceLimited)?;
-        if needed > self.maximum {
-            return Err(IndexError::ResourceLimited);
-        }
-        if needed > self.occurrence.positions.0.capacity() {
-            let capacity = self
-                .occurrence
-                .positions
-                .0
-                .capacity()
-                .checked_mul(2)
-                .ok_or(IndexError::ResourceLimited)?
-                .max(needed)
-                .min(self.maximum);
-            let bytes = capacity
-                .checked_mul(std::mem::size_of::<u32>())
-                .ok_or(IndexError::ResourceLimited)?;
-            let memory = budget.reserve_memory(
-                u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
-                quanta_index_core::index::MemoryLifetime::Temporary,
-            )?;
-            let mut positions = Vec::new();
-            positions
-                .try_reserve_exact(capacity)
-                .map_err(|_error| IndexError::ResourceLimited)?;
-            if positions.capacity() > capacity {
-                return Err(IndexError::ResourceLimited);
-            }
-            positions.append(&mut self.occurrence.positions.0);
-            self.occurrence.positions.0 = positions;
-            self.memory = memory;
-        } else {
-            budget.checkpoint()?;
-        }
-        self.occurrence.positions.0.push(position);
-        Ok(())
-    }
-}
-
-impl std::ops::Deref for Positions {
-    type Target = [u32];
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Serialize for Positions {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let count = u64::try_from(self.len()).map_err(serde::ser::Error::custom)?;
-        if count == 0 || count > MAX_POSITIONS_PER_TERM {
-            return Err(serde::ser::Error::custom(
-                "text positions exceed their leaf envelope",
-            ));
-        }
-        self.0.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Positions {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-        impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = Positions;
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("1..=8192 text positions")
-            }
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                self,
-                mut sequence: A,
-            ) -> Result<Self::Value, A::Error> {
-                let limit =
-                    usize::try_from(MAX_POSITIONS_PER_TERM).map_err(serde::de::Error::custom)?;
-                if sequence.size_hint().is_some_and(|count| count > limit) {
-                    return Err(serde::de::Error::custom(
-                        "text position sequence exceeds its leaf envelope",
-                    ));
-                }
-                let mut positions = Vec::new();
-                while let Some(position) = sequence.next_element::<u32>()? {
-                    if positions.len() == limit {
-                        return Err(serde::de::Error::custom(
-                            "text position sequence exceeds its leaf envelope",
-                        ));
-                    }
-                    positions.push(position);
-                }
-                if positions.is_empty() {
-                    return Err(serde::de::Error::custom("text position sequence is empty"));
-                }
-                Ok(Positions(positions))
-            }
-        }
-        deserializer.deserialize_seq(Visitor)
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Posting {
@@ -7806,15 +8897,8 @@ pub struct TextPlan {
 
 #[derive(Clone, Debug)]
 pub struct TextCandidate {
-    pub binding: MemberBinding,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TextStatistics {
-    /// Number of explicitly admitted owners, including empty text files.
-    pub docs: u64,
-    /// Indexable NFC runs counted once, regardless of the two case surfaces.
-    pub indexed_tokens: u64,
+    binding: MemberBinding,
+    prepared_attempt: Option<quanta_index_core::index::AttemptRef>,
 }
 
 pub struct TextReadContext<'a> {
@@ -7853,17 +8937,16 @@ fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, IndexError> {
 
 struct TextChildren(Option<std::array::IntoIter<ObjectRef, 9>>);
 impl TextChildren {
-    fn pair(first: Option<ObjectRef>, second: Option<ObjectRef>) -> Self {
-        let (first, tail) = match (first, second) {
-            (None, None) => return Self(None),
-            (Some(first), second) => (first, second),
-            (None, Some(second)) => (second, None),
+    fn roots(roots: [Option<ObjectRef>; 3]) -> Self {
+        let mut roots = roots.into_iter().flatten();
+        let Some(first) = roots.next() else {
+            return Self(None);
         };
         let mut values = [first; 9];
-        let len = tail.map_or(1, |second| {
-            values[1] = second;
-            2
-        });
+        let len = roots.clone().count().saturating_add(1);
+        for (target, reference) in values.iter_mut().skip(1).zip(roots) {
+            *target = reference;
+        }
         let mut values = values.into_iter();
         for _slot in len..9 {
             let _unused = values.next_back();
@@ -7895,7 +8978,7 @@ impl TextChildren {
     }
 }
 fn root_children(root: Root) -> TextChildren {
-    TextChildren::pair(root.owners.0, root.terms.0)
+    TextChildren::roots([root.owners.0, root.terms.0, root.path_postings.0])
 }
 fn contribution_children(value: &Contribution) -> Result<TextChildren, IndexError> {
     TextChildren::with(Some(value.record), value.inventory.children()?)
@@ -7943,6 +9026,7 @@ struct VerifiedInventory {
     byte_len: u64,
     inventory: EntryMap,
     indexed_tokens: u64,
+    repeated: bool,
 }
 
 /// One prepare's confirmed inventory roots; the original attempt owns their GC
@@ -7951,6 +9035,7 @@ struct InventoryReuse {
     recipe: TextRecipe,
     entries: Option<PreparedRows<VerifiedInventory>>,
     occurrences: ConfirmedOccurrences,
+    prefixes: Option<Box<token_prefix_cache::TokenPrefixCache>>,
     limit: usize,
 }
 
@@ -8236,6 +9321,7 @@ impl InventoryReuse {
                 Some(PreparedRows::new(limit)?)
             },
             occurrences: ConfirmedOccurrences::new(limit)?,
+            prefixes: None,
             limit,
         })
     }
@@ -8283,6 +9369,7 @@ impl InventoryReuse {
                 byte_len: record.byte_len,
                 inventory: *inventory,
                 indexed_tokens,
+                repeated: false,
             },
             budget,
         )
@@ -8294,10 +9381,31 @@ impl InventoryReuse {
         budget: &WorkBudget,
     ) -> Result<(), IndexError> {
         budget.checkpoint()?;
-        if let Some(entries) = &mut self.entries
-            && entries.len() < self.limit
-        {
+        let Some(entries) = &mut self.entries else {
+            return Ok(());
+        };
+        let mut victim = None;
+        if value.repeated {
+            for (slot, entry) in entries.as_mut_slice().iter_mut().enumerate() {
+                budget.checkpoint()?;
+                if entry.bytes == value.bytes && entry.byte_len == value.byte_len {
+                    entry.repeated = true;
+                    return Ok(());
+                }
+                if !entry.repeated && victim.is_none() {
+                    victim = Some(slot);
+                }
+            }
+        }
+        if entries.len() < self.limit {
             entries.push(*value, budget)?;
+        } else if let Some(slot) = victim {
+            // Keep observed duplicate bodies across windows within the same
+            // grant. Eviction changes reuse only; the backing objects stay
+            // under the original attempt's custody.
+            *entries.as_mut_slice().get_mut(slot).ok_or_else(|| {
+                IndexError::BackendViolation("verified inventory eviction lost its entry".into())
+            })? = *value;
         }
         Ok(())
     }
@@ -8494,6 +9602,7 @@ fn write_root(
     root: Root,
     context: &mut AttemptContext<'_>,
 ) -> Result<(ObjectRef, Digest), IndexError> {
+    root.path_index().validate(root.docs)?;
     let payload = super::text_memory::encode(&root, context.budget)?;
     let artifact = context.put(payload.as_slice(), root_children(root).as_slice())?;
     let commitment = Digest(Sha256::digest(payload.as_slice()).into());
@@ -8518,205 +9627,6 @@ fn decode_posting_owner(key: &[u8]) -> Result<OwnerKey, IndexError> {
         producer: ProducerId(producer_id),
         stable_id: StableOwnerId(stable_id),
     })
-}
-
-pub(super) struct TokenRow {
-    start: usize,
-    end: usize,
-    position: u32,
-}
-
-impl TokenRow {
-    pub(super) const fn position(&self) -> u32 {
-        self.position
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-struct SourceRun {
-    start: usize,
-    end: usize,
-    position: u32,
-}
-
-impl SourceRun {
-    fn text(self, normalized: &str) -> Result<&str, IndexError> {
-        normalized.get(self.start..self.end).ok_or_else(|| {
-            IndexError::BackendViolation("native token source range is invalid".into())
-        })
-    }
-}
-
-pub(super) struct TokenBatch {
-    keys: Vec<u8>,
-    rows: Vec<TokenRow>,
-    // Both data allocations drop before their grants, including error/unwind.
-    key_memory: Option<quanta_index_core::index::MemoryLease>,
-    _row_memory: Option<quanta_index_core::index::MemoryLease>,
-}
-
-impl TokenBatch {
-    fn new(budget: &WorkBudget) -> Result<Self, IndexError> {
-        let bytes = quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
-            .checked_mul(std::mem::size_of::<TokenRow>())
-            .ok_or(IndexError::ResourceLimited)?;
-        let memory = budget.reserve_memory(
-            u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
-            quanta_index_core::index::MemoryLifetime::Temporary,
-        )?;
-        let mut rows = Vec::new();
-        rows.try_reserve_exact(quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS)
-            .map_err(|_error| IndexError::ResourceLimited)?;
-        Ok(Self {
-            keys: Vec::new(),
-            rows,
-            key_memory: None,
-            _row_memory: memory,
-        })
-    }
-
-    pub(super) fn rows(&self) -> &[TokenRow] {
-        &self.rows
-    }
-
-    pub(super) fn term(&self, row: &TokenRow) -> Result<&[u8], IndexError> {
-        self.keys.get(row.start..row.end).ok_or_else(|| {
-            IndexError::BackendViolation("native token arena range is invalid".into())
-        })
-    }
-
-    fn clear(&mut self) {
-        self.rows.clear();
-        self.keys.clear();
-    }
-
-    fn reserve_keys(&mut self, needed: usize, budget: &WorkBudget) -> Result<(), IndexError> {
-        if needed <= self.keys.capacity() {
-            return budget.checkpoint();
-        }
-        // The previous arena and its grant stay live through admission and
-        // allocation. Exact census avoids worst-case overreservation.
-        let memory = budget.reserve_memory(
-            u64::try_from(needed).map_err(|_error| IndexError::ResourceLimited)?,
-            quanta_index_core::index::MemoryLifetime::Temporary,
-        )?;
-        let mut keys = Vec::new();
-        keys.try_reserve_exact(needed)
-            .map_err(|_error| IndexError::ResourceLimited)?;
-        // No old key bytes are needed after successful replacement admission.
-        self.keys = keys;
-        self.key_memory = memory;
-        Ok(())
-    }
-
-    /// Reserve the proved maximum key packet before the optional cold arena.
-    /// A failed optional grant leaves the ordinary SQL packet allocation live.
-    fn try_prepare_cold_keys(
-        &mut self,
-        bytes: usize,
-        budget: &WorkBudget,
-    ) -> Result<bool, IndexError> {
-        if bytes == 0 {
-            return Ok(true);
-        }
-        let Some(memory) = budget.try_reserve_memory_for_optimization(
-            u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
-            quanta_index_core::index::MemoryLifetime::Temporary,
-        )?
-        else {
-            return Ok(false);
-        };
-        let mut keys = Vec::new();
-        if keys.try_reserve_exact(bytes).is_err() || keys.capacity() > bytes {
-            return Ok(false);
-        }
-        self.keys = keys;
-        self.key_memory = Some(memory);
-        Ok(true)
-    }
-
-    fn discard_cold_keys(&mut self) {
-        self.keys = Vec::new();
-        self.key_memory = None;
-    }
-
-    fn prepare(
-        &mut self,
-        normalized: &str,
-        runs: &[SourceRun],
-        budget: &WorkBudget,
-    ) -> Result<(), IndexError> {
-        budget.checkpoint()?;
-        let row_count = runs
-            .len()
-            .checked_mul(2)
-            .ok_or(IndexError::ResourceLimited)?;
-        if row_count == 0 || row_count > quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
-            return Err(IndexError::ResourceLimited);
-        }
-        let maximum =
-            usize::try_from(MAX_TERM_KEY_BYTES).map_err(|_error| IndexError::ResourceLimited)?;
-        let mut lengths = [0usize; quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS];
-        let mut slots = lengths.iter_mut();
-        let mut needed = 0usize;
-        for run in runs {
-            budget.checkpoint()?;
-            let text = run.text(normalized)?;
-            if text.is_empty() {
-                return Err(IndexError::ResourceLimited);
-            }
-            let ascii = text.is_ascii();
-            for case in [CaseMode::Sensitive, CaseMode::Folded] {
-                let length = if ascii {
-                    text.len()
-                        .checked_add(1)
-                        .filter(|length| *length <= maximum)
-                        .ok_or(IndexError::ResourceLimited)?
-                } else {
-                    case_chars(text, case).try_fold(1usize, |bytes, ch| {
-                        bytes
-                            .checked_add(ch.len_utf8())
-                            .filter(|next| *next <= maximum)
-                            .ok_or(IndexError::ResourceLimited)
-                    })?
-                };
-                *slots.next().ok_or(IndexError::ResourceLimited)? = length;
-                needed = needed
-                    .checked_add(length)
-                    .ok_or(IndexError::ResourceLimited)?;
-            }
-        }
-        self.reserve_keys(needed, budget)?;
-        self.clear();
-        let mut lengths = lengths.into_iter();
-        for run in runs {
-            budget.checkpoint()?;
-            let text = run.text(normalized)?;
-            for case in [CaseMode::Sensitive, CaseMode::Folded] {
-                let start = self.keys.len();
-                let end = start
-                    .checked_add(lengths.next().ok_or(IndexError::ResourceLimited)?)
-                    .ok_or(IndexError::ResourceLimited)?;
-                cold_tokens::append_canonical_case_key(&mut self.keys, text, case, needed)?;
-                if self.keys.len() != end {
-                    return Err(IndexError::BackendViolation(
-                        "native token key census changed".into(),
-                    ));
-                }
-                self.rows.push(TokenRow {
-                    start,
-                    end,
-                    position: run.position,
-                });
-            }
-        }
-        if self.keys.len() != needed || self.rows.len() != row_count {
-            return Err(IndexError::BackendViolation(
-                "native token packet census changed".into(),
-            ));
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -8843,6 +9753,7 @@ fn read_root(
             "native text root commitment or edges mismatch".into(),
         ));
     }
+    root.path_index().validate(root.docs)?;
     Ok(root)
 }
 
@@ -8901,12 +9812,24 @@ fn read_posting(
                     ),
                 }
             } else if data.len() == 11 && data.first() == Some(&small_posting_block::INLINE_TAG) {
-                let slot = u16::from_be_bytes(data[1..3].try_into().map_err(|_error| {
-                    IndexError::CorruptObject("small posting slot width".into())
-                })?);
-                let df = u64::from_be_bytes(data[3..].try_into().map_err(|_error| {
-                    IndexError::CorruptObject("small posting DF width".into())
-                })?);
+                let slot = u16::from_be_bytes(
+                    data.get(1..3)
+                        .ok_or_else(|| {
+                            IndexError::CorruptObject("small posting slot width".into())
+                        })?
+                        .try_into()
+                        .map_err(|_error| {
+                            IndexError::CorruptObject("small posting slot width".into())
+                        })?,
+                );
+                let df = u64::from_be_bytes(
+                    data.get(3..)
+                        .ok_or_else(|| IndexError::CorruptObject("small posting DF width".into()))?
+                        .try_into()
+                        .map_err(|_error| {
+                            IndexError::CorruptObject("small posting DF width".into())
+                        })?,
+                );
                 let stored = objects.get(child, budget)?;
                 let small = small_posting_block::read(&stored, child, term, slot, df, budget)?;
                 Posting {
@@ -8963,6 +9886,96 @@ pub(super) struct ValidatedPostingHit {
     pub(super) occurrence: super::text_occurrence::ScopedOccurrence,
 }
 
+pub(super) fn valid_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= MAX_SOURCE_PATH_BYTES
+        && !path.starts_with('/')
+        && !path.contains('\0')
+        && !path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+}
+
+pub(super) fn authenticated_text_source(
+    index: &NativeTextIndex,
+    owner: OwnerKey,
+    source: Option<ObjectRef>,
+    allow_excluded: bool,
+    context: &mut TextReadContext<'_>,
+) -> Result<SourceRecordOwner, IndexError> {
+    let pinned = context.maps.lookup_object(
+        context.ticket.view.source.owners,
+        &owner_map_key(owner),
+        context.budget,
+    )?;
+    let source = match (pinned, source) {
+        (Some(actual), Some(expected)) if actual == expected => actual,
+        (Some(actual), None) => actual,
+        (None, None) => {
+            return Err(IndexError::InvalidInput(
+                "new overlay owner requires an explicit path".into(),
+            ));
+        }
+        _ => {
+            return Err(IndexError::CorruptObject(
+                "native text hit differs from pinned source owner".into(),
+            ));
+        }
+    };
+    let stored = context.objects.get(source, context.budget)?;
+    let record =
+        SourceRecordOwner::decode_json(&stored.payload, context.budget, MemoryLifetime::Temporary)?;
+    if stored.registration.reference != source
+        || stored.registration.children.as_slice() != [record.bytes]
+        || !valid_path(&record.path)
+        || (!index.validate_selected_source(&record)? && !allow_excluded)
+    {
+        return Err(IndexError::CorruptObject(
+            "native text hit source record or admission differs".into(),
+        ));
+    }
+    context.budget.charge(WorkUsage {
+        bytes: u64::try_from(record.path.len())
+            .map_err(|_error| IndexError::ResourceLimited)?
+            .checked_mul(2)
+            .ok_or(IndexError::ResourceLimited)?,
+        ..WorkUsage::default()
+    })?;
+    let key_bytes = record
+        .path
+        .len()
+        .checked_add(5)
+        .ok_or(IndexError::ResourceLimited)?;
+    let _key_memory = context.budget.reserve_memory(
+        u64::try_from(key_bytes).map_err(|_error| IndexError::ResourceLimited)?,
+        MemoryLifetime::Temporary,
+    )?;
+    let mut path_key = Vec::new();
+    path_key
+        .try_reserve_exact(key_bytes)
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    path_key.extend_from_slice(b"path\0");
+    path_key.extend_from_slice(record.path.as_bytes());
+    let marker_ref = context
+        .maps
+        .lookup(context.ticket.view.source.paths, &path_key, context.budget)?
+        .ok_or_else(|| {
+            IndexError::CorruptObject("native text source path lacks reverse owner".into())
+        })?;
+    let path_owner = SourcePathOwners::decode(marker_ref, context.budget)?.owner_for_record(
+        &record,
+        context.maps,
+        context.budget,
+    )?;
+    if path_owner != Some(owner) {
+        return Err(IndexError::CorruptObject(
+            "native text source path owner differs from selected owner".into(),
+        ));
+    }
+    context.budget.checkpoint()?;
+    Ok(record)
+}
+
 pub(super) struct ValidatedUniverseOwner {
     pub(super) owner: OwnerKey,
     pub(super) source_record: ObjectRef,
@@ -8992,23 +10005,56 @@ pub(super) fn validate_universe_owner(
             "text universe contribution exceeds root statistics".into(),
         ));
     }
+    validate_universe_source(owner, contribution.record, recipe, context)?;
+    Ok(ValidatedUniverseOwner {
+        owner,
+        source_record: contribution.record,
+        doc_indexed_tokens: contribution.indexed_tokens,
+    })
+}
+
+fn validate_segment_document(
+    doc: text_segment::wire::Doc,
+    recipe: TextRecipe,
+    context: &mut TextReadContext<'_>,
+) -> Result<ValidatedUniverseOwner, IndexError> {
+    context.budget.charge(WorkUsage {
+        reads: 1,
+        bytes: 32,
+        ..WorkUsage::default()
+    })?;
+    let owner = decode_posting_owner(&doc.owner)?;
+    validate_universe_source(owner, doc.source, recipe, context)?;
+    Ok(ValidatedUniverseOwner {
+        owner,
+        source_record: doc.source,
+        doc_indexed_tokens: doc.tokens,
+    })
+}
+
+fn validate_universe_source(
+    owner: OwnerKey,
+    source: ObjectRef,
+    recipe: TextRecipe,
+    context: &mut TextReadContext<'_>,
+) -> Result<(), IndexError> {
     let selected = context.maps.lookup_object(
         context.ticket.view.source.owners,
         &owner_map_key(owner),
         context.budget,
     )?;
-    if selected != Some(contribution.record) {
+    if selected != Some(source) {
         return Err(IndexError::CorruptObject(
             "text universe contribution is stale against pinned source".into(),
         ));
     }
-    let stored = context.objects.get(contribution.record, context.budget)?;
+    let stored = context.objects.get(source, context.budget)?;
     let record = quanta_index_core::index::SourceRecordOwner::decode_json(
         &stored.payload,
         context.budget,
         quanta_index_core::index::MemoryLifetime::Temporary,
     )?;
-    if stored.registration.reference != contribution.record
+    if stored.registration.reference != source
         || stored.registration.children.as_slice() != [record.bytes]
         || record.byte_len > MAX_SOURCE_BYTES
         || record.path.is_empty()
@@ -9025,12 +10071,7 @@ pub(super) fn validate_universe_owner(
             "text universe source admission, path or edges mismatch".into(),
         ));
     }
-    context.budget.checkpoint()?;
-    Ok(ValidatedUniverseOwner {
-        owner,
-        source_record: contribution.record,
-        doc_indexed_tokens: contribution.indexed_tokens,
-    })
+    context.budget.checkpoint()
 }
 
 fn validate_posting_hit(
@@ -9272,9 +10313,19 @@ impl PostingPageLookups {
 /// Query-local, page-bounded traversal. A hit is provisional until EOF;
 /// callers must exhaust every opened cursor before publishing a result.
 pub(super) struct TextPostingCursor {
+    key: PreparedKey,
+    statistics: TextTermScan,
+    stream: TextPostingStream,
+}
+
+enum TextPostingStream {
+    Tree(TreePostingCursor),
+    Segment(text_segment::read::TermCursor),
+}
+
+struct TreePostingCursor {
     root: Root,
     recipe: TextRecipe,
-    key: PreparedKey,
     posting: Option<Posting>,
     after: Option<MapPageEntry>,
     entries: MapPageCursor,
@@ -9290,15 +10341,27 @@ impl TextPostingCursor {
     }
 
     pub(super) fn statistics(&self) -> TextTermScan {
-        TextTermScan {
-            docs: self.root.docs,
-            indexed_tokens: self.root.indexed_tokens,
-            df: self.posting.map_or(0, |posting| posting.df),
-        }
+        self.statistics
     }
 
     pub(super) fn next_hit(
         &mut self,
+        context: &mut TextReadContext<'_>,
+        occurrences: &mut OccurrenceReader,
+    ) -> Result<Option<ValidatedPostingHit>, IndexError> {
+        match &mut self.stream {
+            TextPostingStream::Tree(cursor) => {
+                cursor.next_hit(self.key.as_slice(), context, occurrences)
+            }
+            TextPostingStream::Segment(cursor) => cursor.next_hit(context),
+        }
+    }
+}
+
+impl TreePostingCursor {
+    fn next_hit(
+        &mut self,
+        key: &[u8],
         context: &mut TextReadContext<'_>,
         occurrences: &mut OccurrenceReader,
     ) -> Result<Option<ValidatedPostingHit>, IndexError> {
@@ -9330,7 +10393,7 @@ impl TextPostingCursor {
                     let (contribution_ref, pinned_record) = lookups.next()?;
                     validate_posting_hit_with_refs(
                         witness,
-                        self.key.as_slice(),
+                        key,
                         &PostingHitBinding {
                             owner: decode_posting_owner(owner_key)?,
                             recipe: self.recipe,
@@ -9344,7 +10407,7 @@ impl TextPostingCursor {
                     validate_posting_hit(
                         owner_key,
                         witness,
-                        self.key.as_slice(),
+                        key,
                         self.root,
                         self.recipe,
                         context,
@@ -9806,6 +10869,10 @@ impl PostingEdits {
         self.rows.len() == self.limit
     }
 
+    fn last_term(&self) -> Option<&[u8]> {
+        self.rows.as_slice().last().map(|row| row.term.as_slice())
+    }
+
     fn push(
         &mut self,
         term: &[u8],
@@ -9841,6 +10908,33 @@ impl PostingEdits {
         }
         spool.posting_batch_rows(self.rows.as_slice(), budget)?;
         self.rows.clear();
+        Ok(())
+    }
+
+    // The ordered cold merge needs the already funded final term after a full
+    // page flush. Move its existing owner instead of copying the source key.
+    fn flush_return_last(
+        &mut self,
+        spool: &TextSpool,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<PostingTermKey>, IndexError> {
+        if self.rows.len() == 0 {
+            return Ok(None);
+        }
+        spool.posting_batch_rows(self.rows.as_slice(), budget)?;
+        let last = self.rows.pop().ok_or(IndexError::ResourceLimited)?;
+        self.rows.clear();
+        Ok(Some(last.term))
+    }
+
+    /// End the child-credit lifetime before opening the next owner window.
+    fn release_empty_backing(&mut self) -> Result<(), IndexError> {
+        if self.rows.len() != 0 {
+            return Err(IndexError::BackendViolation(
+                "posting rows released before flush".into(),
+            ));
+        }
+        self.rows = PreparedRows::new(self.limit)?;
         Ok(())
     }
 }
@@ -10227,40 +11321,6 @@ impl OccurrenceWrites<'_> {
     }
 }
 
-type IndexedTokenCursor<'a> = TokenCursor<'a, Option<quanta_index_core::index::MemoryLease>>;
-
-fn prepare_indexed_token_input<'a>(
-    body: &'a str,
-    budget: &mut WorkBudget,
-) -> Result<(IndexedTokenCursor<'a>, TokenBatch), IndexError> {
-    budget.charge(WorkUsage {
-        bytes: u64::try_from(body.len())
-            .map_err(|_error| IndexError::ResourceLimited)?
-            .checked_mul(4)
-            .ok_or(IndexError::ResourceLimited)?,
-        ..WorkUsage::default()
-    })?;
-    let cursor = TokenCursor::try_new_bounded(
-        body,
-        usize::try_from(MAX_NFC_BYTES).map_err(|_error| IndexError::ResourceLimited)?,
-        usize::try_from(MAX_NFC_WORK_BYTES).map_err(|_error| IndexError::ResourceLimited)?,
-        |_units| budget.checkpoint(),
-        |bytes| {
-            budget.reserve_memory(
-                u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
-                quanta_index_core::index::MemoryLifetime::Temporary,
-            )
-        },
-    )
-    .map_err(|error| {
-        error
-            .into_checkpoint()
-            .map_or(IndexError::ResourceLimited, std::convert::identity)
-    })?;
-    let token_rows = TokenBatch::new(budget)?;
-    Ok((cursor, token_rows))
-}
-
 fn visit_prepared_token_batches(
     cursor: &mut IndexedTokenCursor<'_>,
     token_rows: &mut TokenBatch,
@@ -10323,7 +11383,8 @@ pub(super) fn visit_indexed_token_batches(
     budget: &mut WorkBudget,
     consume: impl FnMut(&TokenBatch, &mut WorkBudget) -> Result<(), IndexError>,
 ) -> Result<u64, IndexError> {
-    let (mut cursor, mut token_rows) = prepare_indexed_token_input(body, budget)?;
+    let mut cursor = prepare_indexed_token_cursor(body, budget)?;
+    let mut token_rows = TokenBatch::new(budget)?;
     visit_prepared_token_batches(&mut cursor, &mut token_rows, budget, consume)
 }
 
@@ -10334,6 +11395,7 @@ struct PreparedInventory {
     alias: Option<entry_patch::ColdInventoryAlias>,
 }
 
+#[cfg(test)]
 fn prepare_inventory(
     body: &str,
     prior_inventory: &EntryMap,
@@ -10343,6 +11405,34 @@ fn prepare_inventory(
     confirmed: &mut ConfirmedOccurrences,
     inventory_edits: &mut InventoryEdits,
     writes: &mut OccurrenceWrites<'_>,
+) -> Result<PreparedInventory, IndexError> {
+    prepare_inventory_with_prefix(
+        body,
+        prior_inventory,
+        ordinal,
+        context,
+        spool,
+        confirmed,
+        inventory_edits,
+        writes,
+        &mut None,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The private producer keeps source, scratch, confirmed output and optional cache authorities explicit"
+)]
+fn prepare_inventory_with_prefix(
+    body: &str,
+    prior_inventory: &EntryMap,
+    ordinal: u32,
+    context: &mut AttemptContext<'_>,
+    spool: &TextSpool,
+    confirmed: &mut ConfirmedOccurrences,
+    inventory_edits: &mut InventoryEdits,
+    writes: &mut OccurrenceWrites<'_>,
+    prefixes: &mut Option<Box<token_prefix_cache::TokenPrefixCache>>,
 ) -> Result<PreparedInventory, IndexError> {
     context.budget.checkpoint()?;
     if inventory_edits.ordinal != ordinal {
@@ -10355,6 +11445,7 @@ fn prepare_inventory(
     // Exact census remains the pre-effect path when that larger grant misses.
     // Neither arena admission alone proves mandatory output headroom.
     let mut cold_tokens = None;
+    let mut cold_program = None;
     let diagnostic = context.budget.request().diagnostic_context().cloned();
     let mut cold_shape =
         (cold && diagnostic.is_some()).then(occurrence_pack::ColdShapeObservation::default);
@@ -10378,26 +11469,34 @@ fn prepare_inventory(
                     },
                 );
             }
-            // The canonical cursor and its mandatory row packet must be
-            // funded before the optional ordered arena takes any memory.
-            let (mut cursor, mut token_rows) = observe_text_step(
-                child,
-                DiagnosticStageV1::NativeTextInventoryPrepare,
-                42,
-                context,
-                |context| prepare_indexed_token_input(body, context.budget),
-            )?;
-            if u64::try_from(body.len()).is_ok_and(|bytes| bytes <= MAX_SOURCE_BYTES)
+            let mut cursor =
+                token_prefix_prepare::with_discardable_cache(prefixes, context, |context| {
+                    observe_text_step(
+                        child,
+                        DiagnosticStageV1::NativeTextInventoryPrepare,
+                        42,
+                        context,
+                        |context| prepare_indexed_token_cursor(body, context.budget),
+                    )
+                })?;
+            let bounded_source =
+                u64::try_from(body.len()).is_ok_and(|bytes| bytes <= MAX_SOURCE_BYTES);
+            if bounded_source && let Some(cache) = prefixes.as_deref_mut() {
+                let (returned, prepared) =
+                    token_prefix_prepare::try_prepare(cache, cursor, context.budget)?;
+                cursor = returned;
+                if let Some((program, indexed)) = prepared {
+                    cold_program = Some(program);
+                    return Ok(indexed);
+                }
+            }
+            if bounded_source
                 && let Some(bound) =
                     cold_tokens::CanonicalTokenCensus::upper_bound(cursor.text().len())?
-                && token_rows.try_prepare_cold_keys(bound.packet_key_bytes(), context.budget)?
             {
-                cold_tokens = cold_tokens::ColdTokens::try_new(bound, context.budget)?;
+                cold_tokens = cold_tokens::ColdTokens::try_new(&bound, context.budget)?;
             }
             if cold_tokens.is_none() {
-                // The abandoned upper packet has no token data. Release its
-                // larger grant before admitting the exact fallback packet.
-                token_rows.discard_cold_keys();
                 let census = observe_text_step(
                     child,
                     DiagnosticStageV1::NativeTextInventoryPrepare,
@@ -10411,11 +11510,8 @@ fn prepare_inventory(
                         )
                     },
                 )?;
-                if let Some(census) = census
-                    && token_rows
-                        .try_prepare_cold_keys(census.packet_key_bytes(), context.budget)?
-                {
-                    cold_tokens = cold_tokens::ColdTokens::try_new(census, context.budget)?;
+                if let Some(census) = census {
+                    cold_tokens = cold_tokens::ColdTokens::try_new(&census, context.budget)?;
                 }
             }
             if let Some(tokens) = cold_tokens.as_mut() {
@@ -10424,11 +11520,10 @@ fn prepare_inventory(
                     DiagnosticStageV1::NativeTextInventoryPrepare,
                     44,
                     context,
-                    |context| tokens.fill_from_cursor(&mut cursor, &mut token_rows, context.budget),
+                    |context| tokens.fill_from_cursor(&mut cursor, context.budget),
                 )?;
                 if indexed == 0 {
                     cold_tokens = None;
-                    token_rows.discard_cold_keys();
                     observe_text_step(
                         child,
                         DiagnosticStageV1::NativeTextInventoryPrepare,
@@ -10453,7 +11548,9 @@ fn prepare_inventory(
                     47,
                     context,
                     |context| {
-                        token_rows.discard_cold_keys();
+                        // The SQL route owns its row/key packet. Ordered
+                        // arenas can replay borrowed pages after admission.
+                        let mut token_rows = TokenBatch::new(context.budget)?;
                         spool.reset_tokens(context.budget)?;
                         visit_prepared_token_batches(
                             &mut cursor,
@@ -10469,79 +11566,204 @@ fn prepare_inventory(
 
     // Merge two sorted file-local inventories. Unchanged occurrence identities
     // stay reachable from the prior COW root; only changed keys become map edits.
-    let (changed, term_count, alias) = observe_attempt_on_lane(
-        context,
-        diagnostic.as_ref(),
-        DiagnosticStageV1::NativeTextInventoryPrepare,
-        quanta_index_core::DiagnosticLaneV1(35),
-        |child, context| {
-            if writes.pack_owners && *prior_inventory == EntryMap::default() {
-                let (count, alias) = observe_text_step(
-                    child,
-                    DiagnosticStageV1::NativeTextInventoryPrepare,
-                    46,
-                    context,
-                    |context| {
-                        occurrence_pack::prepare_owner_blocks(
-                            ordinal,
+    let (changed, term_count, alias) =
+        token_prefix_prepare::with_discardable_cache(prefixes, context, |context| {
+            observe_attempt_on_lane(
+                context,
+                diagnostic.as_ref(),
+                DiagnosticStageV1::NativeTextInventoryPrepare,
+                quanta_index_core::DiagnosticLaneV1(35),
+                |child, context| {
+                    if writes.pack_owners && *prior_inventory == EntryMap::default() {
+                        let (count, alias) = observe_text_step(
+                            child,
+                            DiagnosticStageV1::NativeTextInventoryPrepare,
+                            46,
                             context,
-                            spool,
-                            &mut cold_tokens,
-                            confirmed,
-                            inventory_edits,
-                            writes,
-                            cold_shape.as_mut(),
-                        )
-                    },
-                )?;
-                return Ok((count != 0, count, alias));
-            }
-            let mut occurrences = if confirmed.limit == 0 {
-                OccurrenceReader::uncached()?
-            } else {
-                OccurrenceReader::new(2)?
-            };
-            let mut old_cursor = MapEntries::new(context.objects, context.maps, prior_inventory);
-            let mut old = old_cursor.next(context.budget)?;
-            let mut changed = false;
-            let mut term_count = 0_u64;
-            // Reborrow the existing authority with the visitor's original
-            // budget. No context or grant escapes the live token cursor.
-            let attempt = context.attempt;
-            let objects = context.objects;
-            let maps = context.maps;
-            let custody = context.custody;
-            let scratch = context.scratch;
-            spool.visit_token_groups(
-                usize::try_from(MAX_POSITIONS_PER_TERM)
-                    .map_err(|_error| IndexError::ResourceLimited)?,
-                context.budget,
-                |term, positions, budget| {
-                    let mut group_context = AttemptContext {
-                        attempt,
-                        objects,
-                        maps,
-                        custody,
-                        scratch,
-                        budget,
+                            |context| {
+                                occurrence_pack::prepare_owner_blocks_with_program(
+                                    ordinal,
+                                    context,
+                                    spool,
+                                    &mut cold_tokens,
+                                    &mut cold_program,
+                                    confirmed,
+                                    inventory_edits,
+                                    writes,
+                                    cold_shape.as_mut(),
+                                )
+                            },
+                        )?;
+                        return Ok((count != 0, count, alias));
+                    }
+                    let mut occurrences = if confirmed.limit == 0 {
+                        OccurrenceReader::uncached()?
+                    } else {
+                        OccurrenceReader::new(2)?
                     };
-                    let context = &mut group_context;
-                    context.budget.checkpoint()?;
-                    term_count = term_count
-                        .checked_add(1)
-                        .ok_or(IndexError::ResourceLimited)?;
-                    check_term_key(term.as_slice())?;
-                    while old
-                        .as_ref()
-                        .map(MapPageEntry::key)
-                        .transpose()?
-                        .is_some_and(|key| key < term.as_slice())
-                    {
-                        let entry = old.take().ok_or_else(|| {
-                            IndexError::BackendViolation(
-                                "native text old inventory lost entry".into(),
-                            )
-                        })?;
+                    let mut old_cursor =
+                        MapEntries::new(context.objects, context.maps, prior_inventory);
+                    let mut old = old_cursor.next(context.budget)?;
+                    let mut changed = false;
+                    let mut term_count = 0_u64;
+                    // Reborrow the existing authority with the visitor's original
+                    // budget. No context or grant escapes the live token cursor.
+                    let attempt = context.attempt;
+                    let objects = context.objects;
+                    let maps = context.maps;
+                    let custody = context.custody;
+                    let scratch = context.scratch;
+                    spool.visit_token_groups(
+                        usize::try_from(MAX_POSITIONS_PER_TERM)
+                            .map_err(|_error| IndexError::ResourceLimited)?,
+                        context.budget,
+                        |term, positions, budget| {
+                            let mut group_context = AttemptContext {
+                                attempt,
+                                objects,
+                                maps,
+                                custody,
+                                scratch,
+                                budget,
+                            };
+                            let context = &mut group_context;
+                            context.budget.checkpoint()?;
+                            term_count = term_count
+                                .checked_add(1)
+                                .ok_or(IndexError::ResourceLimited)?;
+                            check_term_key(term.as_slice())?;
+                            while old
+                                .as_ref()
+                                .map(MapPageEntry::key)
+                                .transpose()?
+                                .is_some_and(|key| key < term.as_slice())
+                            {
+                                let entry = old.take().ok_or_else(|| {
+                                    IndexError::BackendViolation(
+                                        "native text old inventory lost entry".into(),
+                                    )
+                                })?;
+                                let (key, reference) = entry.object_parts()?;
+                                inventory_edits.push(key, *reference, context.budget)?;
+                                changed = true;
+                                if inventory_edits.rows.len()
+                                    == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+                                {
+                                    inventory_edits.flush(spool, context.budget)?;
+                                }
+                                old = old_cursor.next(context.budget)?;
+                            }
+                            let previous = if old
+                                .as_ref()
+                                .map(MapPageEntry::key)
+                                .transpose()?
+                                .is_some_and(|key| key == term.as_slice())
+                            {
+                                let entry = old.take().ok_or_else(|| {
+                                    IndexError::BackendViolation(
+                                        "native text old inventory lost match".into(),
+                                    )
+                                })?;
+                                let reference = *entry.object_parts()?.1;
+                                old = old_cursor.next(context.budget)?;
+                                Some(reference)
+                            } else {
+                                None
+                            };
+                            if positions.as_slice().is_empty() {
+                                return Err(IndexError::BackendViolation(
+                                    "native text token term has no positions".into(),
+                                ));
+                            }
+                            let payload = super::text_memory::encode(
+                                positions.as_occurrence(),
+                                context.budget,
+                            )?;
+                            let identified = context.objects.identify(
+                                payload.as_slice(),
+                                &[],
+                                context.budget,
+                            )?;
+                            if previous == Some(identified.reference) {
+                                return Ok(());
+                            }
+                            // The current policy accepts both leaf and block DATA.
+                            // A delta keeps the authenticated block identity when the
+                            // selected term's positions have not changed.
+                            if let Some(reference) = previous {
+                                let prior = occurrences.load(
+                                    reference,
+                                    term.as_slice(),
+                                    context.objects,
+                                    context.budget,
+                                )?;
+                                if prior.positions.iter().eq(positions.as_slice()) {
+                                    return Ok(());
+                                }
+                            }
+                            drop(positions);
+                            changed = true;
+                            // A pending leaf has not reached confirmation. Keep its
+                            // attempt fence without querying the guaranteed SQL miss;
+                            // push still verifies the duplicate payload before staging.
+                            let pending = writes
+                                .pending
+                                .iter()
+                                .any(|row| row.identified == identified.reference);
+                            if pending {
+                                confirmed.check_attempt(context.attempt)?;
+                            }
+                            if !pending
+                                && confirmed.contains_or_spill(
+                                    identified.reference,
+                                    context.attempt,
+                                    spool,
+                                    context.budget,
+                                )?
+                            {
+                                inventory_edits.push_prepared(
+                                    term,
+                                    previous,
+                                    Some(identified.reference),
+                                    context.budget,
+                                )?;
+                                if inventory_edits.rows.len()
+                                    == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+                                {
+                                    inventory_edits.flush(spool, context.budget)?;
+                                }
+                                return Ok(());
+                            }
+                            writes.flush_before_input(
+                                identified.reference,
+                                payload.as_slice().len(),
+                                context,
+                                spool,
+                                confirmed,
+                                inventory_edits,
+                            )?;
+                            writes.push(
+                                OccurrenceEdit {
+                                    ordinal,
+                                    key: term,
+                                    prior: previous,
+                                    identified: identified.reference,
+                                },
+                                payload,
+                                spool,
+                                inventory_edits,
+                                context.budget,
+                            )?;
+                            if writes.pending.len()
+                                == quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH
+                            {
+                                writes.flush(context, spool, confirmed, inventory_edits)?;
+                            }
+                            Ok(())
+                        },
+                    )?;
+                    while let Some(entry) = old {
+                        context.budget.checkpoint()?;
                         let (key, reference) = entry.object_parts()?;
                         inventory_edits.push(key, *reference, context.budget)?;
                         changed = true;
@@ -10552,125 +11774,10 @@ fn prepare_inventory(
                         }
                         old = old_cursor.next(context.budget)?;
                     }
-                    let previous = if old
-                        .as_ref()
-                        .map(MapPageEntry::key)
-                        .transpose()?
-                        .is_some_and(|key| key == term.as_slice())
-                    {
-                        let entry = old.take().ok_or_else(|| {
-                            IndexError::BackendViolation(
-                                "native text old inventory lost match".into(),
-                            )
-                        })?;
-                        let reference = *entry.object_parts()?.1;
-                        old = old_cursor.next(context.budget)?;
-                        Some(reference)
-                    } else {
-                        None
-                    };
-                    if positions.as_slice().is_empty() {
-                        return Err(IndexError::BackendViolation(
-                            "native text token term has no positions".into(),
-                        ));
-                    }
-                    let payload =
-                        super::text_memory::encode(&positions.occurrence, context.budget)?;
-                    let identified =
-                        context
-                            .objects
-                            .identify(payload.as_slice(), &[], context.budget)?;
-                    if previous == Some(identified.reference) {
-                        return Ok(());
-                    }
-                    // The current policy accepts both leaf and block DATA.
-                    // A delta keeps the authenticated block identity when the
-                    // selected term's positions have not changed.
-                    if let Some(reference) = previous {
-                        let prior = occurrences.load(
-                            reference,
-                            term.as_slice(),
-                            context.objects,
-                            context.budget,
-                        )?;
-                        if prior.positions.iter().eq(positions.as_slice()) {
-                            return Ok(());
-                        }
-                    }
-                    drop(positions);
-                    changed = true;
-                    // A pending leaf has not reached confirmation. Keep its
-                    // attempt fence without querying the guaranteed SQL miss;
-                    // push still verifies the duplicate payload before staging.
-                    let pending = writes
-                        .pending
-                        .iter()
-                        .any(|row| row.identified == identified.reference);
-                    if pending {
-                        confirmed.check_attempt(context.attempt)?;
-                    }
-                    if !pending
-                        && confirmed.contains_or_spill(
-                            identified.reference,
-                            context.attempt,
-                            spool,
-                            context.budget,
-                        )?
-                    {
-                        inventory_edits.push_prepared(
-                            term,
-                            previous,
-                            Some(identified.reference),
-                            context.budget,
-                        )?;
-                        if inventory_edits.rows.len()
-                            == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
-                        {
-                            inventory_edits.flush(spool, context.budget)?;
-                        }
-                        return Ok(());
-                    }
-                    writes.flush_before_input(
-                        identified.reference,
-                        payload.as_slice().len(),
-                        context,
-                        spool,
-                        confirmed,
-                        inventory_edits,
-                    )?;
-                    writes.push(
-                        OccurrenceEdit {
-                            ordinal,
-                            key: term,
-                            prior: previous,
-                            identified: identified.reference,
-                        },
-                        payload,
-                        spool,
-                        inventory_edits,
-                        context.budget,
-                    )?;
-                    if writes.pending.len()
-                        == quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH
-                    {
-                        writes.flush(context, spool, confirmed, inventory_edits)?;
-                    }
-                    Ok(())
+                    Ok((changed, term_count, None))
                 },
-            )?;
-            while let Some(entry) = old {
-                context.budget.checkpoint()?;
-                let (key, reference) = entry.object_parts()?;
-                inventory_edits.push(key, *reference, context.budget)?;
-                changed = true;
-                if inventory_edits.rows.len() == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
-                    inventory_edits.flush(spool, context.budget)?;
-                }
-                old = old_cursor.next(context.budget)?;
-            }
-            Ok((changed, term_count, None))
-        },
-    )?;
+            )
+        })?;
     if let (Some(diagnostic), Some(shape)) = (diagnostic.as_ref(), cold_shape.as_ref()) {
         if let Some((occurrences, terms, occurrence_key_bytes, unique_key_bytes, branch)) =
             shape.complete()
@@ -10897,6 +12004,21 @@ fn flush_diff_posting_edits(
     )
 }
 
+fn flush_diff_posting_edits_return_last(
+    rows: &mut PostingEdits,
+    spool: &TextSpool,
+    context: &mut AttemptContext<'_>,
+) -> Result<Option<PostingTermKey>, IndexError> {
+    let diagnostic = context.budget.request().diagnostic_context().cloned();
+    observe_text_step(
+        diagnostic.as_ref(),
+        DiagnosticStageV1::NativeTextPostingEdit,
+        33,
+        context,
+        |context| rows.flush_return_last(spool, context.budget),
+    )
+}
+
 #[cfg(test)]
 fn diff_inventory(
     owner: &[u8],
@@ -10919,11 +12041,11 @@ fn diff_inventory(
     )
 }
 
-fn prepare_inventory_diff<'objects>(
+fn prepare_inventory_diff(
     owner: &[u8],
     prior: Option<&Contribution>,
     next: Option<&Contribution>,
-    context: &mut AttemptContext<'objects>,
+    context: &mut AttemptContext<'_>,
     spool: &TextSpool,
     posting_rows: &mut PostingEdits,
     confirmed: &mut ConfirmedOccurrences,
@@ -11002,10 +12124,14 @@ fn prepare_inventory_diff<'objects>(
     result
 }
 
-fn diff_inventory_inner<'objects>(
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "The producer verification is consumed by this owner's diff instead of remaining reusable by its caller"
+)]
+fn diff_inventory_inner(
     owner: &[u8],
     (prior, next): (Option<&Contribution>, Option<&Contribution>),
-    context: &mut AttemptContext<'objects>,
+    context: &mut AttemptContext<'_>,
     spool: &TextSpool,
     posting_rows: &mut PostingEdits,
     confirmed: &mut ConfirmedOccurrences,
@@ -11311,6 +12437,10 @@ struct ReadyTextNext {
     reused: bool,
     verified: Option<VerifiedInventory>,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The bounded inventory window admits the full inline draft in PreparedRows; boxing would add separate unfunded backing"
+)]
 enum PendingTextNext {
     Preparing,
     Ready,
@@ -11320,6 +12450,7 @@ enum PendingTextNext {
         body: TextBodyKey,
         tokens: u64,
         alias: Option<entry_patch::ColdInventoryAlias>,
+        shared: bool,
     },
 }
 
@@ -11337,6 +12468,7 @@ struct InventoryBatch<'objects> {
     bases: PreparedRows<EntryMap>,
     // A compact alias has one staged anchor row and its full count in the seal.
     counts: PreparedRows<u64>,
+    directory_receipts: PreparedRows<Option<entry_patch::DirectoryReceipt>>,
     inventory_edits: InventoryEdits,
     occurrence_writes: OccurrenceWrites<'objects>,
     posting_edits: PostingEdits,
@@ -11366,6 +12498,7 @@ impl InventoryBatch<'_> {
             ready: PreparedRows::new(limit)?,
             bases: PreparedRows::new(limit)?,
             counts: PreparedRows::new(limit)?,
+            directory_receipts: PreparedRows::new(limit)?,
             inventory_edits: InventoryEdits::new(0)?,
             occurrence_writes: OccurrenceWrites::new(),
             posting_edits: PostingEdits::new()?,
@@ -11482,7 +12615,7 @@ impl InventoryBatch<'_> {
         }
         // Mixed-root SQL rows must exist before either root cursor reads them.
         self.inventory_edits.flush(spool, context.budget)?;
-        let mut roots = if self.bases.len() == 0 {
+        let roots = if self.bases.len() == 0 {
             None
         } else {
             let mut cold_aliases = PreparedRows::new(self.bases.len())?;
@@ -11493,6 +12626,7 @@ impl InventoryBatch<'_> {
                 if let PendingTextNext::Draft {
                     slot,
                     alias: Some(alias),
+                    shared: false,
                     ..
                 } = &row.next
                 {
@@ -11519,6 +12653,7 @@ impl InventoryBatch<'_> {
                         self.bases.as_slice(),
                         self.counts.as_slice(),
                         cold_aliases.as_slice(),
+                        self.directory_receipts.as_mut_slice(),
                         &inventory_read,
                         context,
                     )
@@ -11529,7 +12664,7 @@ impl InventoryBatch<'_> {
         // provisional diff before completing any source-owner transition.
         let prepared = prepared_inventory::PreparedInventoryChanges::prepare(
             self,
-            roots.as_mut().map(PreparedRows::as_mut_slice),
+            roots.as_ref().map(PreparedRows::as_slice),
             context,
             spool,
             inventories,
@@ -11542,8 +12677,58 @@ impl InventoryBatch<'_> {
         self.ready.clear();
         self.bases.clear();
         self.counts.clear();
+        self.directory_receipts.clear();
         self.source_bytes = 0;
         Ok(())
+    }
+
+    fn share_pending_body(
+        &self,
+        body: TextBodyKey,
+        record: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<PendingTextNext>, IndexError> {
+        // The bounded queue already owns all draft metadata. Read a short
+        // digest prefix to reject unrelated drafts before comparing full keys.
+        let prefix = (body.bytes.0).0.first_chunk::<2>();
+        for row in self.rows.as_slice() {
+            let PendingTextNext::Draft {
+                slot,
+                body: candidate,
+                tokens,
+                alias,
+                shared: false,
+                ..
+            } = &row.next
+            else {
+                continue;
+            };
+            if row.prior.is_some() {
+                continue;
+            }
+            budget.charge(WorkUsage {
+                bytes: 2,
+                ..WorkUsage::default()
+            })?;
+            if (candidate.bytes.0).0.first_chunk::<2>() != prefix {
+                continue;
+            }
+            budget.charge(WorkUsage {
+                bytes: 40,
+                ..WorkUsage::default()
+            })?;
+            if *candidate == body {
+                return Ok(Some(PendingTextNext::Draft {
+                    record,
+                    slot: *slot,
+                    body,
+                    tokens: *tokens,
+                    alias: *alias,
+                    shared: true,
+                }));
+            }
+        }
+        Ok(None)
     }
 
     fn push_change(
@@ -11620,7 +12805,8 @@ impl InventoryBatch<'_> {
                 .transpose()?
                 .flatten()
         };
-        if let Some((_, record)) = next
+        let mut shared = None;
+        if let Some((reference, record)) = next
             && !reuse
             && cached.is_none()
         {
@@ -11628,11 +12814,17 @@ impl InventoryBatch<'_> {
                 bytes: record.bytes,
                 byte_len: record.byte_len,
             };
+            let can_share =
+                self.occurrence_writes.pack_owners && prior.is_none() && inventories.limit != 0;
+            if can_share {
+                shared = self.share_pending_body(body, reference, context.budget)?;
+            }
             let repeated =
-                inventories
-                    .entries
-                    .as_ref()
-                    .is_some_and(|entries| entries.len() < inventories.limit)
+                shared.is_none()
+                    && inventories
+                        .entries
+                        .as_ref()
+                        .is_some_and(|entries| entries.len() < inventories.limit)
                     && self.rows.as_slice().iter().zip(self.ready.as_slice()).any(
                         |(row, ready)| match &row.next {
                             PendingTextNext::Draft { body: pending, .. } => *pending == body,
@@ -11646,7 +12838,8 @@ impl InventoryBatch<'_> {
                 .source_bytes
                 .checked_add(record.byte_len)
                 .ok_or(IndexError::ResourceLimited)?;
-            if repeated || (self.rows.len() != 0 && total > MAX_SOURCE_BYTES) {
+            if shared.is_none() && (repeated || (self.rows.len() != 0 && total > MAX_SOURCE_BYTES))
+            {
                 self.flush(root, context, spool, contributions, inventories)?;
                 cached = inventories.lookup(record, context.budget)?;
             }
@@ -11693,11 +12886,14 @@ impl InventoryBatch<'_> {
                         verified: None,
                     },
                 )?
+            } else if let Some(shared) = shared {
+                shared
             } else {
                 let base = prior.map_or_else(EntryMap::default, |value| value.inventory);
                 let ordinal = self.bases.len();
                 self.bases.push(base, context.budget)?;
                 self.counts.push(0, context.budget)?;
+                self.directory_receipts.push(None, context.budget)?;
                 let diagnostic = context.budget.request().diagnostic_context().cloned();
                 let PreparedInventory {
                     changed,
@@ -11709,21 +12905,37 @@ impl InventoryBatch<'_> {
                     diagnostic.as_ref(),
                     quanta_index_core::DiagnosticStageV1::NativeTextInventoryPrepare,
                     |_child, context| {
-                        with_source_text(record, context, |text, context| {
-                            self.inventory_edits.ordinal = u32::try_from(ordinal)
-                                .map_err(|_error| IndexError::ResourceLimited)?;
-                            prepare_inventory(
-                                text,
-                                &base,
-                                u32::try_from(ordinal)
-                                    .map_err(|_error| IndexError::ResourceLimited)?,
-                                context,
-                                spool,
-                                &mut inventories.occurrences,
-                                &mut self.inventory_edits,
-                                &mut self.occurrence_writes,
-                            )
-                        })
+                        token_prefix_prepare::with_source_text(
+                            record,
+                            context,
+                            &mut inventories.prefixes,
+                            |text, context, prefixes| {
+                                self.inventory_edits.ordinal = u32::try_from(ordinal)
+                                    .map_err(|_error| IndexError::ResourceLimited)?;
+                                if self.occurrence_writes.pack_owners
+                                    && prefixes.is_none()
+                                    && inventories.limit != 0
+                                {
+                                    *prefixes = token_prefix_cache::TokenPrefixCache::try_new(
+                                        recipe,
+                                        inventories.limit.min(64),
+                                        context.budget,
+                                    )?;
+                                }
+                                prepare_inventory_with_prefix(
+                                    text,
+                                    &base,
+                                    u32::try_from(ordinal)
+                                        .map_err(|_error| IndexError::ResourceLimited)?,
+                                    context,
+                                    spool,
+                                    &mut inventories.occurrences,
+                                    &mut self.inventory_edits,
+                                    &mut self.occurrence_writes,
+                                    prefixes,
+                                )
+                            },
+                        )
                     },
                 )?;
                 self.source_bytes = self
@@ -11746,10 +12958,14 @@ impl InventoryBatch<'_> {
                         },
                         tokens,
                         alias,
+                        shared: false,
                     }
                 } else {
                     let _count = self.counts.pop().ok_or_else(|| {
                         IndexError::BackendViolation("inventory draft count missing".into())
+                    })?;
+                    let _receipt = self.directory_receipts.pop().ok_or_else(|| {
+                        IndexError::BackendViolation("inventory directory receipt missing".into())
                     })?;
                     let _base = self.bases.pop().ok_or_else(|| {
                         IndexError::BackendViolation("inventory draft base missing".into())
@@ -11768,6 +12984,7 @@ impl InventoryBatch<'_> {
                                 byte_len: record.byte_len,
                                 inventory: base,
                                 indexed_tokens: tokens,
+                                repeated: false,
                             }),
                         },
                     )?
@@ -11990,7 +13207,7 @@ struct PostingTopWrites {
 }
 
 impl PostingTopWrites {
-    fn new(context: &mut AttemptContext<'_>) -> Result<Self, IndexError> {
+    fn new(context: &AttemptContext<'_>) -> Result<Self, IndexError> {
         let memory = context.budget.reserve_memory(
             u64::try_from(std::mem::size_of::<Self>())
                 .map_err(|_error| IndexError::ResourceLimited)?,
@@ -12104,31 +13321,38 @@ impl SmallPostingWrites {
                 "short posting case differs".into(),
             ));
         }
-        if self.cases[surface].is_none() {
-            self.cases[surface] = Some(SmallPostingCase::new(context)?);
+        let case = self
+            .cases
+            .get_mut(surface)
+            .ok_or(IndexError::ResourceLimited)?;
+        if case.is_none() {
+            *case = Some(SmallPostingCase::new(context)?);
         }
-        let selected = self.cases[surface]
+        let selected = case
             .as_mut()
             .ok_or(IndexError::ResourceLimited)?
             .draft
             .push(term.as_slice(), map, df, context.budget)?;
-        let slot = match selected {
-            Some(slot) => slot,
-            None => {
-                self.flush_case(surface, context, spool, diagnostic)?;
-                let mut next = SmallPostingCase::new(context)?;
-                let slot = next
-                    .draft
-                    .push(term.as_slice(), map, df, context.budget)?
-                    .ok_or_else(|| {
-                        IndexError::BackendViolation("single short posting exceeds block".into())
-                    })?;
-                self.cases[surface] = Some(next);
-                slot
-            }
+        let slot = if let Some(slot) = selected {
+            slot
+        } else {
+            self.flush_case(surface, context, spool, diagnostic)?;
+            let mut next = SmallPostingCase::new(context)?;
+            let slot = next
+                .draft
+                .push(term.as_slice(), map, df, context.budget)?
+                .ok_or_else(|| {
+                    IndexError::BackendViolation("single short posting exceeds block".into())
+                })?;
+            *self
+                .cases
+                .get_mut(surface)
+                .ok_or(IndexError::ResourceLimited)? = Some(next);
+            slot
         };
-        self.cases[surface]
-            .as_mut()
+        self.cases
+            .get_mut(surface)
+            .and_then(Option::as_mut)
             .ok_or(IndexError::ResourceLimited)?
             .pending
             .push(
@@ -12203,18 +13427,20 @@ impl SmallPostingWrites {
         diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<(), IndexError> {
         let (sensitive, folded) = self.cases.split_at_mut(1);
-        if let (Some(left), Some(right)) = (sensitive[0].as_mut(), folded[0].as_mut()) {
-            if let Some(offset) = left.draft.try_append(&right.draft, context.budget)? {
-                right.pending.as_mut_slice().reverse();
-                while let Some(mut key) = right.pending.pop() {
-                    key.slot = key
-                        .slot
-                        .checked_add(offset)
-                        .ok_or(IndexError::ResourceLimited)?;
-                    left.pending.push(key, context.budget)?;
-                }
-                folded[0] = None;
+        let left = sensitive.first_mut().ok_or(IndexError::ResourceLimited)?;
+        let right_slot = folded.first_mut().ok_or(IndexError::ResourceLimited)?;
+        if let (Some(left), Some(right)) = (left.as_mut(), right_slot.as_mut())
+            && let Some(offset) = left.draft.try_append(&right.draft, context.budget)?
+        {
+            right.pending.as_mut_slice().reverse();
+            while let Some(mut key) = right.pending.pop() {
+                key.slot = key
+                    .slot
+                    .checked_add(offset)
+                    .ok_or(IndexError::ResourceLimited)?;
+                left.pending.push(key, context.budget)?;
             }
+            *right_slot = None;
         }
         for surface in 0..self.cases.len() {
             self.flush_case(surface, context, spool, diagnostic)?;
@@ -12334,7 +13560,9 @@ fn apply_postings(
                 // Top edits stay in the spool until all pages are complete.
                 // Cold pages have no prior term map or keys to traverse.
                 if root.terms.0.is_some() {
-                    context.maps.lookup_batch(
+                    term_dictionary::lookup_batch_sorted(
+                        context.objects,
+                        context.maps,
                         root.terms,
                         &keys,
                         &mut prior_values,
@@ -12387,8 +13615,11 @@ fn apply_postings(
         {
             // Keep this optional grant in the original scope across pages,
             // outside the installer's temporary child credit.
-            confirmed_dense =
-                dense_posting::write::ConfirmedColdRoots::try_new(context.attempt, context.budget)?;
+            confirmed_dense = dense_posting::write::ConfirmedColdRoots::try_new(
+                spool,
+                context.attempt,
+                context.budget,
+            )?;
             dense_memo_admitted = true;
         }
         let roots = observe_text_step(
@@ -12505,6 +13736,10 @@ fn apply_postings(
             38,
             context,
             |context| {
+                // Flushes performed here belong to this active Work boundary,
+                // rather than becoming siblings that duplicate inclusive work.
+                let diagnostic =
+                    diagnostic.and_then(|_| context.budget.request().diagnostic_context().cloned());
                 for (slot, ((term, old_wrapper, df), new_root)) in metadata
                     .into_iter()
                     .zip(roots.as_slice().iter().copied())
@@ -12519,7 +13754,7 @@ fn apply_postings(
                                     Some(value),
                                     context,
                                     spool,
-                                    diagnostic,
+                                    diagnostic.as_ref(),
                                 )?;
                             }
                             continue;
@@ -12539,7 +13774,7 @@ fn apply_postings(
                             df,
                             context,
                             spool,
-                            diagnostic,
+                            diagnostic.as_ref(),
                         )?;
                     } else if old_wrapper.is_some() {
                         small_writes.push_top(
@@ -12548,7 +13783,7 @@ fn apply_postings(
                             None,
                             context,
                             spool,
-                            diagnostic,
+                            diagnostic.as_ref(),
                         )?;
                     }
                 }
@@ -12567,7 +13802,13 @@ fn apply_postings(
         DiagnosticStageV1::NativeTextPostings,
         39,
         context,
-        |context| context.apply_stream(&[root.terms, root.owners], &mut spool.top_cursor()),
+        |context| {
+            term_dictionary_write::prepare(root.terms, context, spool)?;
+            context.apply_stream(
+                &[root.terms, root.owners],
+                &mut spool.term_anchor_owner_cursor(),
+            )
+        },
     )?;
     let mut roots = roots.into_iter();
     root.terms = roots
@@ -12702,6 +13943,10 @@ impl IndexBuildPort for NativeTextIndex {
                 {
                     return Err(IndexError::Conflict);
                 }
+                if self.recipe.layout == TextLayout::SegmentFullV1 && delta.prior.owners.0.is_some()
+                {
+                    return Ok(PlanDecision::RebuildRequired);
+                }
                 (Some(*member), DeltaInput::Patch(delta))
             }
             (
@@ -12728,6 +13973,46 @@ impl IndexBuildPort for NativeTextIndex {
                 diagnostic.as_ref(),
                 quanta_index_core::DiagnosticStageV1::LexicalBuild,
                 |diagnostic, context| {
+                    if self.recipe.layout != TextLayout::Tree {
+                        let (artifact, logical_commitment) = if self.recipe.is_layered() {
+                            text_segment::build_v2::build(
+                                self.recipe,
+                                plan.context.source,
+                                plan.input,
+                                plan.base.as_ref(),
+                                context,
+                            )?
+                        } else {
+                            if let Some(base) = &plan.base {
+                                let DeltaInput::Patch(delta) = &plan.input else {
+                                    return Err(IndexError::Conflict);
+                                };
+                                let _prior = text_segment::read::root(
+                                    base,
+                                    self.recipe,
+                                    Some(delta.prior),
+                                    context.objects,
+                                    context.budget,
+                                )?;
+                            }
+                            text_segment::build::build(
+                                self.recipe,
+                                plan.context.source,
+                                plan.input,
+                                context,
+                            )?
+                        };
+                        return Ok(TextCandidate {
+                            binding: MemberBinding {
+                                instance: plan.context.instance.instance,
+                                format: plan.context.instance.format,
+                                artifact,
+                                input: plan.context.input,
+                                logical_commitment,
+                            },
+                            prepared_attempt: self.recipe.is_layered().then_some(context.attempt),
+                        });
+                    }
                     let mut root = plan
                         .base
                         .as_ref()
@@ -12761,6 +14046,7 @@ impl IndexBuildPort for NativeTextIndex {
                                     input: plan.context.input,
                                     logical_commitment: base.logical_commitment,
                                 },
+                                prepared_attempt: None,
                             });
                         }
                         // Reuse the canonical DATA reader only inside this one
@@ -12800,6 +14086,8 @@ impl IndexBuildPort for NativeTextIndex {
                         };
                         let mut inventories =
                             InventoryReuse::new(self.recipe, self.inventory_reuse_limit)?;
+                        let mut paths =
+                            super::text_path::PathWrites::new(context.scratch, context.budget)?;
                         let limit = self.inventory_batch_roots(cold);
                         let mut batch =
                             if cold && limit > quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
@@ -12816,6 +14104,7 @@ impl IndexBuildPort for NativeTextIndex {
                         }
                         while let Some(change) = next_change {
                             context.budget.checkpoint()?;
+                            paths.push_change(&change, context.budget)?;
                             batch.push_change(
                                 &change,
                                 &mut root,
@@ -12826,6 +14115,9 @@ impl IndexBuildPort for NativeTextIndex {
                             )?;
                             next_change = changes.next_change(context.budget)?;
                         }
+                        // No later source can consume token programs. Release
+                        // their Original DATA before final map/posting work.
+                        inventories.prefixes = None;
                         batch.flush(
                             &mut root,
                             context,
@@ -12834,6 +14126,16 @@ impl IndexBuildPort for NativeTextIndex {
                             &mut inventories,
                         )?;
                         contributions.flush(context, &spool)?;
+                        let path = observe_text_step(
+                            diagnostic,
+                            DiagnosticStageV1::NativeTextPostings,
+                            49,
+                            context,
+                            |context| paths.finish(root.path_index(), context),
+                        )?;
+                        root.path_postings = path.postings;
+                        root.path_docs = path.statistics.docs;
+                        root.path_indexed_tokens = path.statistics.indexed_tokens;
                         observe_attempt(
                             context,
                             diagnostic,
@@ -12855,6 +14157,7 @@ impl IndexBuildPort for NativeTextIndex {
                             input: plan.context.input,
                             logical_commitment,
                         },
+                        prepared_attempt: None,
                     })
                 },
             )
@@ -12867,8 +14170,76 @@ impl IndexBuildPort for NativeTextIndex {
         context: &'a mut AttemptContext<'_>,
     ) -> IndexFuture<'a, MemberBinding> {
         Box::pin(async move {
-            let _root = read_root(&candidate.binding, context.objects, context.budget)?;
+            if self.recipe.is_layered() {
+                if candidate.prepared_attempt != Some(context.attempt) {
+                    return Err(IndexError::Conflict);
+                }
+                // The producer sealed only the new children and verified the
+                // changed live state against the pinned prior publication.
+                let _summary = text_segment::read::root(
+                    &candidate.binding,
+                    self.recipe,
+                    None,
+                    context.objects,
+                    context.budget,
+                )?;
+            } else if self.recipe.layout == TextLayout::SegmentFullV1 {
+                text_segment::read::verify_full(
+                    &candidate.binding,
+                    self.recipe,
+                    context.objects,
+                    context.budget,
+                )?;
+            } else {
+                let _root = read_root(&candidate.binding, context.objects, context.budget)?;
+            }
             Ok(candidate.binding)
+        })
+    }
+
+    fn compact_source_local<'a>(
+        &'a self,
+        prior: MemberBinding,
+        owner: OwnerKey,
+        plan: PlanContext,
+        context: &'a mut AttemptContext<'_>,
+    ) -> IndexFuture<'a, MemberBinding> {
+        Box::pin(async move {
+            self.validate_instance(&plan.instance)?;
+            if !self.recipe.is_layered() {
+                return Err(IndexError::InvalidInput(
+                    "native text physical compaction requires layered segments".into(),
+                ));
+            }
+            let diagnostic = context.budget.request().diagnostic_context().cloned();
+            let (artifact, logical_commitment) = observe_attempt(
+                context,
+                diagnostic.as_ref(),
+                quanta_index_core::DiagnosticStageV1::Compaction,
+                |_child, context| {
+                    text_segment::build_v2::repack(
+                        self.recipe,
+                        plan.source,
+                        &prior,
+                        owner_key(owner),
+                        context,
+                    )
+                },
+            )?;
+            if logical_commitment != prior.logical_commitment {
+                return Err(IndexError::CorruptObject(
+                    "native text compaction changed logical commitment".into(),
+                ));
+            }
+            let binding = MemberBinding { artifact, ..prior };
+            let _summary = text_segment::read::root(
+                &binding,
+                self.recipe,
+                Some(plan.source),
+                context.objects,
+                context.budget,
+            )?;
+            Ok(binding)
         })
     }
 }
@@ -12892,6 +14263,20 @@ impl NativeTextIndex {
         if selected != source {
             return Err(IndexError::Conflict);
         }
+        if let SelectedTextRoot::Segment { artifact, .. } = root {
+            let doc =
+                text_segment::read::lookup_document(artifact, self.recipe, owner, &mut context)?;
+            return match (source, doc) {
+                (None, None) => Ok(()),
+                (Some(source), Some(doc)) if doc.source == source => {
+                    let _owner = validate_segment_document(doc, self.recipe, &mut context)?;
+                    Ok(())
+                }
+                (Some(_), None) => Err(IndexError::SnapshotUnavailable),
+                (_, Some(_)) => Err(text_segment::wire::corrupt("stale document binding")),
+            };
+        }
+        let root = root.tree()?;
         let key = owner_key(owner);
         let contribution = context.maps.lookup(root.owners, &key, context.budget)?;
         match (source, contribution) {
@@ -12917,7 +14302,7 @@ impl NativeTextIndex {
         &self,
         member: &MemberBinding,
         context: &mut TextReadContext<'_>,
-    ) -> Result<Root, IndexError> {
+    ) -> Result<SelectedTextRoot, IndexError> {
         if member.input.policy != self.recipe.output_policy()
             || member.input.root != context.ticket.view.source.owners
         {
@@ -12947,7 +14332,32 @@ impl NativeTextIndex {
         if &published != member {
             return Err(IndexError::Conflict);
         }
-        read_root(member, context.objects, context.budget)
+        self.read_selected_root(member, context)
+    }
+
+    fn read_selected_root(
+        &self,
+        member: &MemberBinding,
+        context: &mut TextReadContext<'_>,
+    ) -> Result<SelectedTextRoot, IndexError> {
+        if self.recipe.layout != TextLayout::Tree {
+            let summary = text_segment::read::root(
+                member,
+                self.recipe,
+                Some(context.ticket.view.source),
+                context.objects,
+                context.budget,
+            )?;
+            return Ok(SelectedTextRoot::Segment {
+                artifact: member.artifact,
+                statistics: TextStatistics {
+                    docs: summary.docs,
+                    indexed_tokens: summary.indexed_tokens,
+                },
+                path: self.recipe.is_layered().then_some(summary.path),
+            });
+        }
+        read_root(member, context.objects, context.budget).map(SelectedTextRoot::Tree)
     }
 
     /// Inspect exact live statistics from a pinned member. This is not a
@@ -12958,10 +14368,7 @@ impl NativeTextIndex {
         mut context: TextReadContext<'_>,
     ) -> Result<TextStatistics, IndexError> {
         let root = self.pinned_root(member, &mut context)?;
-        Ok(TextStatistics {
-            docs: root.docs,
-            indexed_tokens: root.indexed_tokens,
-        })
+        Ok(root.statistics())
     }
 
     /// Visit one canonical term's postings from an exactly pinned member.
@@ -13010,33 +14417,64 @@ impl NativeTextIndex {
 
     pub(super) fn posting_cursor_from_key(
         &self,
-        root: Root,
+        root: SelectedTextRoot,
         key: PreparedKey,
         context: &mut TextReadContext<'_>,
     ) -> Result<TextPostingCursor, IndexError> {
-        let posting = context
-            .maps
-            .lookup(root.terms, key.as_slice(), context.budget)?
-            .map(|reference| {
-                read_posting(key.as_slice(), reference, context.objects, context.budget)
-            })
-            .transpose()?;
+        let TextStatistics {
+            docs,
+            indexed_tokens,
+        } = root.statistics();
+        if let SelectedTextRoot::Segment { artifact, .. } = root {
+            let cursor = text_segment::read::TermCursor::new(
+                artifact,
+                self.recipe,
+                key.as_slice(),
+                context,
+            )?;
+            return Ok(TextPostingCursor {
+                key,
+                statistics: TextTermScan {
+                    docs,
+                    indexed_tokens,
+                    df: cursor.df(),
+                },
+                stream: TextPostingStream::Segment(cursor),
+            });
+        }
+        let root = root.tree()?;
+        let posting = term_dictionary::lookup(
+            context.objects,
+            context.maps,
+            root.terms,
+            key.as_slice(),
+            context.budget,
+        )?
+        .map(|reference| read_posting(key.as_slice(), reference, context.objects, context.budget))
+        .transpose()?;
         if posting.is_some_and(|posting| posting.df > root.docs) {
             return Err(IndexError::CorruptObject(
                 "text document frequency exceeds corpus document count".into(),
             ));
         }
         Ok(TextPostingCursor {
-            root,
-            recipe: self.recipe,
             key,
-            posting,
-            after: None,
-            entries: MapPageCursor::default(),
-            page_lookups: None,
-            more: posting.is_some(),
-            visited: 0,
-            dense: None,
+            statistics: TextTermScan {
+                docs,
+                indexed_tokens,
+                df: posting.map_or(0, |posting| posting.df),
+            },
+            stream: TextPostingStream::Tree(TreePostingCursor {
+                root,
+                recipe: self.recipe,
+                posting,
+                after: None,
+                entries: MapPageCursor::default(),
+                page_lookups: None,
+                more: posting.is_some(),
+                visited: 0,
+                dense: None,
+            }),
         })
     }
 
@@ -13051,9 +14489,23 @@ impl NativeTextIndex {
     ) -> Result<u64, IndexError> {
         let key = admitted_query_term(term, case, context.budget)?;
         let root = self.pinned_root(member, &mut context)?;
-        let reference = context
-            .maps
-            .lookup(root.terms, key.as_slice(), context.budget)?;
+        if let SelectedTextRoot::Segment { artifact, .. } = root {
+            return Ok(text_segment::read::TermCursor::new(
+                artifact,
+                self.recipe,
+                key.as_slice(),
+                &mut context,
+            )?
+            .df());
+        }
+        let root = root.tree()?;
+        let reference = term_dictionary::lookup(
+            context.objects,
+            context.maps,
+            root.terms,
+            key.as_slice(),
+            context.budget,
+        )?;
         reference
             .map(|reference| {
                 read_posting(key.as_slice(), reference, context.objects, context.budget)?

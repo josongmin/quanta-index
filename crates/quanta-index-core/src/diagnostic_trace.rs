@@ -9,6 +9,8 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::index::ObjectRef;
+
 /// Stable identity for one capture. It is diagnostic metadata, never authority.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct DiagnosticCaptureIdV1(pub [u8; 16]);
@@ -131,6 +133,14 @@ pub enum DiagnosticStageV1 {
     QueryEmbedding,
     QueryOverlayEmbedding,
     QueryCandidate,
+    /// Read and authenticate the selected immutable ANN file set.
+    QueryAnnFileSet,
+    /// Hydrate one admitted private Lance session from that file set.
+    QueryAnnHydrate,
+    /// Connect and verify the selected Lance table and index.
+    QueryAnnOpen,
+    /// Traverse candidates and rescore their current original vectors.
+    QueryAnnCandidate,
     QueryVerify,
     QueryRank,
     QueryProject,
@@ -788,6 +798,25 @@ pub struct DiagnosticTraceRefV1 {
     pub span_id: DiagnosticSpanIdV1,
 }
 
+/// Identity observations from successful managed installation transactions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticManagedInstallCensusKindV1 {
+    CatalogRegistration,
+    CatalogEdge,
+    StorageCasReuse,
+}
+
+impl DiagnosticManagedInstallCensusKindV1 {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CatalogRegistration => "catalog_registration",
+            Self::CatalogEdge => "catalog_edge",
+            Self::StorageCasReuse => "storage_cas_reuse",
+        }
+    }
+}
+
 /// Producer event. The writer assigns output sequence after dequeue.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DiagnosticEventKindV1 {
@@ -844,6 +873,17 @@ pub enum DiagnosticEventKindV1 {
         elapsed_sum_ns: u64,
         thread_cpu_ns: Option<u64>,
         failures: u64,
+    },
+    ManagedInstallCensusBatch {
+        span_id: DiagnosticSpanIdV1,
+        kind: DiagnosticManagedInstallCensusKindV1,
+        entries: u64,
+    },
+    ManagedInstallCensusEntry {
+        span_id: DiagnosticSpanIdV1,
+        kind: DiagnosticManagedInstallCensusKindV1,
+        object: ObjectRef,
+        child: Option<ObjectRef>,
     },
     ObjectKindAggregate {
         span_id: DiagnosticSpanIdV1,
@@ -1185,6 +1225,42 @@ impl DiagnosticContextV1 {
             elapsed_sum_ns,
             thread_cpu_ns,
             failures,
+        });
+    }
+
+    /// Declare how many observations belong to this live custody span.
+    pub fn managed_install_census_batch(
+        &self,
+        kind: DiagnosticManagedInstallCensusKindV1,
+        entries: u64,
+    ) {
+        let Some(span_id) = self.parent_span_id else {
+            self.health(DiagnosticHealthCodeV1::MissingParentSpan);
+            return;
+        };
+        self.emit(DiagnosticEventKindV1::ManagedInstallCensusBatch {
+            span_id,
+            kind,
+            entries,
+        });
+    }
+
+    /// Record the existing registration identity without reading the store.
+    pub fn managed_install_census_entry(
+        &self,
+        kind: DiagnosticManagedInstallCensusKindV1,
+        object: ObjectRef,
+        child: Option<ObjectRef>,
+    ) {
+        let Some(span_id) = self.parent_span_id else {
+            self.health(DiagnosticHealthCodeV1::MissingParentSpan);
+            return;
+        };
+        self.emit(DiagnosticEventKindV1::ManagedInstallCensusEntry {
+            span_id,
+            kind,
+            object,
+            child,
         });
     }
 

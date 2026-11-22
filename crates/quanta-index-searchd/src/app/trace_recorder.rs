@@ -652,6 +652,12 @@ fn write_capture(
                     invalid = true;
                 }
             }
+            DiagnosticEventKindV1::ManagedInstallCensusBatch { span_id, .. }
+            | DiagnosticEventKindV1::ManagedInstallCensusEntry { span_id, .. } => {
+                if !open.contains(&span_id.get()) {
+                    invalid = true;
+                }
+            }
             DiagnosticEventKindV1::RequestIdentity { .. }
             | DiagnosticEventKindV1::PhaseIdentity { .. }
             | DiagnosticEventKindV1::AnnRegionObservation { .. }
@@ -840,13 +846,27 @@ fn event_json(event: DiagnosticEmitV1, output_seq: u64) -> Option<Value> {
             if !(1..=8192).contains(&observation.rows)
                 || !(1..=256).contains(&observation.files)
                 || !(1..=288).contains(&observation.chunks)
-                || observation.chunks < observation.files
+                || (observation.index_kind == DiagnosticAnnIndexKindV1::Hnsw
+                    && (observation.files != 1 || observation.chunks != 1))
             {
                 return None;
             }
-            let (phase, descriptor_ref) = match (observation.phase, observation.descriptor_ref) {
-                (DiagnosticAnnRegionPhaseV1::Installed, None) => ("installed", None),
-                (DiagnosticAnnRegionPhaseV1::SelectedQuery, Some(reference)) => {
+            let (phase, descriptor_ref) = match (
+                observation.phase,
+                observation.index_kind,
+                observation.descriptor_ref,
+            ) {
+                (
+                    DiagnosticAnnRegionPhaseV1::Installed,
+                    DiagnosticAnnIndexKindV1::Flat | DiagnosticAnnIndexKindV1::IvfHnswSq,
+                    None,
+                ) => ("installed", None),
+                (
+                    DiagnosticAnnRegionPhaseV1::Installed,
+                    DiagnosticAnnIndexKindV1::Hnsw,
+                    Some(reference),
+                ) => ("installed", Some(hex_ref(reference))),
+                (DiagnosticAnnRegionPhaseV1::SelectedQuery, _, Some(reference)) => {
                     ("selected_query", Some(hex_ref(reference)))
                 }
                 _ => return None,
@@ -927,6 +947,26 @@ fn event_json(event: DiagnosticEmitV1, output_seq: u64) -> Option<Value> {
         } => json!({"type":"object_install_aggregate", "span_id":span_id.get(),
             "phase":phase.as_str(), "calls":calls, "elapsed_sum_ns":elapsed_sum_ns,
             "thread_cpu_ns":thread_cpu_ns, "failures":failures}),
+        DiagnosticEventKindV1::ManagedInstallCensusBatch {
+            span_id,
+            kind,
+            entries,
+        } => json!({"type":"managed_install_census_batch", "span_id":span_id.get(),
+            "census_kind":kind.as_str(), "entries":entries}),
+        DiagnosticEventKindV1::ManagedInstallCensusEntry {
+            span_id,
+            kind,
+            object,
+            child,
+        } => {
+            use quanta_index_core::diagnostic_trace::DiagnosticManagedInstallCensusKindV1;
+            if (kind == DiagnosticManagedInstallCensusKindV1::CatalogEdge) != child.is_some() {
+                return None;
+            }
+            json!({"type":"managed_install_census_entry", "span_id":span_id.get(),
+                "census_kind":kind.as_str(), "object_ref":hex_ref(object.0.0),
+                "child_ref":child.map(|reference| hex_ref(reference.0.0))})
+        }
         DiagnosticEventKindV1::ObjectKindAggregate {
             span_id,
             kind,
@@ -1081,6 +1121,8 @@ fn wire_event_json(event: DiagnosticEmitV1, output_seq: u64) -> Option<Value> {
         | DiagnosticEventKindV1::OwnedRenewalRefusal { .. }
         | DiagnosticEventKindV1::SyncAggregate { .. }
         | DiagnosticEventKindV1::ObjectInstallAggregate { .. }
+        | DiagnosticEventKindV1::ManagedInstallCensusBatch { .. }
+        | DiagnosticEventKindV1::ManagedInstallCensusEntry { .. }
         | DiagnosticEventKindV1::ObjectKindAggregate { .. }
         | DiagnosticEventKindV1::AdoptionGroupAggregate { .. }
         | DiagnosticEventKindV1::Bm25CensusAggregate { .. }
@@ -1326,6 +1368,10 @@ mod tests {
                 "query_overlay_embedding",
             ),
             (DiagnosticStageV1::QueryCandidate, "query_candidate"),
+            (DiagnosticStageV1::QueryAnnFileSet, "query_ann_file_set"),
+            (DiagnosticStageV1::QueryAnnHydrate, "query_ann_hydrate"),
+            (DiagnosticStageV1::QueryAnnOpen, "query_ann_open"),
+            (DiagnosticStageV1::QueryAnnCandidate, "query_ann_candidate"),
             (DiagnosticStageV1::QueryVerify, "query_verify"),
             (DiagnosticStageV1::QueryRank, "query_rank"),
             (DiagnosticStageV1::QueryProject, "query_project"),
@@ -1399,7 +1445,10 @@ mod tests {
             (DiagnosticCounterV1::WorkWrites, "work_writes"),
             (DiagnosticCounterV1::WorkBytes, "work_bytes"),
             (DiagnosticCounterV1::WorkMutations, "work_mutations"),
-            (DiagnosticCounterV1::ObjectPortGetCalls, "object_port_get_calls"),
+            (
+                DiagnosticCounterV1::ObjectPortGetCalls,
+                "object_port_get_calls",
+            ),
             (
                 DiagnosticCounterV1::ObjectPortGetSucceeded,
                 "object_port_get_succeeded",
@@ -2235,10 +2284,49 @@ mod tests {
             })
             .is_none()
         );
+        let graph_installed = DiagnosticAnnRegionObservationV1 {
+            descriptor_ref: Some([0xcd; 32]),
+            index_kind: DiagnosticAnnIndexKindV1::Hnsw,
+            files: 1,
+            chunks: 1,
+            ..installed
+        };
+        assert_eq!(
+            *json_path(
+                &emit(graph_installed).expect("graph installed event"),
+                &["kind", "descriptor_ref"],
+            ),
+            json!("cd".repeat(32))
+        );
         assert!(
             emit(DiagnosticAnnRegionObservationV1 {
-                chunks: 1,
-                ..installed
+                descriptor_ref: None,
+                ..graph_installed
+            })
+            .is_none()
+        );
+        assert_eq!(
+            *json_path(
+                &emit(DiagnosticAnnRegionObservationV1 {
+                    chunks: 1,
+                    ..installed
+                })
+                .expect("Lance fileset with an empty file entry"),
+                &["kind", "chunks"],
+            ),
+            json!(1)
+        );
+        assert!(
+            emit(DiagnosticAnnRegionObservationV1 {
+                files: 2,
+                ..graph_installed
+            })
+            .is_none()
+        );
+        assert!(
+            emit(DiagnosticAnnRegionObservationV1 {
+                chunks: 2,
+                ..graph_installed
             })
             .is_none()
         );

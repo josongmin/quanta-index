@@ -1,6 +1,6 @@
 //! Attempt-local immutable layout preparation, before its parent is installed.
 
-use super::{AttemptRef, ObjectRef, StagedObjectBatch, ports::PreparedObjectMapBatch};
+use super::{AttemptRef, ObjectRef, StagedObjectBatch, install_ports::PreparedObjectMapBatch};
 
 /// One existing root or one admitted immutable child awaiting installation.
 ///

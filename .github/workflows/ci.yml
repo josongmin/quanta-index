@@ -269,10 +269,10 @@ jobs:
       - name: Ignored-test exceptions are owned and unexpired
         run: python3 tools/ci/lint/check-ignored-test-policy.py
 
-      - name: Sourcegraph parity coverage and generated doc
+      - name: Sourcegraph query witnesses and generated doc
         run: |
           python3 tools/benchmark/sourcegraph_parity.py --check --write
-          git diff --exit-code tools/benchmark/SOURCEGRAPH_PARITY.md
+          git diff --exit-code docs/reference/sourcegraph-filter-parity.md
 
   proof-authority-current-gate:
     name: proof-authority-current-gate (P00)

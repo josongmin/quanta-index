@@ -12,11 +12,10 @@ use quanta_index_core::index::{
 };
 use sha2::{Digest as _, Sha256};
 
+pub(super) use super::super::ann_region_policy::MAX_REGION_ROWS;
+use super::super::ann_region_policy::{MAX_REGION_CELLS, MAX_REGION_DIMENSION};
 use super::vector_norm;
 
-pub(super) const MAX_REGION_ROWS: usize = 8192;
-pub(super) const MAX_REGION_DIMENSION: usize = 4096;
-pub(super) const MAX_REGION_CELLS: usize = 1_048_576;
 pub(super) const MAX_REGION_CANDIDATES: usize = 1024;
 const MAX_ID_BYTES: usize = 1024;
 const M: usize = 16;

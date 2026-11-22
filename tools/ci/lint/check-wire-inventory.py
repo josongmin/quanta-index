@@ -19,7 +19,7 @@ that drifts from the code is worse than none, so this gate fails when:
      or its registered version disagrees with the schema's version constant.
 
 Legacy flat search-plane enums and one-line format constants use the existing
-strict regexes. Native control record/newtype variants use the Rust AST.
+strict regexes. Native control variants use the Rust AST.
 """
 
 from __future__ import annotations
@@ -49,6 +49,10 @@ NATIVE_IPC_FILE = "crates/quanta-index-contract/src/native_protocol.rs"
 
 IPC_ENUM_NAME_RE = re.compile(r"^SearchPlane(?:Query|Control|Ingest)Ipc(?:Request|Response)$")
 NATIVE_ENUM_NAMES = frozenset({"NativeIndexRequest", "NativeIndexResponse"})
+NATIVE_UNIT_BLOCK_RE = re.compile(
+    rb"^\(\s*(NativeIndexRequest|NativeIndexResponse)\s*\{\s*units\s*\{([^{}]*)\}"
+)
+NATIVE_UNIT_TAG_RE = re.compile(rb"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[0-9]+\s*")
 ENUM_DECL_RE = re.compile(r"^\s*pub\s+enum\s+(?P<name>[A-Z][A-Za-z0-9_]*)\s*\{\s*$")
 VARIANT_RE = re.compile(r"^\s*(?P<name>[A-Z][A-Za-z0-9_]*)\s*\(")
 
@@ -329,8 +333,38 @@ def parse_ipc_enums(text: str) -> dict[str, list[str]]:
     return enums
 
 
+def native_unit_tags(tree) -> dict[str, set[str]]:
+    tags: dict[str, set[str]] = {}
+    for item in tree.root_node.named_children:
+        macro = item.named_children[0] if item.type == "expression_statement" else item
+        if macro.type != "macro_invocation":
+            continue
+        macro_name = macro.child_by_field_name("macro")
+        if macro_name is None or macro_name.text not in {
+            b"native_serde_enum", b"quanta_index_contract_base::native_serde_enum",
+        }:
+            continue
+        token_tree = macro.named_children[-1]
+        block = NATIVE_UNIT_BLOCK_RE.match(token_tree.text)
+        if block is None:
+            continue
+        enum_name = block[1].decode("ascii")
+        if enum_name in tags:
+            raise ValueError(f"{enum_name}: duplicate native wire declarations")
+        tags[enum_name] = set()
+        for declaration in block[2].strip().rstrip(b",").split(b",") if block[2].strip() else ():
+            unit = NATIVE_UNIT_TAG_RE.fullmatch(declaration)
+            if unit is None:
+                raise ValueError(f"{enum_name}: malformed native unit tag")
+            variant = unit[1].decode("ascii")
+            if variant in tags[enum_name]:
+                raise ValueError(f"{enum_name}: native unit `{variant}` tagged twice")
+            tags[enum_name].add(variant)
+    return tags
+
+
 def parse_native_enums(text: str) -> dict[str, list[str]]:
-    """Read the two native control enums, including record and newtype variants."""
+    """Read record, newtype, and explicitly tagged native control variants."""
     try:
         from tree_sitter_language_pack import get_parser
     except ImportError as error:
@@ -340,6 +374,7 @@ def parse_native_enums(text: str) -> dict[str, list[str]]:
     tree = get_parser("rust").parse(source)
     if tree.root_node.has_error:
         raise ValueError("native control Rust syntax could not be parsed")
+    tagged_units = native_unit_tags(tree)
     enums: dict[str, list[str]] = {}
     for item in tree.root_node.children:
         if item.type != "enum_item":
@@ -358,19 +393,24 @@ def parse_native_enums(text: str) -> dict[str, list[str]]:
         if body is None:
             raise ValueError(f"{name}: enum body is absent")
         variants: list[str] = []
+        seen_units: set[str] = set()
         for child in body.children:
             if child.type != "enum_variant":
                 continue
             variant_node = child.child_by_field_name("name")
             shape = {part.type for part in child.children}
-            if variant_node is None or not shape.intersection(
-                {"field_declaration_list", "ordered_field_declaration_list"}
-            ):
+            if variant_node is None:
                 raise ValueError(f"{name}: unrecognized native variant shape")
             variant = source[variant_node.start_byte : variant_node.end_byte].decode("utf-8")
+            if not shape.intersection({"field_declaration_list", "ordered_field_declaration_list"}):
+                if child.child_count != 1 or variant not in tagged_units.get(name, ()):
+                    raise ValueError(f"{name}: unrecognized native variant shape")
+                seen_units.add(variant)
             if variant in variants:
                 raise ValueError(f"{name}: variant `{variant}` declared twice")
             variants.append(variant)
+        if seen_units != tagged_units.get(name, set()):
+            raise ValueError(f"{name}: native unit tags differ from enum variants")
         enums[name] = variants
     return enums
 

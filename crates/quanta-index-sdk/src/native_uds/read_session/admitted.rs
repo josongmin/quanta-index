@@ -3,7 +3,10 @@
 
 use super::super::{AdmittedNativePublicationReply, MemoryScope, validate_text_result_with_memory};
 use super::*;
-use quanta_index_contract::{SemanticQueryRequest, native_protocol::NativeTextCursor};
+use quanta_index_contract::{
+    SemanticQueryRequest,
+    native_protocol::{NativeTextCursor, NativeTextPathCursorV1},
+};
 
 impl<P: AsRef<Path>> NativeUdsClient<P> {
     /// Copy ACK fields only; keep the returned owner alive for full DATA borrows.
@@ -71,7 +74,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         memory: &MemoryScope,
     ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
         admitted_budget_checkpoint(budget)?;
-        let limit = prepare_text(expected, &query, Some(memory))?;
+        let (limit, path_projection) = prepare_text(expected, &query, Some(memory))?;
         let request = NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchText {
             session: expected.session,
             instance,
@@ -84,14 +87,32 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             unreachable!()
         };
         match reply.response() {
-            NativeIndexResponse::TextRanked(result) => validate_text_result_with_memory(
-                ViewSelection::Exact(expected.view),
-                instance,
-                limit,
-                &query.constraints,
-                result,
-                Some(memory),
-            )?,
+            NativeIndexResponse::TextRanked(result) if !path_projection => {
+                validate_text_result_with_memory(
+                    ViewSelection::Exact(expected.view),
+                    instance,
+                    limit,
+                    &query.constraints,
+                    result,
+                    Some(memory),
+                )?
+            }
+            NativeIndexResponse::TextPathRankedV1(result) if path_projection => {
+                if result.previews.is_some() {
+                    return Err(NativeUdsError::Protocol(
+                        "unexpected retained text path previews".into(),
+                    ));
+                }
+                super::super::path_output_v1::validate_ranking(
+                    ViewSelection::Exact(expected.view),
+                    instance,
+                    limit,
+                    result.ranked.ranking.matched.min(u64::from(limit)),
+                    &query.constraints,
+                    &result.ranked,
+                    Some(memory),
+                )?;
+            }
             NativeIndexResponse::Error(_) => {}
             _ => {
                 return Err(NativeUdsError::Protocol(
@@ -142,6 +163,61 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             _ => {
                 return Err(NativeUdsError::Protocol(
                     "unexpected retained text page reply".into(),
+                ));
+            }
+        }
+        admitted_budget_checkpoint(budget)?;
+        Ok(reply)
+    }
+
+    pub fn search_text_path_page_in_read_session_admitted(
+        &self,
+        expected: &NativeReadSessionStatus,
+        instance: IndexInstanceId,
+        query: TextQueryRequest,
+        after: Option<NativeTextPathCursorV1>,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        admitted_budget_checkpoint(budget)?;
+        let digest = path_page_v1::prepare_path_page(
+            expected,
+            instance,
+            &query,
+            after.as_ref(),
+            Some(memory),
+        )?;
+        let request =
+            NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchTextPathPageV1 {
+                session: expected.session,
+                instance,
+                query,
+                after,
+            });
+        let reply = self.request_publication_admitted_ref(&request, budget, memory)?;
+        let NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchTextPathPageV1 {
+            query,
+            after,
+            ..
+        }) = &request
+        else {
+            unreachable!()
+        };
+        match reply.response() {
+            NativeIndexResponse::TextPathPageV1(page) => path_page_v1::validate_path_page(
+                expected,
+                instance,
+                query.top_k,
+                digest,
+                after.as_ref(),
+                &query.constraints,
+                page,
+                Some(memory),
+            )?,
+            NativeIndexResponse::Error(_) => {}
+            _ => {
+                return Err(NativeUdsError::Protocol(
+                    "unexpected retained text path page reply".into(),
                 ));
             }
         }

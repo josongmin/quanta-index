@@ -1,4 +1,4 @@
-//! Canonical persisted run-registry DATA and decoder; no ObjectStore is opened.
+//! Canonical persisted run-registry DATA and decoder; no `ObjectStore` is opened.
 use super::object_codec::{MapRoot, ObjectRef};
 use quanta_index_core::{CoreError, lexical_maintenance::TargetCounters};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -6,13 +6,7 @@ const REGISTRY_WIRE_VERSION: u8 = 2;
 pub(crate) fn invalid(message: &str) -> CoreError {
     CoreError::InvalidContract(format!("lexical run registry: {message}"))
 }
-#[cfg(feature = "legacy-tantivy")]
-pub(crate) fn corrupt(message: &str) -> CoreError {
-    CoreError::Typed {
-        code: quanta_index_core::GENERATION_SIDECAR_CORRUPT_CODE,
-        message: format!("lexical run registry corrupt: {message}"),
-    }
-}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RunRegistry {
     pub(crate) runs: MapRoot,

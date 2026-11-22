@@ -5,7 +5,11 @@ use super::*;
 fn without_environment(args: &[String]) -> TestResult<Output> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
     let _command = command.env_clear().args(args);
-    bounded_output(command, args, false)
+    bounded_output(
+        |stdout, stderr| Ok(command.stdout(stdout).stderr(stderr).spawn()?),
+        args,
+        false,
+    )
 }
 
 #[test]

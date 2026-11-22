@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::readiness::{
     AuxDomainState, ChangedDocState, DirtyDocState, DocFacetState, HistoryAuthorityState,
-    HistoryDelta, HistoryDiffKey, HistoryStateMeta, Ledger, RefChange, RuntimeCatalogDelta,
+    HistoryDelta, HistoryDiffKey, HistoryStateMeta, Ledger, RuntimeCatalogDelta,
     RuntimeDirtyDelta, RuntimeMetadataState, RuntimeStateMeta, StructuralAuthorityState,
     StructuralChunksDelta, StructuralStateMeta, StructuralTreesDelta, TrackAuthorityState,
     enforce_runtime_catalog_batch_order, validate_runtime_catalog_doc_ids,
@@ -147,9 +147,14 @@ fn epoch_row(
 }
 
 fn diff_key_bytes(key: &HistoryDiffKey) -> Vec<u8> {
-    let mut bytes = key.commit_sha().as_bytes().to_vec();
+    history_diff_row_key(key.commit_sha(), key.file_path())
+}
+
+fn history_diff_row_key(sha: CommitSha, path: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(COMMIT_SHA_LEN + 1 + path.len());
+    bytes.extend_from_slice(sha.as_bytes());
     bytes.push(DIFF_KEY_SEPARATOR);
-    bytes.extend_from_slice(key.file_path().as_bytes());
+    bytes.extend_from_slice(path.as_bytes());
     bytes
 }
 
@@ -350,11 +355,11 @@ pub(crate) fn decode_history_row(row: &AuxiliaryRowV1) -> Result<HistoryReadback
 
 /// Validate `batch` against `current` and name what it changes; the
 /// snapshot after it is stamped `epoch`.
-pub(crate) fn history_transition(
+pub(crate) fn history_transition<'a>(
     current: Option<&HistoryAuthorityState>,
     epoch: AuxEpochV1,
-    batch: &HistoryIngestBatch,
-) -> Result<HistoryDelta, CoreError> {
+    batch: &'a HistoryIngestBatch,
+) -> Result<HistoryDelta<'a>, CoreError> {
     let generation = generation_key(&batch.repo_id, &batch.revision_id, batch.generation);
     let mut meta = current.map(HistoryAuthorityState::meta).unwrap_or_default();
     // Commits known after each step: the current state plus the batch so far.
@@ -362,7 +367,6 @@ pub(crate) fn history_transition(
     let is_known = |known: &BTreeSet<CommitSha>, sha: &CommitSha| {
         known.contains(sha) || current.is_some_and(|state| state.commits().contains_key(sha))
     };
-    let mut commits = Vec::with_capacity(batch.commits.len());
     for record in &batch.commits {
         meta.commits_materialized = true;
         for parent in &record.parents {
@@ -379,40 +383,31 @@ pub(crate) fn history_transition(
             }
         }
         let _new = known.insert(record.sha);
-        commits.push(record.clone());
     }
     let ref_changes = |mutations: &[HistoryRefMutation],
                        label: &str,
                        materialized: &mut bool|
-     -> Result<Vec<RefChange>, CoreError> {
-        let mut changes = Vec::with_capacity(mutations.len());
+     -> Result<(), CoreError> {
         for mutation in mutations {
             *materialized = true;
-            match mutation {
-                HistoryRefMutation::Upsert(payload) => {
-                    if !is_known(&known, &payload.sha) {
-                        return Err(history_typed(
-                            quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
-                                quanta_index_contract::lex::LexicalErrorCode::HistoryRefNotFound,
-                            ),
-                            format!(
-                                "history ingest: {label} `{}` points to unknown commit {}",
-                                payload.name, payload.sha
-                            ),
-                        ));
-                    }
-                    changes.push(RefChange::Upsert(payload.name.clone(), payload.sha));
-                }
-                HistoryRefMutation::Delete(payload) => {
-                    changes.push(RefChange::Delete(payload.name.clone()));
-                }
+            if let HistoryRefMutation::Upsert(payload) = mutation
+                && !is_known(&known, &payload.sha)
+            {
+                return Err(history_typed(
+                    quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                        quanta_index_contract::lex::LexicalErrorCode::HistoryRefNotFound,
+                    ),
+                    format!(
+                        "history ingest: {label} `{}` points to unknown commit {}",
+                        payload.name, payload.sha
+                    ),
+                ));
             }
         }
-        Ok(changes)
+        Ok(())
     };
-    let refs = ref_changes(&batch.refs, "ref", &mut meta.refs_materialized)?;
-    let tags = ref_changes(&batch.tags, "tag", &mut meta.tags_materialized)?;
-    let mut diff_hunks = Vec::with_capacity(batch.diff_hunks.len());
+    ref_changes(&batch.refs, "ref", &mut meta.refs_materialized)?;
+    ref_changes(&batch.tags, "tag", &mut meta.tags_materialized)?;
     for hunk in &batch.diff_hunks {
         meta.diff_hunks_materialized = true;
         if !is_known(&known, &hunk.commit_sha) {
@@ -426,18 +421,14 @@ pub(crate) fn history_transition(
                 ),
             ));
         }
-        diff_hunks.push((
-            HistoryDiffKey::new(hunk.commit_sha, hunk.file_path.as_ref()),
-            hunk.record.clone(),
-        ));
     }
     Ok(HistoryDelta {
         generation,
         epoch,
-        commits,
-        refs,
-        tags,
-        diff_hunks,
+        commits: &batch.commits,
+        refs: &batch.refs,
+        tags: &batch.tags,
+        diff_hunks: &batch.diff_hunks,
         meta,
     })
 }
@@ -481,14 +472,19 @@ pub(crate) fn runtime_catalog_transition(
     current: Option<&RuntimeMetadataState>,
     epoch: AuxEpochV1,
     batch: &RuntimeCatalogIngestBatch,
+    mut checkpoint: impl FnMut() -> Result<(), CoreError>,
 ) -> Result<RuntimeCatalogDelta, CoreError> {
     let chunk_universe = structural
-        .map(|state| state.chunks().keys().cloned().collect::<BTreeSet<_>>())
+        .map(StructuralAuthorityState::chunks)
         .ok_or_else(|| CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeCatalogChunkUniverseUnavailable,
             message: "runtime catalog ingest: lexical chunk authority is not materialized for the pinned generation".to_string(),
         })?;
-    validate_runtime_catalog_doc_ids(batch, &chunk_universe)?;
+    validate_runtime_catalog_doc_ids(
+        batch,
+        |doc_id| chunk_universe.contains_key(doc_id),
+        &mut checkpoint,
+    )?;
     if let Some(current) = current {
         enforce_runtime_catalog_batch_order(current, batch)?;
     }
@@ -497,6 +493,43 @@ pub(crate) fn runtime_catalog_transition(
             .as_deref()
             .map(str::to_owned)
             .map(String::into_boxed_str)
+    };
+    let changed_docs = batch
+        .changed_entries
+        .iter()
+        .map(|record| {
+            checkpoint()?;
+            Ok((
+                record.doc_id.clone(),
+                ChangedDocState::new(record.applied_at_ms, record.payload_hash),
+            ))
+        })
+        .collect::<Result<_, CoreError>>()?;
+    let doc_facets = batch
+        .facet_entries
+        .iter()
+        .map(|record| {
+            checkpoint()?;
+            Ok((
+                record.doc_id.clone(),
+                DocFacetState::new(
+                    owned(&record.owner),
+                    owned(&record.service),
+                    owned(&record.layer),
+                    owned(&record.surface),
+                ),
+            ))
+        })
+        .collect::<Result<_, CoreError>>()?;
+    let mut copy_doc_ids = |doc_ids: &[ChunkId]| {
+        checkpoint()?;
+        doc_ids
+            .iter()
+            .map(|doc_id| {
+                checkpoint()?;
+                Ok(doc_id.clone())
+            })
+            .collect::<Result<BTreeSet<_>, CoreError>>()
     };
     Ok(RuntimeCatalogDelta {
         generation: generation_key(&batch.repo_id, &batch.revision_id, batch.generation),
@@ -508,73 +541,38 @@ pub(crate) fn runtime_catalog_transition(
             generation_materialized_at_ms: Some(batch.generation_materialized_at_ms),
             catalog_materialized: true,
         },
-        changed_docs: batch
-            .changed_entries
-            .iter()
-            .map(|record| {
-                (
-                    record.doc_id.clone(),
-                    ChangedDocState::new(record.applied_at_ms, record.payload_hash),
-                )
-            })
-            .collect(),
-        doc_facets: batch
-            .facet_entries
-            .iter()
-            .map(|record| {
-                (
-                    record.doc_id.clone(),
-                    DocFacetState::new(
-                        owned(&record.owner),
-                        owned(&record.service),
-                        owned(&record.layer),
-                        owned(&record.surface),
-                    ),
-                )
-            })
-            .collect(),
+        changed_docs,
+        doc_facets,
         snapshots: batch
             .snapshot_entries
             .iter()
             .map(|record| {
-                (
+                Ok((
                     record.name.clone().into_boxed_str(),
-                    record
-                        .doc_ids
-                        .iter()
-                        .cloned()
-                        .collect::<BTreeSet<ChunkId>>(),
-                )
+                    copy_doc_ids(&record.doc_ids)?,
+                ))
             })
-            .collect(),
+            .collect::<Result<_, CoreError>>()?,
         affected_docs: batch
             .affected_entries
             .iter()
             .map(|record| {
-                (
+                Ok((
                     record.key.clone().into_boxed_str(),
-                    record
-                        .doc_ids
-                        .iter()
-                        .cloned()
-                        .collect::<BTreeSet<ChunkId>>(),
-                )
+                    copy_doc_ids(&record.doc_ids)?,
+                ))
             })
-            .collect(),
+            .collect::<Result<_, CoreError>>()?,
         invalidated_by_docs: batch
             .invalidated_by_entries
             .iter()
             .map(|record| {
-                (
+                Ok((
                     record.key.clone().into_boxed_str(),
-                    record
-                        .doc_ids
-                        .iter()
-                        .cloned()
-                        .collect::<BTreeSet<ChunkId>>(),
-                )
+                    copy_doc_ids(&record.doc_ids)?,
+                ))
             })
-            .collect(),
+            .collect::<Result<_, CoreError>>()?,
     })
 }
 
@@ -718,12 +716,12 @@ pub(crate) fn structural_chunks_transition(
 
 /// The catalog rows one history delta amounts to.
 pub(crate) fn history_delta_rows(
-    delta: &HistoryDelta,
+    delta: &HistoryDelta<'_>,
 ) -> Result<AuxiliaryMutationBatchV1, CoreError> {
     const DOMAIN: AuxiliaryDomainV1 = AuxiliaryDomainV1::History;
     let generation = &delta.generation;
     let mut rows = Vec::new();
-    for record in &delta.commits {
+    for record in delta.commits {
         rows.push(upsert(
             DOMAIN,
             generation,
@@ -733,27 +731,31 @@ pub(crate) fn history_delta_rows(
         )?);
     }
     for (family, changes) in [
-        (AuxiliaryRowFamilyV1::Ref, &delta.refs),
-        (AuxiliaryRowFamilyV1::Tag, &delta.tags),
+        (AuxiliaryRowFamilyV1::Ref, delta.refs),
+        (AuxiliaryRowFamilyV1::Tag, delta.tags),
     ] {
         for change in changes {
             rows.push(match change {
-                RefChange::Upsert(name, sha) => {
-                    upsert(DOMAIN, generation, family, name.as_bytes().to_vec(), sha)?
-                }
-                RefChange::Delete(name) => {
-                    delete(DOMAIN, generation, family, name.as_bytes().to_vec())
+                HistoryRefMutation::Upsert(update) => upsert(
+                    DOMAIN,
+                    generation,
+                    family,
+                    update.name.as_bytes().to_vec(),
+                    &update.sha,
+                )?,
+                HistoryRefMutation::Delete(update) => {
+                    delete(DOMAIN, generation, family, update.name.as_bytes().to_vec())
                 }
             });
         }
     }
-    for (key, record) in &delta.diff_hunks {
+    for hunk in delta.diff_hunks {
         rows.push(upsert(
             DOMAIN,
             generation,
             AuxiliaryRowFamilyV1::DiffHunk,
-            diff_key_bytes(key),
-            record,
+            history_diff_row_key(hunk.commit_sha, &hunk.file_path),
+            &hunk.record,
         )?);
     }
     rows.push(upsert(

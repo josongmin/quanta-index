@@ -4,10 +4,23 @@ use quanta_index_contract::index::{
     native_protected_view_marker_bytes_v1, native_protected_view_marker_ref_v1,
 };
 
+std::thread_local! {
+    static ATTACHED_VIEW_ROOT_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn count_attached_view_root_scan(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event {
+        if sql.contains("FROM native_view_root_v1 AS root") {
+            ATTACHED_VIEW_ROOT_SCANS.with(|count| count.set(count.get() + 1));
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct ProtectedTestMemoryV1 {
     live: std::sync::Arc<std::sync::atomic::AtomicU64>,
     deny_bytes: Option<u64>,
+    limit_bytes: Option<u64>,
 }
 
 impl quanta_index_core::index::MemoryLeaseOwner for ProtectedTestMemoryV1 {
@@ -31,7 +44,7 @@ impl quanta_index_core::index::MemoryScopePort for ProtectedTestMemoryV1 {
         bytes: u64,
         _lifetime: quanta_index_core::index::MemoryLifetime,
     ) -> Result<quanta_index_core::index::MemoryLease, IndexError> {
-        const LIMIT: u64 = 64 * 1024 * 1024;
+        const DEFAULT_LIMIT: u64 = 64 * 1024 * 1024;
         if self.deny_bytes == Some(bytes) {
             return Err(IndexError::ResourceLimited);
         }
@@ -40,7 +53,10 @@ impl quanta_index_core::index::MemoryScopePort for ProtectedTestMemoryV1 {
             .fetch_update(
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
-                |live| live.checked_add(bytes).filter(|next| *next <= LIMIT),
+                |live| {
+                    live.checked_add(bytes)
+                        .filter(|next| *next <= self.limit_bytes.unwrap_or(DEFAULT_LIMIT))
+                },
             )
             .map_err(|_| IndexError::ResourceLimited)?;
         Ok(quanta_index_core::index::MemoryLease::new(
@@ -70,6 +86,72 @@ fn third_workspace() -> WorkspaceKey {
         slot: SlotId(id(237)),
         ..workspace()
     }
+}
+
+fn insert_orphan_workspace_row_v1(connection: &Connection, family: &str, key: &[u8]) -> TestResult {
+    let query = match family {
+        "native_view_v1" => {
+            "INSERT INTO native_view_v1(workspace,epoch,sequence,identity_digest,payload,row_digest)
+             VALUES (?1,7,99,zeroblob(32),x'01',zeroblob(32))"
+        }
+        "native_frontier_v1" => {
+            "INSERT INTO native_frontier_v1(workspace,producer,stream,stream_epoch,sequence,row_digest)
+             VALUES (?1,zeroblob(32),zeroblob(32),1,1,zeroblob(32))"
+        }
+        "native_source_authority_v1" => {
+            "INSERT INTO native_source_authority_v1(workspace,workspace_epoch,producer,source_epoch,row_digest)
+             VALUES (?1,7,zeroblob(32),1,zeroblob(32))"
+        }
+        _ => return Err("unknown orphan family".into()),
+    };
+    check_eq!(connection.execute(query, params![key])?, 1);
+    Ok(())
+}
+
+fn remove_orphan_workspace_row_v1(connection: &Connection, family: &str, key: &[u8]) -> TestResult {
+    let query = match family {
+        "native_view_v1" => "DELETE FROM native_view_v1 WHERE workspace=?1",
+        "native_frontier_v1" => "DELETE FROM native_frontier_v1 WHERE workspace=?1",
+        "native_source_authority_v1" => "DELETE FROM native_source_authority_v1 WHERE workspace=?1",
+        _ => return Err("unknown orphan family".into()),
+    };
+    check_eq!(connection.execute(query, params![key])?, 1);
+    Ok(())
+}
+
+fn insert_orphan_view_root_v1(
+    connection: &Connection,
+    workspace: WorkspaceKey,
+    object: ObjectRef,
+) -> TestResult {
+    let workspace = workspace_key(workspace)?;
+    let object = object_key(object);
+    let digest = fields_digest(
+        b"qidx.native.viewroot.v1",
+        &(&workspace, 7_i64, 99_i64, &object),
+    )?;
+    let foreign_keys: bool =
+        connection.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+    connection.pragma_update(None, "foreign_keys", false)?;
+    let inserted = connection.execute(
+        "INSERT INTO native_view_root_v1(workspace,epoch,sequence,object,row_digest)
+         VALUES (?1,7,99,?2,?3)",
+        params![&workspace, &object, &digest],
+    );
+    connection.pragma_update(None, "foreign_keys", foreign_keys)?;
+    check_eq!(inserted?, 1);
+    Ok(())
+}
+
+fn remove_orphan_view_root_v1(connection: &Connection, workspace: WorkspaceKey) -> TestResult {
+    check_eq!(
+        connection.execute(
+            "DELETE FROM native_view_root_v1 WHERE workspace=?1 AND epoch=7 AND sequence=99",
+            params![workspace_key(workspace)?],
+        )?,
+        1
+    );
+    Ok(())
 }
 
 pub(super) fn in_second_workspace(mut publication: CatalogView) -> CatalogView {
@@ -209,7 +291,197 @@ pub(super) fn stage_routes(
 }
 
 #[test]
+fn protected_route_accepts_selected_workspace_floors_and_refuses_foreign_or_corrupt_floor()
+-> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, first_operation, first, second_operation, second) =
+        two_published_heads(root.path())?;
+    let routes = route_set(
+        first_operation,
+        first.clone(),
+        second_operation,
+        second.clone(),
+    )?;
+    check_eq!(
+        catalog.advance_exact_history_floor(
+            first.identity.workspace,
+            first.identity.epoch,
+            1,
+            &mut admission_budget(),
+        )?,
+        1
+    );
+    check_eq!(
+        catalog.advance_exact_history_floor(
+            second.identity.workspace,
+            second.identity.epoch,
+            1,
+            &mut admission_budget(),
+        )?,
+        1
+    );
+    let (ingress, route_ref) = stage_routes(&catalog, &routes, operation(20_008, 208).key)?;
+    let selected = catalog.select_native_boot_manifest_with_protected_routes_if_current(
+        first_operation.key,
+        route_ref,
+        &routes,
+        ingress,
+        &mut protected_budget_v1(),
+    )?;
+    check_eq!(
+        selected.protected_source_routes.map(|route| route.object),
+        Some(route_ref)
+    );
+
+    let guard = catalog.lock()?;
+    boot_quiescence::check_quiescent_protected_routes(
+        &guard,
+        first.identity,
+        &routes,
+        None,
+        &mut protected_budget_v1(),
+    )?;
+    let foreign = workspace_key(third_workspace())?;
+    let digest = fields_digest(b"qidx.native.exactfloor.v1", &(&foreign, 7_i64, 1_i64))?;
+    let foreign_keys: bool = guard.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+    guard.pragma_update(None, "foreign_keys", false)?;
+    let inserted = guard.execute(
+        "INSERT INTO native_exact_history_floor_v1
+         (workspace,epoch,retain_from_sequence,row_digest) VALUES (?1,?2,?3,?4)",
+        params![&foreign, 7_i64, 1_i64, digest],
+    );
+    guard.pragma_update(None, "foreign_keys", foreign_keys)?;
+    check_eq!(inserted?, 1);
+    check!(matches!(
+        boot_quiescence::check_quiescent_protected_routes(
+            &guard,
+            first.identity,
+            &routes,
+            None,
+            &mut protected_budget_v1(),
+        ),
+        Err(IndexError::Conflict)
+    ));
+    check_eq!(
+        guard.execute(
+            "DELETE FROM native_exact_history_floor_v1 WHERE workspace=?1 AND epoch=7",
+            params![&foreign],
+        )?,
+        1
+    );
+    check_eq!(
+        guard.execute(
+            "UPDATE native_exact_history_floor_v1 SET row_digest=zeroblob(32)
+             WHERE workspace=?1 AND epoch=7",
+            params![workspace_key(second.identity.workspace)?],
+        )?,
+        1
+    );
+    check!(matches!(
+        boot_quiescence::check_quiescent_protected_routes(
+            &guard,
+            first.identity,
+            &routes,
+            None,
+            &mut protected_budget_v1(),
+        ),
+        Err(IndexError::Storage(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn protected_route_refuses_corrupt_registered_edge_before_visiting_publications() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, first_operation, first, second_operation, second) =
+        two_published_heads(root.path())?;
+    let marker = native_protected_view_marker_ref_v1(first.identity)?;
+    let routes = route_set(first_operation, first, second_operation, second)?;
+    let (ingress, route_ref) = stage_routes(&catalog, &routes, operation(20_009, 209).key)?;
+    let selected = catalog.select_native_boot_manifest_with_protected_routes_if_current(
+        first_operation.key,
+        route_ref,
+        &routes,
+        ingress,
+        &mut protected_budget_v1(),
+    )?;
+    check_eq!(
+        selected.protected_source_routes.map(|route| route.object),
+        Some(route_ref)
+    );
+
+    let guard = catalog.lock()?;
+    let mut healthy_visits = 0_usize;
+    let _verified = boot_manifest::validate_protected_routes_with_publications(
+        &guard,
+        first_operation.key,
+        route_ref,
+        &routes,
+        true,
+        None,
+        &mut protected_budget_v1(),
+        |_, _, _| {
+            healthy_visits += 1;
+            Ok(())
+        },
+    )?;
+    check_eq!(healthy_visits, 2);
+
+    ATTACHED_VIEW_ROOT_SCANS.with(|count| count.set(0));
+    guard.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+        Some(count_attached_view_root_scan),
+    );
+    let mut rollback_visits = 0_usize;
+    let rollback = read_only::check_rollback_with_publications(
+        &guard,
+        &selected,
+        Some(&routes),
+        &mut protected_budget_v1(),
+        |_, _, _| {
+            rollback_visits += 1;
+            Ok(())
+        },
+    );
+    guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    rollback?;
+    check_eq!(rollback_visits, 2);
+    check_eq!(ATTACHED_VIEW_ROOT_SCANS.with(std::cell::Cell::get), 1);
+
+    check_eq!(
+        guard.execute(
+            "UPDATE native_object_edge_v1 SET row_digest=zeroblob(32) WHERE parent=?1 AND child=?2",
+            params![object_key(route_ref), object_key(marker)],
+        )?,
+        1
+    );
+    let mut refused_visits = 0_usize;
+    check_eq!(
+        boot_manifest::validate_protected_routes_with_publications(
+            &guard,
+            first_operation.key,
+            route_ref,
+            &routes,
+            true,
+            None,
+            &mut protected_budget_v1(),
+            |_, _, _| {
+                refused_visits += 1;
+                Ok(())
+            },
+        ),
+        Err(IndexError::CorruptObject(
+            "object edge digest mismatch".into()
+        ))
+    );
+    check_eq!(refused_visits, 0);
+    Ok(())
+}
+
+#[test]
 fn selected_two_workspace_route_survives_exact_retirement_and_reopen() -> TestResult {
+    use rusqlite::limits::Limit;
+
     let root = tempfile::tempdir()?;
     let (catalog, first_operation, first, second_operation, second) =
         two_published_heads(root.path())?;
@@ -232,7 +504,7 @@ fn selected_two_workspace_route_survives_exact_retirement_and_reopen() -> TestRe
             route_ref,
             &routes,
             wrong_fence,
-            &mut admission_budget(),
+            &mut protected_budget_v1(),
         ),
         Err(IndexError::FenceLost)
     ));
@@ -244,43 +516,143 @@ fn selected_two_workspace_route_survives_exact_retirement_and_reopen() -> TestRe
                 ObjectRef(digest_id(254)),
                 &routes,
                 ingress,
-                &mut admission_budget(),
+                &mut protected_budget_v1(),
             )
             .is_err()
     );
     check_eq!(catalog.native_boot_manifest(&mut admission_budget())?, None);
+
+    let seal_operation = operation_key(seal_key)?;
+    let original_ingress_payload: Vec<u8> = {
+        let guard = catalog.lock()?;
+        let original = guard.query_row(
+            "SELECT payload FROM native_ingress_v1 WHERE operation=?1",
+            params![&seal_operation],
+            |row| row.get(0),
+        )?;
+        check_eq!(
+            guard.execute(
+                "UPDATE native_ingress_v1 SET payload=zeroblob(2097152) WHERE operation=?1",
+                params![&seal_operation],
+            )?,
+            1
+        );
+        original
+    };
+    let previous_length_limit = catalog
+        .lock()?
+        .set_limit(Limit::SQLITE_LIMIT_LENGTH, 1_048_576)?;
+    let oversized_ingress = catalog.select_native_boot_manifest_with_protected_routes_if_current(
+        first_operation.key,
+        route_ref,
+        &routes,
+        ingress,
+        &mut protected_budget_v1(),
+    );
+    {
+        let guard = catalog.lock()?;
+        let _limited = guard.set_limit(Limit::SQLITE_LIMIT_LENGTH, previous_length_limit)?;
+        let length: i64 = guard.query_row(
+            "SELECT length(payload) FROM native_ingress_v1 WHERE operation=?1",
+            params![&seal_operation],
+            |row| row.get(0),
+        )?;
+        check_eq!(length, 2_097_152);
+        check_eq!(
+            guard.execute(
+                "UPDATE native_ingress_v1 SET payload=?2 WHERE operation=?1",
+                params![&seal_operation, &original_ingress_payload],
+            )?,
+            1
+        );
+    }
+    check_eq!(oversized_ingress, Err(IndexError::DigestConflict));
+    check_eq!(catalog.native_boot_manifest(&mut admission_budget())?, None);
+    check_eq!(
+        fixture_read_ingress(&catalog, seal_key)?.map(|row| row.stage),
+        Some(ingress)
+    );
+
+    {
+        let guard = catalog.lock()?;
+        check_eq!(
+            guard.execute(
+                "INSERT INTO native_operation_v1(operation,workspace,epoch,payload,row_digest)
+                 VALUES (?1,?2,?3,zeroblob(2097152),zeroblob(32))",
+                params![
+                    &seal_operation,
+                    workspace_key(seal_key.workspace)?,
+                    i64::try_from(seal_key.epoch)?,
+                ],
+            )?,
+            1
+        );
+    }
+    let previous_length_limit = catalog
+        .lock()?
+        .set_limit(Limit::SQLITE_LIMIT_LENGTH, 1_048_576)?;
+    let oversized_operation = catalog.select_native_boot_manifest_with_protected_routes_if_current(
+        first_operation.key,
+        route_ref,
+        &routes,
+        ingress,
+        &mut protected_budget_v1(),
+    );
+    {
+        let guard = catalog.lock()?;
+        let _limited = guard.set_limit(Limit::SQLITE_LIMIT_LENGTH, previous_length_limit)?;
+        let length: i64 = guard.query_row(
+            "SELECT length(payload) FROM native_operation_v1 WHERE operation=?1",
+            params![&seal_operation],
+            |row| row.get(0),
+        )?;
+        check_eq!(length, 2_097_152);
+        check_eq!(
+            guard.execute(
+                "DELETE FROM native_operation_v1 WHERE operation=?1",
+                params![&seal_operation],
+            )?,
+            1
+        );
+    }
+    check_eq!(oversized_operation, Err(IndexError::Conflict));
+    check_eq!(catalog.native_boot_manifest(&mut admission_budget())?, None);
+    check_eq!(
+        fixture_read_ingress(&catalog, seal_key)?.map(|row| row.stage),
+        Some(ingress)
+    );
 
     let selected = catalog.select_native_boot_manifest_with_protected_routes_if_current(
         first_operation.key,
         route_ref,
         &routes,
         ingress,
-        &mut admission_budget(),
+        &mut protected_budget_v1(),
     )?;
     check_eq!(
         selected.protected_source_routes,
-        Some(boot_manifest::NativeBootSourceRouteRefV1 {
+        Some(boot_record::NativeBootSourceRouteRefV1 {
             object: route_ref,
-            count: 2
+            count: 2,
             marker_anchor: None,
         })
     );
     check_eq!(fixture_read_ingress(&catalog, seal_key)?, None);
 
     let guard = catalog.lock()?;
-    read_only::check_quiescent_protected_routes(
+    boot_quiescence::check_quiescent_protected_routes(
         &guard,
         first.identity,
         &routes,
         None,
-        &mut admission_budget(),
+        &mut protected_budget_v1(),
     )?;
     let mut published = Vec::new();
     read_only::visit_quiescent_published_rows_with_routes_v1(
         &guard,
         first.identity.workspace,
         Some(&routes),
-        &mut admission_budget(),
+        &mut protected_budget_v1(),
         |operation, view, _| {
             published.push((operation.key, view.identity));
             Ok(())
@@ -308,7 +680,7 @@ fn selected_two_workspace_route_survives_exact_retirement_and_reopen() -> TestRe
         7,
         None,
         8,
-        &mut admission_budget(),
+        &mut protected_budget_v1(),
     )?;
     check_eq!(retired.retired, 1);
     check_eq!(retired.blocked, 1);
@@ -321,7 +693,7 @@ fn selected_two_workspace_route_survives_exact_retirement_and_reopen() -> TestRe
     drop(catalog);
     let catalog = open(root.path())?;
     check_eq!(
-        catalog.native_boot_manifest(&mut admission_budget())?,
+        catalog.native_boot_manifest(&mut protected_budget_v1())?,
         Some(selected.clone())
     );
     let guard = catalog.lock()?;
@@ -333,7 +705,7 @@ fn selected_two_workspace_route_survives_exact_retirement_and_reopen() -> TestRe
             &routes,
             true,
             None,
-            &mut admission_budget(),
+            &mut protected_budget_v1(),
         ),
         Err(IndexError::Conflict)
     ));
@@ -345,7 +717,7 @@ fn selected_two_workspace_route_survives_exact_retirement_and_reopen() -> TestRe
             &routes,
             false,
             None,
-            &mut admission_budget(),
+            &mut protected_budget_v1(),
         )?
         .count,
         2
@@ -544,13 +916,13 @@ fn selected_primary_can_be_outside_complete_preserved_legacy_heads() -> TestResu
         route_ref,
         &routes,
         ingress,
-        &mut admission_budget(),
+        &mut protected_budget_v1(),
     )?;
     check_eq!(
         selected.protected_source_routes,
-        Some(boot_manifest::NativeBootSourceRouteRefV1 {
+        Some(boot_record::NativeBootSourceRouteRefV1 {
             object: route_ref,
-            count: 1
+            count: 1,
             marker_anchor: None,
         })
     );
@@ -563,7 +935,7 @@ fn selected_primary_can_be_outside_complete_preserved_legacy_heads() -> TestResu
             &routes,
             true,
             None,
-            &mut admission_budget(),
+            &mut protected_budget_v1(),
         )?
         .count,
         1
@@ -637,13 +1009,13 @@ fn selected_repomap_only_workspace_is_protected_without_source_route() -> TestRe
         route_ref,
         &routes,
         ingress,
-        &mut admission_budget(),
+        &mut protected_budget_v1(),
     )?;
     check_eq!(
         selected.protected_source_routes,
-        Some(boot_manifest::NativeBootSourceRouteRefV1 {
+        Some(boot_record::NativeBootSourceRouteRefV1 {
             object: route_ref,
-            count: 0
+            count: 0,
             marker_anchor: None,
         })
     );
@@ -656,17 +1028,17 @@ fn selected_repomap_only_workspace_is_protected_without_source_route() -> TestRe
             &routes,
             true,
             None,
-            &mut admission_budget(),
+            &mut protected_budget_v1(),
         )?
         .count,
         0
     );
-    read_only::check_quiescent_protected_routes(
+    boot_quiescence::check_quiescent_protected_routes(
         &guard,
         selected.publication.identity,
         &routes,
         None,
-        &mut admission_budget(),
+        &mut protected_budget_v1(),
     )?;
     drop(guard);
     check_eq!(
@@ -678,7 +1050,7 @@ fn selected_repomap_only_workspace_is_protected_without_source_route() -> TestRe
         7,
         None,
         8,
-        &mut admission_budget(),
+        &mut protected_budget_v1(),
     )?;
     check_eq!(retired.retired, 1);
     check_eq!(retired.blocked, 1);
@@ -690,7 +1062,7 @@ fn selected_repomap_only_workspace_is_protected_without_source_route() -> TestRe
             &routes,
             &repo,
             &revision,
-            &mut admission_budget(),
+            &mut protected_budget_v1(),
         )?,
         imported_view
     );
@@ -701,7 +1073,7 @@ fn selected_repomap_only_workspace_is_protected_without_source_route() -> TestRe
             &routes,
             &foreign,
             &revision,
-            &mut admission_budget(),
+            &mut protected_budget_v1(),
         ),
         Err(IndexError::SnapshotUnavailable)
     ));
@@ -721,7 +1093,7 @@ fn selected_routes_refuse_pending_or_unknown_workspace() -> TestResult {
             route_ref,
             &routes,
             ingress,
-            &mut admission_budget(),
+            &mut protected_budget_v1(),
         )?;
         if unknown_workspace {
             let profile = object(31, vec![]);
@@ -744,12 +1116,12 @@ fn selected_routes_refuse_pending_or_unknown_workspace() -> TestResult {
         }
         let guard = catalog.lock()?;
         check!(matches!(
-            read_only::check_quiescent_protected_routes(
+            boot_quiescence::check_quiescent_protected_routes(
                 &guard,
                 first.identity,
                 &routes,
                 None,
-                &mut admission_budget(),
+                &mut protected_budget_v1(),
             ),
             Err(IndexError::Conflict)
         ));
@@ -758,14 +1130,207 @@ fn selected_routes_refuse_pending_or_unknown_workspace() -> TestResult {
 }
 
 #[test]
+fn orphan_protected_workspace_rows_refuse_routes_and_bootstrap() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, first_operation, first, second_operation, second) =
+        two_published_heads(root.path())?;
+    let routes = route_set(first_operation, first.clone(), second_operation, second)?;
+    let foreign = workspace_key(third_workspace())?;
+    for family in [
+        "native_view_v1",
+        "native_frontier_v1",
+        "native_source_authority_v1",
+    ] {
+        {
+            let guard = catalog.lock()?;
+            insert_orphan_workspace_row_v1(&guard, family, &foreign)?;
+            check_eq!(
+                workspace_integrity::require_registered_workspace_rows_v1(
+                    &guard,
+                    &mut protected_budget_v1(),
+                ),
+                Err(IndexError::DigestConflict)
+            );
+            check_eq!(
+                boot_quiescence::check_quiescent_protected_routes(
+                    &guard,
+                    first.identity,
+                    &routes,
+                    None,
+                    &mut protected_budget_v1(),
+                ),
+                Err(IndexError::DigestConflict)
+            );
+        }
+        let profile = object(31, vec![]);
+        check_eq!(
+            catalog.begin_bootstrap(
+                third_workspace(),
+                7,
+                &GenesisIdentity(profile),
+                &mut protected_budget_v1(),
+            ),
+            Err(IndexError::Conflict)
+        );
+        let guard = catalog.lock()?;
+        remove_orphan_workspace_row_v1(&guard, family, &foreign)?;
+    }
+    {
+        let guard = catalog.lock()?;
+        workspace_integrity::require_registered_workspace_rows_v1(
+            &guard,
+            &mut protected_budget_v1(),
+        )?;
+    }
+    let profile = object(31, vec![]);
+    let stage = catalog.begin_bootstrap(
+        third_workspace(),
+        7,
+        &GenesisIdentity(profile.clone()),
+        &mut protected_budget_v1(),
+    )?;
+    catalog.reserve_bootstrap(stage, &profile)?;
+    catalog.confirm_bootstrap(stage, &profile)?;
+    {
+        let guard = catalog.lock()?;
+        insert_orphan_workspace_row_v1(&guard, "native_frontier_v1", &foreign)?;
+    }
+    let mut genesis = view(0, profile.reference, None);
+    genesis.identity.workspace = third_workspace();
+    genesis.identity.digest = genesis.identity_digest()?;
+    check_eq!(
+        catalog.publish_bootstrap(stage, genesis.clone(), &mut protected_budget_v1()),
+        Err(IndexError::Conflict)
+    );
+    {
+        let guard = catalog.lock()?;
+        remove_orphan_workspace_row_v1(&guard, "native_frontier_v1", &foreign)?;
+    }
+    let expected = genesis.identity;
+    check_eq!(
+        catalog.publish_bootstrap(stage, genesis, &mut protected_budget_v1())?,
+        expected
+    );
+    Ok(())
+}
+
+#[test]
+fn orphan_view_root_with_registered_workspace_refuses_current_and_retained_routes() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, first_operation, first, second_operation, second) =
+        two_published_heads(root.path())?;
+    let routes = route_set(first_operation, first.clone(), second_operation, second)?;
+    let (ingress, route_ref) = stage_routes(&catalog, &routes, operation(20_026, 226).key)?;
+    {
+        let guard = catalog.lock()?;
+        // The workspace and object are valid; only the composite parent view
+        // (workspace, epoch, sequence) is absent.
+        insert_orphan_view_root_v1(&guard, first.identity.workspace, first.profile)?;
+        check!(matches!(
+            boot_manifest::validate_protected_routes(
+                &guard,
+                first_operation.key,
+                route_ref,
+                &routes,
+                false,
+                Some(ingress),
+                &mut protected_budget_v1(),
+            ),
+            Err(IndexError::DigestConflict)
+        ));
+    }
+    check!(matches!(
+        catalog.select_native_boot_manifest_with_protected_routes_if_current(
+            first_operation.key,
+            route_ref,
+            &routes,
+            ingress,
+            &mut protected_budget_v1(),
+        ),
+        Err(IndexError::DigestConflict)
+    ));
+    {
+        let guard = catalog.lock()?;
+        remove_orphan_view_root_v1(&guard, first.identity.workspace)?;
+        let retained = boot_manifest::validate_protected_routes(
+            &guard,
+            first_operation.key,
+            route_ref,
+            &routes,
+            false,
+            Some(ingress),
+            &mut protected_budget_v1(),
+        )?;
+        check_eq!(retained.object, route_ref);
+    }
+    let selected = catalog.select_native_boot_manifest_with_protected_routes_if_current(
+        first_operation.key,
+        route_ref,
+        &routes,
+        ingress,
+        &mut protected_budget_v1(),
+    )?;
+    check_eq!(
+        selected.protected_source_routes.map(|route| route.object),
+        Some(route_ref)
+    );
+    Ok(())
+}
+
+#[test]
 fn protected_native_import_is_atomic_exact_and_retryable() -> TestResult {
-    use quanta_index_contract::index::{
-        NativeProtectedNativeOriginV1, NativeProtectedNativeSnapshotV1,
-    };
+    use quanta_index_contract::index::NativeProtectedNativeOriginV1;
 
     let old_root = tempfile::tempdir()?;
-    let (old, primary, _first, source_operation, source_view) =
+    let (old, primary, first, _previous_operation, previous_view) =
         two_published_heads(old_root.path())?;
+    let mut source_operation = operation(20_019, 219);
+    source_operation.key.workspace = second_workspace();
+    source_operation.source_mode = SourceOperationMode::Advance;
+    let events = (0_u16..512)
+        .map(|ordinal| {
+            let mut stream = id(20);
+            stream[..2].copy_from_slice(&ordinal.to_be_bytes());
+            SourceEvent {
+                producer: source_operation.key.producer,
+                stream: StreamId(stream),
+                stream_epoch: 1,
+                predecessor: 0,
+                sequence: 1,
+                payload: digest_id(54),
+            }
+        })
+        .collect::<Vec<_>>();
+    let source_attempt = admit_new_events(&old, source_operation, &events)
+        .map_err(|error| format!("admit predecessor Source events: {error}"))?;
+    let frontier = object(54, vec![]);
+    reserve_confirm(&old, source_attempt, std::slice::from_ref(&frontier))?;
+    let mut source_view = in_second_workspace(view(2, previous_view.profile, None));
+    source_view.source.frontiers = MapRoot(Some(frontier.reference));
+    source_view.identity.digest = source_view.identity_digest()?;
+    // Fund the 512-event setup separately from the bounded snapshot export.
+    let mut publication_budget = protected_budget_v1();
+    check_eq!(
+        old.commit_transition(
+            PreparedPublication {
+                attempt: source_attempt,
+                expected: previous_view.identity,
+                next: source_view.clone(),
+                work_actions: WorkActionSet::empty(),
+                complete_work: None,
+                source_events: events.clone(),
+                projection_events: Vec::new(),
+                expected_source: Some(previous_view.source),
+                source_mode: SourceOperationMode::Advance,
+            },
+            &mut VecActions(VecDeque::new()),
+            &mut publication_budget,
+        )
+        .map_err(|error| {
+            format!("publish predecessor Source events: {error:?}, {publication_budget:?}")
+        })?,
+        OperationStatus::Published(source_view.identity)
+    );
     let map_workspace = third_workspace();
     let profile = object(30, vec![]);
     let stage = old.begin_bootstrap(
@@ -795,7 +1360,7 @@ fn protected_native_import_is_atomic_exact_and_retryable() -> TestResult {
         publish(&old, attempt, &map_genesis, map_view.clone())?,
         OperationStatus::Published(map_view.identity)
     );
-    let mut old_routes = route_set(primary, _first, source_operation, source_view.clone())?;
+    let mut old_routes = route_set(primary, first, source_operation, source_view.clone())?;
     let _removed_primary = old_routes.heads.remove(0);
     old_routes.repomap_heads.push(NativeProtectedRepoMapHeadV1 {
         repo_id: quanta_index_contract::RepoId::new("repo-map")?,
@@ -813,41 +1378,53 @@ fn protected_native_import_is_atomic_exact_and_retryable() -> TestResult {
     });
     old_routes.validate()?;
     let (old_ingress, old_route_ref) = stage_routes(&old, &old_routes, operation(20_021, 221).key)?;
-    let _old_selected = old.select_native_boot_manifest_with_protected_routes_if_current(
-        primary.key,
-        old_route_ref,
-        &old_routes,
-        old_ingress,
-        &mut protected_budget_v1(),
-    )?;
-    let nonce = {
+    let mut selection_budget = protected_budget_v1();
+    let old_selected = old
+        .select_native_boot_manifest_with_protected_routes_if_current(
+            primary.key,
+            old_route_ref,
+            &old_routes,
+            old_ingress,
+            &mut selection_budget,
+        )
+        .map_err(|error| format!("select predecessor BOOT: {error:?}, {selection_budget:?}"))?;
+    const EXPORT_WORK_BYTES: u64 = 8 * 1024 * 1024;
+    let mut export_budget = WorkBudget::with_request(
+        WorkLimits {
+            reads: 100_000,
+            writes: 100_000,
+            bytes: EXPORT_WORK_BYTES,
+            mutations: 100_000,
+        },
+        quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(30)),
+    );
+    export_budget.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(
+        std::sync::Arc::new(ProtectedTestMemoryV1::default()),
+    )));
+    let snapshot = {
         let guard = old.lock()?;
-        Digest(capture_format::verify_stamp(&*guard, old_root.path())?)
+        let nonce = capture_format::verify_stamp(&*guard, old_root.path())?;
+        read_only::visit_native_protected_snapshot_connection_v1(
+            &guard,
+            nonce,
+            &old_selected,
+            &old_routes,
+            &mut export_budget,
+            |snapshot, _budget| Ok(snapshot.clone()),
+        )
+        .map_err(|error| format!("export predecessor snapshot: {error:?}, {export_budget:?}"))?
     };
-    let mut keys = [source_operation.key, map_operation.key];
-    keys.sort_unstable();
-    let operation_rows = keys
-        .into_iter()
-        .map(|key| {
-            let guard = old.lock().map_err(|error| error.to_string())?;
-            let row = read_operation(&*guard, key)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "old operation absent".to_owned())?;
-            encode(&row).map_err(|error| error.to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let roots = vec![old_route_ref];
-    let snapshot = NativeProtectedNativeSnapshotV1 {
-        wire_version: NativeProtectedNativeSnapshotV1::WIRE_VERSION,
-        source_root_nonce: nonce,
-        source_routes: old_route_ref,
-        operation_rows,
-        genesis_views: vec![map_genesis.clone()],
-        frontiers: Vec::new(),
-        source_authorities: Vec::new(),
-        event_claims: Vec::new(),
-        roots,
-    };
+    let largest_operation = snapshot
+        .operation_rows
+        .iter()
+        .map(Vec::len)
+        .max()
+        .unwrap_or(0);
+    check!(largest_operation > 4096);
+    // The former scan reread this same operation for every committed claim.
+    check!(u64::try_from(largest_operation * events.len())? > EXPORT_WORK_BYTES);
+    check_eq!(snapshot.event_claims.len(), events.len());
+    let nonce = snapshot.source_root_nonce;
     snapshot.validate_shape_v1()?;
     let snapshot_ref = snapshot.object_ref_v1()?;
     let mut routes = old_routes.clone();
@@ -962,22 +1539,251 @@ fn protected_native_import_is_atomic_exact_and_retryable() -> TestResult {
         check_eq!(current_view(&*guard, second_workspace())?, None);
         check_eq!(current_view(&*guard, map_workspace)?, None);
     }
-    new.restore_protected_native_heads_v1(
-        new_primary.key,
-        ingress,
-        &snapshot,
-        &routes,
-        &mut protected_budget_v1(),
-    )?;
-    new.restore_protected_native_heads_v1(
-        new_primary.key,
-        ingress,
-        &snapshot,
-        &routes,
-        &mut protected_budget_v1(),
-    )?;
+    let foreign_workspace = WorkspaceKey {
+        slot: SlotId(id(239)),
+        ..workspace()
+    };
+    let foreign_key = workspace_key(foreign_workspace)?;
+    let assert_orphan_children_refuse_import = || -> TestResult {
+        for family in [
+            "native_view_v1",
+            "native_frontier_v1",
+            "native_source_authority_v1",
+        ] {
+            {
+                let guard = new.lock()?;
+                insert_orphan_workspace_row_v1(&guard, family, &foreign_key)?;
+            }
+            check_eq!(
+                new.restore_protected_native_heads_v1(
+                    new_primary.key,
+                    ingress,
+                    &snapshot,
+                    &routes,
+                    &mut protected_budget_v1(),
+                ),
+                Err(IndexError::DigestConflict)
+            );
+            {
+                let guard = new.lock()?;
+                remove_orphan_workspace_row_v1(&guard, family, &foreign_key)?;
+            }
+        }
+        Ok(())
+    };
+    assert_orphan_children_refuse_import()?;
+    let assert_orphan_view_root_refuses_import = || -> TestResult {
+        let before = {
+            let guard = new.lock()?;
+            let views = (
+                current_view(&guard, second_workspace())?,
+                current_view(&guard, map_workspace)?,
+            );
+            insert_orphan_view_root_v1(&guard, primary_workspace, primary_profile.reference)?;
+            views
+        };
+        check_eq!(
+            new.restore_protected_native_heads_v1(
+                new_primary.key,
+                ingress,
+                &snapshot,
+                &routes,
+                &mut protected_budget_v1(),
+            ),
+            Err(IndexError::DigestConflict)
+        );
+        {
+            let guard = new.lock()?;
+            check_eq!(
+                (
+                    current_view(&guard, second_workspace())?,
+                    current_view(&guard, map_workspace)?,
+                ),
+                before
+            );
+            remove_orphan_view_root_v1(&guard, primary_workspace)?;
+        }
+        Ok(())
+    };
+    assert_orphan_view_root_refuses_import()?;
+    // A file captured with foreign keys disabled may contain a claim whose
+    // operation vanished. Neither first import nor exact retry may silently
+    // omit it through the workspace-scoped claim join.
+    let missing_operation = OperationKey {
+        workspace: second_workspace(),
+        ..operation(20_025, 225).key
+    };
+    let orphan_event = SourceEvent {
+        producer: missing_operation.producer,
+        stream: StreamId(id(250)),
+        stream_epoch: missing_operation.stream_epoch,
+        predecessor: 0,
+        sequence: 1,
+        payload: digest_id(217),
+    };
+    let orphan = EventClaim {
+        operation: missing_operation,
+        event: orphan_event,
+        state: EventClaimState::Pending,
+    };
+    let orphan_identity = event_identity(missing_operation, orphan_event)?;
+    let orphan_operation = operation_key(missing_operation)?;
+    let orphan_payload = encode(&orphan)?;
+    let orphan_digest = digest(b"qidx.native.eventclaim.v1", &orphan_payload).to_vec();
+    let insert_orphan = || -> TestResult {
+        let guard = new.lock()?;
+        let foreign_keys: bool =
+            guard.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        guard.pragma_update(None, "foreign_keys", false)?;
+        let inserted = guard.execute(
+            "INSERT INTO native_event_claim_v1(identity,operation,payload,row_digest)
+             VALUES (?1,?2,?3,?4)",
+            params![
+                &orphan_identity,
+                &orphan_operation,
+                &orphan_payload,
+                &orphan_digest,
+            ],
+        );
+        guard.pragma_update(None, "foreign_keys", foreign_keys)?;
+        check_eq!(inserted?, 1);
+        Ok(())
+    };
+    let remove_orphan = || -> TestResult {
+        let guard = new.lock()?;
+        check_eq!(
+            guard.execute(
+                "DELETE FROM native_event_claim_v1 WHERE identity=?1",
+                params![&orphan_identity],
+            )?,
+            1
+        );
+        Ok(())
+    };
+    insert_orphan()?;
+    check_eq!(
+        new.restore_protected_native_heads_v1(
+            new_primary.key,
+            ingress,
+            &snapshot,
+            &routes,
+            &mut protected_budget_v1(),
+        ),
+        Err(IndexError::DigestConflict)
+    );
     {
         let guard = new.lock()?;
+        check_eq!(current_view(&*guard, second_workspace())?, None);
+        check_eq!(current_view(&*guard, map_workspace)?, None);
+    }
+    let restore_clean = |stage| {
+        let mut budget = protected_budget_v1();
+        new.restore_protected_native_heads_v1(
+            new_primary.key,
+            ingress,
+            &snapshot,
+            &routes,
+            &mut budget,
+        )
+        .map_err(|error| format!("{stage}: {error:?}, {budget:?}"))
+    };
+    remove_orphan()?;
+    restore_clean("first protected import")?;
+    assert_orphan_children_refuse_import()?;
+    assert_orphan_view_root_refuses_import()?;
+    insert_orphan()?;
+    check_eq!(
+        new.restore_protected_native_heads_v1(
+            new_primary.key,
+            ingress,
+            &snapshot,
+            &routes,
+            &mut protected_budget_v1(),
+        ),
+        Err(IndexError::DigestConflict)
+    );
+    remove_orphan()?;
+    restore_clean("exact protected import retry")?;
+    let exact_memory = ProtectedTestMemoryV1 {
+        // Two imported workspaces must fit the verifier's fixed scratch.
+        limit_bytes: Some(18 * 1024),
+        ..Default::default()
+    };
+    let mut exact_budget = admission_budget();
+    exact_budget.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(
+        std::sync::Arc::new(exact_memory.clone()),
+    )));
+    {
+        let guard = new.lock()?;
+        read_only::verify_imported_exact_views_v1(&*guard, &routes, &mut exact_budget).map_err(
+            |error| format!("verify installed Exact views: {error:?}, {exact_budget:?}"),
+        )?;
+    }
+    check_eq!(
+        exact_memory.live.load(std::sync::atomic::Ordering::Acquire),
+        0
+    );
+    let source_key = operation_key(source_operation.key)?;
+    let source_payload: Vec<u8> = {
+        let guard = new.lock()?;
+        let original = guard.query_row(
+            "SELECT payload FROM native_operation_v1 WHERE operation=?1",
+            params![&source_key],
+            |row| row.get(0),
+        )?;
+        check_eq!(
+            guard.execute(
+                "UPDATE native_operation_v1 SET payload=x'00' WHERE operation=?1",
+                params![&source_key],
+            )?,
+            1
+        );
+        original
+    };
+    check_eq!(
+        new.restore_protected_native_heads_v1(
+            new_primary.key,
+            ingress,
+            &snapshot,
+            &routes,
+            &mut protected_budget_v1(),
+        ),
+        Err(IndexError::Storage(
+            "native catalog row digest mismatch".into()
+        ))
+    );
+    // The existing retry row is larger than this connection's SQLite result
+    // limit. The guarded projection must reject it without returning the BLOB.
+    let previous_length_limit = {
+        use rusqlite::limits::Limit;
+        let guard = new.lock()?;
+        check_eq!(
+            guard.execute(
+                "UPDATE native_operation_v1 SET payload=zeroblob(2097152) WHERE operation=?1",
+                params![&source_key],
+            )?,
+            1
+        );
+        guard.set_limit(Limit::SQLITE_LIMIT_LENGTH, 1_048_576)?
+    };
+    let oversized_retry = new.restore_protected_native_heads_v1(
+        new_primary.key,
+        ingress,
+        &snapshot,
+        &routes,
+        &mut protected_budget_v1(),
+    );
+    {
+        use rusqlite::limits::Limit;
+        let guard = new.lock()?;
+        let _tight_limit = guard.set_limit(Limit::SQLITE_LIMIT_LENGTH, previous_length_limit)?;
+        check_eq!(
+            guard.execute(
+                "UPDATE native_operation_v1 SET payload=?2 WHERE operation=?1",
+                params![&source_key, &source_payload],
+            )?,
+            1
+        );
         check_eq!(
             current_view(&*guard, second_workspace())?,
             Some(source_view)
@@ -987,6 +1793,107 @@ fn protected_native_import_is_atomic_exact_and_retryable() -> TestResult {
             Some(map_view.clone())
         );
     }
+    check_eq!(
+        oversized_retry,
+        Err(IndexError::Storage(
+            "native catalog row digest mismatch".into()
+        ))
+    );
+    // A malformed fixed-width digest must be rejected by the SQL projection
+    // before SQLite materializes it as a Rust Vec during an exact retry.
+    let frontier_row = snapshot.frontiers.first().ok_or("frontier absent")?;
+    let frontier_workspace = workspace_key(frontier_row.workspace)?;
+    let frontier_producer = frontier_row.producer.0.to_vec();
+    let frontier_stream = frontier_row.stream.0.to_vec();
+    let (frontier_digest, frontier_length_limit) = {
+        use rusqlite::limits::Limit;
+        let guard = new.lock()?;
+        let digest: Vec<u8> = guard.query_row(
+            "SELECT row_digest FROM native_frontier_v1 WHERE workspace=?1 AND producer=?2 AND stream=?3",
+            params![&frontier_workspace, &frontier_producer, &frontier_stream],
+            |row| row.get(0),
+        )?;
+        check_eq!(
+            guard.execute(
+                "UPDATE native_frontier_v1 SET row_digest=zeroblob(2097152) WHERE workspace=?1 AND producer=?2 AND stream=?3",
+                params![&frontier_workspace, &frontier_producer, &frontier_stream],
+            )?,
+            1
+        );
+        (
+            digest,
+            guard.set_limit(Limit::SQLITE_LIMIT_LENGTH, 1_048_576)?,
+        )
+    };
+    let oversized_frontier = new.restore_protected_native_heads_v1(
+        new_primary.key,
+        ingress,
+        &snapshot,
+        &routes,
+        &mut protected_budget_v1(),
+    );
+    {
+        use rusqlite::limits::Limit;
+        let guard = new.lock()?;
+        let _tight_limit = guard.set_limit(Limit::SQLITE_LIMIT_LENGTH, frontier_length_limit)?;
+        check_eq!(
+            guard.execute(
+                "UPDATE native_frontier_v1 SET row_digest=?4 WHERE workspace=?1 AND producer=?2 AND stream=?3",
+                params![&frontier_workspace, &frontier_producer, &frontier_stream, &frontier_digest],
+            )?,
+            1
+        );
+    }
+    check_eq!(oversized_frontier, Err(IndexError::DigestConflict));
+
+    let authority_row = snapshot
+        .source_authorities
+        .first()
+        .ok_or("source authority absent")?;
+    let authority_workspace = workspace_key(authority_row.workspace)?;
+    let authority_workspace_epoch = int(authority_row.workspace_epoch)?;
+    let authority_producer = authority_row.producer.0.to_vec();
+    let (authority_digest, authority_length_limit) = {
+        use rusqlite::limits::Limit;
+        let guard = new.lock()?;
+        let digest: Vec<u8> = guard.query_row(
+            "SELECT row_digest FROM native_source_authority_v1 WHERE workspace=?1 AND workspace_epoch=?2 AND producer=?3",
+            params![&authority_workspace, authority_workspace_epoch, &authority_producer],
+            |row| row.get(0),
+        )?;
+        check_eq!(
+            guard.execute(
+                "UPDATE native_source_authority_v1 SET row_digest=zeroblob(2097152) WHERE workspace=?1 AND workspace_epoch=?2 AND producer=?3",
+                params![&authority_workspace, authority_workspace_epoch, &authority_producer],
+            )?,
+            1
+        );
+        (
+            digest,
+            guard.set_limit(Limit::SQLITE_LIMIT_LENGTH, 1_048_576)?,
+        )
+    };
+    let oversized_authority = new.restore_protected_native_heads_v1(
+        new_primary.key,
+        ingress,
+        &snapshot,
+        &routes,
+        &mut protected_budget_v1(),
+    );
+    {
+        use rusqlite::limits::Limit;
+        let guard = new.lock()?;
+        let _tight_limit = guard.set_limit(Limit::SQLITE_LIMIT_LENGTH, authority_length_limit)?;
+        check_eq!(
+            guard.execute(
+                "UPDATE native_source_authority_v1 SET row_digest=?4 WHERE workspace=?1 AND workspace_epoch=?2 AND producer=?3",
+                params![&authority_workspace, authority_workspace_epoch, &authority_producer, &authority_digest],
+            )?,
+            1
+        );
+    }
+    check_eq!(oversized_authority, Err(IndexError::DigestConflict));
+
     let conflicting = OperationKey {
         workspace: map_workspace,
         ..operation(20_024, 224).key

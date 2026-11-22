@@ -45,7 +45,7 @@ import subprocess
 import sys
 from array import array
 from bisect import bisect_right
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
@@ -60,6 +60,7 @@ try:
     from tools.benchmark.retrieval import (
         hybrid_file_evidence,
         literal_source_oracle,
+        native_file_paths,
         retrieval_contract,
         source_oracle,
     )
@@ -76,6 +77,7 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.benchmark.retrieval import (
         hybrid_file_evidence,
         literal_source_oracle,
+        native_file_paths,
         retrieval_contract,
         source_oracle,
     )
@@ -156,6 +158,11 @@ def object_keys_optional(
 def string(value: Any, where: str) -> str:
     require(isinstance(value, str) and bool(value.strip()), f"{where} must be a nonempty string")
     return value
+
+
+def distinct_review_identities(*identities: str) -> bool:
+    """Compare review role identities independent of surrounding whitespace."""
+    return len({identity.strip() for identity in identities}) == len(identities)
 
 
 def sha(value: Any, where: str) -> str:
@@ -499,10 +506,27 @@ def read_json(path: Path) -> Any:
         raise EvidenceError(f"cannot read JSON {path}: {exc}") from exc
 
 
-def read_json_with_bytes(path: Path) -> tuple[bytes, Any]:
+def _read_committed_bytes(path: Path, expected_bytes: tuple[str, int], message: str) -> bytes:
+    from tools.benchmark.evidence import EvidenceError as ByteEvidenceError
+    from tools.benchmark.evidence import _read_regular_file
+
+    try:
+        return _read_regular_file(path, expected_bytes=expected_bytes)
+    except ByteEvidenceError as exc:
+        raise EvidenceError(f"{message}: {exc}") from exc
+
+
+def read_json_with_bytes(
+    path: Path, *, expected_bytes: tuple[str, int] | None = None
+) -> tuple[bytes, Any]:
     """Parse the same strict JSON bytes that a caller binds by file digest."""
     try:
-        raw = path.read_bytes()
+        if expected_bytes is None:
+            raw = path.read_bytes()
+        else:
+            raw = _read_committed_bytes(
+                path, expected_bytes, "Native input bytes differ from frozen commitment",
+            )
         return raw, _parse_json_text(raw.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise EvidenceError(f"cannot read JSON {path}: {exc}") from exc
@@ -4494,34 +4518,154 @@ def load_native_file_replay(
     query_pack_path: Path,
     capture_path: Path,
     source_inputs: tuple[Path, Path, Path, Path, str] | None = None,
+    *,
+    expected_capture: tuple[str, int] | None = None,
+    expected_suite: tuple[str, int] | None = None,
+    expected_query_pack: tuple[str, int] | None = None,
+    expected_source_universe: tuple[str, int] | None = None,
+    expected_source_binding: tuple[str, int] | None = None,
+    expected_reviewed_labels: tuple[str, int] | None = None,
+    release_validator: Callable[[Path], dict] | None = None,
+    reviewed_labels: Path | None = None,
 ) -> dict[str, dict]:
     """Authenticate frozen inputs, then replay one Native file capture."""
     from tools.benchmark.retrieval import native_file_evidence
 
-    suite, pack, source = validate_suite(repo.resolve(), read_json(suite_path))
-    pack_bytes, observed_pack = read_json_with_bytes(query_pack_path)
-    require(observed_pack == pack, "Native frozen blind pack differs")
-    capture = read_json(capture_path)
+    receipt = None
+    if reviewed_labels is not None:
+        from tools.benchmark.evidence import RawFile, read_control
+
+        receipt_bytes = read_control(reviewed_labels)
+        if expected_reviewed_labels is not None:
+            require(
+                ("sha256:" + digest(receipt_bytes), len(receipt_bytes))
+                == expected_reviewed_labels,
+                "Native reviewed labels bytes differ from frozen commitment",
+            )
+        receipt = _parse_json_text(receipt_bytes.decode("utf-8"))
+        if expected_capture is None:
+            captured = RawFile.capture(capture_path)
+            expected_capture = captured.sha256, captured.size
+    suite, pack, capture, source = _load_native_file_inputs(
+        repo, suite_path, query_pack_path, capture_path,
+        expected_capture=expected_capture,
+        expected_suite=expected_suite,
+        expected_query_pack=expected_query_pack,
+    )
+    if reviewed_labels is not None:
+        from tools.benchmark.retrieval.holdout_review import bind_native_reviewed_suite
+
+        require(expected_capture is not None, "Native reviewed labels need a raw capture commitment")
+        reviewed, _, _ = validate_suite(
+            native_file_paths.resolve_path(repo),
+            bind_native_reviewed_suite(suite, pack, receipt, expected_capture[0].removeprefix("sha256:")),
+            source_snapshot=source,
+        )
+        report = native_file_evidence.evaluate(
+            suite, pack, capture, source, source_inputs,
+            release_validator=release_validator, reviewed_suite=reviewed,
+            expected_source_universe=expected_source_universe,
+            expected_source_binding=expected_source_binding,
+        )
+        return {"suite": reviewed, "execution_suite": suite, "capture": capture, "report": report}
+
+    report = native_file_evidence.evaluate(
+        suite, pack, capture, source, source_inputs, release_validator=release_validator,
+        expected_source_universe=expected_source_universe,
+        expected_source_binding=expected_source_binding,
+    )
+    return {"suite": suite, "capture": capture, "report": report}
+
+
+def load_native_file_execution(
+    repo: Path,
+    suite_path: Path,
+    query_pack_path: Path,
+    capture_path: Path,
+    source_inputs: tuple[Path, Path, Path, Path, str],
+    *,
+    expected_capture: tuple[str, int],
+    expected_suite: tuple[str, int] | None = None,
+    expected_query_pack: tuple[str, int] | None = None,
+    expected_source_universe: tuple[str, int] | None = None,
+    expected_source_binding: tuple[str, int] | None = None,
+    release_validator: Callable[[Path], dict] | None = None,
+) -> dict:
+    """Verify an owned raw Native capture against its frozen execution inputs."""
+    from tools.benchmark.retrieval import native_file_evidence
+
+    suite, pack, capture, source = _load_native_file_inputs(
+        repo, suite_path, query_pack_path, capture_path,
+        expected_capture=expected_capture,
+        expected_suite=expected_suite,
+        expected_query_pack=expected_query_pack,
+    )
+    native_file_evidence.verify_execution(
+        suite, pack, capture, source, source_inputs, release_validator=release_validator,
+        expected_source_universe=expected_source_universe,
+        expected_source_binding=expected_source_binding,
+    )
+    return capture
+
+
+def _load_native_file_inputs(
+    repo: Path,
+    suite_path: Path,
+    query_pack_path: Path,
+    capture_path: Path,
+    *,
+    expected_capture: tuple[str, int] | None = None,
+    expected_suite: tuple[str, int] | None = None,
+    expected_query_pack: tuple[str, int] | None = None,
+) -> tuple[dict, dict, dict, SourceSnapshot]:
+    """Bind raw capture and query pack bytes to the Git-verified suite."""
+    suite = (
+        read_json(suite_path)
+        if expected_suite is None
+        else read_json_with_bytes(suite_path, expected_bytes=expected_suite)[1]
+    )
+    pack_bytes, observed_pack = read_json_with_bytes(
+        query_pack_path, expected_bytes=expected_query_pack,
+    )
+    if expected_capture is None:
+        capture = read_json(capture_path)
+    else:
+        capture_bytes = _read_committed_bytes(
+            capture_path,
+            expected_capture,
+            "Native capture bytes differ from the controlled execution commitment",
+        )
+        try:
+            capture = _parse_json_text(capture_bytes.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise EvidenceError(f"cannot read JSON {capture_path}: {exc}") from exc
+    return _bind_native_file_inputs(repo, suite, pack_bytes, observed_pack, capture)
+
+
+def _bind_native_file_inputs(
+    repo: Path, suite_payload: dict, pack_bytes: bytes, observed_pack: dict, capture: dict
+) -> tuple[dict, dict, dict, SourceSnapshot]:
+    suite, pack, source = validate_suite(native_file_paths.resolve_path(repo), suite_payload)
+    require(canonical(observed_pack) == canonical(pack), "Native frozen blind pack differs")
     require(
         capture.get("query_pack_file_sha256") == digest(pack_bytes),
         "Native blind pack file digest differs",
     )
-    report = native_file_evidence.evaluate(suite, pack, capture, source, source_inputs)
-    return {"suite": suite, "capture": capture, "report": report}
+    return suite, pack, capture, source
 
 
 def _native_cohort_manifest(path: Path) -> tuple[bytes, dict]:
     """Read a path-only manifest without accepting duplicate or extra JSON keys."""
     from tools.benchmark.evidence import read_control
 
-    raw = read_control(path.resolve())
+    raw = read_control(native_file_paths.resolve_path(path))
     manifest = _parse_json_text(raw.decode("utf-8"))
     require(
         isinstance(manifest, dict)
         and set(manifest)
         == {"schema_version", "profile", "repositories", "repository_strata", "families"}
         and type(manifest["schema_version"]) is int
-        and manifest["schema_version"] == 1
+        and manifest["schema_version"] in (1, 2)
         and manifest["profile"] == "native_file_family_cohort",
         "Native cohort manifest shape differs",
     )
@@ -4534,21 +4678,52 @@ def _native_cohort_manifest(path: Path) -> tuple[bytes, dict]:
         and bool(manifest["families"]),
         "Native cohort target roster or families differ",
     )
-    fields = {
-        "repo", "suite", "query_pack", "capture", "source_universe",
-        "source_binding", "base_release", "target_releases", "family_id",
-    }
+    fields = {"repo", "family_id", *native_file_paths.COHORT_FILES, *native_file_paths.RELEASE_ROOTS}
+    runtime_fields = {"daemon_config", "daemon_config_sha256"}
+    selection_fields = {"selection_path", "selection_sha256"}
     seen_families: set[str] = set()
     seen_captures: set[Path] = set()
+    seen_configs: set[Path] = set()
+    seen_selections: set[Path] = set()
+    selected_mode: bool | None = None
+    manifest_dir = native_file_paths.resolve_path(path.parent)
     for family in manifest["families"]:
+        selected = isinstance(family, dict) and selection_fields <= set(family)
+        expected = fields if manifest["schema_version"] == 1 else fields | runtime_fields | (selection_fields if selected else set())
         require(
             isinstance(family, dict)
-            and set(family) == fields
+            and set(family) == expected
             and all(isinstance(family[key], str) and bool(family[key]) for key in fields),
             "Native cohort family input shape differs",
         )
+        if manifest["schema_version"] == 2:
+            require(
+                selected_mode is None or selected_mode == selected,
+                "Native cohort families mix selected and candidate runtime modes",
+            )
+            selected_mode = selected
+            for key in ("daemon_config_sha256", "selection_sha256"):
+                if key in family:
+                    require(
+                        isinstance(family[key], str) and bool(HEX64_RE.fullmatch(family[key])),
+                        f"Native cohort {key} is malformed",
+                    )
+            for key, seen in (("daemon_config", seen_configs), ("selection_path", seen_selections)):
+                if key not in family:
+                    continue
+                value = family[key]
+                require(
+                    isinstance(value, str) and bool(value),
+                    f"Native cohort {key} is malformed",
+                )
+                resolved = native_file_paths.resolve_path(manifest_dir / value)
+                require(
+                    resolved not in seen,
+                    f"Native cohort {key} is repeated",
+                )
+                seen.add(resolved)
         family_id = family["family_id"]
-        capture = (path.parent / family["capture"]).resolve()
+        capture = native_file_paths.resolve_path(manifest_dir / family["capture"])
         require(
             family_id not in seen_families and capture not in seen_captures,
             "Native cohort family or capture is repeated",
@@ -4558,27 +4733,59 @@ def _native_cohort_manifest(path: Path) -> tuple[bytes, dict]:
     return raw, manifest
 
 
-def evaluate_native_file_cohort(path: Path) -> dict:
+def verify_native_replay_sources(replays: Iterable[tuple[Path, dict]]) -> None:
+    """Recheck the Git state authenticated by the replayed suites."""
+    sources = {(repo, replay["suite"]["repository_commit"]) for repo, replay in replays}
+    for repo, commit in sorted(sources):
+        verify_repo(repo, commit)
+
+
+def evaluate_native_file_cohort(
+    path: Path, *, output: native_file_paths.Output | None = None,
+) -> dict:
     """Replay each family from files before repository-cluster aggregation."""
+    from tools.benchmark.evidence import file_digest, read_control
     from tools.benchmark.retrieval import native_file_evidence
 
-    raw, manifest = _native_cohort_manifest(path)
-
-    def bound_path(value: str) -> Path:
-        return (path.parent / value).resolve()
+    resolve = native_file_paths.resolve_path
+    manifest_dir = resolve(path.parent)
+    manifest_file = resolve(path)
+    declared_manifest = manifest_dir / path.name
+    raw, manifest = _native_cohort_manifest(declared_manifest)
+    if output is not None:
+        output.protect((
+            ("cohort manifest", path),
+            *native_file_paths.cohort_inputs(declared_manifest, manifest),
+        ))
+    file_keys = native_file_paths.COHORT_FILES
+    family_paths = [
+        {key: resolve(manifest_dir / item[key]) for key in ("repo", *file_keys)}
+        for item in manifest["families"]
+    ]
+    require(
+        len({paths["capture"] for paths in family_paths}) == len(family_paths),
+        "Native cohort capture path is repeated",
+    )
+    evidence_paths = {paths[key] for paths in family_paths for key in file_keys}
+    commitments = {source: file_digest(source) for source in sorted(evidence_paths)}
 
     families = []
-    for item in manifest["families"]:
+    for item, paths in zip(manifest["families"], family_paths, strict=True):
+        # The release validator must see symlinks on the declared paths.
         source_inputs = (
-            bound_path(item["source_universe"]),
-            bound_path(item["source_binding"]),
-            bound_path(item["base_release"]),
-            bound_path(item["target_releases"]),
+            paths["source_universe"],
+            paths["source_binding"],
+            manifest_dir / item["base_release"],
+            manifest_dir / item["target_releases"],
             item["family_id"],
         )
         replay = load_native_file_replay(
-            bound_path(item["repo"]), bound_path(item["suite"]),
-            bound_path(item["query_pack"]), bound_path(item["capture"]), source_inputs,
+            paths["repo"], paths["suite"], paths["query_pack"], paths["capture"], source_inputs,
+            expected_suite=commitments[paths["suite"]],
+            expected_query_pack=commitments[paths["query_pack"]],
+            expected_capture=commitments[paths["capture"]],
+            expected_source_universe=commitments[paths["source_universe"]],
+            expected_source_binding=commitments[paths["source_binding"]],
         )
         binding = replay["report"].get("composite_source_binding")
         require(
@@ -4588,6 +4795,21 @@ def evaluate_native_file_cohort(path: Path) -> dict:
         families.append(replay)
     result = native_file_evidence.repository_cluster_ci_from_native_families(
         families, manifest["repositories"], manifest["repository_strata"]
+    )
+    require(
+        resolve(path.parent) == manifest_dir
+        and resolve(path) == manifest_file
+        and read_control(manifest_file) == raw
+        and all(
+            resolve(manifest_dir / item[key]) == frozen
+            for item, paths in zip(manifest["families"], family_paths, strict=True)
+            for key, frozen in paths.items()
+        )
+        and all(file_digest(source) == commitment for source, commitment in commitments.items()),
+        "Native cohort input commitments changed during replay",
+    )
+    verify_native_replay_sources(
+        (paths["repo"], replay) for paths, replay in zip(family_paths, families, strict=True)
     )
     result["manifest_file_sha256"] = digest(raw)
     return result
@@ -4620,10 +4842,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     cohort.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
+        native_evaluation = args.command in ("evaluate-native-file", "evaluate-native-file-cohort")
+        output = (
+            native_file_paths.Output.prepare(
+                args.output, exists_error=f"Native evaluation output already exists: {args.output}",
+            )
+            if native_evaluation and args.output is not None else None
+        )
         if args.command == "freeze":
             _, value, _ = validate_suite(args.repo.resolve(), read_json(args.suite))
         elif args.command == "evaluate-native-file-cohort":
-            value = evaluate_native_file_cohort(args.manifest)
+            value = evaluate_native_file_cohort(args.manifest, output=output)
         elif args.command == "evaluate-native-file":
             source_inputs = (
                 args.source_universe,
@@ -4637,10 +4866,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                 or all(value is not None for value in source_inputs),
                 "composite source binding requires all five inputs",
             )
-            value = load_native_file_replay(
-                args.repo, args.suite, args.query_pack, args.runner,
+            repo = native_file_paths.resolve_path(args.repo)
+            if output is not None:
+                output.protect(
+                    (role, path)
+                    for role, path in (
+                        ("source repository", args.repo), ("suite", args.suite),
+                        ("query pack", args.query_pack), ("capture", args.runner),
+                        ("source universe", args.source_universe),
+                        ("source binding", args.source_binding), ("base release", args.base_release),
+                        ("target releases", args.target_releases),
+                    )
+                    if path is not None
+                )
+            replay = load_native_file_replay(
+                repo, args.suite, args.query_pack, args.runner,
                 source_inputs if all(value is not None for value in source_inputs) else None,
-            )["report"]
+            )
+            require(
+                native_file_paths.resolve_path(args.repo) == repo,
+                "Native evaluation repository path changed during replay",
+            )
+            verify_native_replay_sources(((repo, replay),))
+            value = replay["report"]
         elif args.command == "evaluate":
             suite, pack, run = load_evidence(args.repo.resolve(), args.suite, args.runner)
             value = evaluate(
@@ -4652,12 +4900,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         rendered = (
             json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n"
         )
-        if args.output:
+        if args.output is None:
+            sys.stdout.write(rendered)
+        elif output is not None:
+            output.write(rendered)
+        else:
             args.output.write_text(rendered, encoding="utf-8")
             if args.command == "freeze":
                 sys.stdout.write(digest(canonical(value)) + "\n")
-        else:
-            sys.stdout.write(rendered)
         return 0
     except (EvidenceError, OSError, KeyError, TypeError, ValueError) as exc:
         print("ERROR: " + str(exc), file=sys.stderr)

@@ -38,6 +38,7 @@ pub(crate) fn children(request: &UpdateRequest) -> ObjectChildren {
             [transition.owners.root.0, certificate, None, None]
         }
         UpdateKind::Reconfigure { profile } => [Some(*profile), None, None, None],
+        UpdateKind::CompactSourceLocal { .. } => [None; 4],
         UpdateKind::HistoryAdvance(transition) => {
             [Some(transition.input), Some(transition.profile), None, None]
         }
@@ -193,7 +194,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn requests() -> [UpdateRequest; 8] {
+    pub(crate) fn requests() -> [UpdateRequest; 9] {
         let history_cut: quanta_index_core::index::HistorySourceCutV1 =
             serde_json::from_value(serde_json::json!({
                 "generation": {"repo_id": "repo-a", "revision_id": "rev-a", "generation": 1},
@@ -218,6 +219,14 @@ pub(crate) mod tests {
             }),
             UpdateKind::Reconfigure {
                 profile: reference(4),
+            },
+            UpdateKind::CompactSourceLocal {
+                instance: IndexInstanceId([255; 16]),
+                expected_artifact: reference(98),
+                owner: OwnerKey {
+                    producer: ProducerId([255; 16]),
+                    stable_id: StableOwnerId([254; 16]),
+                },
             },
             UpdateKind::HistoryAdvance(quanta_index_core::index::HistoryTransition {
                 instance: IndexInstanceId([255; 16]),
@@ -337,6 +346,18 @@ pub(crate) mod tests {
             }))
             .as_slice()
                 == [reference(3)],
+        )?;
+        require(
+            children(&request(UpdateKind::CompactSourceLocal {
+                instance: IndexInstanceId([255; 16]),
+                expected_artifact: reference(98),
+                owner: OwnerKey {
+                    producer: ProducerId([255; 16]),
+                    stable_id: StableOwnerId([254; 16]),
+                },
+            }))
+            .as_slice()
+            .is_empty(),
         )?;
         for (source, projection, gold) in [
             (

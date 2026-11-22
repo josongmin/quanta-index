@@ -1,79 +1,41 @@
-//! E2E-01 — lexical full-fidelity matrix against the live driver.
+//! E2E-01 — lexical full-fidelity matrix against a pinned old-Q process.
 //!
-//! Table-driven. Every row in `SCENARIOS` ingests through the real publish
-//! path, seals, then issues a `TextQueryRequest` and asserts against the
-//! observed result. Broad executable-query inventory now lives in
-//! `runtime_rows.toml`; this rail keeps only specialized regression shapes
-//! that the closeout corpus does not express well.
+//! Table-driven. Every row in `SCENARIOS` shares one SDK-published Source
+//! generation, then queries after a real process restart. The additional
+//! `runtime_rows.toml` inventory is schema checked separately; those rows are
+//! not executed by this process rail. This rail executes the specialized
+//! regression shapes in `SCENARIOS`.
 //!
-//! The harness supports two row categories; the current live matrix happens
-//! to use only `Candidates` rows:
-//!
-//! - `ExpectedOutcome::Candidates` — wiring exists today; row must return
-//!   the exact ordered candidate-id set.
-//! - `ExpectedOutcome::ExpectedFailing { owner_ticket, .. }` — wiring is
-//!   pending the named LXE-NN ticket. The row STILL EXECUTES the query and
-//!   asserts the *current* observable behavior (typically "no match" or a
-//!   typed-unavailable code). When LXE-NN lands and the underlying engine
-//!   produces real results, the assertion goes red and the row owner
-//!   converts it to `Candidates` (or, in the same PR, introduces a
-//!   `TypedError` variant if the live behavior is a typed rejection).
-//!   That is the closed-loop guarantee.
-//!
-//! No row may be silently skipped. A row marked `ExpectedFailing` stays
-//! GREEN while its `current_observation` continues to hold; the moment
-//! the observation diverges (e.g. the owner ticket lands and the engine
-//! now returns real candidates where empty was predicted), the row goes
-//! RED with a "promote this row" message, forcing an honest update.
+//! Every `SCENARIOS` row executes and asserts an exact ordered candidate-id
+//! set. Typed query errors fail the row with their code and message.
 
 #![forbid(unsafe_code)]
 
 use anyhow::Result as AnyResult;
-use quanta_index_contract::TextQuerySyntax;
+use quanta_index_contract::lex::{
+    LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
+};
+use quanta_index_contract::{
+    ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    SearchPlaneErrorCodeV2, SymbolId, TextQuerySyntax,
+};
+use quanta_index_sdk::{QuantaIndex, SdkError, SearchCorpusBatch};
+use quanta_index_searchd_harness::{
+    legacy_reference::{
+        LegacySearchdBinary, legacy_source_replacement_from_chunks_and_symbols,
+        publish_legacy_source_batch, request_when_ready,
+    },
+    private_tempdir,
+};
+use std::error::Error;
 use std::fmt::Write as _;
-
-use crate::e2e_harness::{E2eQueryResult, E2eRuntime};
-
-/// Per-row expected outcome.
-///
-/// See module doc-comment for closed-loop semantics.
-///
-/// Variants are added only as live rows exist for them (CLAUDE.md "dead
-/// port surface is forbidden"). When LXE-NN tickets land and
-/// `ExpectedFailing` rows promote to typed-error coverage, add the
-/// `TypedError` variant in the same PR.
-#[derive(Clone, Debug)]
-enum ExpectedOutcome {
-    Candidates {
-        ids: &'static [&'static str],
-    },
-    #[expect(
-        dead_code,
-        reason = "all current lexical full-fidelity rows are green candidates; keep closed-loop variant for future regressions"
-    )]
-    ExpectedFailing {
-        owner_ticket: &'static str,
-        reason: &'static str,
-        current_observation: CurrentObservation,
-    },
-}
-
-#[expect(
-    dead_code,
-    reason = "all current lexical full-fidelity rows are green or typed-error; retained for future expected-failing rows"
-)]
-#[derive(Clone, Debug)]
-enum CurrentObservation {
-    /// Today this query returns no candidates (and no typed error).
-    Empty,
-}
 
 struct LexicalScenario {
     id: &'static str,
     /// Native LQ syntax.
     query_text: &'static str,
     top_k: u32,
-    expected: ExpectedOutcome,
+    expected_ids: &'static [&'static str],
 }
 
 /// Corpus shared by all rows.
@@ -173,7 +135,7 @@ const SCENARIOS: &[LexicalScenario] = &[
         // proves the content query surface does not leak path-only matches.
         query_text: "path_only_needle_zzz_not_present_anywhere",
         top_k: 10,
-        expected: ExpectedOutcome::Candidates { ids: &[] },
+        expected_ids: &[],
     },
     LexicalScenario {
         id: "repo_has_file_predicate_under_or_short_circuits_true_repo_gate",
@@ -182,18 +144,16 @@ const SCENARIOS: &[LexicalScenario] = &[
         // candidates on the lexical route.
         query_text: "repo:has.file(path:src/lib.rs) OR ripens",
         top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &[
-                "delta_phrase",
-                "beta_pathonly",
-                "gamma_py_same",
-                "eta_trigram_bait",
-                "alpha_content",
-                "zeta_raw",
-                "theta_symbol",
-                "epsilon_regex",
-            ],
-        },
+        expected_ids: &[
+            "delta_phrase",
+            "beta_pathonly",
+            "gamma_py_same",
+            "eta_trigram_bait",
+            "alpha_content",
+            "zeta_raw",
+            "theta_symbol",
+            "epsilon_regex",
+        ],
     },
     // ──────── case ────────
     LexicalScenario {
@@ -202,18 +162,14 @@ const SCENARIOS: &[LexicalScenario] = &[
         // the lowercase content in both rust and python rows.
         query_text: "ALPHA_CONTENT_NEEDLE",
         top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["alpha_content", "gamma_py_same"],
-        },
+        expected_ids: &["alpha_content", "gamma_py_same"],
     },
     // ──────── phrase ────────
     LexicalScenario {
         id: "phrase_exact_adjacent_matches",
         query_text: "\"lemon yellow banana\"",
         top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["delta_phrase"],
-        },
+        expected_ids: &["delta_phrase"],
     },
     LexicalScenario {
         id: "phrase_unordered_tokens_must_not_match",
@@ -222,7 +178,21 @@ const SCENARIOS: &[LexicalScenario] = &[
         // order and adjacency rather than accidental token coincidence.
         query_text: "\"banana lemon\"",
         top_k: 10,
-        expected: ExpectedOutcome::Candidates { ids: &[] },
+        expected_ids: &[],
+    },
+    LexicalScenario {
+        id: "manual_scan_same_document_keyword_phrase_and_content",
+        query_text: "index:no alpha_content_needle \"fn alpha_content_needle\" file.has.content(\"alpha_content_needle\")",
+        top_k: 10,
+        expected_ids: &["alpha_content"],
+    },
+    LexicalScenario {
+        id: "manual_scan_does_not_join_keyword_phrase_and_content_across_documents",
+        // The Rust file owns the phrase; only the Python file owns `def`.
+        // Both files own the keyword, so a cross-document conjunction leaks.
+        query_text: "index:no alpha_content_needle \"fn alpha_content_needle\" file.has.content(\"def\")",
+        top_k: 10,
+        expected_ids: &[],
     },
     // ──────── regex ────────
     LexicalScenario {
@@ -232,25 +202,177 @@ const SCENARIOS: &[LexicalScenario] = &[
         // exact verify must reject it.
         query_text: "/needle_x[0-9]/",
         top_k: 10,
-        expected: ExpectedOutcome::Candidates { ids: &[] },
+        expected_ids: &[],
     },
 ];
 
-fn ingest_corpus(rt: &mut E2eRuntime) -> AnyResult<()> {
-    for row in CORPUS {
-        rt.ingest_text("repo-e2e", row.path, row.content)?;
-        if let Some(symbol_name) = row.symbol_name {
-            rt.ingest_symbol("repo-e2e", row.path, row.id, symbol_name)?;
-        }
+#[derive(Debug)]
+struct TypedError {
+    code: SearchPlaneErrorCodeV2,
+    message: String,
+}
+
+#[derive(Debug)]
+struct QueryResult {
+    candidates: Vec<quanta_index_contract::LexicalCandidate>,
+    typed_error: Option<TypedError>,
+}
+
+fn boxed<T>(result: Result<T, Box<dyn Error>>) -> AnyResult<T> {
+    result.map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+fn pin() -> AnyResult<GenerationPin> {
+    Ok(GenerationPin::new(
+        RepoId::new("repo-e2e")?,
+        RevisionId::new("rev-e2e")?,
+        ManifestGeneration::new(1),
+    ))
+}
+
+fn language_from_path(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("rs") => "rust",
+        Some("py") => "python",
+        Some("ts") => "typescript",
+        Some("js") => "javascript",
+        Some("md") => "markdown",
+        Some(_) | None => "text",
     }
-    Ok(())
 }
 
-fn run_query(rt: &mut E2eRuntime, scenario: &LexicalScenario) -> E2eQueryResult {
-    rt.query_text(TextQuerySyntax::Native, scenario.query_text, scenario.top_k)
+fn chunk(id: u64, path: &str, text: &str) -> AnyResult<ChunkRecord> {
+    Ok(ChunkRecord {
+        chunk_id: ChunkId::new(format!("e2e-{id}-{path}")),
+        repo_relative_path: RepoRelativePath::new(path),
+        language: LanguageCode::new(language_from_path(path)).map_err(anyhow::Error::msg)?,
+        start_byte: 0,
+        end_byte: u32::try_from(text.len())?,
+        start_line: 1,
+        end_line: 2,
+        text: text.to_owned().into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
+        source_repo_id: None,
+    })
 }
 
-fn candidate_ids(result: &E2eQueryResult) -> Vec<String> {
+fn symbol(id: &str, path: &str, name: &str) -> AnyResult<SymbolRecord> {
+    Ok(SymbolRecord {
+        symbol_id: SymbolId::new(id),
+        repo_relative_path: RepoRelativePath::new(path),
+        language: LanguageCode::new(language_from_path(path)).map_err(anyhow::Error::msg)?,
+        symbol_kind: SymbolKindCode::new("function").map_err(anyhow::Error::msg)?,
+        symbol_kind_family: Some(SymbolKindFamily::Callable),
+        local_name: name.to_owned().into_boxed_str(),
+        qualified_name: format!("crate::{name}").into_boxed_str(),
+        signature: None,
+        visibility: None,
+        definition_span: SymbolSpan {
+            path: path.to_owned().into_boxed_str(),
+            byte_start: 0,
+            byte_end: u32::try_from(name.len())?,
+            line_start: 1,
+            line_end: 1,
+        },
+        container_qualified_name: Some("crate".to_owned().into_boxed_str()),
+        relationship: SymbolRelationship::Def,
+    })
+}
+
+fn with_cold_fixture<T>(
+    batch: &SearchCorpusBatch,
+    evaluate: impl FnOnce(&QuantaIndex, &GenerationPin) -> AnyResult<T>,
+) -> AnyResult<T> {
+    let root = private_tempdir()?;
+    let state_root = root.path().join("state");
+    let binary = LegacySearchdBinary::from_environment()
+        .map_err(|error| anyhow::anyhow!("pinned old-Q executable: {error}"))?;
+    let producer = boxed(binary.start(&state_root, 8))?;
+    let published = (|| -> AnyResult<()> {
+        let client = boxed(producer.connect())?;
+        let _ack = boxed(publish_legacy_source_batch(&client, batch, None))?;
+        Ok(())
+    })();
+    let stopped = producer.stop();
+    let verified = binary.verify();
+    published?;
+    boxed(stopped)?;
+    boxed(verified)?;
+
+    let reader = boxed(binary.start(&state_root, 8))?;
+    let result = (|| -> AnyResult<T> {
+        let client = boxed(reader.connect())?;
+        let pin = GenerationPin::new(
+            batch.repo_id().clone(),
+            batch.revision_id().clone(),
+            batch.generation(),
+        );
+        evaluate(&client, &pin)
+    })();
+    let stopped = reader.stop();
+    let verified = binary.verify();
+    let output = result?;
+    boxed(stopped)?;
+    boxed(verified)?;
+    Ok(output)
+}
+
+fn run_query(
+    client: &QuantaIndex,
+    pin: &GenerationPin,
+    syntax: TextQuerySyntax,
+    query: &str,
+    top_k: u32,
+) -> AnyResult<QueryResult> {
+    run_query_with_languages(client, pin, syntax, query, top_k, &[])
+}
+
+fn run_query_with_languages(
+    client: &QuantaIndex,
+    pin: &GenerationPin,
+    syntax: TextQuerySyntax,
+    query: &str,
+    top_k: u32,
+    languages: &[&str],
+) -> AnyResult<QueryResult> {
+    let languages = languages
+        .iter()
+        .map(|language| LanguageCode::new(*language).map_err(anyhow::Error::msg))
+        .collect::<AnyResult<Vec<_>>>()?;
+    let response = request_when_ready(|| {
+        let builder = client.lexical().query();
+        let builder = match syntax {
+            TextQuerySyntax::Native => builder.native(query),
+            TextQuerySyntax::CodeSearch => builder.code_search(query),
+            TextQuerySyntax::Sourcegraph => builder.sourcegraph(query),
+        };
+        let builder = if languages.is_empty() {
+            builder
+        } else {
+            builder.language_any_of(languages.clone())
+        };
+        builder.pinned(pin.clone()).top_k(top_k).execute()
+    });
+    match response {
+        Ok(page) if page.generation == *pin => Ok(QueryResult {
+            candidates: page.results,
+            typed_error: None,
+        }),
+        Ok(page) => Err(anyhow::anyhow!(
+            "pinned old-Q returned generation {:?} for requested {:?}",
+            page.generation,
+            pin
+        )),
+        Err(SdkError::Remote { code, message, .. }) => Ok(QueryResult {
+            candidates: Vec::new(),
+            typed_error: Some(TypedError { code, message }),
+        }),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn candidate_ids(result: &QueryResult) -> Vec<String> {
     result
         .candidates
         .iter()
@@ -273,7 +395,7 @@ fn corpus_id_for_candidate_id(candidate_id: &str) -> Option<&'static str> {
     CORPUS.iter().find(|row| row.path == path).map(|row| row.id)
 }
 
-fn observed_corpus_ids(result: &E2eQueryResult) -> Result<Vec<&'static str>, Vec<String>> {
+fn observed_corpus_ids(result: &QueryResult) -> Result<Vec<&'static str>, Vec<String>> {
     let mut observed = Vec::with_capacity(result.candidates.len());
     let mut unmapped = Vec::new();
     for candidate in &result.candidates {
@@ -295,7 +417,7 @@ struct RowReport {
     failure: Option<String>,
 }
 
-fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
+fn assess(scenario: &LexicalScenario, result: &QueryResult) -> RowReport {
     let observed = match observed_corpus_ids(result) {
         Ok(observed) => observed,
         Err(unmapped_candidate_ids) => {
@@ -308,119 +430,148 @@ fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
             };
         }
     };
-    match &scenario.expected {
-        ExpectedOutcome::Candidates { ids } => {
-            if let Some(err) = &result.typed_error {
-                return RowReport {
-                    id: scenario.id,
-                    failure: Some(format!(
-                        "expected Candidates ids={ids:?}, got typed error code={} message={}",
-                        err.code, err.message
-                    )),
-                };
-            }
-            let expected: Vec<&'static str> = (*ids).to_vec();
-            if observed == expected {
-                RowReport {
-                    id: scenario.id,
-                    failure: None,
-                }
-            } else {
-                RowReport {
-                    id: scenario.id,
-                    failure: Some(format!(
-                        "expected ids={expected:?}, observed ids={observed:?}, raw candidate ids={:?}, raw candidates={:?}",
-                        candidate_ids(result),
-                        result.candidates
-                    )),
-                }
-            }
+    let ids = scenario.expected_ids;
+    if let Some(err) = &result.typed_error {
+        return RowReport {
+            id: scenario.id,
+            failure: Some(format!(
+                "expected Candidates ids={ids:?}, got typed error code={} message={}",
+                err.code.as_wire_str(),
+                err.message
+            )),
+        };
+    }
+    let expected: Vec<&'static str> = ids.to_vec();
+    if observed == expected {
+        RowReport {
+            id: scenario.id,
+            failure: None,
         }
-        ExpectedOutcome::ExpectedFailing {
-            owner_ticket,
-            reason,
-            current_observation,
-        } => {
-            // Assert against the CURRENT behavior. When the owner ticket
-            // lands and the behavior moves toward the future expectation,
-            // this assertion goes red and the row must be updated.
-            let observed_error = result.typed_error.as_ref().map(|e| e.code.as_str());
-            match current_observation {
-                CurrentObservation::Empty => {
-                    // Closed-loop: row stays GREEN while the *current*
-                    // observation matches the prediction. When the owner
-                    // ticket lands and the engine produces real results,
-                    // `observed` will no longer be empty (or a typed error
-                    // will appear) — the assertion goes red and the row
-                    // owner must promote it to `Candidates`/`TypedError`.
-                    if observed.is_empty() && observed_error.is_none() {
-                        RowReport {
-                            id: scenario.id,
-                            failure: None,
-                        }
-                    } else {
-                        RowReport {
-                            id: scenario.id,
-                            failure: Some(format!(
-                                "[ExpectedFailing owner={owner_ticket}] predicted empty current observation, but observed ids={observed:?} typed_error={observed_error:?}; {owner_ticket} may have landed — promote this row to Candidates/TypedError. reason={reason}"
-                            )),
-                        }
-                    }
-                }
-            }
+    } else {
+        RowReport {
+            id: scenario.id,
+            failure: Some(format!(
+                "expected ids={expected:?}, observed ids={observed:?}, raw candidate ids={:?}, raw candidates={:?}",
+                candidate_ids(result),
+                result.candidates
+            )),
         }
     }
 }
 
 #[test]
 fn lexical_full_fidelity_matrix() -> AnyResult<()> {
-    let mut rt = E2eRuntime::boot()?;
-    ingest_corpus(&mut rt)?;
-    _ = rt.seal()?;
-    let mut rt = rt.reopen();
-
-    let mut failures: Vec<RowReport> = Vec::new();
-    let mut green_count: usize = 0;
-    let mut expected_failing_count: usize = 0;
-
-    for scenario in SCENARIOS {
-        if matches!(scenario.expected, ExpectedOutcome::ExpectedFailing { .. }) {
-            expected_failing_count = expected_failing_count.saturating_add(1);
-        }
-        let result = run_query(&mut rt, scenario);
-        let report = assess(scenario, &result);
-        if report.failure.is_some() {
-            failures.push(report);
-        } else {
-            green_count = green_count.saturating_add(1);
+    let pin = pin()?;
+    let mut chunks = Vec::with_capacity(CORPUS.len());
+    let mut symbols = Vec::new();
+    for (index, row) in CORPUS.iter().enumerate() {
+        chunks.push(chunk(u64::try_from(index + 1)?, row.path, row.content)?);
+        if let Some(name) = row.symbol_name {
+            symbols.push(symbol(row.id, row.path, name)?);
         }
     }
+    let batch = boxed(legacy_source_replacement_from_chunks_and_symbols(
+        &pin.repo_id,
+        &pin.revision_id,
+        pin.manifest_generation.get(),
+        chunks,
+        symbols,
+    ))?;
+    with_cold_fixture(&batch, |client, pin| {
+        let mut failures: Vec<RowReport> = Vec::new();
+        let mut green_count: usize = 0;
 
-    if failures.is_empty() {
-        return Ok(());
-    }
-
-    let mut buf = String::new();
-    writeln!(
-        buf,
-        "E2E-01 lexical_full_fidelity_matrix: {} of {} rows failed (expected-failing rows in this file: {}, rows currently green: {})",
-        failures.len(),
-        SCENARIOS.len(),
-        expected_failing_count,
-        green_count
-    )?;
-    for failure in &failures {
-        if let Some(message) = &failure.failure {
-            writeln!(buf, "  - [{}] {}", failure.id, message)?;
+        for scenario in SCENARIOS {
+            let result = run_query(
+                client,
+                pin,
+                TextQuerySyntax::Native,
+                scenario.query_text,
+                scenario.top_k,
+            )?;
+            let report = assess(scenario, &result);
+            if report.failure.is_some() {
+                failures.push(report);
+            } else {
+                green_count = green_count.saturating_add(1);
+            }
         }
-    }
-    Err(anyhow::anyhow!("{buf}"))
+
+        for (id, languages, top_k, expected_ids) in [
+            (
+                "indexed_language_unconstrained_top_one_is_rust",
+                &[][..],
+                1,
+                &["alpha_content"][..],
+            ),
+            (
+                "indexed_language_filter_precedes_top_one",
+                &["python"][..],
+                1,
+                &["gamma_py_same"][..],
+            ),
+            (
+                "indexed_language_unique_or_set",
+                &["rust", "python"][..],
+                10,
+                &["alpha_content", "gamma_py_same"][..],
+            ),
+            (
+                "indexed_language_duplicate_or_set_preserves_membership",
+                &["rust", "python", "rust"][..],
+                10,
+                &["alpha_content", "gamma_py_same"][..],
+            ),
+        ] {
+            let scenario = LexicalScenario {
+                id,
+                query_text: "ALPHA_CONTENT_NEEDLE",
+                top_k,
+                expected_ids,
+            };
+            let result = run_query_with_languages(
+                client,
+                pin,
+                TextQuerySyntax::Native,
+                scenario.query_text,
+                top_k,
+                languages,
+            )?;
+            let report = assess(&scenario, &result);
+            if report.failure.is_some() {
+                failures.push(report);
+            } else {
+                green_count = green_count.saturating_add(1);
+            }
+        }
+
+        if failures.is_empty() {
+            return Ok(());
+        }
+
+        let mut buf = String::new();
+        writeln!(
+            buf,
+            "E2E-01 lexical_full_fidelity_matrix: {} of {} rows failed (rows currently green: {})",
+            failures.len(),
+            SCENARIOS.len() + 4,
+            green_count
+        )?;
+        for failure in &failures {
+            if let Some(message) = &failure.failure {
+                writeln!(buf, "  - [{}] {}", failure.id, message)?;
+            }
+        }
+        Err(anyhow::anyhow!("{buf}"))
+    })
 }
 
 #[test]
 fn code_search_components_use_symbol_names_through_live_driver() -> AnyResult<()> {
-    let mut rt = E2eRuntime::boot()?;
-    for (path, content, symbols) in [
+    let pin = pin()?;
+    let mut chunks = Vec::new();
+    let mut symbol_records = Vec::new();
+    for (ordinal, (path, content, symbols)) in [
         ("components/exact.rs", "fn cleanUp() {}", &["cleanUp"][..]),
         (
             "components/longer.rs",
@@ -437,58 +588,76 @@ fn code_search_components_use_symbol_names_through_live_driver() -> AnyResult<()
             "fn upClean() {}",
             &["upClean"][..],
         ),
-    ] {
-        rt.ingest_text("repo-e2e", path, content)?;
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        chunks.push(chunk(u64::try_from(ordinal + 1)?, path, content)?);
         for (index, name) in symbols.iter().enumerate() {
-            rt.ingest_symbol("repo-e2e", path, &format!("{path}-{index}"), name)?;
+            symbol_records.push(symbol(&format!("{path}-{index}"), path, name)?);
         }
     }
-    _ = rt.seal()?;
-    let mut rt = rt.reopen();
-    let result = rt.query_text(TextQuerySyntax::CodeSearch, "components:\"clean up\"", 10);
-    anyhow::ensure!(
-        result.typed_error.is_none(),
-        "component query returned typed error: {:?}",
-        result.typed_error
-    );
-    let paths = result
-        .candidates
-        .iter()
-        .map(|candidate| candidate.repo_relative_path.as_str())
-        .collect::<Vec<_>>();
-    anyhow::ensure!(
-        paths == ["components/exact.rs", "components/longer.rs"],
-        "unexpected component candidate order: {paths:?}"
-    );
-    let exact = result
-        .candidates
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("exact component candidate is absent"))?;
-    let longer = result
-        .candidates
-        .get(1)
-        .ok_or_else(|| anyhow::anyhow!("longer component candidate is absent"))?;
-    anyhow::ensure!(
-        exact.score > longer.score,
-        "exact component score {} must exceed longer component score {}",
-        exact.score,
-        longer.score
-    );
+    let batch = boxed(legacy_source_replacement_from_chunks_and_symbols(
+        &pin.repo_id,
+        &pin.revision_id,
+        pin.manifest_generation.get(),
+        chunks,
+        symbol_records,
+    ))?;
+    with_cold_fixture(&batch, |client, pin| {
+        let result = run_query(
+            client,
+            pin,
+            TextQuerySyntax::CodeSearch,
+            "components:\"clean up\"",
+            10,
+        )?;
+        anyhow::ensure!(
+            result.typed_error.is_none(),
+            "component query returned typed error: {:?}",
+            result.typed_error
+        );
+        let paths = result
+            .candidates
+            .iter()
+            .map(|candidate| candidate.repo_relative_path.as_str())
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            paths == ["components/exact.rs", "components/longer.rs"],
+            "unexpected component candidate order: {paths:?}"
+        );
+        let exact = result
+            .candidates
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("exact component candidate is absent"))?;
+        let longer = result
+            .candidates
+            .get(1)
+            .ok_or_else(|| anyhow::anyhow!("longer component candidate is absent"))?;
+        anyhow::ensure!(
+            exact.score > longer.score,
+            "exact component score {} must exceed longer component score {}",
+            exact.score,
+            longer.score
+        );
 
-    let absent = rt.query_text(
-        TextQuerySyntax::CodeSearch,
-        "components:\"clean missing\"",
-        10,
-    );
-    anyhow::ensure!(
-        absent.typed_error.is_none(),
-        "absent component query returned typed error: {:?}",
-        absent.typed_error
-    );
-    anyhow::ensure!(
-        absent.candidates.is_empty(),
-        "absent component query returned {} candidates",
-        absent.candidates.len()
-    );
-    Ok(())
+        let absent = run_query(
+            client,
+            pin,
+            TextQuerySyntax::CodeSearch,
+            "components:\"clean missing\"",
+            10,
+        )?;
+        anyhow::ensure!(
+            absent.typed_error.is_none(),
+            "absent component query returned typed error: {:?}",
+            absent.typed_error
+        );
+        anyhow::ensure!(
+            absent.candidates.is_empty(),
+            "absent component query returned {} candidates",
+            absent.candidates.len()
+        );
+        Ok(())
+    })
 }

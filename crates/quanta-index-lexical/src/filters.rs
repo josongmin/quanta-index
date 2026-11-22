@@ -27,7 +27,7 @@ use crate::symbol::{ResultSurface, SymbolPlannerError, resolve_result_surface};
 /// Today the executor lowers `pattern` into a regex match over the indexed
 /// `repo_id` facet (`ChunkRecord::source_repo_id` when present, otherwise the
 /// batch `repo_id`); `revs` is recorded but is not executable on the live
-/// Tantivy adapter until a history producer exists.
+/// Native text route until a history producer exists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepoConstraint {
     pub pattern: String,

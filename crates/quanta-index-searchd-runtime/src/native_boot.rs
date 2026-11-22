@@ -10,8 +10,8 @@ mod restore_forward;
 #[path = "native_boot/settle_published_v1.rs"]
 mod settle_published_v1;
 
-pub(crate) use restore_forward::{RestoreForwardSourceRefusalV1, HeldPreviousNativeV1};
 pub(super) use restore_forward::publish_v1 as publish_restore_forward_under_locked_selection_v1;
+pub(crate) use restore_forward::{HeldPreviousNativeV1, RestoreForwardSourceRefusalV1};
 pub(crate) use settle_published_v1::with_verified_settlement_root_v1;
 
 use std::{fs, sync::Arc};
@@ -168,6 +168,12 @@ pub(crate) fn with_selected_native_history_v1<T>(
     Ok(result)
 }
 
+enum ProtectedRouteCheckV1 {
+    Retained,
+    Current,
+    CandidateResume,
+}
+
 fn authenticate(
     authority: &NativeBootAuthority,
     snapshot: &quanta_index_catalog::NativeBootCatalogSnapshot,
@@ -187,7 +193,11 @@ fn authenticate(
         recovery,
         None,
         None,
-        require_current_routes,
+        if require_current_routes {
+            ProtectedRouteCheckV1::Current
+        } else {
+            ProtectedRouteCheckV1::Retained
+        },
         budget,
     )
     .map(|_| ())
@@ -202,7 +212,7 @@ fn authenticate_with_legacy_history_v1(
     recovery: Option<&RecoveryCapture<'_, '_>>,
     legacy_history: Option<LegacyHistoryRecoveryV1<'_>>,
     native_history: Option<&[FundedNativeRestoreInputV1]>,
-    require_current_routes: bool,
+    route_check: ProtectedRouteCheckV1,
     budget: &mut WorkBudget,
 ) -> Result<Option<FundedInstalledHistoryV1>> {
     let root = authority.lease.state_root_identity_v1();
@@ -251,23 +261,33 @@ fn authenticate_with_legacy_history_v1(
             stored,
             budget,
             |routes, budget| {
-                quanta_index_catalog::verify_native_protected_source_routes_v1(
+                match route_check {
+                ProtectedRouteCheckV1::Retained => quanta_index_catalog::verify_native_protected_source_routes_v1(
                     root,
                     authority.io.as_ref(),
                     manifest,
                     routes,
                     budget,
-                )?;
-                if require_current_routes {
+                ),
+                ProtectedRouteCheckV1::Current => {
                     quanta_index_catalog::verify_native_protected_source_routes_if_current_v1(
                         root,
                         authority.io.as_ref(),
                         manifest,
                         routes,
                         budget,
-                    )?;
+                    )
                 }
-                Ok(())
+                ProtectedRouteCheckV1::CandidateResume => {
+                    quanta_index_catalog::verify_native_protected_source_routes_for_candidate_resume_v1(
+                        root,
+                        authority.io.as_ref(),
+                        manifest,
+                        routes,
+                        budget,
+                    )
+                }
+            }
             },
         )?;
     }
@@ -943,9 +963,10 @@ fn with_recovery_boot_authority<T>(
     callback(authority, budget)
 }
 
-pub(super) fn require_unselected_candidate(
+pub(super) fn require_candidate_start_v1(
     authority: &NativeBootAuthority,
     config: &ValidatedConfig,
+    registry: &AdapterRegistry,
     request: &RequestBudgetV1,
 ) -> Result<()> {
     let root = authority.lease.state_root_identity_v1();
@@ -955,8 +976,31 @@ pub(super) fn require_unselected_candidate(
         Ok(_) => with_admitted_control_budget(config, request.clone(), false, |budget, _| {
             verify_existing_native_format(authority, &config.socket_path, budget)?;
             let snapshot = verify_native_boot_catalog(root, authority.io.as_ref(), budget)?;
-            if snapshot.selected.is_some() {
-                return Err(IndexError::Conflict.into());
+            if let Some(selected) = snapshot.selected.as_ref() {
+                // The pinned config names this exact candidate root. A selected
+                // BOOT without protected routes is an installed-root boundary,
+                // never a resumable candidate publication.
+                if selected.protected_source_routes.is_none() {
+                    return Err(IndexError::Conflict.into());
+                }
+                let _installed_history = authenticate_with_legacy_history_v1(
+                    authority,
+                    &snapshot,
+                    selected,
+                    registry,
+                    config.resources.physical.inventory.max_entries,
+                    None,
+                    None,
+                    None,
+                    ProtectedRouteCheckV1::CandidateResume,
+                    budget,
+                )?;
+                let after = verify_native_boot_catalog(root, authority.io.as_ref(), budget)?;
+                if after.root_nonce != snapshot.root_nonce
+                    || after.selected.as_ref() != Some(selected)
+                {
+                    return Err(IndexError::DigestConflict.into());
+                }
             }
             authority.lease.require_state_root_v1(root)?;
             budget.checkpoint()?;
@@ -1005,28 +1049,27 @@ pub(super) fn execute(
                     let operation = command
                         .select_operation
                         .ok_or_else(|| anyhow!("missing native operation"))?;
-                    let candidate =
-                        if matches!(
-                            command.mode,
-                            NativeCommandModeV1::SelectCandidate {
-                                protected_source_routes: None,
-                                ..
-                            }
-                        ) {
-                            verify_native_boot_current_candidate(
-                                &root,
-                                authority.io.as_ref(),
-                                operation,
-                                &mut budget,
-                            )?
-                        } else {
-                            verify_native_boot_candidate(
-                                &root,
-                                authority.io.as_ref(),
-                                operation,
-                                &mut budget,
-                            )?
-                        };
+                    let candidate = if matches!(
+                        command.mode,
+                        NativeCommandModeV1::SelectCandidate {
+                            protected_source_routes: None,
+                            ..
+                        }
+                    ) {
+                        verify_native_boot_current_candidate(
+                            &root,
+                            authority.io.as_ref(),
+                            operation,
+                            &mut budget,
+                        )?
+                    } else {
+                        verify_native_boot_candidate(
+                            &root,
+                            authority.io.as_ref(),
+                            operation,
+                            &mut budget,
+                        )?
+                    };
                     let presealed = match command.mode {
                         NativeCommandModeV1::SelectCandidate {
                             protected_source_routes: Some(reference),
@@ -1364,7 +1407,7 @@ fn verify_recovery_candidate_with_legacy_history_v1(
         }),
         legacy_history,
         native_history,
-        false,
+        ProtectedRouteCheckV1::Retained,
         budget,
     )?;
     require_retired(authority)?;
@@ -1627,15 +1670,23 @@ impl VerifiedLegacyRepoMapV1 {
         config: &ValidatedConfig,
         budget: &mut WorkBudget,
     ) -> Result<()> {
-        let root = self.separate.as_ref().or(legacy)
+        let root = self
+            .separate
+            .as_ref()
+            .or(legacy)
             .ok_or_else(|| anyhow::anyhow!("RepoMap proof lost its retained Legacy root"))?;
         root.require_repomap_locator_v1(self.locator, budget)?;
-        self.files.require_current_v1(root.root(), root.objects(), budget)?;
+        self.files
+            .require_current_v1(root.root(), root.objects(), budget)?;
         if self.separate.is_some() {
-            let selection = config.legacy_repomap_selection.as_ref()
+            let selection = config
+                .legacy_repomap_selection
+                .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("separate RepoMap selection binding disappeared"))?;
             LockedDeploymentSelectionV1::require_legacy_repomap_selection_v1(
-                &selection.path, quanta_index_core::index::Digest(selection.sha256), budget,
+                &selection.path,
+                quanta_index_core::index::Digest(selection.sha256),
+                budget,
             )?;
             root.require_current_and_retired(budget)?;
         }
@@ -1704,11 +1755,7 @@ fn verify_legacy_repomap_v1(
     let (lease, memory) = acquire_recovery_root_v1(root, budget)?;
     let native_io = native_io.ok_or(IndexError::SnapshotUnavailable)?;
     let authority = legacy_read_factory::LegacyReadAuthorityV1::acquire(
-        &saved,
-        native_io,
-        lease,
-        memory,
-        budget,
+        &saved, native_io, lease, memory, budget,
     )?;
     authority.require_repomap_locator_v1(*locator_digest, budget)?;
     let observed = quanta_index_catalog::verify_legacy_catalog_quiescence_v1(

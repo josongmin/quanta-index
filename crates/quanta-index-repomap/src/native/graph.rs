@@ -6,6 +6,7 @@
 
 mod affected;
 mod contribution;
+mod prior_file;
 mod query;
 mod rank_query;
 
@@ -24,12 +25,15 @@ use sha2::{Digest as _, Sha256};
 
 pub use contribution::{GraphEdge, GraphNode, GraphOwnerOutput};
 pub use query::{GraphPage, GraphQuery, GraphRow, NativeGraphReader};
+pub use prior_file::{NativeRepoMapPriorFileContextV1, NativeRepoMapPriorFileReaderV1};
 pub use rank_query::{NativeRepoMapRankPage, NativeRepoMapRankReader};
 
 const MAX_AFFECTED_GRAPH_ITEMS: usize = 4096;
+const TYPED_FACTS_ROOT_EPOCH: u8 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct GraphRoot {
+    facts_epoch: u8,
     input: InputBinding,
     projection: ProjectionBinding,
     owners: MapRoot,
@@ -38,6 +42,7 @@ struct GraphRoot {
     incoming: MapRoot,
 }
 quanta_index_contract::native_serde_struct!(GraphRoot {
+    facts_epoch: u8,
     input: InputBinding,
     projection: ProjectionBinding,
     owners: MapRoot,
@@ -92,6 +97,7 @@ impl NativeGraph {
         let mut root = match prior {
             Some(binding) => load_root(binding, context.objects, context.budget)?,
             None => GraphRoot {
+                facts_epoch: TYPED_FACTS_ROOT_EPOCH,
                 input,
                 projection: *projection,
                 owners: MapRoot(None),
@@ -244,7 +250,8 @@ fn load_root(
     }
     let root: GraphRoot = serde_json::from_slice(&stored.payload)
         .map_err(|error| IndexError::CorruptObject(format!("graph root: {error}")))?;
-    if root.input != binding.input
+    if root.facts_epoch != TYPED_FACTS_ROOT_EPOCH
+        || root.input != binding.input
         || binding.logical_commitment != Digest(Sha256::digest(&stored.payload).into())
     {
         return Err(IndexError::CorruptObject(

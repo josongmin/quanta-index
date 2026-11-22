@@ -69,6 +69,8 @@ def heading_anchors(path: Path) -> frozenset[str]:
 
 def link_issue(doc_path: Path, raw_target: str, repo_root: Path = REPO_ROOT) -> str | None:
     target = raw_target.strip()
+    if target.startswith("<") and target.endswith(">"):
+        target = target[1:-1]
     if not target or "://" in target or target.startswith("mailto:"):
         return None
     normalized, _, fragment = target.partition("#")

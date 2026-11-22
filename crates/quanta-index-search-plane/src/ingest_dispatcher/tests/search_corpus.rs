@@ -2289,46 +2289,62 @@ fn repairing_a_generation_settles_a_failed_scrubs_old_fence() -> TestRes {
 /// before any mutation with the repair to perform.
 #[test]
 fn a_delta_over_a_corrupt_base_is_refused_with_the_repair() -> TestRes {
-    let probe = ZeroMutationProbe::new(Arc::new(CorruptTrackGeneration {
-        corrupt: SearchPlaneTrackKind::Semantic,
-        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
-    }));
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+
     let mut delta = fixture_search_corpus_batch()?;
     delta.mode = BatchIngestMode::Delta;
-    delta.base_generation = Some(ManifestGeneration::new(3));
+    let base = ManifestGeneration::new(3);
+    delta.base_generation = Some(base);
     restamp_search_corpus_fixture(&mut delta)?;
     delta.validate_v1()?;
-    probe
-        .ledger
-        .write()
-        .map_err(|err| format!("ledger poisoned: {err}"))?
-        .record_historically_sealed_search_corpus(
-            &delta.repo_id,
-            &delta.revision_id,
-            ManifestGeneration::new(3),
-            "manifest:base",
-        );
-    for (label, outcome) in [
+    for (corrupt, failure) in [
         (
-            "preflight",
-            probe.materializer.preflight_batch(&delta, None),
+            SearchPlaneTrackKind::Semantic,
+            SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
         ),
         (
-            "publish",
-            probe
-                .materializer
-                .publish_batch(&delta, &RequestBudgetV1::unbounded())
-                .map(|_receipt| ()),
+            SearchPlaneTrackKind::Lexical,
+            SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
         ),
     ] {
-        match outcome {
-            Err(CoreError::Typed { code, message })
-                if code == quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired
-                    && message.contains("publish a ReplaceGeneration seal batch") => {}
-            other => return Err(format!("{label} over a corrupt base answered {other:?}").into()),
+        let probe = ZeroMutationProbe::new(Arc::new(CorruptTrackGeneration {
+            corrupt,
+            code: failure,
+        }));
+        probe
+            .ledger
+            .write()
+            .map_err(|err| format!("ledger poisoned: {err}"))?
+            .record_historically_sealed_search_corpus(
+                &delta.repo_id,
+                &delta.revision_id,
+                base,
+                "manifest:base",
+            );
+        let preflight = probe.materializer.preflight_batch(&delta, None);
+        probe.assert_nothing_touched("corrupt DELTA base preflight")?;
+        let publish = probe
+            .materializer
+            .publish_batch(&delta, &RequestBudgetV1::unbounded())
+            .map(|_receipt| ());
+        probe.assert_nothing_touched("corrupt DELTA base publish")?;
+        for (label, outcome) in [("preflight", preflight), ("publish", publish)] {
+            match outcome {
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired,
+                    message,
+                }) if message.contains("publish a ReplaceGeneration seal batch")
+                    && message.contains(failure.as_wire_str()) => {}
+                other => {
+                    return Err(format!(
+                        "{label} over a {corrupt:?} base with {failure} answered {other:?}"
+                    )
+                    .into());
+                }
+            }
         }
     }
-    probe.assert_nothing_touched("corrupt delta base")
+    Ok(())
 }
 
 struct RefusingSemanticPreflight {

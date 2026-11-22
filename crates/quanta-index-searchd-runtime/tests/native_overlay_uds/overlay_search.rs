@@ -1,9 +1,16 @@
 //! Selected native text search with one live, revision-fenced overlay corpus.
 
 use super::*;
-use quanta_index_contract::native_protocol::{
-    NativeOverlayTextQuery, NativeOverlayTextResult, NativeOverlayTextSource,
+use quanta_index_contract::{
+    index::ObjectRef,
+    native_protocol::{
+        NativeOverlayTextQuery, NativeOverlayTextResult, NativeOverlayTextSource,
+        NativeTextPreviewEvidence,
+    },
 };
+
+const SOURCE_PATH: &str = "src/a.rs";
+const DURABLE_TEXT: &str = "typed durable source";
 
 fn other_owner() -> OwnerKey {
     OwnerKey {
@@ -42,14 +49,65 @@ fn require_overlay_conflict(
     )
 }
 
-#[test]
-fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResult {
-    let root = tempfile::tempdir()?;
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
-    let socket = root.path().join("native.sock");
-    let running = RunningService::start(service(root.path(), &socket, true)?);
-    let client = NativeUdsClient::new(socket);
+fn stage_fixture_source(
+    client: &NativeUdsClient,
+    base: ViewRef,
+    sequence: u64,
+    expected: Option<ObjectRef>,
+    text: &str,
+) -> TestResult<(ObjectRef, UpdateRequest)> {
+    let predecessor = sequence
+        .checked_sub(2)
+        .ok_or("fixture source sequence starts at 2")?;
+    let event_sequence = sequence
+        .checked_sub(1)
+        .ok_or("fixture source event underflow")?;
+    let key = operation(sequence);
+    let ingress = client.begin_input(key, &budget())?;
+    let source = client.stage_source(
+        ingress,
+        SOURCE_PATH.into(),
+        text.as_bytes(),
+        SourceTextAdmission::Utf8 {
+            policy: Digest([31; 32]),
+        },
+        &budget(),
+    )?;
+    let owners = client.stage_mutations(
+        ingress,
+        [OwnerMutation {
+            owner: owner(),
+            expected,
+            next: Some(source),
+        }],
+        &budget(),
+    )?;
+    let mut transition = SourceTransition {
+        expected_source: client
+            .read_view(ViewSelection::Exact(base), &budget())?
+            .source,
+        owners,
+        events: Vec::new(),
+    };
+    transition.events.push(SourceEvent {
+        producer: key.producer,
+        stream: key.stream,
+        stream_epoch: key.stream_epoch,
+        predecessor,
+        sequence: event_sequence,
+        payload: transition.owner_digest()?,
+    });
+    Ok((
+        source,
+        UpdateRequest {
+            operation: key,
+            expected_view: base,
+            kind: UpdateKind::SourceAdvance(transition),
+        },
+    ))
+}
 
+fn publish_fixture(client: &NativeUdsClient) -> TestResult<(ViewRef, ObjectRef, UpdateRequest)> {
     let NativeIndexResponse::Created(genesis) = client.request(
         NativeIndexRequest::CreateWorkspace {
             workspace: workspace(),
@@ -69,7 +127,7 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
         &budget(),
     )?;
     let configured = published(
-        &client,
+        client,
         operation(1),
         &client.submit(
             UpdateRequest {
@@ -80,53 +138,23 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
             &budget(),
         )?,
     )?;
-    let key = operation(2);
-    let ingress = client.begin_input(key, &budget())?;
-    let source = client.stage_source(
-        ingress,
-        "src/a.rs".into(),
-        b"typed durable source",
-        SourceTextAdmission::Utf8 {
-            policy: Digest([31; 32]),
-        },
-        &budget(),
-    )?;
-    let mutations = client.stage_mutations(
-        ingress,
-        [OwnerMutation {
-            owner: owner(),
-            expected: None,
-            next: Some(source),
-        }],
-        &budget(),
-    )?;
-    let mut transition = SourceTransition {
-        expected_source: client
-            .read_view(ViewSelection::Exact(configured), &budget())?
-            .source,
-        owners: mutations,
-        events: Vec::new(),
-    };
-    transition.events.push(SourceEvent {
-        producer: key.producer,
-        stream: key.stream,
-        stream_epoch: key.stream_epoch,
-        predecessor: 0,
-        sequence: 1,
-        payload: transition.owner_digest()?,
-    });
+    let (source, request) = stage_fixture_source(client, configured, 2, None, DURABLE_TEXT)?;
     let selected = published(
-        &client,
-        key,
-        &client.submit(
-            UpdateRequest {
-                operation: key,
-                expected_view: configured,
-                kind: UpdateKind::SourceAdvance(transition),
-            },
-            &budget(),
-        )?,
+        client,
+        request.operation,
+        &client.submit_borrowed(&request, &budget())?,
     )?;
+    Ok((selected, source, request))
+}
+
+#[test]
+fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResult {
+    let root = tempfile::tempdir()?;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
+    let socket = root.path().join("native.sock");
+    let running = RunningService::start(service(root.path(), &socket, true)?);
+    let client = NativeUdsClient::new(socket);
+    let (selected, source, _) = publish_fixture(&client)?;
     let durable = client.search_text(
         ViewSelection::Exact(selected),
         native_text_spec().instance,
@@ -440,5 +468,196 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
         "typed",
         None,
     ))?;
+    running.stop()
+}
+
+#[test]
+fn interrupted_overlay_save_preserves_sealed_view_bytes_across_reopen() -> TestResult {
+    const CANDIDATE: &str = "interrupted replacement";
+    let root = tempfile::tempdir()?;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
+    let socket = root.path().join("native.sock");
+    let running = RunningService::start(service(root.path(), &socket, true)?);
+    let client = NativeUdsClient::new(socket.clone());
+    let (selected, source, original) = publish_fixture(&client)?;
+    let exact = ViewSelection::Exact(selected);
+    let before = client.read_view(exact, &budget())?;
+    let text_instance = native_text_spec().instance;
+    let durable =
+        client.search_text_preview(exact, text_instance, text_request("typed"), &budget())?;
+    let [preview] = durable.previews.as_slice() else {
+        return Err("the sealed view did not return exactly one Source preview".into());
+    };
+    let NativeTextPreviewEvidence::Excerpt(excerpt) = &preview.evidence else {
+        return Err("the sealed Source preview has no physical excerpt".into());
+    };
+    require(
+        durable.ranking.view == selected
+            && durable.ranking.exhaustive
+            && durable.ranking.matched == 1
+            && preview.source == source
+            && excerpt.text == DURABLE_TEXT,
+        "published view was missing the original Source excerpt",
+    )?;
+    let object_root = root.path().join("native-objects");
+    let source_path = native_object_files::object_file(&object_root, source)?;
+    let artifact_path = native_object_files::object_file(&object_root, durable.ranking.artifact)?;
+    let source_bytes = std::fs::read(&source_path)?;
+    let artifact_bytes = std::fs::read(&artifact_path)?;
+
+    let changed = UpdateRequest {
+        expected_view: selected,
+        ..original.clone()
+    };
+    require(
+        matches!(client.submit(changed, &budget()), Err(NativeUdsError::Refused(error))
+            if error.code == NativeIndexErrorCode::DigestConflict),
+        "changed replay reused the sealed publication key",
+    )?;
+    require(
+        client.submit_borrowed(&original, &budget())?
+            == SubmitOutcome::Terminal(OperationStatus::Published(selected)),
+        "the exact original request lost its sealed receipt",
+    )?;
+
+    let publisher = client.begin_interaction_publisher(Duration::from_secs(30), &budget())?;
+    let session = NativeOverlaySession {
+        workspace: workspace(),
+        publisher,
+        epoch: 1,
+    };
+    let document = NativeOverlayDocument {
+        session,
+        owner: owner(),
+    };
+    require(
+        client.overlay(NativeOverlayRequest::Begin { session }, &budget())?
+            == NativeOverlayReply::Begun(session),
+        "replacement overlay session did not begin",
+    )?;
+    require(
+        client.overlay(
+            NativeOverlayRequest::Update {
+                document,
+                expected_revision: None,
+                revision: 1,
+                text: Some(CANDIDATE.into()),
+                path: Some(SOURCE_PATH.into()),
+            },
+            &budget(),
+        )? == NativeOverlayReply::Updated {
+            document,
+            revision: 1,
+        },
+        "replacement overlay edit was not accepted",
+    )?;
+    let (candidate, request) = stage_fixture_source(&client, selected, 3, Some(source), CANDIDATE)?;
+    let candidate_key = request.operation;
+    let candidate_path = native_object_files::object_file(&object_root, candidate)?;
+    require(
+        candidate != source && !native_object_files::absent_nofollow(&candidate_path)?,
+        "replacement Source was not physically staged",
+    )?;
+    require(
+        client.bind_overlay_save(
+            NativeOverlaySaveIntent {
+                document,
+                revision: 1,
+                expected_source: Some(source),
+                request,
+            },
+            &budget(),
+        )? == NativeOverlayReply::SaveBound {
+            document,
+            revision: 1,
+            operation: candidate_key,
+        },
+        "replacement Source was not bound to the live overlay revision",
+    )?;
+    // The save was staged and bound, but no SourceAdvance was submitted.
+    running.stop()?;
+
+    let reopened = RunningService::start(service(root.path(), &socket, true)?);
+    let latest = ViewSelection::Latest {
+        workspace: workspace(),
+        epoch: 1,
+    };
+    require(
+        client.read_view(latest, &budget())? == before
+            && client.read_view(exact, &budget())? == before,
+        "cold reopen changed the latest or exact sealed view",
+    )?;
+    require(
+        client.status(candidate_key, &budget())? == OperationStatus::Unknown
+            && client.status(original.operation, &budget())?
+                == OperationStatus::Published(selected),
+        "cold reopen changed the original or unsubmitted publication status",
+    )?;
+    require(
+        std::fs::read(source_path)? == source_bytes
+            && std::fs::read(artifact_path)? == artifact_bytes,
+        "the sealed Source record or Text artifact bytes changed",
+    )?;
+    require(
+        client.search_text_preview(exact, text_instance, text_request("typed"), &budget())?
+            == durable,
+        "cold reopen changed the exact query or the original Source excerpt",
+    )?;
+    let invisible = client.search_text(
+        latest,
+        text_instance,
+        text_request("interrupted"),
+        &budget(),
+    )?;
+    require(
+        invisible.view == selected
+            && invisible.exhaustive
+            && invisible.matched == 0
+            && invisible.hits.is_empty(),
+        "the staged overlay became visible without Source publication",
+    )?;
+    reopened.stop()
+}
+
+#[test]
+fn selected_text_root_same_length_damage_is_refused_through_uds() -> TestResult {
+    let root = tempfile::tempdir()?;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
+    let socket = root.path().join("native.sock");
+    let running = RunningService::start(service(root.path(), &socket, true)?);
+    let client = NativeUdsClient::new(socket);
+    let (selected, source, _) = publish_fixture(&client)?;
+    let query = || {
+        client.search_text(
+            ViewSelection::Exact(selected),
+            native_text_spec().instance,
+            text_request("typed"),
+            &budget(),
+        )
+    };
+    let before = query()?;
+    require(
+        before.exhaustive
+            && before.matched == 1
+            && matches!(before.hits.as_slice(), [hit] if hit.source == source),
+        "the intact Text root did not return the published Source",
+    )?;
+    let object_root = root.path().join("native-objects");
+    let path = native_object_files::object_file(&object_root, before.artifact)?;
+    let original = std::fs::read(&path)?;
+    let mut damaged = original.clone();
+    *damaged.last_mut().ok_or("empty Text root object")? ^= 1;
+    std::fs::write(&path, damaged)?;
+    let rejected = query();
+    std::fs::write(&path, original)?;
+    require(
+        matches!(rejected, Err(NativeUdsError::Refused(error))
+            if error.code == NativeIndexErrorCode::CorruptObject),
+        "the exact Text read did not return CorruptObject for its damaged root",
+    )?;
+    require(
+        query()? == before,
+        "restoring the root did not restore the same exact result",
+    )?;
     running.stop()
 }

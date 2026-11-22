@@ -131,7 +131,7 @@ pub(crate) fn convert(
                 "durable Hybrid returned lexical overlay".into(),
             ));
         };
-        if !crate::native::valid_native_source_path(&path)
+        if !crate::native_source_path::valid_native_source_path(&path)
             || constraints
                 .repo_relative_path_exact
                 .as_ref()
@@ -154,7 +154,7 @@ pub(crate) fn convert(
     for row in dense_rows {
         let parts = row.into_source_file_parts()?;
         let source_path = parts.source_file.path();
-        if !crate::native::valid_native_source_path(source_path)
+        if !crate::native_source_path::valid_native_source_path(source_path)
             || constraints
                 .repo_relative_path_exact
                 .as_ref()

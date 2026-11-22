@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
-"""Generate (and verify) the Sourcegraph-filter execution-coverage matrix.
+"""Inventory Sourcegraph syntax and the queries exercised by maintained tests.
 
-The feature comparison against Sourcegraph must be grounded in *execution
-evidence*, not in the accepted-syntax surface. A filter that the `lq-bridge`
-parser accepts is not "supported" until a test actually runs it through the
-engine and asserts the result. This tool closes that gap by deriving the matrix
-straight from code:
-
-  1. the accepted surface — `SgFilter` variants in `lq-bridge/src/syntax.rs`;
-  2. the refusals — translator arms that return a typed `BridgeError`
-     (`lq-bridge/src/translator.rs`) plus its disposition comment table;
-  3. the execution evidence — every filter keyword actually exercised by an
-     asserting test: the `ParityScenario` rows in
-     `e2e_dual_syntax_lowering_parity.rs` (exact-id / typed-error assertions),
-     the DSL bench `SCENARIOS` table, and the pos/neg filter-execution tests in
-     `e2e_filter_execution.rs`.
-
-`--write` regenerates `docs/reference/sourcegraph-filter-parity.md`. `--check` fails
-if any accepted `SgFilter` variant is neither execution-verified nor explicitly
-refused (i.e. "accepted but silently untested") — a CI-able guard against the
-comparison drifting back into parse-only claims.
+`--write` regenerates the reference page. `--check` rejects untracked
+coverage gaps. The inventory identifies test source and its runtime scope.
+It does not collect test results or establish Native product support.
 """
 
 from __future__ import annotations
@@ -35,20 +19,32 @@ SYNTAX_RS = REPO_ROOT / "crates/quanta-index-lq-bridge/src/syntax.rs"
 TRANSLATOR_RS = REPO_ROOT / "crates/quanta-index-lq-bridge/src/translator.rs"
 PREDICATE_REGISTRY_RS = REPO_ROOT / "crates/quanta-index-lexical/src/predicate_registry.rs"
 CORE_PREDICATE_RS = REPO_ROOT / "crates/quanta-index-core/src/domains/read_view/predicate.rs"
-PARITY_RS = (
-    REPO_ROOT / "crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs"
-)
-SCENARIOS_RS = REPO_ROOT / "crates/quanta-index-searchd-harness/src/scenarios.rs"
-FILTER_EXEC_RS = REPO_ROOT / "crates/quanta-index-searchd-runtime/tests/e2e_filter_execution.rs"
-FRONTDOOR_SCENARIOS_RS = (
-    REPO_ROOT / "crates/quanta-index-searchd-runtime/tests/common/frontdoor_scenarios.rs"
-)
+RUNTIME_TESTS = REPO_ROOT / "crates/quanta-index-searchd-runtime/tests"
+FRONTDOOR_SCENARIOS_RS = RUNTIME_TESTS / "common/frontdoor_scenarios.rs"
 LOWERING_RS = REPO_ROOT / "crates/quanta-index-search-plane/src/lowering.rs"
-RUNTIME_ROWS_TOML = (
-    REPO_ROOT
-    / "crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/runtime_rows.toml"
-)
 OUT_MD = REPO_ROOT / "docs/reference/sourcegraph-filter-parity.md"
+
+# Each entry points at a query argument in a maintained pinned old-Q rail.
+OLD_Q_QUERIES = {
+    "legacy_text_route_hellgate.rs": (r"\.query(?:_text)?\(\s*TextQuerySyntax::Sourcegraph,",),
+    "legacy_structural_hellgate.rs": (r"structural_query\(client,",),
+    "legacy_rev_at_time_route.rs": (r"expect_query\(\s*&client,", r"\.sourcegraph\("),
+    "legacy_dirty_only_route.rs": (r"require_catalog_replay\(",),
+    "e2e_exact_count_window.rs": (r"text_query\(client,\s*pin,",),
+    "end_to_end.rs": (r"syntax: TextQuerySyntax::Sourcegraph,\s*query_text:",),
+    "sdk_frontdoor/search_tests.rs": (r"\.sourcegraph\(",),
+    "sdk_frontdoor/failure_tests.rs": (r"\.sourcegraph\(",),
+}
+OLD_Q_QUERY_TABLES = {
+    "legacy_text_route_hellgate.rs": (r"for query in \[(.*?)\n\s*\] \{", r"(?:\A|,)"),
+    "legacy_structural_hellgate.rs": (
+        r"for \(query, expected_count\) in \[(.*?)\n\s*\] \{", r"\("
+    ),
+    "e2e_history_text_predicate.rs": (r"let cases:[^=]+=\s*\[(.*?)\n\s*\];", r"\("),
+}
+NATIVE_REPOSITORY_QUERIES = RUNTIME_TESTS / (
+    "native_index_uds/read_sessions/query/repository_query_contract.rs"
+)
 
 # The one hand-maintained contract: SgFilter enum variant -> its query keyword.
 # `--check` flags any enum variant missing here, so drift is caught.
@@ -116,38 +112,21 @@ SG_SELECT_SURFACES = [
     "select:file.owners",
 ]
 
-EXPLICIT_UNSUPPORTED_COMPARISON_GAPS: tuple[tuple[str, str, str], ...] = ()
+# Exact gaps left by retired in-process cases. A new gap is an error, and an
+# entry is removed when a maintained asserting query covers it.
+EXECUTION_UNVERIFIED_WAIVER = {"Before", "Committer", "Content", "Message", "Since"}
+RETIRED_SURFACE_WITNESSES = {"repo.contains.file", "file.contains.content"}
 
-OUTCOME_LABEL = {
-    "Candidates": "candidates",
-    "HistoryCommits": "commits",
-    "HistoryDiffPaths": "diff_paths",
-    "TypedError": "typed_error",
-    "ExpectedFailing": "expected_failing",
-}
-
-# Canonical labels for the bench `ResultShape` enum (kept in sync with OUTCOME_LABEL).
-SHAPE_LABEL = {
-    "Candidates": "candidates",
-    "Commits": "commits",
-    "DiffPaths": "diff_paths",
-    "TypedError": "typed_error",
-    "Empty": "empty",
-}
-
-# Filters that parse + translate (adopted -> LqFilter) but have no test asserting
-# their execution effect yet. Tracked gap, NOT a silent pass: `--check` allows
-# exactly these and fails on any *new* unverified filter. Remove an entry here
-# when an asserting test lands for it.
-#
-# Now EMPTY: the previously-waived eight (rev/author/committer/message/archived/
-# content/context/timeout) gained pos+neg execution tests in
-# `e2e_filter_execution.rs`. Keep the mechanism so a future accepted filter
-# without a test fails `--check`.
-EXECUTION_UNVERIFIED_WAIVER: set[str] = set()
-
-# Match `keyword:` and `keyword(` tokens (filters + predicates) in a query.
-TOKEN_RE = re.compile(r"([a-z][a-z._]*[a-z])\s*[:(]")
+# Predicate namespaces and arguments have their own witness table. Quoted text
+# can also contain filter-like tokens without selecting a filter.
+QUERY_TOKENS = re.compile(
+    r''' "(?:\\.|[^"\\])*" | '(?:\\.|[^'\\])*' '''
+    r''' | (?<![\w./])/(?:\\.|[^/\\\n])*/ '''
+    r''' | (?P<predicate>\b(?:repo|file|symbol)[.:][a-z][a-z._]*\() '''
+    r''' | (?P<filter>(?<![\w.])[a-z][a-z._]*)\s*: '''
+    r''' | (?P<open>\() | (?P<close>\)) ''',
+    re.X,
+)
 
 SURFACE_TOKENS: list[tuple[str, tuple[str, ...]]] = [
     ("rev.at.time", ("rev:at.time(",)),
@@ -209,8 +188,6 @@ REQUIRED_SURFACES: tuple[str, ...] = (
     "sg_structural.symbol_has_name_predicate_sibling",
 )
 
-UNSUPPORTED_SURFACE_TOKENS: list[tuple[str, tuple[str, ...]]] = []
-
 DEMOTED_STRUCTURAL_OWNER_TESTS: dict[str, tuple[str, ...]] = {
     "sg_structural.direct_phrase_lexical_sibling": (
         "sourcegraph_structural_route_rewrites_single_pattern_body_into_structural_leaf",
@@ -261,33 +238,45 @@ def refused_keywords() -> set[str]:
 
 
 def keywords_in(query: str) -> set[str]:
-    return set(TOKEN_RE.findall(query))
+    keywords = set()
+    predicate_depth = 0
+    for token in QUERY_TOKENS.finditer(query):
+        if token.group("predicate") or (predicate_depth and token.group("open")):
+            predicate_depth += 1
+        elif predicate_depth and token.group("close"):
+            predicate_depth -= 1
+        elif not predicate_depth and token.group("filter"):
+            keywords.add(token.group("filter"))
+    return keywords
 
 
 def decode_literal_query(raw: str) -> str:
     return raw.replace('\\"', '"').replace("\\\\", "\\")
 
 
-def rust_string_literals(body: str, prefix_pattern: str) -> list[str]:
-    queries = re.findall(prefix_pattern + r'\s*"(.*?)"', body)
-    queries += [query for _, query in re.findall(prefix_pattern + r'\s*r(#+)"(.*?)"\1', body)]
-    return queries
+_RUST_STRING = r'r(?P<hashes>\#*)"(?P<raw>.*?)"(?P=hashes)|"(?P<cooked>(?:\\.|[^"\\])*)"'
+_RUST_TOKENS = re.compile(
+    _RUST_STRING + r"|(?P<comment>//[^\n]*|/\*.*?\*/)", re.S
+)
 
 
-def prefixed_rust_query_literals(body: str, prefix_pattern: str) -> list[str]:
-    queries = re.findall(
-        prefix_pattern
-        + r'\s*"((?:repo:|repo[.]|file:|file[.]|select:|select[.]|patterntype:|symbol:|symbol[.]|type:(?:commit|diff)).*?)"',
-        body,
+def strip_rust_comments(body: str) -> str:
+    return _RUST_TOKENS.sub(
+        lambda match: " " if match.group("comment") is not None else match.group(), body
     )
-    queries += [
-        query
-        for _, query in re.findall(
-            prefix_pattern
-            + r'\s*r(#+)"((?:repo:|repo[.]|file:|file[.]|select:|select[.]|patterntype:|symbol:|symbol[.]|type:(?:commit|diff)).*?)"\1',
-            body,
-        )
-    ]
+
+
+def rust_string_literals(body: str, prefix_pattern: str) -> list[str]:
+    prefix = re.compile(prefix_pattern + r"\s*\Z")
+    queries = []
+    body = strip_rust_comments(body)
+    for match in _RUST_TOKENS.finditer(body):
+        if not prefix.search(body, 0, match.start()):
+            continue
+        if match.group("raw") is not None:
+            queries.append(match.group("raw"))
+        elif match.group("cooked") is not None:
+            queries.append(decode_literal_query(match.group("cooked")))
     return queries
 
 
@@ -311,10 +300,6 @@ def surface_ids_in(query: str) -> set[str]:
         else:
             found.add("file.has.contributor.regex.name")
     return found
-
-
-def demoted_structural_surface_ids_in(query: str) -> set[str]:
-    return set()
 
 
 def is_slash_delimited_regex_token(token: str) -> bool:
@@ -349,22 +334,12 @@ def repo_meta_regex_surface_ids_in(query: str) -> set[str]:
     return found
 
 
-def unsupported_surface_ids_in(query: str) -> set[str]:
-    found: set[str] = set()
-    for surface, tokens in UNSUPPORTED_SURFACE_TOKENS:
-        if any(token in query for token in tokens):
-            found.add(surface)
-    return found
-
-
 def record_query(
     query: str,
     outcome: str,
     test_name: str,
     keyword_evidence: dict[str, Evidence],
     surface_evidence: dict[str, Evidence],
-    demoted_evidence: dict[str, Evidence],
-    unsupported_evidence: dict[str, Evidence],
 ) -> None:
     for kw in keywords_in(query):
         ev = keyword_evidence.setdefault(kw, Evidence())
@@ -376,176 +351,103 @@ def record_query(
         ev.outcomes.add(outcome)
         ev.tests.add(test_name)
         ev.samples += 1
-    for surface in demoted_structural_surface_ids_in(query):
-        ev = demoted_evidence.setdefault(surface, Evidence())
-        ev.outcomes.add(outcome)
-        ev.tests.add(test_name)
-        ev.samples += 1
-    for surface in unsupported_surface_ids_in(query):
-        ev = unsupported_evidence.setdefault(surface, Evidence())
-        ev.outcomes.add(outcome)
-        ev.tests.add(test_name)
-        ev.samples += 1
 
 
-def scan_parity(
+def scan_old_q_queries(
     keyword_evidence: dict[str, Evidence],
     surface_evidence: dict[str, Evidence],
-    demoted_evidence: dict[str, Evidence],
-    unsupported_evidence: dict[str, Evidence],
 ) -> int:
-    body = read(PARITY_RS)
     rows = 0
-    for block in body.split("ParityScenario {")[1:]:
-        ids = re.findall(r'(?:sg_query|lq_query):\s*r?#?"(.*?)"#?', block)
-        outcome = re.search(r"ExpectedOutcome::([A-Za-z]+)", block)
-        if not ids or outcome is None:
-            continue
-        rows += 1
-        label = OUTCOME_LABEL.get(outcome.group(1), outcome.group(1))
-        for query in ids:
+    for relative in dict.fromkeys((*OLD_Q_QUERIES, *OLD_Q_QUERY_TABLES)):
+        body = read(RUNTIME_TESTS / relative)
+        queries = [
+            query for prefix in OLD_Q_QUERIES.get(relative, ())
+            for query in rust_string_literals(body, prefix)
+        ]
+        if relative in OLD_Q_QUERY_TABLES:
+            table_pattern, prefix = OLD_Q_QUERY_TABLES[relative]
+            for table in re.findall(table_pattern, strip_rust_comments(body), re.S):
+                queries.extend(rust_string_literals(table, prefix))
+        if not queries:
+            raise ValueError(f"{relative}: no maintained old-Q query arguments")
+        rows += len(queries)
+        for query in queries:
             record_query(
                 query,
-                label,
-                "e2e_dual_parity",
+                "old_q_assertion",
+                Path(relative).stem,
                 keyword_evidence,
                 surface_evidence,
-                demoted_evidence,
-                unsupported_evidence,
             )
     return rows
 
 
-def scan_bench(
+def scan_native_repository_queries(
     keyword_evidence: dict[str, Evidence],
     surface_evidence: dict[str, Evidence],
-    demoted_evidence: dict[str, Evidence],
-    unsupported_evidence: dict[str, Evidence],
 ) -> int:
-    body = read(SCENARIOS_RS)
-    rows = 0
-    for block in body.split("DslBenchScenario {")[1:]:
-        # `query: QuerySpec::Literal("...")` holds the static query string;
-        # `QuerySpec::Generated(...)` adversarial rows are runtime-built (no
-        # literal to scan) and carry no filter keyword, so they're skipped.
-        query = re.search(r'QuerySpec::Literal\(\s*"(.*?)"\s*\)', block)
-        shape = re.search(r"ResultShape::([A-Za-z]+)", block)
-        if query is None:
-            continue
-        rows += 1
-        label = SHAPE_LABEL.get(shape.group(1), shape.group(1).lower()) if shape else "candidates"
-        decoded = decode_literal_query(query.group(1))
-        record_query(
-            decoded,
-            label,
-            "dsl_bench",
-            keyword_evidence,
-            surface_evidence,
-            demoted_evidence,
-            unsupported_evidence,
-        )
-    return rows
-
-
-def scan_filter_exec(
-    keyword_evidence: dict[str, Evidence],
-    surface_evidence: dict[str, Evidence],
-    demoted_evidence: dict[str, Evidence],
-    unsupported_evidence: dict[str, Evidence],
-) -> int:
-    if not FILTER_EXEC_RS.exists():
-        return 0
-    body = read(FILTER_EXEC_RS)
-    # Lexical queries pass the literal directly to `query_text(...)`; history
-    # queries route through a helper but always carry the `type:commit` /
-    # `type:diff` discriminator, so match those literals wherever they appear.
-    queries = rust_string_literals(body, r"query_text\(\s*TextQuerySyntax::\w+,")
-    queries += rust_string_literals(body, r"query_text_with_pin\(\s*TextQuerySyntax::\w+,")
-    # Some negative rails batch Sourcegraph literals through `for query in [...]`
-    # loops before calling `query_text(...)`; scan only those loop-local literal
-    # blocks instead of every string in the file to keep evidence fail-closed.
-    for block in re.findall(r"for\s+\w+\s+in\s+\[(.*?)\]\s*\{", body, re.DOTALL):
-        queries += prefixed_rust_query_literals(block, "")
-    queries += prefixed_rust_query_literals(body, "")
-    for query in queries:
-        decoded = decode_literal_query(query)
-        record_query(
-            decoded,
-            "executed",
-            "e2e_filter_exec",
-            keyword_evidence,
-            surface_evidence,
-            demoted_evidence,
-            unsupported_evidence,
-        )
-    return len(queries)
+    body = strip_rust_comments(read(NATIVE_REPOSITORY_QUERIES))
+    cases = (
+        ("repository_path_aliases_and_scalar_file_matchers_gate_the_source_repository",
+         "native_assertion"),
+        ("legacy_repo_metadata_and_repo_surface_are_explicitly_unavailable_on_native_text",
+         "native_refusal"),
+    )
+    count = 0
+    for name, outcome in cases:
+        case = re.search(rf"fn {name}\(\).*?\n\}}", body, re.S)
+        if case is None:
+            raise ValueError(f"missing Native repository case {name}")
+        queries = [
+            query
+            for table in re.findall(r"for query in \[(.*?)\n\s*\] \{", case.group(), re.S)
+            for query in rust_string_literals(table, r"(?:\A|,)")
+        ]
+        if not queries:
+            raise ValueError(f"{name}: no Native repository query arguments")
+        count += len(queries)
+        for query in queries:
+            record_query(
+                query, outcome, name, keyword_evidence, surface_evidence,
+            )
+    return count
 
 
 def scan_frontdoor_scenarios(
     keyword_evidence: dict[str, Evidence],
     surface_evidence: dict[str, Evidence],
-    demoted_evidence: dict[str, Evidence],
-    unsupported_evidence: dict[str, Evidence],
 ) -> int:
-    if not FRONTDOOR_SCENARIOS_RS.exists():
-        return 0
-    body = read(FRONTDOOR_SCENARIOS_RS)
-    queries = rust_string_literals(body, r"query_text:")
+    body = strip_rust_comments(read(FRONTDOOR_SCENARIOS_RS))
+    queries = []
+    for rail in ("SDK", "IPC"):
+        table = re.search(
+            rf"{rail}_FRONTDOOR_SCENARIOS[^=]*=\s*&\[(.*?)\n\];", body, re.S
+        )
+        if table is None:
+            raise ValueError(f"missing {rail} front-door scenario table")
+        rows = rust_string_literals(table.group(1), r"query_text:")
+        if not rows:
+            raise ValueError(f"{rail} front-door scenario table has no queries")
+        queries.extend(rows)
     for query in queries:
-        decoded = decode_literal_query(query)
         record_query(
-            decoded,
-            "frontdoor",
+            query,
+            "old_q_assertion",
             "frontdoor_scenarios",
             keyword_evidence,
             surface_evidence,
-            demoted_evidence,
-            unsupported_evidence,
         )
     return len(queries)
-
-
-def scan_runtime_rows(
-    keyword_evidence: dict[str, Evidence],
-    surface_evidence: dict[str, Evidence],
-    demoted_evidence: dict[str, Evidence],
-    unsupported_evidence: dict[str, Evidence],
-) -> int:
-    if not RUNTIME_ROWS_TOML.exists():
-        return 0
-    body = read(RUNTIME_ROWS_TOML)
-    rows = 0
-    for block in body.split("[[row]]")[1:]:
-        query = re.search(r'^query = "(.*)"$', block, re.MULTILINE)
-        if query is None:
-            continue
-        rows += 1
-        outcome = (
-            "typed_error"
-            if re.search(r'^runtime_error_code = ".+"$', block, re.MULTILINE)
-            else "runtime_row"
-        )
-        decoded = decode_literal_query(query.group(1))
-        record_query(
-            decoded,
-            outcome,
-            "runtime_rows",
-            keyword_evidence,
-            surface_evidence,
-            demoted_evidence,
-            unsupported_evidence,
-        )
-    return rows
 
 
 def scan_lowering_owner_local_demotions(
     demoted_evidence: dict[str, Evidence],
 ) -> int:
-    body = read(LOWERING_RS)
+    body = strip_rust_comments(read(LOWERING_RS))
     hits = 0
     for surface, test_names in DEMOTED_STRUCTURAL_OWNER_TESTS.items():
         for test_name in test_names:
-            if test_name in body:
+            if re.search(rf"\bfn {test_name}\(", body):
                 ev = demoted_evidence.setdefault(surface, Evidence())
                 ev.outcomes.add("owner_local")
                 ev.tests.add(test_name)
@@ -666,36 +568,31 @@ def build_report(
     keyword_evidence: dict[str, Evidence],
     surface_evidence: dict[str, Evidence],
     demoted_evidence: dict[str, Evidence],
-    unsupported_evidence: dict[str, Evidence],
-    parity_rows: int,
-    bench_rows: int,
-    exec_rows: int,
+    old_q_rows: int,
     frontdoor_rows: int,
-    runtime_rows: int,
+    native_rows: int,
     owner_local_demotion_hits: int,
 ) -> tuple[str, list[str], list[str]]:
     lines: list[str] = []
     untested: list[str] = []
     unverified_surfaces: list[str] = []
 
-    lines.append("# Sourcegraph filter parity — execution coverage")
+    lines.append("# Sourcegraph filter parity — test inventory")
     lines.append("")
     lines.append(
-        "Generated by `tools/benchmark/sourcegraph_parity.py` from code: the "
-        "`SgFilter` accepted surface, the `lq-bridge` translator refusals, and "
-        "the filter keywords exercised by asserting tests "
-        f"({parity_rows} `e2e_dual` parity rows + {bench_rows} DSL bench rows + "
-        f"{exec_rows} `e2e_filter_execution` queries + {frontdoor_rows} shared "
-        f"front-door queries + {runtime_rows} runtime rows + "
-        f"{owner_local_demotion_hits} owner-local structural demotion witnesses). "
-        "Do not hand-edit; run `--write` to regenerate. "
-        "This is a source coverage inventory: generation/checking does not execute "
-        "those tests or establish a current-source passing receipt."
+        "Generated by `tools/benchmark/sourcegraph_parity.py` from the bridge and "
+        f"maintained test sources. It lists {old_q_rows} pinned old-Q query arguments, "
+        f"{frontdoor_rows} SDK/IPC front-door rows and "
+        f"{native_rows} Native repository query arguments. It also lists "
+        f"{owner_local_demotion_hits} structural lowering tests. "
+        "The front-door rows also use pinned old-Q. "
+        "This inventory records source coverage. Native product support requires "
+        "its own execution results."
     )
     lines.append("")
     lines.append("## Accepted SgFilter surface — disposition")
     lines.append("")
-    lines.append("| SgFilter | keyword | translate | execution evidence (tests / outcomes) |")
+    lines.append("| SgFilter | keyword | translate | query witnesses (source / scope) |")
     lines.append("| --- | --- | --- | --- |")
     for variant in variants:
         kw = VARIANT_KEYWORD.get(variant, "?")
@@ -707,11 +604,11 @@ def build_report(
         if ev and ev.outcomes:
             tests = ",".join(sorted(ev.tests))
             outs = ",".join(sorted(ev.outcomes))
-            evid = f"✅ {tests} → {outs} ({ev.samples})"
+            evid = f"{tests} → {outs} ({ev.samples})"
         elif kw in refused:
             evid = "— (refusal asserted at bridge unit level)"
         elif variant in EXECUTION_UNVERIFIED_WAIVER:
-            evid = "⚠️ accepted; execution untested (tracked gap)"
+            evid = "Retired witness; current execution unverified"
             untested.append(f"{variant} ({kw})")
         else:
             evid = "❌ ACCEPTED BUT UNVERIFIED — not waived"
@@ -719,7 +616,7 @@ def build_report(
         lines.append(f"| `{variant}` | `{kw}:` | {disp} | {evid} |")
     lines.append("")
 
-    lines.append("## Canonical predicate / alias surface — execution evidence")
+    lines.append("## Canonical predicate / alias surface — query witnesses")
     lines.append("")
     lines.append("| surface id | evidence (tests / outcomes) |")
     lines.append("| --- | --- |")
@@ -728,10 +625,13 @@ def build_report(
         if ev and ev.outcomes:
             tests = ",".join(sorted(ev.tests))
             outs = ",".join(sorted(ev.outcomes))
-            evid = f"✅ {tests} → {outs} ({ev.samples})"
+            evid = f"{tests} → {outs} ({ev.samples})"
         else:
             evid = "❌ ACCEPTED/SHIPPED SURFACE BUT UNVERIFIED"
-            unverified_surfaces.append(surface)
+            if surface in RETIRED_SURFACE_WITNESSES:
+                evid = "Retired witness; current execution unverified"
+            else:
+                unverified_surfaces.append(surface)
         lines.append(f"| `{surface}` | {evid} |")
     lines.append("")
 
@@ -755,7 +655,10 @@ def build_report(
             evid = f"✅ {tests} → {outs} ({ev.samples})"
         else:
             evid = "❌ DEMOTION SURFACE LACKS OWNER/RUNTIME EVIDENCE"
-            unverified_surfaces.append(surface)
+            if surface in RETIRED_SURFACE_WITNESSES:
+                evid = "Retired witness; current execution unverified"
+            else:
+                unverified_surfaces.append(surface)
         lines.append(f"| `{surface}` | {evid} | {note} |")
     lines.append("")
 
@@ -764,7 +667,7 @@ def build_report(
     canonical, aliases, route_owned = predicate_inventory
     supported_surface = set(canonical) | set(aliases) | set(route_owned)
     lines.append(
-        "**Canonical executable predicates (`PREDICATE_REGISTRY` SSOT):** "
+        "**Canonical predicate registry (`PREDICATE_REGISTRY`):** "
         + (", ".join(f"`{p}`" for p in canonical) or "none")
     )
     lines.append("")
@@ -773,21 +676,19 @@ def build_report(
     )
     lines.append("")
     lines.append(
-        "**Shipped non-registry predicate routes:** "
+        "**Separate symbol predicate routes:** "
         + (", ".join(f"`{p}`" for p in route_owned) or "none")
     )
     lines.append("")
     lines.append("**Sourcegraph (docs, external reference — not verified here):**")
     for pred in SG_PREDICATES:
         have = pred.split("(")[0].replace(":", ".") in supported_surface
-        mark = "✅ have" if have else "❌ lack"
+        mark = "registered" if have else "unregistered"
         lines.append(f"- `{pred}` — {mark}")
     lines.append("")
     lines.append(
-        "> Predicate surface is our clearest gap vs Sourcegraph: the canonical "
-        f"engine inventory is {len(canonical)} predicate(s) and the bridge adds "
-        f"{len(aliases)} Sourcegraph-only alias(es); the rest are "
-        "typed-refused or unparsed."
+        f"The registry names {len(canonical)} canonical predicates and "
+        f"{len(aliases)} aliases. Consult the query witnesses above for coverage."
     )
     lines.append("")
 
@@ -799,31 +700,15 @@ def build_report(
         implemented = translator_surface in supported_select_surfaces()
         ev = surface_evidence.get(surface_id)
         if implemented and ev and ev.outcomes:
-            lines.append(f"- `{select_surface}` — ✅ have")
+            lines.append(f"- `{select_surface}` — pinned old-Q query witness")
             continue
         if implemented:
             lines.append(f"- `{select_surface}` — ⚠ unverified")
-            unverified_surfaces.append(surface_id)
+            if surface_id not in RETIRED_SURFACE_WITNESSES:
+                unverified_surfaces.append(surface_id)
             continue
         lines.append(f"- `{select_surface}` — ❌ lack")
     lines.append("")
-
-    if EXPLICIT_UNSUPPORTED_COMPARISON_GAPS:
-        lines.append("## Explicit unsupported authority-backed comparison gaps")
-        lines.append("")
-        lines.append("| surface id | Sourcegraph surface | evidence | reason |")
-        lines.append("| --- | --- | --- | --- |")
-        for surface_id, display, reason in EXPLICIT_UNSUPPORTED_COMPARISON_GAPS:
-            ev = unsupported_evidence.get(surface_id)
-            if ev and "typed_error" in ev.outcomes:
-                tests = ",".join(sorted(ev.tests))
-                outs = ",".join(sorted(ev.outcomes))
-                evid = f"✅ {tests} → {outs} ({ev.samples})"
-            else:
-                evid = "❌ EXPLICIT UNSUPPORTED GAP LACKS TYPED-FAIL EVIDENCE"
-                unverified_surfaces.append(surface_id)
-            lines.append(f"| `{surface_id}` | `{display}` | {evid} | {reason} |")
-        lines.append("")
 
     return "\n".join(lines).rstrip("\n") + "\n", untested, unverified_surfaces
 
@@ -846,23 +731,20 @@ def main() -> int:
     keyword_evidence: dict[str, Evidence] = {}
     surface_evidence: dict[str, Evidence] = {}
     demoted_evidence: dict[str, Evidence] = {}
-    unsupported_evidence: dict[str, Evidence] = {}
-    parity_rows = scan_parity(
-        keyword_evidence, surface_evidence, demoted_evidence, unsupported_evidence
-    )
-    bench_rows = scan_bench(
-        keyword_evidence, surface_evidence, demoted_evidence, unsupported_evidence
-    )
-    exec_rows = scan_filter_exec(
-        keyword_evidence, surface_evidence, demoted_evidence, unsupported_evidence
-    )
-    frontdoor_rows = scan_frontdoor_scenarios(
-        keyword_evidence, surface_evidence, demoted_evidence, unsupported_evidence
-    )
-    runtime_rows = scan_runtime_rows(
-        keyword_evidence, surface_evidence, demoted_evidence, unsupported_evidence
-    )
-    owner_local_demotion_hits = scan_lowering_owner_local_demotions(demoted_evidence)
+    try:
+        old_q_rows = scan_old_q_queries(
+            keyword_evidence, surface_evidence
+        )
+        frontdoor_rows = scan_frontdoor_scenarios(
+            keyword_evidence, surface_evidence
+        )
+        native_rows = scan_native_repository_queries(
+            keyword_evidence, surface_evidence
+        )
+        owner_local_demotion_hits = scan_lowering_owner_local_demotions(demoted_evidence)
+    except (OSError, ValueError) as error:
+        print(f"FAIL: query witness inventory: {error}", file=sys.stderr)
+        return 1
 
     missing_map = [v for v in variants if v not in VARIANT_KEYWORD]
     try:
@@ -877,18 +759,11 @@ def main() -> int:
         keyword_evidence,
         surface_evidence,
         demoted_evidence,
-        unsupported_evidence,
-        parity_rows,
-        bench_rows,
-        exec_rows,
+        old_q_rows,
         frontdoor_rows,
-        runtime_rows,
+        native_rows,
         owner_local_demotion_hits,
     )
-
-    if args.write:
-        OUT_MD.write_text(report, encoding="utf-8")
-        print(f"wrote {OUT_MD.relative_to(REPO_ROOT)} ({len(variants)} filters)")
 
     if args.check:
         problems = 0
@@ -920,22 +795,17 @@ def main() -> int:
             for surface in unverified_surfaces:
                 print(f"  - {surface}", file=sys.stderr)
             problems += len(unverified_surfaces)
-        canonical, aliases, route_owned = predicate_inventory
-        supported_surface = set(canonical) | set(aliases) | set(route_owned)
-        implemented_unsupported = sorted(
-            surface_id
-            for surface_id, _display, _reason in EXPLICIT_UNSUPPORTED_COMPARISON_GAPS
-            if surface_id in supported_surface
+        stale_waivers = sorted(
+            EXECUTION_UNVERIFIED_WAIVER - {item.split()[0] for item in untested_filters}
+            | {
+                surface
+                for surface in RETIRED_SURFACE_WITNESSES
+                if surface not in REQUIRED_SURFACES or surface in surface_evidence
+            }
         )
-        if implemented_unsupported:
-            print(
-                "FAIL: explicit unsupported comparison gap now appears implemented; "
-                "promote the verdict and add canonical execution proof:",
-                file=sys.stderr,
-            )
-            for surface in implemented_unsupported:
-                print(f"  - {surface}", file=sys.stderr)
-            problems += len(implemented_unsupported)
+        if stale_waivers:
+            print(f"FAIL: stale query witness exceptions: {', '.join(stale_waivers)}", file=sys.stderr)
+            problems += len(stale_waivers)
         waived = [
             item for item in untested_filters if item.split(" ")[0] in EXECUTION_UNVERIFIED_WAIVER
         ]
@@ -949,11 +819,14 @@ def main() -> int:
             return 1
         print(
             f"OK: {len(variants)} filters and {len(REQUIRED_SURFACES)} required surfaces "
-            f"— execution-verified or typed-refused or waived ({len(waived)} waived filter gap(s) tracked)."
+            f"— query witnesses inventoried, {len(waived)} filter and "
+            f"{len(RETIRED_SURFACE_WITNESSES)} predicate witness gaps tracked."
         )
-        return 0
 
-    if not args.write:
+    if args.write:
+        OUT_MD.write_text(report, encoding="utf-8")
+        print(f"wrote {OUT_MD.relative_to(REPO_ROOT)} ({len(variants)} filters)")
+    elif not args.check:
         print(report)
     return 0
 

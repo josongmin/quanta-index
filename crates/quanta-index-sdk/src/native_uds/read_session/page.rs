@@ -4,6 +4,7 @@ use super::*;
 use quanta_index_contract::native_protocol::{
     NativeTextCursor, NativeTextPage, native_text_query_digest,
 };
+use quanta_index_contract::{LqFilter, LqSelect};
 
 impl<P: AsRef<Path>> NativeUdsClient<P> {
     pub fn search_text_page_in_read_session(
@@ -67,6 +68,18 @@ pub(super) fn prepare_page(
             if parsed.options.count.is_some() {
                 return Err(NativeUdsError::Protocol(
                     "text pages do not support count".into(),
+                ));
+            }
+            if parsed.filters.iter().any(|filter| {
+                matches!(
+                    filter,
+                    LqFilter::Select {
+                        dim: LqSelect::Path
+                    }
+                )
+            }) {
+                return Err(NativeUdsError::Protocol(
+                    "text path projection requires path page".into(),
                 ));
             }
             Ok(())

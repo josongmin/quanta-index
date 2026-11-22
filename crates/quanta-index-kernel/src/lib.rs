@@ -30,6 +30,7 @@ pub use boot::{
     verify_native_boot_source_target_v1, verify_native_published_full_target_v1,
     verify_native_published_source_target_v1, with_native_boot_history_full_v1,
 };
+pub use projection::{ProjectionCommitBasis, ProjectionCommitValidator};
 pub use quanta_index_core::index::{SourceChange, SourceDelta};
 pub use query::QueryAdapterRegistry;
 pub use registry::{AdapterDescriptor, AdapterRegistry};

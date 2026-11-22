@@ -29,7 +29,7 @@ pub struct SemanticReadRequest {
     pub query: SemanticQueryRequest,
     pub overlay: Vec<SemanticOverlayDocument>,
     pub overlay_memory: Option<MemoryLease>,
-    pub lexical_eligibility: Option<super::SemanticLexicalEligibility>,
+    pub lexical_eligibility: Option<super::lexical_eligibility::SemanticLexicalEligibility>,
 }
 
 impl From<SemanticQueryRequest> for SemanticReadRequest {
@@ -267,8 +267,7 @@ pub(super) fn rank_overlay(
     overlay: OverlaySearch<'_>,
     query: &SearchQuery<'_>,
     query_norm: f64,
-    top_k: usize,
-    heap: &mut BinaryHeap<RankedHit>,
+    heap: &mut RankedHits,
     context: &mut ReadContext<'_>,
 ) -> Result<(), IndexError> {
     for document in overlay.documents {
@@ -317,14 +316,13 @@ pub(super) fn rank_overlay(
                 (b"whole-file".as_slice(), None)
             };
             let score = cosine(query.vector, query_norm, values)?;
-            let better = heap.len() < top_k
-                || heap.peek().is_some_and(|worst| {
+            let better = !heap.is_full()
+                || heap.worst().is_some_and(|worst| {
                     worst
-                        .0
                         .cosine
                         .total_cmp(&score)
-                        .then_with(|| document.owner.cmp(&worst.0.owner))
-                        .then_with(|| id.cmp(worst.0.vector_id.as_slice()))
+                        .then_with(|| document.owner.cmp(&worst.owner))
+                        .then_with(|| id.cmp(worst.vector_id.as_slice()))
                         == Ordering::Less
                 });
             if !better {
@@ -336,8 +334,8 @@ pub(super) fn rank_overlay(
                 ));
             }
             // The displaced ID no longer counts toward the retained window.
-            if heap.len() == top_k {
-                drop(heap.pop());
+            if heap.is_full() {
+                drop(heap.remove(0));
             }
             let memory = context.budget.reserve_memory(
                 u64::try_from(RETAINED_VECTOR_ID_CAPACITY)
@@ -357,7 +355,7 @@ pub(super) fn rank_overlay(
                 revision: document.revision,
                 chunk,
             });
-            heap.push(RankedHit(hit));
+            heap.push(hit, context.budget)?;
         }
     }
     Ok(())

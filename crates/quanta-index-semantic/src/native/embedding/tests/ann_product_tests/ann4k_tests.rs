@@ -2,6 +2,21 @@
 //! This is local owner evidence; SDK/worker deadlines and on-disk Catalog reopen
 //! remain separate product rails.
 use super::*;
+use crate::native::ann_lance;
+
+#[path = "lance_cache.rs"]
+mod lance_cache;
+
+fn search_selected_lancedb(
+    query: &SearchQuery<'_>,
+    context: &mut ReadContext<'_>,
+    runtime: &tokio::runtime::Runtime,
+) -> Result<SearchResult, IndexError> {
+    ann_directory::validate_coverage_layout(query.coverage)?;
+    let directory =
+        ann_directory::AnnDirectory::load_for_coverage(query.coverage, query.recipe, context)?;
+    ann_query::search_loaded(query, directory.as_ref(), None, context, Some(runtime))
+}
 
 fn profile_work(seconds: u64) -> Result<WorkBudget, Box<dyn std::error::Error>> {
     Ok(WorkBudget::new(
@@ -24,6 +39,146 @@ fn profile_owner(index: usize) -> OwnerKey {
         producer: ProducerId([1; 16]),
         stable_id: StableOwnerId(bytes),
     }
+}
+
+struct ProfileMembers {
+    sources: MapRoot,
+    owners: MapRoot,
+    expected_files: BTreeMap<OwnerKey, (ObjectRef, String, usize)>,
+    entries: Vec<(ObjectRef, OwnerMemberBinding)>,
+}
+
+fn seed_profile_members(
+    store: &MemoryStore,
+    maps: &GraphMap<'_>,
+    spec: &InstanceSpec,
+    recipe: &EmbeddingRecipe,
+    vectors: &[Vec<f32>],
+    source_text: &[u8],
+    work: &mut WorkBudget,
+) -> Result<ProfileMembers, Box<dyn std::error::Error>> {
+    let mut source_entries = BTreeMap::new();
+    let mut owner_entries = BTreeMap::new();
+    let mut expected_files = BTreeMap::new();
+    let mut entries = Vec::new();
+    for (index, vector) in vectors.iter().enumerate() {
+        let owner = profile_owner(index);
+        let path = format!("src/{index}.rs");
+        let (source, payload) = semantic_source(store, &path, source_text)?;
+        let (key, coverage) = semantic_owner_vector_for_owner(
+            store,
+            spec,
+            recipe,
+            source,
+            payload,
+            owner,
+            vector.clone(),
+        )?;
+        check!(source_entries.insert(key.clone(), source).is_none());
+        check!(owner_entries.insert(key, coverage).is_none());
+        check!(
+            expected_files
+                .insert(owner, (source, path, index))
+                .is_none()
+        );
+        let coverage_object = store.get(coverage, work).map_err(|error| {
+            format!(
+                "ANN profile coverage owner={index}: {error}; usage={:?}",
+                work.usage()
+            )
+        })?;
+        let binding: OwnerCoverage = serde_json::from_slice(&coverage_object.payload)?;
+        let member_ref = binding.searchable.ok_or("ANN profile member absent")?;
+        let member_object = store.get(member_ref, work).map_err(|error| {
+            format!(
+                "ANN profile member owner={index}: {error}; usage={:?}",
+                work.usage()
+            )
+        })?;
+        let member: OwnerMemberBinding = serde_json::from_slice(&member_object.payload)?;
+        entries.push((member_ref, member));
+    }
+    Ok(ProfileMembers {
+        sources: maps.seed(source_entries)?,
+        owners: maps.seed(owner_entries)?,
+        expected_files,
+        entries,
+    })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the shared fixture keeps the selected store, map, custody, and budget explicit"
+)]
+fn install_profile_lance_region(
+    store: &MemoryStore,
+    maps: &GraphMap<'_>,
+    custody: &TestCustody,
+    recipe: &EmbeddingRecipe,
+    directory: &mut ann_directory::AnnDirectory,
+    members: &[(ObjectRef, OwnerMemberBinding)],
+    vectors: &[Vec<f32>],
+    range: std::ops::Range<usize>,
+    work: &mut WorkBudget,
+    runtime: &tokio::runtime::Runtime,
+) -> Result<(ObjectRef, Vec<f32>), Box<dyn std::error::Error>> {
+    let member_root = maps.seed(
+        range
+            .clone()
+            .map(|index| {
+                (
+                    owner_map_key(profile_owner(index)).to_vec(),
+                    members[index].0,
+                )
+            })
+            .collect(),
+    )?;
+    let rows: Vec<_> = range
+        .clone()
+        .map(|index| ann_lance::RegionRow {
+            owner: profile_owner(index),
+            member: members[index].1.logical_commitment,
+            vector_id: b"whole-file",
+            input: members[index].1.input,
+            vector: &vectors[index],
+        })
+        .collect();
+    let dimension = usize::try_from(recipe.dimension)?;
+    let mut center = vec![0.0f32; dimension];
+    for vector in &vectors[range.clone()] {
+        for (sum, value) in center.iter_mut().zip(vector) {
+            *sum += *value;
+        }
+    }
+    let generation = directory.next_region + 1;
+    let mut context = AttemptContext {
+        attempt: attempt(),
+        objects: store,
+        maps,
+        custody,
+        scratch: &NoScratch,
+        budget: work,
+    };
+    let fileset = crate::run_blocking(
+        runtime,
+        ann_materialization::install_lance_region(
+            &rows,
+            recipe.fingerprint(),
+            generation,
+            dimension,
+            &mut context,
+        ),
+    )?;
+    let _descriptor = directory.append_region(
+        &ann_directory::RegionDescriptor {
+            fileset,
+            members: member_root,
+            center: center.clone(),
+            rows: u32::try_from(range.len())?,
+        },
+        &mut context,
+    )?;
+    Ok((fileset, center))
 }
 
 #[derive(Clone, Copy)]
@@ -247,6 +402,7 @@ fn native_ann4k_selected_file_recall_matches_independent_exact()
     let mut recipe = recipe();
     recipe.dimension = 64;
     let spec = instance(&recipe);
+    let runtime = test_runtime()?;
     let mut seed = 42u64;
     let vectors: Vec<Vec<f32>> = (0..4096)
         .map(|_| {
@@ -269,115 +425,49 @@ fn native_ann4k_selected_file_recall_matches_independent_exact()
             vector
         })
         .collect();
-    let mut source_entries = BTreeMap::new();
-    let mut expected_files = BTreeMap::new();
-    let mut owner_entries = BTreeMap::new();
-    let mut member_entries = Vec::new();
     let mut work = profile_work(30)?;
-    for (index, vector) in vectors.iter().enumerate() {
-        let owner = profile_owner(index);
-        let (source, payload) =
-            semantic_source(&store, &format!("src/{index}.rs"), b"ANN4K original source")?;
-        let (key, coverage) = semantic_owner_vector_for_owner(
-            &store,
-            &spec,
-            &recipe,
-            source,
-            payload,
-            owner,
-            vector.clone(),
-        )?;
-        let previous_source = source_entries.insert(key.clone(), source);
-        check!(previous_source.is_none());
-        check!(
-            expected_files
-                .insert(owner, (source, format!("src/{index}.rs"), index))
-                .is_none()
-        );
-        let previous_owner = owner_entries.insert(key, coverage);
-        check!(previous_owner.is_none());
-        let coverage_object = store.get(coverage, &mut work).map_err(|error| {
-            format!(
-                "ANN4K setup coverage owner={index}: {error}; usage={:?}",
-                work.usage()
-            )
-        })?;
-        let coverage: OwnerCoverage = serde_json::from_slice(&coverage_object.payload)?;
-        let member_ref = coverage.searchable.ok_or("ANN4K member")?;
-        let object = store.get(member_ref, &mut work).map_err(|error| {
-            format!(
-                "ANN4K setup member owner={index}: {error}; usage={:?}",
-                work.usage()
-            )
-        })?;
-        let member: OwnerMemberBinding = serde_json::from_slice(&object.payload)?;
-        member_entries.push((member_ref, member));
-    }
-    let sources = maps.seed(source_entries)?;
-    let owners = maps.seed(owner_entries)?;
-    let mut directory = ann_directory::AnnDirectory::empty(recipe.fingerprint(), owners);
+    let ProfileMembers {
+        sources,
+        owners,
+        expected_files,
+        entries: member_entries,
+    } = seed_profile_members(
+        &store,
+        &maps,
+        &spec,
+        &recipe,
+        &vectors,
+        b"ANN4K original source",
+        &mut work,
+    )?;
+    let mut directory = ann_directory::AnnDirectory::empty_with_backend(
+        recipe.fingerprint(),
+        owners,
+        ann_directory::AnnBackend::LanceDb,
+    );
     let mut sealed = Vec::new();
     for group in 0..8 {
         let start = group * 512;
         let end = start + 512;
-        let members = maps.seed(
-            (start..end)
-                .map(|i| {
-                    (
-                        owner_map_key(profile_owner(i)).to_vec(),
-                        member_entries[i].0,
-                    )
-                })
-                .collect(),
-        )?;
-        let rows: Vec<_> = (start..end)
-            .map(|i| native_graph::RegionRow {
-                owner: profile_owner(i),
-                member: member_entries[i].1.logical_commitment,
-                vector_id: b"whole-file",
-                vector: &vectors[i],
-            })
-            .collect();
-        let mut center = vec![0.0f32; 64];
-        for vector in &vectors[start..end] {
-            for (sum, value) in center.iter_mut().zip(vector) {
-                *sum += *value;
-            }
-        }
-        let generation = directory.next_region + 1;
-        let mut context = AttemptContext {
-            attempt: attempt(),
-            objects: &store,
-            maps: &maps,
-            custody: &custody,
-            scratch: &NoScratch,
-            budget: &mut work,
-        };
-        let graph =
-            native_graph::install(&rows, recipe.fingerprint(), generation, 64, &mut context)
-                .map_err(|error| {
-                    format!(
-                        "ANN4K graph build region={group}: {error}; usage={:?}; sealed={sealed:?}",
-                        context.budget.usage()
-                    )
-                })?;
-        sealed.push(graph);
-        let _descriptor = directory
-            .append_region(
-                &ann_directory::RegionDescriptor {
-                    fileset: graph,
-                    members,
-                    center,
-                    rows: 512,
-                },
-                &mut context,
+        let (fileset, _center) = install_profile_lance_region(
+            &store,
+            &maps,
+            &custody,
+            &recipe,
+            &mut directory,
+            &member_entries,
+            &vectors,
+            start..end,
+            &mut work,
+            &runtime,
+        )
+        .map_err(|error| {
+            format!(
+                "ANN4K LanceDB install region={group}: {error}; usage={:?}; sealed={sealed:?}",
+                work.usage()
             )
-            .map_err(|error| {
-                format!(
-                    "ANN4K descriptor region={group}: {error}; usage={:?}; sealed={sealed:?}",
-                    context.budget.usage()
-                )
-            })?;
+        })?;
+        sealed.push(fileset);
     }
     let reference = directory
         .save(&mut AttemptContext {
@@ -430,11 +520,10 @@ fn native_ann4k_selected_file_recall_matches_independent_exact()
         exact.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let gold: BTreeSet<_> = exact.iter().take(10).map(|(owner, _)| *owner).collect();
         let mut query_work = profile_work(10)?;
-        let result = ann_query::search(
+        let result = search_selected_lancedb(
             &SearchQuery {
                 source_files: true,
                 lexical_eligibility: None,
-                lexical_owners: None,
                 exact_path: None,
                 coverage: &coverage,
                 projection: None,
@@ -454,6 +543,7 @@ fn native_ann4k_selected_file_recall_matches_independent_exact()
                 maps: &maps,
                 budget: &mut query_work,
             },
+            &runtime,
         )
         .map_err(|error| {
             format!(
@@ -483,6 +573,201 @@ fn native_ann4k_selected_file_recall_matches_independent_exact()
     verify_selected_eligibility_strata(
         &store, &maps, &custody, &spec, &recipe, &vectors, &coverage,
     )?;
+    Ok(())
+}
+
+#[test]
+fn native_trained_ninth_region_quality_separates_routing_loss()
+-> Result<(), Box<dyn std::error::Error>> {
+    const REGIONS: usize = 9;
+    const ROWS_PER_REGION: usize = 256;
+    const DIMENSION: usize = 8;
+    const TOP_K: usize = 10;
+
+    let store = MemoryStore::default();
+    let maps = GraphMap::new(&store);
+    let custody = TestCustody;
+    let mut recipe = recipe();
+    recipe.dimension = u32::try_from(DIMENSION)?;
+    let spec = instance(&recipe);
+    let runtime = test_runtime()?;
+    let query_vector = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    // The selected region has ten separated winners. The ninth centroid is
+    // negative although it contains the global exact winner.
+    let vectors: Vec<Vec<f32>> = (0..REGIONS)
+        .flat_map(|region| {
+            (0..ROWS_PER_REGION).map(move |row| {
+                let x = if region == REGIONS - 1 {
+                    if row == 0 {
+                        1.0
+                    } else {
+                        -0.9 + row as f32 * 0.0001
+                    }
+                } else if region == REGIONS - 2 && row < TOP_K {
+                    0.99 - row as f32 * 0.001
+                } else {
+                    0.55 + region as f32 * 0.045 + row as f32 * 0.0001
+                };
+                vec![x, (1.0 - x * x).sqrt(), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            })
+        })
+        .collect();
+    let mut work = profile_work(180)?;
+    let ProfileMembers {
+        sources,
+        owners,
+        expected_files,
+        entries: member_entries,
+    } = seed_profile_members(
+        &store,
+        &maps,
+        &spec,
+        &recipe,
+        &vectors,
+        b"trained ANN source",
+        &mut work,
+    )?;
+    let mut directory = ann_directory::AnnDirectory::empty_with_backend(
+        recipe.fingerprint(),
+        owners,
+        ann_directory::AnnBackend::LanceDb,
+    );
+    let mut centers = Vec::new();
+    for region in 0..REGIONS {
+        let start = region * ROWS_PER_REGION;
+        let end = start + ROWS_PER_REGION;
+        let (fileset, center) = install_profile_lance_region(
+            &store,
+            &maps,
+            &custody,
+            &recipe,
+            &mut directory,
+            &member_entries,
+            &vectors,
+            start..end,
+            &mut work,
+            &runtime,
+        )?;
+        let inspected =
+            crate::native::ann_files::inspect_fileset_manifest(&store, fileset, &mut work)?;
+        check_eq!(inspected.seal.rows, u32::try_from(ROWS_PER_REGION)?);
+        check_eq!(
+            inspected.index_kind,
+            quanta_index_core::DiagnosticAnnIndexKindV1::IvfHnswSq
+        );
+        centers.push(center);
+    }
+
+    let reference = directory.save(&mut AttemptContext {
+        attempt: attempt(),
+        objects: &store,
+        maps: &maps,
+        custody: &custody,
+        scratch: &NoScratch,
+        budget: &mut work,
+    })?;
+    let coverage = maintenance::binding(&spec, &recipe, sources, owners, reference);
+    let mut global_exact: Vec<_> = vectors
+        .iter()
+        .enumerate()
+        .map(|(index, vector)| {
+            (
+                profile_owner(index),
+                eligibility_reference_cosine(&query_vector, vector),
+            )
+        })
+        .collect();
+    global_exact.sort_unstable_by(|left, right| {
+        right
+            .1
+            .total_cmp(&left.1)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    check_eq!(global_exact[0].0, profile_owner(8 * ROWS_PER_REGION));
+    let global_top: BTreeSet<_> = global_exact
+        .iter()
+        .take(TOP_K)
+        .map(|(owner, _)| *owner)
+        .collect();
+    let mut center_scores: Vec<_> = centers
+        .iter()
+        .enumerate()
+        .map(|(region, center)| (region, eligibility_reference_cosine(&query_vector, center)))
+        .collect();
+    center_scores.sort_unstable_by(|left, right| {
+        right
+            .1
+            .total_cmp(&left.1)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    let selected_regions: BTreeSet<_> = center_scores
+        .iter()
+        .take(REGIONS - 1)
+        .map(|(region, _)| *region)
+        .collect();
+    check!(!selected_regions.contains(&(REGIONS - 1)));
+    let routed_top: BTreeSet<_> = global_exact
+        .iter()
+        .filter(|(owner, _)| {
+            selected_regions.contains(&(expected_files[owner].2 / ROWS_PER_REGION))
+        })
+        .take(TOP_K)
+        .map(|(owner, _)| *owner)
+        .collect();
+    check_eq!(routed_top.len(), TOP_K);
+    check_eq!(global_top.intersection(&routed_top).count(), TOP_K - 1);
+
+    let mut query_work = profile_work(60)?;
+    let result = search_selected_lancedb(
+        &SearchQuery {
+            source_files: true,
+            lexical_eligibility: None,
+            exact_path: None,
+            coverage: &coverage,
+            projection: None,
+            source_owners: sources,
+            source_paths: MapRoot(None),
+            instance: spec.instance,
+            format: spec.format,
+            recipe: &recipe,
+            vector: &query_vector,
+            top_k: u32::try_from(TOP_K)?,
+            page_size: 64,
+            max_owners: 1024,
+            overlay: None,
+        },
+        &mut ReadContext {
+            objects: &store,
+            maps: &maps,
+            budget: &mut query_work,
+        },
+        &runtime,
+    )?;
+    check_eq!(
+        result.traversal,
+        NativeSemanticTraversal::Approximate { capped: true }
+    );
+    check!(!result.exhaustive);
+    let mut hits = Vec::new();
+    for hit in &result.hits {
+        let file = hit.source_file().ok_or("trained ANN file witness absent")?;
+        hits.push(ObservedFileHit {
+            owner: hit.owner,
+            file_owner: file.owner,
+            source: file.source,
+            path: file.path(),
+            vector_id: &hit.vector_id,
+            cosine: hit.cosine,
+        });
+    }
+    let observed = verify_file_hits(&hits, &expected_files, &vectors, &query_vector, TOP_K)?;
+    check!(
+        observed
+            .iter()
+            .all(|owner| selected_regions.contains(&(expected_files[owner].2 / ROWS_PER_REGION)))
+    );
+    check_eq!(observed.intersection(&global_top).count(), TOP_K - 1);
+    check_eq!(observed.intersection(&routed_top).count(), TOP_K);
     Ok(())
 }
 
@@ -527,7 +812,7 @@ fn verify_selected_eligibility_strata(
         },
         recipe.clone(),
     )?
-    .with_ann();
+    .with_lancedb_ann();
     let runtime = test_runtime()?;
     // Membership is fixed independently before any ANN output is observed.
     let mut farthest: Vec<_> = (0..4096).collect();
@@ -632,6 +917,8 @@ fn verify_selected_eligibility_strata(
             check_eq!(directory.region_count, 8);
         }
         let mut recalled = 0usize;
+        let mut peak_scanned_owners = 0;
+        let mut queries_at_owner_limit = 0usize;
         let expected_count = count.min(10);
         for (ordinal, vector) in queries.iter().enumerate() {
             let mut gold: Vec<_> = active
@@ -654,7 +941,6 @@ fn verify_selected_eligibility_strata(
             let query = SearchQuery {
                 source_files: true,
                 lexical_eligibility: None,
-                lexical_owners: None,
                 exact_path: None,
                 coverage: &selected,
                 projection: None,
@@ -669,13 +955,14 @@ fn verify_selected_eligibility_strata(
                 max_owners: 1024,
                 overlay: None,
             };
-            let result = ann_query::search(
+            let result = search_selected_lancedb(
                 &query,
                 &mut ReadContext {
                     objects: store,
                     maps,
                     budget: &mut work,
                 },
+                &runtime,
             )
             .map_err(|error| {
                 format!(
@@ -683,7 +970,11 @@ fn verify_selected_eligibility_strata(
                     work.usage()
                 )
             })?;
-            check!(result.scanned_owners <= 1024);
+            check!(result.scanned_owners <= query.max_owners);
+            peak_scanned_owners = peak_scanned_owners.max(result.scanned_owners);
+            if result.scanned_owners == query.max_owners {
+                queries_at_owner_limit += 1;
+            }
             if count == 0 {
                 check!(result.exhaustive);
                 check_eq!(result.traversal, NativeSemanticTraversal::ExactExhausted);
@@ -714,7 +1005,7 @@ fn verify_selected_eligibility_strata(
             // the full file Q64 oracle and its denominator stay unchanged.
             if ordinal == 0 {
                 let mut raw_work = profile_work(10)?;
-                let raw = ann_query::search(
+                let raw = search_selected_lancedb(
                     &SearchQuery {
                         source_files: false,
                         ..query
@@ -724,6 +1015,7 @@ fn verify_selected_eligibility_strata(
                         maps,
                         budget: &mut raw_work,
                     },
+                    &runtime,
                 )
                 .map_err(|error| {
                     format!(
@@ -751,7 +1043,8 @@ fn verify_selected_eligibility_strata(
                 )?;
                 let raw_recalled = raw_owners.intersection(&gold).count();
                 eprintln!(
-                    "ANN4K raw selected eligibility {label}: recalled={raw_recalled}/{expected_count}"
+                    "ANN4K raw selected eligibility {label}: recalled={raw_recalled}/{expected_count}, scanned_owners={}",
+                    raw.scanned_owners
                 );
                 if raw_owners != gold {
                     failures.push(format!("{label}/raw: {raw_recalled}/{expected_count}"));
@@ -760,7 +1053,8 @@ fn verify_selected_eligibility_strata(
         }
         let denominator = 64 * expected_count;
         eprintln!(
-            "ANN4K selected eligibility {label}: active={count}/4096, recalled={recalled}/{denominator}"
+            "ANN4K selected eligibility {label}: active={count}/4096, recalled={recalled}/{denominator}, peak_scanned_owners={peak_scanned_owners}, queries_at_owner_limit={queries_at_owner_limit}/{}",
+            queries.len()
         );
         if denominator != 0 && recalled as f64 / (denominator as f64) < 0.95 {
             failures.push(format!("{label}: {recalled}/{denominator}"));

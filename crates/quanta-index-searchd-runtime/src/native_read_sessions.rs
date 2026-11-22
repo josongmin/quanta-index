@@ -643,7 +643,10 @@ impl NativeReadSessions {
                     }),
                 )?;
                 match ticket.validate() {
-                    Ok(()) => continue,
+                    // A live quarantined view still has a valid custody lease.
+                    // The serving path reports corruption and normal release
+                    // or expiry settles the original pin.
+                    Ok(()) | Err(IndexError::CorruptObject(_)) => continue,
                     Err(IndexError::SnapshotUnavailable) => {}
                     Err(error) => {
                         record_failure(&mut report, error);

@@ -294,6 +294,36 @@ fn offline_activation_reader_refuses_another_active_revision() -> TestResult {
         )
         .is_err()
     );
+    let expected_sibling = catalog
+        .active_search_corpus_v1(&sibling.target.repo_id, &sibling.target.revision_id)?
+        .ok_or("sibling activation absent")?
+        .to_contract_v1();
+    let mut seen = 0_u64;
+    let count = super::recovery_read_only::visit_existing_active_search_corpus_heads_v1(
+        dir.path(),
+        &TestReadIo,
+        &TestMetadata,
+        &mut budget(),
+        &mut |repo, revision, head, _budget| {
+            match seen {
+                0 => {
+                    assert_eq!(repo, &first.target.repo_id);
+                    assert_eq!(revision, &first.target.revision_id);
+                    assert_eq!(head.generation, expected);
+                }
+                1 => {
+                    assert_eq!(repo, &sibling.target.repo_id);
+                    assert_eq!(revision, &sibling.target.revision_id);
+                    assert_eq!(head.generation, expected_sibling);
+                }
+                _ => return Err(IndexError::DigestConflict.into()),
+            }
+            seen += 1;
+            Ok(())
+        },
+    )?;
+    assert_eq!(count, 2);
+    assert_eq!(seen, 2);
     Ok(())
 }
 

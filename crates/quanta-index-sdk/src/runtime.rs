@@ -2,9 +2,9 @@ use quanta_index_contract::lex::DirtyRecord;
 use quanta_index_contract::{
     BorrowedAuxiliaryIngestIpcRequestV1, ChunkId, ContinuationTokenV2, DirtyDelete,
     DirtyIngestBatch, DirtyMutation, GenerationPin, GenerationSelector, ManifestGeneration, RepoId,
-    RevisionId, RuntimeMetadataQueryRequest, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    SearchPlaneRuntimeMetadataQueryResponse, TextQuerySyntax,
+    RevisionId, RuntimeCatalogIngestBatch, RuntimeMetadataQueryRequest,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse, TextQuerySyntax,
 };
 
 use crate::history::{
@@ -109,6 +109,27 @@ impl<'a> RuntimeNamespace<'a> {
 
     pub fn publish_dirty(&self, batch: &DirtyBatch) -> Result<BatchReceipt, SdkError> {
         <RuntimeNs as crate::NamespaceIngest>::publish(self.client, batch)
+    }
+
+    /// Publish a caller-owned Runtime Catalog batch with canonical digest and
+    /// request/receipt binding under the SDK ingest transport.
+    pub fn publish_catalog(
+        &self,
+        mut batch: RuntimeCatalogIngestBatch,
+    ) -> Result<BatchReceipt, SdkError> {
+        stamp_batch_digest_v1(&mut batch).map_err(|error| {
+            SdkError::Serialization(format!("runtime catalog batch digest: {error}"))
+        })?;
+        let response = self.client.dispatch_ingest(
+            SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(batch),
+        )?;
+        match response {
+            SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(receipt) => Ok(receipt),
+            other => Err(SdkError::unexpected_response(
+                "runtime catalog receipt",
+                QuantaIndexClientPayloadV1::ingest_response_kind(&other),
+            )),
+        }
     }
 
     /// Publishes the caller-owned canonical dirty wire batch under admitted
@@ -296,7 +317,11 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 
 impl RuntimeQueryBuilder<'_, true, true, true> {
     pub fn execute(self) -> Result<SearchPlaneRuntimeMetadataQueryResponse, SdkError> {
-        let text_query = self.state.build_request("runtime")?;
+        let text_query = self.state.build_request(
+            self.client,
+            crate::LegacyQueryCapabilityV1::RuntimeMetadata,
+            "runtime",
+        )?;
         dispatch_runtime_query_request_v1(
             self.client,
             RuntimeMetadataQueryRequest {

@@ -10,36 +10,31 @@
 //! their inode is the base's, and the seal's own measurement — bytes it read
 //! through its hasher, bytes it inherited — must equal those partitions.
 //! Shared File and Native pool bodies have separate physical reuse oracles.
-//! Nothing here reads a clock.
+//! The cost oracle uses byte and file counts.
 //! File admission verifies changed raw source input at seal; its logical
 //! counters are separate from generation-local hashing and pool object I/O.
 
-#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
-
-#[path = "support/publication_fixture.rs"]
-mod publication_fixture;
-use publication_fixture::FixtureBatchBuildPort;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::io::Read as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use sha2::{Digest as _, Sha256};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
-    LqSpan, ManifestGeneration, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
-    RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    BatchIngestMode, ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, MetricsSnapshotV1,
+    RepoId, RepoRelativePath, RevisionId, SearchCorpusActiveHeadV1,
+    SearchCorpusGenerationReservationRequestV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
 };
-use quanta_index_core::{
-    GenerationStorageKeyV1, LexicalIndexOpenPort, MetricSourcePort, MetricValueV1,
-    RepoMetaIngestPort, RequestBudgetV1,
-};
-use quanta_index_lexical::{LexicalAdapter, LexicalSealCommitmentStats};
+use quanta_index_core::GenerationStorageKeyV1;
+use quanta_index_sdk::{ConnectOptions, QuantaIndex, RepoMetaBatch, SearchCorpusBatch};
+use quanta_index_searchd_harness::legacy_reference::{LegacySearchdBinary, SearchdBinaryProcess};
+use quanta_index_searchd_harness::private_tempdir;
 
 #[path = "support/current_source_fixture.rs"]
 mod current_source_fixture;
@@ -48,6 +43,12 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 /// Enough documents for several bounded Native segments and Tantivy segments.
 const DOCS: usize = 3 * 2048 + 50;
+// The multi-segment fixture keeps the base and its successor together.
+// Use the per-pair ceiling of the large old-Q restart fixture.
+const MULTI_SEGMENT_HISTORY_MAX_BYTES: u64 = 256 * 1024 * 1024;
+// The external old-Q fixture uses the same per-request I/O limit as the
+// large old-Q restart regression. The oracle measures persisted work.
+const SEAL_REQUEST_IO_TIMEOUT: Duration = Duration::from_secs(300);
 const TEXT_AUTHORITY_DIR: &str = "text-authority";
 const FILE_AUTHORITY_DIR: &str = "file-authority";
 const SOURCE_FILE_COVERAGE: &str = "source-file-coverage.cbor";
@@ -62,6 +63,17 @@ const OVERLAY_FILES: [&str; 7] = [
     "file-ownership.cbor",
     "file-contributor.cbor",
 ];
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SealStats {
+    seals: u64,
+    files_hashed: u64,
+    bytes_hashed: u64,
+    files_inherited: u64,
+    bytes_inherited: u64,
+    file_admission_sources_verified: u64,
+    file_admission_source_bytes_verified: u64,
+}
 
 #[expect(
     clippy::expect_used,
@@ -163,6 +175,140 @@ fn base_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatch,
     batch(generation, None, scopes)
 }
 
+fn sdk_batch(raw: SearchCorpusIngestBatch) -> SearchCorpusBatch {
+    let mut batch = if let Some(base) = raw.base_generation {
+        SearchCorpusBatch::delta(
+            raw.repo_id,
+            raw.revision_id,
+            raw.generation,
+            base,
+            raw.manifest_digest,
+        )
+    } else {
+        SearchCorpusBatch::replace_generation(
+            raw.repo_id,
+            raw.revision_id,
+            raw.generation,
+            raw.manifest_digest,
+        )
+    }
+    .source_event(raw.source_event);
+    for scope in raw.replace_scopes {
+        batch = batch.replace_scope(
+            scope.coverage,
+            scope.source_bytes,
+            scope.chunks,
+            scope.symbols,
+        );
+    }
+    batch
+}
+
+fn publish_and_activate(
+    client: &QuantaIndex,
+    raw: SearchCorpusIngestBatch,
+    expected_active: Option<SearchCorpusActiveHeadV1>,
+) -> Result<SearchCorpusActiveHeadV1, Box<dyn Error>> {
+    let generation = raw.generation;
+    let batch = sdk_batch(raw);
+    let (receipt, activation) = client
+        .search_corpus()
+        .publish_and_activate(&batch, expected_active)
+        .map_err(|error| {
+            format!(
+                "seal generation {}: publish and activate: {error:?}",
+                generation.get()
+            )
+        })?;
+    if !receipt.applied || receipt.durable_sequence == 0 {
+        return Err("cost fixture Source publication was not durable".into());
+    }
+    let observed = client
+        .generations()
+        .active_head(repo(), revision())
+        .map_err(|error| {
+            format!(
+                "seal generation {}: read active head: {error:?}",
+                generation.get()
+            )
+        })?
+        .ok_or("cost fixture Source activation was not observed")?;
+    if observed != activation.active
+        || observed.generation.lexical.manifest_generation != generation
+    {
+        return Err("cost fixture Source activation differs from its publication".into());
+    }
+    Ok(observed)
+}
+
+fn with_old_q(
+    history_max_bytes: Option<u64>,
+    run: impl FnOnce(&QuantaIndex, &Path) -> TestResult,
+) -> TestResult {
+    let root = private_tempdir()?;
+    let binary = LegacySearchdBinary::from_environment()?;
+    let mut command = binary.command()?;
+    let _configured = command.arg("serve").arg("--state-root").arg(root.path());
+    let _configured = command.apply_searchd_env(8);
+    if let Some(bytes) = history_max_bytes {
+        let _configured = command.env(
+            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
+            bytes.to_string(),
+        );
+    }
+    let process = SearchdBinaryProcess::start_with_pinned_command(root.path(), command)?;
+    let result = (|| -> TestResult {
+        binary.verify()?;
+        let client = QuantaIndex::connect_legacy(
+            ConnectOptions::from_state_root(root.path())
+                .with_request_io_timeout(SEAL_REQUEST_IO_TIMEOUT),
+        )?;
+        run(&client, &root.path().join("indexes/lexical"))
+    })();
+    let stopped = process.stop();
+    let verified = binary.verify();
+    result?;
+    stopped?;
+    verified
+}
+
+fn counter(snapshot: &MetricsSnapshotV1, name: &str) -> Result<u64, Box<dyn Error>> {
+    let mut found = snapshot
+        .counters
+        .iter()
+        .filter(|counter| counter.name == name);
+    let value = found
+        .next()
+        .ok_or_else(|| format!("missing old-Q seal counter {name}"))?
+        .value;
+    if found.next().is_some() {
+        return Err(format!("duplicate old-Q seal counter {name}").into());
+    }
+    Ok(value)
+}
+
+fn seal_stats(client: &QuantaIndex) -> Result<SealStats, Box<dyn Error>> {
+    let snapshot = client
+        .observability()
+        .metrics_snapshot()
+        .map_err(|error| format!("read old-Q seal metrics: {error:?}"))?;
+    Ok(SealStats {
+        seals: counter(&snapshot, "lexical_seals_total")?,
+        files_hashed: counter(&snapshot, "lexical_seal_files_hashed_total")?,
+        bytes_hashed: counter(&snapshot, "lexical_seal_bytes_hashed_total")?,
+        files_inherited: counter(&snapshot, "lexical_seal_files_inherited_total")?,
+        bytes_inherited: counter(&snapshot, "lexical_seal_bytes_inherited_total")?,
+        file_admission_sources_verified: counter(
+            &snapshot,
+            "lexical_seal_file_admission_sources_verified_total",
+        )?,
+        file_admission_source_bytes_verified: counter(
+            &snapshot,
+            "lexical_seal_file_admission_source_bytes_verified_total",
+        )?,
+    })
+}
+
 fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
     GenerationStorageKeyV1::for_repo_revision(&repo(), &revision()).generation_dir(root, generation)
 }
@@ -223,23 +369,33 @@ fn pooled_body(root: &Path, kind: u8, witness: &[u8]) -> Result<PooledBodyFacts,
 }
 
 /// One overlay so the delta has an overlay to inherit.
-#[expect(
-    clippy::expect_used,
-    reason = "static fixture IDs provably satisfy the canonical ID policy"
-)]
-fn publish_repo_meta(adapter: &LexicalAdapter, generation: ManifestGeneration) -> TestResult {
-    let _receipt = adapter.publish_batch(&RepoMetaIngestBatch {
-        repo_id: repo(),
-        revision_id: revision(),
-        generation,
-        batch_digest: format!("cost-meta:{}", generation.get()),
-        entries: vec![RepoMetaEntry {
-            source_repo_id: RepoId::new("cost-source")
-                .expect("static fixture ID satisfies canonical policy"),
-            key: "lifecycle".to_string(),
-            value: "cost".to_string(),
-        }],
-    })?;
+fn publish_repo_meta(
+    client: &QuantaIndex,
+    generation: ManifestGeneration,
+    source_event: quanta_index_contract::SourcePublicationEvent,
+) -> TestResult {
+    let reservation = client
+        .search_corpus()
+        .reserve_generation(&SearchCorpusGenerationReservationRequestV1 {
+            repo_id: repo(),
+            revision_id: revision(),
+            source_event: source_event.clone(),
+        })
+        .map_err(|error| format!("reserve old-Q generation for repo-meta overlay: {error:?}"))?;
+    if reservation.generation != generation || reservation.source_event != source_event {
+        return Err("cost fixture Source reservation differs from the final batch".into());
+    }
+    let receipt = client
+        .history()
+        .publish_repo_meta(&RepoMetaBatch::new(repo(), revision(), generation).entry(
+            RepoId::new("cost-source")?,
+            "lifecycle",
+            "cost",
+        ))
+        .map_err(|error| format!("publish old-Q repo-meta overlay: {error:?}"))?;
+    if !receipt.applied || receipt.durable_sequence == 0 {
+        return Err("cost fixture repo-meta overlay was not durable".into());
+    }
     Ok(())
 }
 
@@ -323,11 +479,8 @@ fn total_bytes<'a>(files: impl Iterator<Item = &'a CommittedFile>) -> u64 {
     files.fold(0_u64, |total, file| total.saturating_add(file.bytes))
 }
 
-fn delta_stats(
-    before: LexicalSealCommitmentStats,
-    after: LexicalSealCommitmentStats,
-) -> LexicalSealCommitmentStats {
-    LexicalSealCommitmentStats {
+fn delta_stats(before: SealStats, after: SealStats) -> SealStats {
+    SealStats {
         seals: after.seals.saturating_sub(before.seals),
         files_hashed: after.files_hashed.saturating_sub(before.files_hashed),
         bytes_hashed: after.bytes_hashed.saturating_sub(before.bytes_hashed),
@@ -348,87 +501,79 @@ fn delta_stats(
     reason = "fixed on-disk source admission oracle in a fallible fixture"
 )]
 fn file_admission_counts_verified_changed_sources_separately() -> TestResult {
-    let temp = tempfile::tempdir()?;
-    let root = temp.path();
-    let adapter = LexicalAdapter::with_state_root(root.to_path_buf());
-    let g1 = ManifestGeneration::new(1);
-    let g2 = ManifestGeneration::new(2);
-    let original = "fn original() { firstsentinel }";
-    let inherited = "fn unchanged() { secondsentinel }";
-    let replacement = "fn replacement() { thirdsentinel }";
-    let _stages = adapter.build_fixture_batch(&batch(
-        g1,
-        None,
-        vec![scope(0, original)?, scope(1, inherited)?],
-    )?)?;
-    let base_stats = adapter.seal_commitment_stats()?;
-    assert_eq!(base_stats.file_admission_sources_verified, 2);
-    assert_eq!(
-        base_stats.file_admission_source_bytes_verified,
-        u64::try_from(original.len() + inherited.len())?
-    );
-    let base_original = pooled_body(root, 1, original.as_bytes())?;
-    let base_inherited = pooled_body(root, 1, inherited.as_bytes())?;
-    let _stages =
-        adapter.build_fixture_batch(&batch(g2, Some(g1), vec![scope(0, replacement)?])?)?;
-    let after = adapter.seal_commitment_stats()?;
-    let delta = delta_stats(base_stats, after);
-    assert_eq!(pooled_body(root, 1, original.as_bytes())?, base_original);
-    assert_eq!(pooled_body(root, 1, inherited.as_bytes())?, base_inherited);
-    let fresh = pooled_body(root, 1, replacement.as_bytes())?;
-    assert_ne!(fresh.path, base_original.path);
-    assert_ne!(fresh.path, base_inherited.path);
-    assert_eq!(delta.file_admission_sources_verified, 1);
-    assert_eq!(
-        delta.file_admission_source_bytes_verified,
-        u64::try_from(replacement.len())?
-    );
-    assert!(delta.files_inherited > 0);
-    assert!(delta.bytes_inherited >= u64::try_from(inherited.len())?);
-    let metrics = adapter.scrape()?;
-    for (name, count) in [
-        (
-            "lexical_seal_file_admission_sources_verified_total",
-            after.file_admission_sources_verified,
-        ),
-        (
-            "lexical_seal_file_admission_source_bytes_verified_total",
-            after.file_admission_source_bytes_verified,
-        ),
-    ] {
-        assert!(metrics.iter().any(|metric| {
-            metric.name == name && metric.value == MetricValueV1::Counter(count)
-        }));
-    }
-    Ok(())
+    with_old_q(None, |client, root| {
+        let g1 = ManifestGeneration::new(1);
+        let g2 = ManifestGeneration::new(2);
+        let original = "fn original() { firstsentinel }";
+        let inherited = "fn unchanged() { secondsentinel }";
+        let replacement = "fn replacement() { thirdsentinel }";
+        let before_base = seal_stats(client)?;
+        let first_head = publish_and_activate(
+            client,
+            batch(g1, None, vec![scope(0, original)?, scope(1, inherited)?])?,
+            None,
+        )?;
+        let base_stats = delta_stats(before_base, seal_stats(client)?);
+        assert_eq!(base_stats.file_admission_sources_verified, 2);
+        assert_eq!(
+            base_stats.file_admission_source_bytes_verified,
+            u64::try_from(original.len() + inherited.len())?
+        );
+        let base_original = pooled_body(root, 1, original.as_bytes())?;
+        let base_inherited = pooled_body(root, 1, inherited.as_bytes())?;
+        let before_delta = seal_stats(client)?;
+        let _second_head = publish_and_activate(
+            client,
+            batch(g2, Some(g1), vec![scope(0, replacement)?])?,
+            Some(first_head),
+        )?;
+        let delta = delta_stats(before_delta, seal_stats(client)?);
+        assert_eq!(pooled_body(root, 1, original.as_bytes())?, base_original);
+        assert_eq!(pooled_body(root, 1, inherited.as_bytes())?, base_inherited);
+        let fresh = pooled_body(root, 1, replacement.as_bytes())?;
+        assert_ne!(fresh.path, base_original.path);
+        assert_ne!(fresh.path, base_inherited.path);
+        assert_eq!(delta.file_admission_sources_verified, 1);
+        assert_eq!(
+            delta.file_admission_source_bytes_verified,
+            u64::try_from(replacement.len())?
+        );
+        assert!(delta.files_inherited > 0);
+        assert!(delta.bytes_inherited >= u64::try_from(inherited.len())?);
+        Ok(())
+    })
 }
 
-fn hit_ids(
-    adapter: &LexicalAdapter,
+fn require_hits(
+    client: &QuantaIndex,
     generation: ManifestGeneration,
     pattern: &str,
-) -> Result<Vec<String>, Box<dyn Error>> {
-    let searcher = adapter.open(
-        &repo(),
-        &revision(),
-        generation,
-        &quanta_index_core::RequestBudgetV1::unbounded(),
-    )?;
-    let query = LqQuery {
-        lq_version: LQ_VERSION_TAG,
-        expr: LqExpr::Leaf(LqLeaf::Regex(pattern.to_string())),
-        filters: Vec::new(),
-        options: LqOptions::defaults(),
-        directives: Vec::new(),
-        source_span: LqSpan::eof(0),
-    };
-    let mut ids: Vec<String> = searcher
-        .search(&query, 64, &RequestBudgetV1::unbounded())?
+    expected: &[String],
+) -> TestResult {
+    let answer = client
+        .lexical()
+        .query()
+        .native(format!("/{pattern}/"))
+        .pinned(GenerationPin::new(repo(), revision(), generation))
+        .top_k(64)
+        .execute()?;
+    if answer.generation != GenerationPin::new(repo(), revision(), generation) {
+        return Err("old-Q query selected another cost fixture generation".into());
+    }
+    let mut ids: Vec<String> = answer
+        .results
         .iter()
-        .map(|candidate| candidate.candidate_id.clone())
+        .map(|candidate| candidate.candidate_id.as_str().to_string())
         .collect();
     ids.sort();
-    Ok(ids)
+    if ids != expected {
+        return Err(format!(
+            "seal generation {} regex /{pattern}/: expected {expected:?}, got {ids:?}",
+            generation.get()
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// Machine-readable cost evidence; visible with `-- --nocapture`.
@@ -450,115 +595,120 @@ fn emit_evidence(fields: &[(&str, String)]) {
 /// validation, while other unchanged inodes retain their base commitments.
 #[test]
 fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestResult {
-    let temp = tempfile::tempdir()?;
-    let root = temp.path().to_path_buf();
-    let adapter = LexicalAdapter::with_state_root(root.clone());
-    let g1 = ManifestGeneration::new(1);
-    let g2 = ManifestGeneration::new(2);
+    with_old_q(Some(MULTI_SEGMENT_HISTORY_MAX_BYTES), |client, root| {
+        let g1 = ManifestGeneration::new(1);
+        let g2 = ManifestGeneration::new(2);
 
-    // The base: a full build, measured whole.
-    publish_repo_meta(&adapter, g1)?;
-    let before_base = adapter.seal_commitment_stats()?;
-    let _stages = adapter.build_fixture_batch(&base_batch(g1)?)?;
-    let base_seal = delta_stats(before_base, adapter.seal_commitment_stats()?);
-    let base_files = committed_files(&generation_dir(&root, g1))?;
-    let base_native_body = pooled_body(&root, 3, scope_body(0).as_bytes())?;
-    if base_files
-        .iter()
-        .filter(|file| file.name == LIVE_BM25_STATS)
-        .count()
-        != 1
-    {
-        return Err("base seal omitted mandatory live BM25 statistics".into());
-    }
-    let base_bytes = total_bytes(base_files.iter());
-    if base_seal.seals != 1
-        || base_seal.files_inherited != 0
-        || base_seal.files_hashed != u64::try_from(base_files.len())?
-        || base_seal.bytes_hashed != base_bytes
-    {
-        return Err(format!(
+        // The base: a full build, measured whole.
+        let base_batch = base_batch(g1)?;
+        publish_repo_meta(client, g1, base_batch.source_event.clone())?;
+        let before_base = seal_stats(client)?;
+        let first_head = publish_and_activate(client, base_batch, None)?;
+        let base_seal = delta_stats(before_base, seal_stats(client)?);
+        let base_files = committed_files(&generation_dir(root, g1))?;
+        let base_native_body = pooled_body(root, 3, scope_body(0).as_bytes())?;
+        if base_files
+            .iter()
+            .filter(|file| file.name == LIVE_BM25_STATS)
+            .count()
+            != 1
+        {
+            return Err("base seal omitted mandatory live BM25 statistics".into());
+        }
+        let base_bytes = total_bytes(base_files.iter());
+        if base_seal.seals != 1
+            || base_seal.files_inherited != 0
+            || base_seal.files_hashed != u64::try_from(base_files.len())?
+            || base_seal.bytes_hashed != base_bytes
+        {
+            return Err(format!(
             "the base seal must hash every committed file once: stats {base_seal:?}, disk {} files / {base_bytes} bytes",
             base_files.len()
         )
         .into());
-    }
-    let base_inodes: BTreeSet<u64> = base_files.iter().map(|file| file.inode).collect();
-    let base_by_name: BTreeMap<&str, &CommittedFile> = base_files
-        .iter()
-        .map(|file| (file.name.as_str(), file))
-        .collect();
+        }
+        let base_inodes: BTreeSet<u64> = base_files.iter().map(|file| file.inode).collect();
+        let base_by_name: BTreeMap<&str, &CommittedFile> = base_files
+            .iter()
+            .map(|file| (file.name.as_str(), file))
+            .collect();
 
-    // The delta: one scope replaced, the overlay inherited untouched.
-    let replaced = 100;
-    let before_delta = adapter.seal_commitment_stats()?;
-    let _stages = adapter.build_fixture_batch(&batch(
-        g2,
-        Some(g1),
-        vec![scope(replaced, "fn replaced() { replacedsentinel }")?],
-    )?)?;
-    let delta_seal = delta_stats(before_delta, adapter.seal_commitment_stats()?);
-    let delta_files = committed_files(&generation_dir(&root, g2))?;
-    if pooled_body(&root, 3, scope_body(0).as_bytes())? != base_native_body {
-        return Err("unchanged NativeBody pool object changed path, inode, length or SHA".into());
-    }
-    let (linked, written): (Vec<&CommittedFile>, Vec<&CommittedFile>) = delta_files
-        .iter()
-        .partition(|file| base_inodes.contains(&file.inode));
-    if written
-        .iter()
-        .filter(|file| file.name == LIVE_BM25_STATS)
-        .count()
-        != 1
-    {
-        return Err("delta seal did not commit newly written live BM25 statistics".into());
-    }
-    let linked_bytes = total_bytes(linked.iter().copied());
-    let written_bytes = total_bytes(written.iter().copied());
-    let linked_coverage_pages: Vec<_> = linked
-        .iter()
-        .copied()
-        .filter(|file| file.name.starts_with("source-file-coverage-page-"))
-        .collect();
-    let linked_coverage_bytes = total_bytes(linked_coverage_pages.iter().copied());
-    let written_names: Vec<&str> = written.iter().map(|file| file.name.as_str()).collect();
-    emit_evidence(&[
-        ("docs", DOCS.to_string()),
-        ("base_files", base_files.len().to_string()),
-        ("base_bytes", base_bytes.to_string()),
-        (
-            "base_ranked_key_bytes",
-            total_bytes(
-                base_files
-                    .iter()
-                    .filter(|file| file.name.starts_with("ranked-keys-")),
-            )
-            .to_string(),
-        ),
-        ("base_seal_bytes_hashed", base_seal.bytes_hashed.to_string()),
-        ("delta_files", delta_files.len().to_string()),
-        ("delta_written_bytes", written_bytes.to_string()),
-        ("delta_linked_bytes", linked_bytes.to_string()),
-        (
-            "delta_seal_bytes_hashed",
-            delta_seal.bytes_hashed.to_string(),
-        ),
-        (
-            "delta_seal_bytes_inherited",
-            delta_seal.bytes_inherited.to_string(),
-        ),
-        ("delta_written", written_names.join(",")),
-    ]);
+        // The delta: one scope replaced, the overlay inherited untouched.
+        let replaced = 100;
+        let before_delta = seal_stats(client)?;
+        let _second_head = publish_and_activate(
+            client,
+            batch(
+                g2,
+                Some(g1),
+                vec![scope(replaced, "fn replaced() { replacedsentinel }")?],
+            )?,
+            Some(first_head),
+        )?;
+        let delta_seal = delta_stats(before_delta, seal_stats(client)?);
+        let delta_files = committed_files(&generation_dir(root, g2))?;
+        if pooled_body(root, 3, scope_body(0).as_bytes())? != base_native_body {
+            return Err(
+                "unchanged NativeBody pool object changed path, inode, length or SHA".into(),
+            );
+        }
+        let (linked, written): (Vec<&CommittedFile>, Vec<&CommittedFile>) = delta_files
+            .iter()
+            .partition(|file| base_inodes.contains(&file.inode));
+        if written
+            .iter()
+            .filter(|file| file.name == LIVE_BM25_STATS)
+            .count()
+            != 1
+        {
+            return Err("delta seal did not commit newly written live BM25 statistics".into());
+        }
+        let linked_bytes = total_bytes(linked.iter().copied());
+        let written_bytes = total_bytes(written.iter().copied());
+        let linked_coverage_pages: Vec<_> = linked
+            .iter()
+            .copied()
+            .filter(|file| file.name.starts_with("source-file-coverage-page-"))
+            .collect();
+        let linked_coverage_bytes = total_bytes(linked_coverage_pages.iter().copied());
+        let written_names: Vec<&str> = written.iter().map(|file| file.name.as_str()).collect();
+        emit_evidence(&[
+            ("docs", DOCS.to_string()),
+            ("base_files", base_files.len().to_string()),
+            ("base_bytes", base_bytes.to_string()),
+            (
+                "base_ranked_key_bytes",
+                total_bytes(
+                    base_files
+                        .iter()
+                        .filter(|file| file.name.starts_with("ranked-keys-")),
+                )
+                .to_string(),
+            ),
+            ("base_seal_bytes_hashed", base_seal.bytes_hashed.to_string()),
+            ("delta_files", delta_files.len().to_string()),
+            ("delta_written_bytes", written_bytes.to_string()),
+            ("delta_linked_bytes", linked_bytes.to_string()),
+            (
+                "delta_seal_bytes_hashed",
+                delta_seal.bytes_hashed.to_string(),
+            ),
+            (
+                "delta_seal_bytes_inherited",
+                delta_seal.bytes_inherited.to_string(),
+            ),
+            ("delta_written", written_names.join(",")),
+        ]);
 
-    if delta_seal.seals != 1 {
-        return Err(format!("expected one delta seal, stats {delta_seal:?}").into());
-    }
-    // The disk inventory is the byte bound: newly written files and every
-    // inherited coverage page require hashing; other inherited files do not.
-    if delta_seal.files_hashed != u64::try_from(written.len() + linked_coverage_pages.len())?
-        || delta_seal.bytes_hashed != written_bytes.saturating_add(linked_coverage_bytes)
-    {
-        return Err(format!(
+        if delta_seal.seals != 1 {
+            return Err(format!("expected one delta seal, stats {delta_seal:?}").into());
+        }
+        // The disk inventory is the byte bound: newly written files and every
+        // inherited coverage page require hashing; other inherited files do not.
+        if delta_seal.files_hashed != u64::try_from(written.len() + linked_coverage_pages.len())?
+            || delta_seal.bytes_hashed != written_bytes.saturating_add(linked_coverage_bytes)
+        {
+            return Err(format!(
             "the delta seal hashed {} files / {} bytes; disk says {} new files / {written_bytes} bytes plus {} linked coverage pages / {linked_coverage_bytes} bytes ({written_names:?})",
             delta_seal.files_hashed,
             delta_seal.bytes_hashed,
@@ -566,11 +716,11 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
             linked_coverage_pages.len()
         )
         .into());
-    }
-    if delta_seal.files_inherited != u64::try_from(linked.len() - linked_coverage_pages.len())?
-        || delta_seal.bytes_inherited != linked_bytes.saturating_sub(linked_coverage_bytes)
-    {
-        return Err(format!(
+        }
+        if delta_seal.files_inherited != u64::try_from(linked.len() - linked_coverage_pages.len())?
+            || delta_seal.bytes_inherited != linked_bytes.saturating_sub(linked_coverage_bytes)
+        {
+            return Err(format!(
             "the delta seal inherited {} files / {} bytes; disk says {} non-coverage files / {} bytes share the base inode",
             delta_seal.files_inherited,
             delta_seal.bytes_inherited,
@@ -578,48 +728,43 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
             linked_bytes.saturating_sub(linked_coverage_bytes)
         )
         .into());
-    }
-    // Every linked file is the base's file under the same name and length;
-    // only coverage pages are also rehashed against the prepared root.
-    for file in &linked {
-        match base_by_name.get(file.name.as_str()) {
-            Some(base) if base.inode == file.inode && base.bytes == file.bytes => {}
-            other => {
-                return Err(format!(
-                    "inherited {} is not the base's file of that name: {other:?}",
-                    file.name
-                )
-                .into());
+        }
+        // Every linked file is the base's file under the same name and length;
+        // only coverage pages are also rehashed against the prepared root.
+        for file in &linked {
+            match base_by_name.get(file.name.as_str()) {
+                Some(base) if base.inode == file.inode && base.bytes == file.bytes => {}
+                other => {
+                    return Err(format!(
+                        "inherited {} is not the base's file of that name: {other:?}",
+                        file.name
+                    )
+                    .into());
+                }
             }
         }
-    }
-    if !linked.iter().any(|file| file.name == "repo-meta.cbor") {
-        return Err("the untouched overlay must be inherited, not re-read".into());
-    }
-    if !linked
-        .iter()
-        .any(|file| !file.name.starts_with(TEXT_AUTHORITY_DIR) && file.name != "repo-meta.cbor")
-    {
-        return Err("no segment file was inherited; the base index was rewritten".into());
-    }
-    if !linked
-        .iter()
-        .any(|file| file.name.starts_with("ranked-keys-"))
-    {
-        return Err("an unchanged segment did not inherit its ranked-key table".into());
-    }
-    // Both generations serve from their own commitments.
-    if hit_ids(&adapter, g1, &format!("quartz_{replaced:05}"))? != vec![scope_chunk(replaced)] {
-        return Err("the base must still serve the replaced scope's old text".into());
-    }
-    if hit_ids(&adapter, g2, &format!("quartz_{replaced:05}"))? != Vec::<String>::new() {
-        return Err("the delta must not serve the replaced scope's old text".into());
-    }
-    if hit_ids(&adapter, g2, "replacedsentinel")? != vec![scope_chunk(replaced)] {
-        return Err("the delta must serve the replacement".into());
-    }
-    if hit_ids(&adapter, g2, "quartz_00000")? != vec![scope_chunk(0)] {
-        return Err("the delta must still serve an unchanged pooled Native body".into());
-    }
-    Ok(())
+        if !linked.iter().any(|file| file.name == "repo-meta.cbor") {
+            return Err("the untouched overlay must be inherited, not re-read".into());
+        }
+        if !linked
+            .iter()
+            .any(|file| !file.name.starts_with(TEXT_AUTHORITY_DIR) && file.name != "repo-meta.cbor")
+        {
+            return Err("no segment file was inherited; the base index was rewritten".into());
+        }
+        if !linked
+            .iter()
+            .any(|file| file.name.starts_with("ranked-keys-"))
+        {
+            return Err("an unchanged segment did not inherit its ranked-key table".into());
+        }
+        // Both generations serve from their own commitments.
+        let previous = format!("quartz_{replaced:05}");
+        let replaced_chunk = [scope_chunk(replaced)];
+        require_hits(client, g1, &previous, &replaced_chunk)?;
+        require_hits(client, g2, &previous, &[])?;
+        require_hits(client, g2, "replacedsentinel", &replaced_chunk)?;
+        require_hits(client, g2, "quartz_00000", &[scope_chunk(0)])?;
+        Ok(())
+    })
 }

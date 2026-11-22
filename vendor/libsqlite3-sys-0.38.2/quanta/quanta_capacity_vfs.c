@@ -73,6 +73,7 @@ typedef struct qiv_file {
   unsigned record_index;
   int open_flags;
   int verification_only;
+  uint64_t verification_max_bytes;
   max_align_t inner_alignment;
   /* The wrapped VFS's sqlite3_file occupies the szOsFile bytes immediately
    * after this structure, at max_align_t alignment. */
@@ -120,10 +121,24 @@ static qiv_state qiv;
 static atomic_int qiv_active = ATOMIC_VAR_INIT(0);
 static QIV_THREAD_LOCAL uint64_t qiv_scope_id;
 static QIV_THREAD_LOCAL int qiv_verification_only;
+static QIV_THREAD_LOCAL uint64_t qiv_verification_main_max_bytes;
+static QIV_THREAD_LOCAL uint64_t qiv_verification_wal_max_bytes;
 
 int qiv_enter_verification(int enabled) {
   int previous = qiv_verification_only;
   qiv_verification_only = enabled != 0;
+  return previous;
+}
+
+uint64_t qiv_enter_verification_main_ceiling(uint64_t bytes) {
+  uint64_t previous = qiv_verification_main_max_bytes;
+  qiv_verification_main_max_bytes = bytes;
+  return previous;
+}
+
+uint64_t qiv_enter_verification_wal_ceiling(uint64_t bytes) {
+  uint64_t previous = qiv_verification_wal_max_bytes;
+  qiv_verification_wal_max_bytes = bytes;
   return previous;
 }
 
@@ -168,6 +183,17 @@ static qiv_event qiv_event_for(uint32_t kind, uint64_t scope_id,
 
 static int qiv_scope_matches(qiv_file *file) {
   return qiv_scope_id != 0 && qiv_scope_id == file->scope_id;
+}
+
+int qiv_is_verification_file(sqlite3_file *base) {
+  qiv_file *file;
+  if (!base || (base->pMethods != &qiv.io_v1 &&
+                base->pMethods != &qiv.io_v2 && base->pMethods != &qiv.io_v3))
+    return 0;
+  file = (qiv_file *)base;
+  return qiv_scope_matches(file) && qiv_verification_only &&
+         file->verification_only &&
+         (file->open_flags & SQLITE_OPEN_MAIN_DB) != 0;
 }
 
 int qiv_can_pack_wal_frame(sqlite3_file *base) {
@@ -450,13 +476,40 @@ static int qiv_close(sqlite3_file *base) {
 static int qiv_read(sqlite3_file *base, void *buffer, int amount,
                     sqlite3_int64 offset) {
   qiv_file *file = (qiv_file *)base;
+  uint64_t available;
+  int prefix, rc;
+  sqlite3_int64 actual;
   if (!qiv_scope_matches(file)) return SQLITE_IOERR_READ;
+  if (qiv_verification_only && !file->verification_only)
+    return SQLITE_IOERR_READ;
+  if (file->verification_only && (offset < 0 || amount < 0))
+    return SQLITE_IOERR_READ;
   if (file->verification_only || qiv_verification_only) {
     qiv_event event = qiv_file_event(file, QIV_BEFORE_VERIFICATION_READ);
     event.offset = offset;
     event.amount = amount;
     int callback_rc = qiv_emit(&event);
     if (callback_rc != SQLITE_OK) return callback_rc;
+  }
+  if (file->verification_only && amount > 0 &&
+      ((uint64_t)offset >= file->verification_max_bytes ||
+       (uint64_t)amount > file->verification_max_bytes - (uint64_t)offset)) {
+    /* SQLite may request a page that straddles an unchanged EOF. Preserve its
+     * short-read zero fill, but never expose bytes past the admitted length. */
+    rc = file->inner->pMethods->xFileSize(file->inner, &actual);
+    if (rc != SQLITE_OK || actual < 0 ||
+        (uint64_t)actual > file->verification_max_bytes)
+      return SQLITE_IOERR_READ;
+    available = (uint64_t)offset < file->verification_max_bytes
+                    ? file->verification_max_bytes - (uint64_t)offset
+                    : 0;
+    prefix = available < (uint64_t)amount ? (int)available : amount;
+    if (prefix > 0) {
+      rc = file->inner->pMethods->xRead(file->inner, buffer, prefix, offset);
+      if (rc != SQLITE_OK && rc != SQLITE_IOERR_SHORT_READ) return rc;
+    }
+    memset((unsigned char *)buffer + prefix, 0, (size_t)(amount - prefix));
+    return SQLITE_IOERR_SHORT_READ;
   }
   return file->inner->pMethods->xRead(file->inner, buffer, amount, offset);
 }
@@ -550,7 +603,14 @@ static int qiv_sync(sqlite3_file *base, int flags) {
 static int qiv_file_size(sqlite3_file *base, sqlite3_int64 *size) {
   qiv_file *file = (qiv_file *)base;
   if (!qiv_scope_matches(file)) return SQLITE_IOERR_FSTAT;
-  return file->inner->pMethods->xFileSize(file->inner, size);
+  if (qiv_verification_only && !file->verification_only)
+    return SQLITE_IOERR_FSTAT;
+  int rc = file->inner->pMethods->xFileSize(file->inner, size);
+  if (rc != SQLITE_OK) return rc;
+  if (file->verification_only &&
+      (*size < 0 || (uint64_t)*size > file->verification_max_bytes))
+    return SQLITE_IOERR_FSTAT;
+  return SQLITE_OK;
 }
 
 static int qiv_lock(sqlite3_file *base, int level) {
@@ -731,12 +791,20 @@ static int qiv_fetch(sqlite3_file *base, sqlite3_int64 offset, int amount,
                      void **mapping) {
   qiv_file *file = (qiv_file *)base;
   if (!qiv_scope_matches(file)) return SQLITE_IOERR;
+  if (qiv_verification_only && !file->verification_only) return SQLITE_IOERR;
+  if (file->verification_only) {
+    /* SQLite falls back to xRead. No mapping can bypass the byte ceiling. */
+    *mapping = NULL;
+    return SQLITE_OK;
+  }
   return file->inner->pMethods->xFetch(file->inner, offset, amount, mapping);
 }
 
 static int qiv_unfetch(sqlite3_file *base, sqlite3_int64 offset, void *mapping) {
   qiv_file *file = (qiv_file *)base;
   if (!qiv_scope_matches(file)) return SQLITE_IOERR;
+  if (qiv_verification_only && !file->verification_only) return SQLITE_IOERR;
+  if (file->verification_only) return mapping == NULL ? SQLITE_OK : SQLITE_IOERR;
   return file->inner->pMethods->xUnfetch(file->inner, offset, mapping);
 }
 
@@ -784,7 +852,9 @@ static int qiv_open(sqlite3_vfs *wrapper, sqlite3_filename name,
     /* The main FD needs O_RDWR for POSIX exclusive byte-range locks, but
      * every write path remains denied for this handle through its close.
      * WAL is an existing read-only file; no source sidecar may be born. */
-    if (!name || (flags & (SQLITE_OPEN_MAIN_DB | SQLITE_OPEN_WAL)) == 0)
+    if (!name ||
+        ((flags & (SQLITE_OPEN_MAIN_DB | SQLITE_OPEN_WAL)) != SQLITE_OPEN_MAIN_DB &&
+         (flags & (SQLITE_OPEN_MAIN_DB | SQLITE_OPEN_WAL)) != SQLITE_OPEN_WAL))
       return SQLITE_CANTOPEN;
     flags &= ~(SQLITE_OPEN_CREATE | SQLITE_OPEN_DELETEONCLOSE);
     flags |= SQLITE_OPEN_NOFOLLOW;
@@ -796,6 +866,9 @@ static int qiv_open(sqlite3_vfs *wrapper, sqlite3_filename name,
       flags |= SQLITE_OPEN_READWRITE;
     }
     file->verification_only = 1;
+    file->verification_max_bytes =
+        (flags & SQLITE_OPEN_WAL) ? qiv_verification_wal_max_bytes
+                                  : qiv_verification_main_max_bytes;
   }
   rc = qiv_allocate_open_slot(qiv_scope_id, &handle_id, &record_index);
   if (rc != SQLITE_OK) return rc;

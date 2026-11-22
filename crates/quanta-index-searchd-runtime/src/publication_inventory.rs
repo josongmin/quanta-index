@@ -23,20 +23,12 @@ use quanta_index_core::{CoreError, RequestBudgetV1};
 use quanta_index_searchd::app::runtime::StateRootLease;
 use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, statat};
 
+pub(crate) use crate::publication_file_capacity::{checked_device_id, link_count_u64};
+
 #[path = "publication_inventory/admitted.rs"]
 mod admitted;
-pub(crate) use admitted::{AdmittedBootInventoryV1, InventoryMemory};
+pub(crate) use admitted::AdmittedBootInventoryV1;
 use admitted::{InventoryControl, ScanFile};
-
-/// Normalize native stat device numbers without losing signed-platform errors.
-pub(crate) fn checked_device_id<T: TryInto<u64>>(device: T) -> Result<u64, T::Error> {
-    device.try_into()
-}
-
-/// Linux nlink_t is u64; Darwin uses a narrower unsigned field.
-pub(crate) fn link_count_u64<T: Into<u64>>(links: T) -> u64 {
-    links.into()
-}
 
 /// All ceilings are supplied by the service configuration; no implicit scan
 /// or publication capacity is inferred from observed usage.

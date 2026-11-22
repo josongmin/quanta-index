@@ -98,7 +98,9 @@ impl<'de> Deserialize<'de> for NativeImmutableObjectPayloadV1 {
             }
         }
 
-        deserializer.deserialize_bytes(Payload)
+        // This is owned, variable-length data. Ciborium's borrowed-byte path
+        // only accepts byte strings that fit its 4 KiB reader scratch buffer.
+        deserializer.deserialize_byte_buf(Payload)
     }
 }
 
@@ -122,5 +124,25 @@ mod tests {
             payload
         );
         assert!(valid_len_v1(MAX_PAYLOAD_BYTES_V1 + 1).is_err());
+    }
+
+    #[test]
+    fn owned_payload_round_trips_across_the_cbor_reader_scratch_boundary() {
+        for size in [4_096, 4_097, 6_383, 65_536] {
+            let bytes: Vec<_> = (0_u8..=255).cycle().take(size).collect();
+            let payload = NativeImmutableObjectPayloadV1::new(bytes.clone())
+                .expect("payload is inside the existing wire limit");
+            let mut wire = Vec::new();
+            ciborium::ser::into_writer(&payload, &mut wire).expect("encode owned payload");
+            let decoded: NativeImmutableObjectPayloadV1 =
+                ciborium::de::from_reader(wire.as_slice()).expect("decode complete owned payload");
+            assert_eq!(decoded.as_slice(), bytes.as_slice());
+            let json = serde_json::to_vec(&payload).expect("encode JSON byte sequence");
+            assert_eq!(
+                serde_json::from_slice::<NativeImmutableObjectPayloadV1>(&json)
+                    .expect("decode JSON byte sequence"),
+                payload
+            );
+        }
     }
 }

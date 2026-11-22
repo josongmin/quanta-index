@@ -1,16 +1,16 @@
 //! Owner-local byte-literal index for the native kernel. The query capability is
 //! explicitly case-sensitive byte literals; token/ranking/regex routes stay separate.
 use super::literal_packed::{self, PackedRoot, SealInput, SealWitness};
+use super::literal_work::{load_literal_body, observe_member_work, owner_key};
 use quanta_index_core::index::{
     AttemptContext, BaseMember, DeltaInput, Digest, IndexError, InputBinding, MapRoot,
     MemberBinding, MemoryLease, MemoryLifetime, ObjectChildren, ObjectRef, OwnerKey, PlanContext,
-    PlanDecision, SourceDelta, SourceInputCursor, SourceRecord, SourceRecordOwner, StoredObject,
-    TicketRecord, WorkBudget, WorkUsage, member_map_key, owner_from_map_key, owner_map_key,
+    PlanDecision, SourceDelta, SourceInputCursor, SourceRecord, SourceRecordOwner, TicketRecord,
+    WorkBudget, WorkUsage, member_map_key, owner_from_map_key, owner_map_key,
     ports::{ImmutableObjectPort, IndexBuildPort, IndexFuture, PersistentMapPort},
 };
 #[cfg(test)]
 use quanta_index_core::index::{ObjectBatchInput, StagedObjectReferences};
-use quanta_index_core::{DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1};
 #[cfg(test)]
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -86,26 +86,6 @@ fn load_literal_record(
         ));
     }
     Ok(record)
-}
-
-pub(super) fn load_literal_body(
-    record: &SourceRecord,
-    objects: &dyn ImmutableObjectPort,
-    budget: &mut WorkBudget,
-) -> Result<StoredObject, IndexError> {
-    budget.checkpoint()?;
-    let body = objects.get(record.bytes, budget)?;
-    budget.checkpoint()?;
-    if body.registration.reference != record.bytes
-        || !body.registration.children.is_empty()
-        || u64::try_from(body.payload.len()).map_err(|_error| IndexError::ResourceLimited)?
-            != record.byte_len
-    {
-        return Err(IndexError::CorruptObject(
-            "literal source body identity, edges or length mismatch".into(),
-        ));
-    }
-    Ok(body)
 }
 
 #[cfg(test)]
@@ -210,26 +190,26 @@ pub struct LiteralPlan {
     input: DeltaInput<SourceDelta>,
 }
 
-#[derive(Clone, Debug)]
 pub struct LiteralCandidate {
     pub binding: MemberBinding,
     seal: Option<SealWitness>,
+}
+
+impl std::fmt::Debug for LiteralCandidate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LiteralCandidate")
+            .field("binding", &self.binding)
+            .field("has_seal", &self.seal.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, IndexError> {
     serde_json::to_vec(value).map_err(|error| IndexError::InvalidInput(error.to_string()))
 }
-pub(super) fn owner_key(owner: OwnerKey) -> [u8; 32] {
-    let mut key = [0; 32];
-    for (target, byte) in key
-        .iter_mut()
-        .zip(owner.producer.0.iter().chain(owner.stable_id.0.iter()))
-    {
-        *target = *byte;
-    }
-    key
-}
+
 fn roots(root: Root) -> ObjectChildren {
     match [root.owners.0, root.grams.0] {
         [None, None] => ObjectChildren::Empty,
@@ -238,42 +218,6 @@ fn roots(root: Root) -> ObjectChildren {
     }
 }
 
-pub(super) fn observe_member_work<T>(
-    context: &mut AttemptContext<'_>,
-    lane: u16,
-    work: impl FnOnce(&mut AttemptContext<'_>) -> Result<T, IndexError>,
-) -> Result<T, IndexError> {
-    let parent = context.budget.request().diagnostic_context().cloned();
-    let span = parent.as_ref().and_then(|parent| {
-        parent
-            .enter(DiagnosticStageV1::BuildPrepare, DiagnosticLaneV1(lane))
-            .ok()
-    });
-    let before = span.as_ref().map(|_| context.budget.usage());
-    let result = {
-        let child = parent
-            .as_ref()
-            .zip(span.as_ref())
-            .map(|(parent, span)| parent.child_context(span));
-        let mut budget = context.budget.scoped_diagnostic_context(child);
-        let mut phase = AttemptContext {
-            attempt: context.attempt,
-            objects: context.objects,
-            maps: context.maps,
-            custody: context.custody,
-            scratch: context.scratch,
-            budget: &mut budget,
-        };
-        work(&mut phase)
-    };
-    if let (Some(span), Some(before)) = (span.as_ref(), before) {
-        context.budget.record_diagnostic_usage_delta(before, span);
-    }
-    if let Some(span) = span {
-        let _finished = span.finish(DiagnosticTerminalV1::from_result(&result));
-    }
-    result
-}
 impl IndexBuildPort for NativeLiteralIndex {
     type Delta = SourceDelta;
     type Plan = LiteralPlan;
@@ -1085,7 +1029,7 @@ mod tests {
         let body_ref = ObjectRef(Digest([7; 32]));
         let record = SourceRecordOwner::decode_json(
             SOURCE_WIRE,
-            &posting_budget()?,
+            &mut posting_budget()?,
             MemoryLifetime::Temporary,
         )?;
         for body in [false, true] {

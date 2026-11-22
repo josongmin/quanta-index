@@ -21,8 +21,9 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 use super::{
     ClaimIdentity, EventClaim, EventClaimState, OperationRow, SqliteCatalog, begin, check_digest,
     claim_identity, confirmed_ingress_object, decode, digest, encode, ensure_roots, event_identity,
-    exactly_one, fields_digest, int, operation_key, publication_result, sql, workspace_key,
-    write_event_claim, write_operation_payload, write_view,
+    exactly_one, fields_digest, int, operation_key, publication_result, sql,
+    workspace_integrity::require_registered_workspace_rows_v1, workspace_key, write_event_claim,
+    write_operation_payload, write_view,
 };
 
 struct ExpectedProtectedRowsV1<'a> {
@@ -599,7 +600,7 @@ fn validate_existing_v1(
         }
     }
     for (identity, view) in &expected.views {
-        if &super::boot_manifest::load_publication(tx, *identity, budget)? != *view {
+        if &super::boot_record::load_publication(tx, *identity, budget)? != *view {
             return Err(IndexError::DigestConflict);
         }
     }
@@ -835,7 +836,7 @@ impl SqliteCatalog {
         if super::boot_manifest::protected_route_operation_exists(&tx, ingress.operation, budget)? {
             return Err(IndexError::Conflict);
         }
-        super::boot_manifest::with_protected_operation(&tx, primary, budget, |row, _budget| {
+        super::boot_record::with_protected_operation(&tx, primary, budget, |row, _budget| {
             if !matches!(&row.status, OperationStatus::Published(_)) {
                 return Err(IndexError::Conflict);
             }
@@ -924,7 +925,8 @@ impl SqliteCatalog {
             }),
         )
         .map_err(|error| sql(&error))?;
-        let attached = require_attached_event_claims_v1(&tx, budget);
+        let attached = require_attached_event_claims_v1(&tx, budget)
+            .and_then(|()| require_registered_workspace_rows_v1(&tx, budget));
         tx.progress_handler(0, None::<fn() -> bool>)
             .map_err(|error| sql(&error))?;
         attached?;

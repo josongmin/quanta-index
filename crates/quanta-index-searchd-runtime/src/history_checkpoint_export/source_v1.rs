@@ -22,6 +22,7 @@ use quanta_index_core::{
     ExistingTreeMetadataIoPortV1, RequestBudgetV1,
     index::{IndexError, MemoryLifetime, ObjectReadIoPort, WorkBudget},
 };
+use quanta_index_lexical::legacy::SourceVisitFailureV1;
 use quanta_index_searchd::cli::NativeSourceExportCommandV1;
 use serde::Serialize;
 
@@ -36,8 +37,11 @@ fn write_source_frame_v1<T: Serialize>(
     frame: &T,
     budget: &mut WorkBudget,
 ) -> std::result::Result<(), IndexError> {
-    write_frame(output, frame, budget)
-        .map_err(|cause| IndexError::Storage(format!("Source export frame: {cause}")))
+    write_frame(output, frame, budget).map_err(|cause| {
+        cause
+            .downcast::<IndexError>()
+            .unwrap_or_else(|cause| IndexError::Storage(format!("Source export frame: {cause}")))
+    })
 }
 
 fn export_source_heads_v1(
@@ -156,7 +160,13 @@ fn export_source_heads_v1(
             budget,
             &mut begin,
             &mut file,
-        )?;
+        )
+        .map_err(|cause| match cause {
+            SourceVisitFailureV1::Visitor(cause) => {
+                anyhow::Error::new(cause).context("Source visitor refused")
+            }
+            physical => anyhow::Error::new(physical),
+        })?;
         ensure!(
             count == file_count.get(),
             "Source file frame count differs from sealed file census"
@@ -341,4 +351,62 @@ pub fn run_source_v1(
             )
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use quanta_index_core::index::WorkLimits;
+
+    use super::*;
+
+    #[test]
+    fn source_frame_refuses_budget_and_cancellation_without_output() {
+        let frame = SourceSnapshotExportFrameV1::FileChunk {
+            offset: 0,
+            bytes: vec![1, 2, 3],
+        };
+        let assert_refused = |mut budget, expected, phase| {
+            let mut output = Vec::new();
+            assert_eq!(
+                write_source_frame_v1(&mut output, &frame, &mut budget),
+                Err(expected),
+                "{phase}"
+            );
+            assert!(output.is_empty(), "{phase}");
+        };
+        let limits = WorkLimits {
+            reads: 1,
+            writes: 2,
+            bytes: 1024,
+            mutations: 1,
+        };
+        for (limits, phase) in [
+            (WorkLimits { bytes: 1, ..limits }, "frame census"),
+            (
+                WorkLimits {
+                    writes: 1,
+                    ..limits
+                },
+                "frame write",
+            ),
+        ] {
+            assert_refused(
+                WorkBudget::with_request(
+                    limits,
+                    RequestBudgetV1::for_duration(Duration::from_secs(30)),
+                ),
+                IndexError::ResourceLimited,
+                phase,
+            );
+        }
+        let request = RequestBudgetV1::for_duration(Duration::from_secs(30));
+        request.cancel_handle().cancel();
+        assert_refused(
+            WorkBudget::with_request(limits, request),
+            IndexError::Cancelled,
+            "cancelled request",
+        );
+    }
 }

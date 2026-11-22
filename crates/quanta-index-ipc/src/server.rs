@@ -1681,12 +1681,18 @@ impl ShutdownHandle {
 /// stricter owner deadline.
 pub const DEFAULT_CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
+// Distinct from a valid frame length. The ack establishes a server-side
+// monotonic anchor before the client samples its remaining Original time.
+const REQUEST_DEADLINE_PREFACE_V1: [u8; 4] = *b"QDL1";
+const REQUEST_DEADLINE_ACK_V1: [u8; 4] = *b"QDA1";
+
 /// Absolute request I/O deadline policy shared by every one-shot IPC client.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClientIoPolicy {
     request_timeout: Duration,
     absolute_deadline: Option<Instant>,
     admitted_multiframe: bool,
+    propagate_deadline: bool,
 }
 
 impl ClientIoPolicy {
@@ -1698,6 +1704,7 @@ impl ClientIoPolicy {
             request_timeout,
             absolute_deadline: None,
             admitted_multiframe: false,
+            propagate_deadline: false,
         })
     }
 
@@ -1710,6 +1717,7 @@ impl ClientIoPolicy {
             request_timeout,
             absolute_deadline: Some(absolute_deadline),
             admitted_multiframe: false,
+            propagate_deadline: false,
         })
     }
 
@@ -1740,6 +1748,7 @@ impl Default for ClientIoPolicy {
             request_timeout: DEFAULT_CLIENT_IO_TIMEOUT,
             absolute_deadline: None,
             admitted_multiframe: false,
+            propagate_deadline: false,
         }
     }
 }
@@ -1835,7 +1844,7 @@ where
             saw_frame_bytes: false,
             first_read: true,
         };
-        let (request, _decode_permit, attested_capture) = match (|| {
+        let (request, _decode_permit, attested_capture, client_deadline) = match (|| {
             let mut prefix = [0_u8; 4];
             read_exact_transport(&mut ingress_reader, &mut prefix)?;
             let mut attested_capture = None;
@@ -1860,13 +1869,21 @@ where
                 }
                 read_exact_transport(&mut ingress_reader, &mut prefix)?;
             }
+            let client_deadline = if prefix == REQUEST_DEADLINE_PREFACE_V1 {
+                let deadline = receive_request_deadline_v1(&mut ingress_reader)?;
+                ingress_reader.deadline = ingress_reader.deadline.min(deadline);
+                read_exact_transport(&mut ingress_reader, &mut prefix)?;
+                Some(deadline)
+            } else {
+                None
+            };
             let mut prefixed = std::io::Cursor::new(prefix).chain(&mut ingress_reader);
             let (request, permit) = decode_request_guarded::<RequestEnvelopeT, _, _>(
                 &mut prefixed,
                 |body_bytes| slots.try_acquire_decode(body_bytes, plane),
                 DecodePermit::reserve,
             )?;
-            Ok::<_, IpcError>((request, permit, attested_capture))
+            Ok::<_, IpcError>((request, permit, attested_capture, client_deadline))
         })() {
             Ok(request) => request,
             Err(err @ IpcError::IngressSaturated { .. }) => {
@@ -1923,7 +1940,10 @@ where
         // unbounded wait.
         let repo_scope = RequestEnvelopeT::repo_scope(&request_payload);
         let queue_span = event_scope.enter(DiagnosticStageV1::QueueWait);
-        let permit = match slots.acquire(policy.queue_wait(), repo_scope.as_deref()) {
+        let queue_wait = client_deadline.map_or(policy.queue_wait(), |deadline| {
+            policy.queue_wait().min(deadline.saturating_duration_since(Instant::now()))
+        });
+        let permit = match slots.acquire(queue_wait, repo_scope.as_deref()) {
             Ok(permit) => {
                 if let Some(span) = queue_span {
                     let _diagnostic_result = span.finish(DiagnosticTerminalV1::Ok);
@@ -1998,6 +2018,13 @@ where
         let mut budget = RequestBudgetV1::for_duration(policy.dispatch_budget())
             .with_correlation(RequestCorrelationV1::from_admitted(request_id))
             .with_diagnostics(diagnostics);
+        if let Some(deadline) = client_deadline {
+            if deadline <= Instant::now() {
+                event_scope.finish(RequestEventStageV1::Aborted);
+                return ConnectionCloseReason::RequestDecodeFailed(IpcError::ClientIoDeadlineElapsed);
+            }
+            budget = budget.capped_at(deadline);
+        }
         if let Some(trace) = event_scope.diagnostic_context() {
             budget = budget.with_diagnostic_context(trace.clone());
         }
@@ -2401,6 +2428,20 @@ fn read_exact_transport(reader: &mut impl Read, bytes: &mut [u8]) -> Result<(), 
     })
 }
 
+fn receive_request_deadline_v1(reader: &mut IngressDeadlineReader<'_>) -> Result<Instant, IpcError> {
+    let anchor = Instant::now();
+    reader.stream.write_all(&REQUEST_DEADLINE_ACK_V1).map_err(IpcError::Io)?;
+    let mut remaining = [0; 8];
+    read_exact_transport(reader, &mut remaining)?;
+    let deadline = anchor
+        .checked_add(Duration::from_nanos(u64::from_be_bytes(remaining)))
+        .ok_or(IpcError::InvalidClientIoTimeout)?;
+    if deadline <= Instant::now() {
+        return Err(IpcError::ClientIoDeadlineElapsed);
+    }
+    Ok(deadline)
+}
+
 /// A close before any bytes of the next frame is not a malformed request.
 /// A truncated or reset connection after even one byte is a failed decode.
 fn peer_closed_before_frame(error: &IpcError, saw_frame_bytes: bool) -> bool {
@@ -2797,7 +2838,7 @@ pub fn send_request_body_with_budget_admitted_bound_peer_v1<RequestEnvelopeT: se
     memory: &MemoryScope,
     expected: &crate::KernelConnectedPeerProcessLeaseV1,
 ) -> Result<AdmittedClientResponseBody, IpcError> {
-    send_admitted_bound_peer_request(socket, request, budget, memory, expected, false)
+    send_admitted_bound_peer_request(socket, request, budget, memory, expected, false, false)
 }
 
 /// Opt in to admitted multiframe request encoding on the same authenticated
@@ -2811,7 +2852,35 @@ pub fn send_request_body_with_budget_admitted_multiframe_bound_peer_v1<
     memory: &MemoryScope,
     expected: &crate::KernelConnectedPeerProcessLeaseV1,
 ) -> Result<AdmittedClientResponseBody, IpcError> {
-    send_admitted_bound_peer_request(socket, request, budget, memory, expected, true)
+    send_admitted_bound_peer_request(socket, request, budget, memory, expected, true, false)
+}
+
+/// Cap dispatch and commit by the caller's existing deadline. When supplied,
+/// the installed peer lease is checked before sending the deadline preface.
+pub fn send_request_body_with_budget_admitted_deadline_v1<RequestEnvelopeT: serde::Serialize>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+    expected: Option<&crate::KernelConnectedPeerProcessLeaseV1>,
+) -> Result<AdmittedClientResponseBody, IpcError> {
+    if let Some(expected) = expected {
+        return send_admitted_bound_peer_request(
+            socket, request, budget, memory, expected, false, true,
+        );
+    }
+    send_budgeted_request(
+        socket,
+        request,
+        budget,
+        Some(memory),
+        true,
+        &AdmittedRawClientResponse {
+            budget,
+            memory,
+            work: None,
+        },
+    )
 }
 
 fn send_admitted_bound_peer_request<RequestEnvelopeT: serde::Serialize>(
@@ -2821,6 +2890,7 @@ fn send_admitted_bound_peer_request<RequestEnvelopeT: serde::Serialize>(
     memory: &MemoryScope,
     expected: &crate::KernelConnectedPeerProcessLeaseV1,
     admitted_multiframe: bool,
+    propagate_deadline: bool,
 ) -> Result<AdmittedClientResponseBody, IpcError> {
     check_stream_budget(budget).map_err(IpcError::Io)?;
     expected
@@ -2828,6 +2898,7 @@ fn send_admitted_bound_peer_request<RequestEnvelopeT: serde::Serialize>(
         .map_err(IpcError::PeerBindingRefused)?;
     let mut io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
     io_policy.admitted_multiframe = admitted_multiframe;
+    io_policy.propagate_deadline = propagate_deadline;
     send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
         socket, request, None, io_policy, None, Some(budget), Some(memory),
         &BoundPeerAdmittedRawClientResponse {
@@ -2871,8 +2942,48 @@ where
     RequestEnvelopeT: serde::Serialize,
     ResponseEnvelopeT: serde::de::DeserializeOwned,
 {
+    send_budgeted_request(
+        socket,
+        request,
+        budget,
+        None,
+        false,
+        &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
+    )
+}
+
+/// Use the existing budget for client I/O and cap server dispatch by its
+/// deadline. The peer must acknowledge the cap before any request is sent.
+pub fn send_request_with_commit_deadline_v1<RequestEnvelopeT, ResponseEnvelopeT>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+) -> Result<ResponseEnvelopeT, IpcError>
+where
+    RequestEnvelopeT: serde::Serialize,
+    ResponseEnvelopeT: serde::de::DeserializeOwned,
+{
+    send_budgeted_request(
+        socket,
+        request,
+        budget,
+        None,
+        true,
+        &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
+    )
+}
+
+fn send_budgeted_request<RequestEnvelopeT: serde::Serialize, Decoder: ClientResponseDecode>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+    memory: Option<&MemoryScope>,
+    propagate_deadline: bool,
+    decoder: &Decoder,
+) -> Result<Decoder::Output, IpcError> {
     check_stream_budget(budget).map_err(IpcError::Io)?;
-    let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    let mut io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    io_policy.propagate_deadline = propagate_deadline;
     send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
         socket,
         request,
@@ -2880,8 +2991,8 @@ where
         io_policy,
         None,
         Some(budget),
-        None,
-        &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
+        memory,
+        decoder,
     )
 }
 
@@ -2928,16 +3039,12 @@ pub fn send_request_body_with_budget_admitted<RequestEnvelopeT: serde::Serialize
     budget: &RequestBudgetV1,
     memory: &MemoryScope,
 ) -> Result<AdmittedClientResponseBody, IpcError> {
-    check_stream_budget(budget).map_err(IpcError::Io)?;
-    let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
-    send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
+    send_budgeted_request(
         socket,
         request,
-        None,
-        io_policy,
-        None,
-        Some(budget),
+        budget,
         Some(memory),
+        false,
         &AdmittedRawClientResponse {
             budget,
             memory,
@@ -3271,6 +3378,9 @@ where
         frame
     };
     let write_started = timing.as_ref().map(|_| Instant::now());
+    if io_policy.propagate_deadline {
+        send_request_deadline_v1(&mut stream, io_policy)?;
+    }
     #[cfg(feature = "native-send-observer-v1")]
     crate::native_send_observer_v1::observe_v1();
     stream
@@ -3480,6 +3590,20 @@ fn wait_for_connect(socket: &OwnedFd, deadline: Instant) -> std::io::Result<()> 
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+fn send_request_deadline_v1(stream: &mut DeadlineStream, policy: ClientIoPolicy) -> Result<(), IpcError> {
+    let write_error = |error| classify_client_io_error(error, IpcIoOperation::Write, policy);
+    stream.write_all(&REQUEST_DEADLINE_PREFACE_V1).map_err(write_error)?;
+    let mut ack = [0; 4];
+    stream.read_exact(&mut ack)
+        .map_err(|error| classify_client_io_error(error, IpcIoOperation::Read, policy))?;
+    if ack != REQUEST_DEADLINE_ACK_V1 {
+        return Err(IpcError::Decode("invalid request deadline acknowledgement".into()));
+    }
+    let remaining = stream.remaining().map_err(write_error)?;
+    let nanos = u64::try_from(remaining.as_nanos()).unwrap_or(u64::MAX);
+    stream.write_all(&nanos.to_be_bytes()).map_err(write_error)
 }
 
 fn ensure_deadline_remaining(deadline: Instant) -> std::io::Result<()> {

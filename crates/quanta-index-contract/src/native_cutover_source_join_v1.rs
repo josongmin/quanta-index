@@ -27,6 +27,146 @@ pub enum NativeCutoverSourceJoinErrorV1<E> {
     Work(E),
 }
 
+impl<E: std::fmt::Display> std::fmt::Display for NativeCutoverSourceJoinErrorV1<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(reason) => f.write_str(reason),
+            Self::Work(cause) => write!(f, "source join work failed: {cause}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for NativeCutoverSourceJoinErrorV1<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Refused(_) => None,
+            Self::Work(cause) => Some(cause),
+        }
+    }
+}
+
+/// Borrowed operation lookup over caller-funded scratch. This is an index of
+/// evidence facts, not an admission decision; consumers still validate every
+/// returned reservation, replay, and AST row.
+pub struct NativeCutoverPublicationFactsV1<'a> {
+    facts: &'a [Fact],
+    rows: &'a [usize],
+}
+
+impl<'a> NativeCutoverPublicationFactsV1<'a> {
+    pub fn from_facts_v1<E>(
+        facts: &'a [Fact],
+        rows: &'a mut Vec<usize>,
+        charge: &mut impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Self, NativeCutoverSourceJoinErrorV1<E>> {
+        if facts.len() > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1 {
+            return Err(refuse("publication fact census exceeds bound"));
+        }
+        if rows.capacity() < facts.len() {
+            return Err(refuse("publication fact scratch was not preadmitted"));
+        }
+        rows.clear();
+        for (index, fact) in facts.iter().enumerate() {
+            work(charge, 1)?;
+            if publication_fact_operation_v1(fact).is_some() {
+                rows.push(index);
+            }
+        }
+        sort_lineage_rows(rows, &mut |left, right| {
+            work(charge, std::mem::size_of::<crate::index::OperationKey>())?;
+            let left_key = facts
+                .get(left)
+                .and_then(publication_fact_operation_v1)
+                .ok_or_else(|| refuse("publication fact row absent"))?;
+            let right_key = facts
+                .get(right)
+                .and_then(publication_fact_operation_v1)
+                .ok_or_else(|| refuse("publication fact row absent"))?;
+            Ok(left_key.cmp(&right_key).then_with(|| left.cmp(&right)))
+        })?;
+        Ok(Self {
+            facts,
+            rows: rows.as_slice(),
+        })
+    }
+
+    #[must_use]
+    pub fn for_operation_v1(
+        &self,
+        key: crate::index::OperationKey,
+    ) -> impl Iterator<Item = &'a Fact> + Clone + '_ {
+        let lower = self.rows.partition_point(|&index| {
+            self.facts
+                .get(index)
+                .and_then(publication_fact_operation_v1)
+                .is_some_and(|actual| actual < key)
+        });
+        let upper = self.rows.partition_point(|&index| {
+            self.facts
+                .get(index)
+                .and_then(publication_fact_operation_v1)
+                .is_some_and(|actual| actual <= key)
+        });
+        let facts = self.facts;
+        self.rows[lower..upper].iter().map(move |&index| &facts[index])
+    }
+}
+
+fn publication_fact_operation_v1(fact: &Fact) -> Option<crate::index::OperationKey> {
+    match fact {
+        Fact::Reservation { target, .. } => Some(target.operation),
+        Fact::Replay {
+            native_update_request: Some(request),
+            ..
+        } => Some(request.operation),
+        Fact::AstWork { ast_operation: Some(operation), .. } => Some(*operation),
+        _ => None,
+    }
+}
+
+/// One caller-funded lookup slot, keyed by a retained Host event ID.
+pub struct NativeCutoverSourceEventMatchV1<'a> {
+    event_id: u128,
+    source: Option<&'a NativeCutoverEvidenceSourcePublicationBindingV1>,
+}
+
+impl NativeCutoverSourceEventMatchV1<'_> {
+    pub fn new(event_id: u128) -> Self {
+        Self { event_id, source: None }
+    }
+
+    pub fn event_id_v1(&self) -> u128 {
+        self.event_id
+    }
+}
+
+/// Matches are usable only after the enclosing Source join succeeds.
+pub struct NativeCutoverSourceEventMatchesV1<'a, 'scratch> {
+    matches: &'scratch [NativeCutoverSourceEventMatchV1<'a>],
+}
+
+impl<'a> NativeCutoverSourceEventMatchesV1<'a, '_> {
+    pub fn source_for_event_v1<E>(
+        &self,
+        event_id: u128,
+        charge: &mut impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Option<&'a NativeCutoverEvidenceSourcePublicationBindingV1>, E> {
+        let mut low = 0;
+        let mut high = self.matches.len();
+        while low < high {
+            charge(std::mem::size_of::<NativeCutoverSourceEventMatchV1<'_>>() as u64)?;
+            let middle = low + (high - low) / 2;
+            let probe = &self.matches[middle];
+            match probe.event_id.cmp(&event_id) {
+                Ordering::Less => low = middle + 1,
+                Ordering::Equal => return Ok(probe.source),
+                Ordering::Greater => high = middle,
+            }
+        }
+        Ok(None)
+    }
+}
+
 /// Every optional reference is an exact member of `evidence.source_facts`.
 ///
 /// The latest Published AST request is borrowed for the receiver's independent
@@ -62,7 +202,6 @@ pub struct NativeCutoverJoinedSourceFactsV1<'a> {
     /// initial FULL has no predecessor pair or typed prior-M selector here.
     pub prior_sdk_acked_binding: Option<&'a Fact>,
     completed_watch_sources: &'a [Fact],
-    completed_source_requests: &'a [Fact],
     native_initial_sources: &'a [Fact],
     native_sdk_sources: &'a [Fact],
     imported_legacy_sources: &'a [Fact],
@@ -99,33 +238,6 @@ impl<'a> NativeCutoverJoinedSourceFactsV1<'a> {
             }
             _ => None,
         }
-    }
-
-    pub fn completed_source_request_for_event_v1<E>(
-        &self,
-        event_id: u128,
-        charge: &mut impl FnMut(u64) -> Result<(), E>,
-    ) -> Result<Option<(&'a NativeCutoverEvidenceSourcePublicationBindingV1, &'a [u128], Option<crate::index::OperationKey>)>, E> {
-        for fact in self.completed_source_requests {
-            charge((std::mem::size_of::<crate::index::OperationKey>() + 3 * 64) as u64)?;
-            let Fact::CompletedSourceRequest { native_operation, source, event_ids } = fact else {
-                continue;
-            };
-            let mut low = 0;
-            let mut high = event_ids.len();
-            while low < high {
-                charge(std::mem::size_of::<u128>() as u64)?;
-                let middle = low + (high - low) / 2;
-                if event_ids[middle] < event_id { low = middle + 1; } else { high = middle; }
-            }
-            if low < event_ids.len() {
-                charge(std::mem::size_of::<u128>() as u64)?;
-                if event_ids[low] == event_id {
-                    return Ok(Some((source, event_ids.as_slice(), *native_operation)));
-                }
-            }
-        }
-        Ok(None)
     }
 
     #[must_use]
@@ -721,13 +833,13 @@ fn validate_ast_inventory_v1<E>(
     Ok(())
 }
 
-/// Check every completed Watch event set without allocating an event-ID copy.
-/// The two caller-funded row/cursor arrays form a min heap and are reused by
-/// the AST census and Native lineage fold after this check.
-fn validate_completed_watch_inventory_v1<E>(
-    evidence: &NativeCutoverEvidenceV1,
+/// Merge sorted Host probes during the global completed-event uniqueness scan.
+/// The row/cursor heap is reused by the AST census and Native lineage fold.
+fn validate_completed_watch_inventory_v1<'a, E>(
+    evidence: &'a NativeCutoverEvidenceV1,
     rows: &mut Vec<usize>,
     cursors: &mut Vec<usize>,
+    event_matches: &mut [NativeCutoverSourceEventMatchV1<'a>],
     charge: &mut impl FnMut(u64) -> Result<(), E>,
 ) -> Result<(), NativeCutoverSourceJoinErrorV1<E>> {
     let facts = &evidence.source_facts;
@@ -737,6 +849,16 @@ fn validate_completed_watch_inventory_v1<E>(
     {
         return Err(refuse("completed Watch scratch was not preadmitted"));
     }
+    let mut prior_probe = None;
+    for probe in event_matches.iter_mut() {
+        work(charge, std::mem::size_of_val(probe))?;
+        if prior_probe.is_some_and(|prior| prior > probe.event_id) {
+            return Err(refuse("Host event lookup slots are unsorted"));
+        }
+        prior_probe = Some(probe.event_id);
+        probe.source = None;
+    }
+    let mut pending = event_matches.iter_mut().peekable();
     rows.clear();
     cursors.clear();
     for (index, fact) in facts.iter().enumerate() {
@@ -805,9 +927,19 @@ fn validate_completed_watch_inventory_v1<E>(
         prior_event_id = Some(event_id);
         let row = *rows.first().ok_or_else(|| refuse("completed Watch heap is empty"))?;
         let fact = facts.get(row).ok_or_else(|| refuse("completed Watch heap row absent"))?;
-        let Fact::CompletedSourceRequest { event_ids, .. } = fact else {
+        let Fact::CompletedSourceRequest { source, event_ids, .. } = fact else {
             return Err(refuse("completed Watch heap category differs"));
         };
+        while let Some(probe) = pending.peek_mut() {
+            work(charge, std::mem::size_of::<NativeCutoverSourceEventMatchV1<'_>>())?;
+            if probe.event_id > event_id {
+                break;
+            }
+            if probe.event_id == event_id {
+                probe.source = Some(source);
+            }
+            let _ = pending.next();
+        }
         let cursor = cursors.first_mut().ok_or_else(|| refuse("completed Watch cursor absent"))?;
         *cursor += 1;
         if *cursor == event_ids.len() {
@@ -1088,15 +1220,20 @@ fn require_selected_native_initial_source_parity_v1<E>(
 }
 
 /// Validate the settled signed census for a Native successor chain. The
-/// scratch is caller-funded and never escapes; returned facts borrow only the
-/// evidence. Q publication, Host and physical owner checks remain separate.
-pub fn join_native_cutover_source_facts_v1<'a, E>(
+/// caller funds the sorted Host lookup slots and the temporary census rows.
+/// Q publication, Host and physical owner checks remain separate.
+pub fn join_native_cutover_source_facts_v1<'a, 'scratch, E>(
     evidence: &'a NativeCutoverEvidenceV1,
     reservation_rows: &mut Vec<usize>,
     replay_rows: &mut Vec<usize>,
+    event_matches: &'scratch mut [NativeCutoverSourceEventMatchV1<'a>],
     charge: &mut impl FnMut(u64) -> Result<(), E>,
-) -> Result<NativeCutoverJoinedSourceFactsV1<'a>, NativeCutoverSourceJoinErrorV1<E>> {
-    validate_completed_watch_inventory_v1(evidence, reservation_rows, replay_rows, charge)?;
+) -> Result<(
+    NativeCutoverJoinedSourceFactsV1<'a>,
+    NativeCutoverSourceEventMatchesV1<'a, 'scratch>,
+), NativeCutoverSourceJoinErrorV1<E>> {
+    validate_completed_watch_inventory_v1(evidence, reservation_rows, replay_rows, event_matches, charge)?;
+    let matched_events = NativeCutoverSourceEventMatchesV1 { matches: event_matches };
     validate_ast_inventory_v1(evidence, reservation_rows, replay_rows, charge)?;
     let ranges = mixed_ranges(&evidence.source_facts, charge)?;
     let imports = mixed_slice(&evidence.source_facts, &ranges, 15)?;
@@ -1105,7 +1242,7 @@ pub fn join_native_cutover_source_facts_v1<'a, E>(
         let mut joined = join_initial_only_source_facts_v1(evidence, imports, charge)?;
         validate_imported_source_groups_v1(evidence, imports, joined.baseline_candidate_root_nonce, charge)?;
         joined.imported_legacy_sources = imports;
-        return Ok(joined);
+        return Ok((joined, matched_events));
     }
     let facts = &evidence.source_facts;
     let ranges = &mixed_ranges(facts, charge)?;
@@ -1186,7 +1323,6 @@ pub fn join_native_cutover_source_facts_v1<'a, E>(
         current_legacy_sdk_ack: None,
         prior_sdk_acked_binding: None,
         completed_watch_sources,
-        completed_source_requests,
         native_initial_sources,
         native_sdk_sources,
         imported_legacy_sources: mixed_slice(facts, ranges, 15)?,
@@ -1435,7 +1571,7 @@ pub fn join_native_cutover_source_facts_v1<'a, E>(
             return Err(refuse("Native carrier and V9 owner key differ"));
         }
     }
-    Ok(joined)
+    Ok((joined, matched_events))
 }
 
 fn refuse<E>(reason: &'static str) -> NativeCutoverSourceJoinErrorV1<E> {
@@ -1866,7 +2002,6 @@ fn join_initial_only_source_facts_v1<'a, E>(
         current_legacy_sdk_ack: None,
         prior_sdk_acked_binding: None,
         completed_watch_sources,
-        completed_source_requests,
         native_initial_sources,
         native_sdk_sources: &[],
         imported_legacy_sources: mixed_slice(&evidence.source_facts, &completed_ranges, 15)?,
@@ -2972,7 +3107,8 @@ mod tests {
     ) -> Result<NativeCutoverJoinedSourceFactsV1<'a>, NativeCutoverSourceJoinErrorV1<E>> {
         let mut reservations = Vec::with_capacity(evidence.source_facts.len());
         let mut replays = Vec::with_capacity(evidence.source_facts.len());
-        join_native_cutover_source_facts_v1(evidence, &mut reservations, &mut replays, charge)
+        join_native_cutover_source_facts_v1(evidence, &mut reservations, &mut replays, &mut [], charge)
+            .map(|(joined, _)| joined)
     }
 
     fn fixed_evidence() -> NativeCutoverEvidenceV1 {
@@ -3208,6 +3344,75 @@ mod tests {
                 recovery_receipts: Vec::new(),
             },
         }
+    }
+
+    #[test]
+    fn publication_facts_lookup_preserves_duplicate_and_phase_order() {
+        let mut evidence = with_published_ast(fixed_evidence());
+        let source_key = evidence.baseline.operation;
+        let ast = evidence
+            .source_facts
+            .iter()
+            .find_map(|fact| match fact {
+                Fact::AstWork {
+                    ast_operation: Some(operation),
+                    ..
+                } => Some((*operation, fact.clone())),
+                _ => None,
+            })
+            .expect("published AST fixture");
+        let reservation = evidence
+            .source_facts
+            .iter()
+            .find(|fact| {
+                matches!(fact, Fact::Reservation { target, .. } if target.operation == source_key)
+            })
+            .expect("reservation fixture")
+            .clone();
+        evidence.source_facts.push(reservation);
+        let mut earlier_phase = ast.1;
+        if let Fact::AstWork { phase, .. } = &mut earlier_phase {
+            *phase = NativeCutoverAstWorkPhaseV1::Claimed;
+        }
+        evidence.source_facts.push(earlier_phase);
+
+        let facts = evidence.source_facts.as_slice();
+        let mut rows = Vec::with_capacity(facts.len());
+        let index = NativeCutoverPublicationFactsV1::from_facts_v1(
+            facts,
+            &mut rows,
+            &mut |_| Ok::<(), ()>(()),
+        )
+        .expect("caller-funded operation index");
+        let source = index.for_operation_v1(source_key).collect::<Vec<_>>();
+        assert_eq!(source.len(), 3);
+        assert!(std::ptr::eq(source[0], &facts[1]));
+        assert!(std::ptr::eq(source[1], &facts[2]));
+        assert!(std::ptr::eq(source[2], &facts[facts.len() - 2]));
+        let ast_rows = index.for_operation_v1(ast.0).collect::<Vec<_>>();
+        assert_eq!(ast_rows.len(), 2);
+        assert!(matches!(ast_rows[0], Fact::AstWork {
+            phase: NativeCutoverAstWorkPhaseV1::Published,
+            ..
+        }));
+        assert!(matches!(ast_rows[1], Fact::AstWork {
+            phase: NativeCutoverAstWorkPhaseV1::Claimed,
+            ..
+        }));
+        assert_eq!(index.for_operation_v1(ast.0).clone().count(), 2);
+        let mut unknown = source_key;
+        unknown.sequence = u64::MAX;
+        assert_eq!(index.for_operation_v1(unknown).count(), 0);
+
+        let mut short = Vec::new();
+        assert!(matches!(
+            NativeCutoverPublicationFactsV1::from_facts_v1(
+                facts,
+                &mut short,
+                &mut |_| Ok::<(), ()>(()),
+            ),
+            Err(NativeCutoverSourceJoinErrorV1::Refused(_))
+        ));
     }
 
     #[test]
@@ -5245,8 +5450,8 @@ mod tests {
             let evidence = settled_native_successor_evidence(successors);
             let mut reservations = Vec::with_capacity(evidence.source_facts.len());
             let mut replays = Vec::with_capacity(evidence.source_facts.len());
-            let joined = join_native_cutover_source_facts_v1(&evidence,
-                &mut reservations, &mut replays, &mut |_| Ok::<_, ()>(()))
+            let (joined, _) = join_native_cutover_source_facts_v1(&evidence,
+                &mut reservations, &mut replays, &mut [], &mut |_| Ok::<_, ()>(()))
                 .expect("settled Native SDK lineage and historical Legacy M");
             assert_eq!(joined.baseline.operation.sequence, 7);
             assert_eq!(joined.current_native_target.operation.sequence,
@@ -5260,10 +5465,8 @@ mod tests {
         evidence.source_facts.push(settled_outbox_fixture("Lexical"));
         evidence.source_facts.sort_by(|left, right| mixed_rank(left).cmp(&mixed_rank(right))
             .then_with(|| mixed_key(left).cmp(&mixed_key(right))));
-        let mut reservations = Vec::with_capacity(evidence.source_facts.len());
-        let mut replays = Vec::with_capacity(evidence.source_facts.len());
-        let _joined = join_native_cutover_source_facts_v1(&evidence, &mut reservations, &mut replays,
-            &mut |_| Ok::<_, ()>(())).expect("settled historical outbox is joined once");
+        let _joined = join_test(&evidence, &mut |_| Ok::<_, ()>(()))
+            .expect("settled historical outbox is joined once");
     }
 
     #[test]
@@ -5417,6 +5620,43 @@ mod tests {
     }
 
     #[test]
+    fn many_host_events_resolve_within_bounded_work() {
+        const HOST_EVENTS: u128 = 96;
+        const READ_LIMIT: usize = 8_000;
+        let mut evidence = historical_watch_evidence();
+        let template = completed_watch_fact(&evidence, 11, vec![1]);
+        let insert = evidence.source_facts.len() - 1;
+        for index in 0..HOST_EVENTS {
+            let mut fact = template.clone();
+            let Fact::CompletedSourceRequest { native_operation, source, event_ids } = &mut fact else {
+                unreachable!()
+            };
+            *native_operation = None;
+            let digest = format!("{index:064x}");
+            source.transition_digest = NativeCutoverDigest64V1(digest.as_bytes().try_into().unwrap());
+            let first = 100 + index;
+            *event_ids = vec![first, first + HOST_EVENTS];
+            evidence.source_facts.insert(insert + index as usize, fact);
+        }
+        let mut reads = 0;
+        let mut charge = |_| {
+            reads += 1;
+            if reads > READ_LIMIT { Err("read limit") } else { Ok(()) }
+        };
+        let mut reservations = Vec::with_capacity(evidence.source_facts.len());
+        let mut replays = Vec::with_capacity(evidence.source_facts.len());
+        let mut probes: Vec<_> = (100..100 + HOST_EVENTS)
+            .map(NativeCutoverSourceEventMatchV1::new).collect();
+        let (_, matched) = join_native_cutover_source_facts_v1(&evidence, &mut reservations,
+            &mut replays, &mut probes, &mut charge).unwrap();
+        for id in (100..100 + HOST_EVENTS).rev() {
+            let binding = matched.source_for_event_v1(id, &mut charge)
+                .expect("bounded Source event lookup").expect("exact Source-only event");
+            assert_eq!(binding.transition_digest.0.as_slice(), format!("{:064x}", id - 100).as_bytes());
+        }
+    }
+
+    #[test]
     fn source_only_completed_request_has_no_native_publication_and_global_event_ids_are_unique() {
         let mut evidence = historical_watch_evidence();
         let mut source_only = completed_watch_fact(&evidence, 11, vec![31, 33]);
@@ -5426,15 +5666,25 @@ mod tests {
         *native_operation = None;
         source.transition_digest = NativeCutoverDigest64V1([b'1'; 64]);
         evidence.source_facts.insert(evidence.source_facts.len() - 1, source_only);
-        let joined = join_test(&evidence, &mut |_| Ok::<_, ()>(()))
+        let mut reservations = Vec::with_capacity(evidence.source_facts.len());
+        let mut replays = Vec::with_capacity(evidence.source_facts.len());
+        let mut probes = [0, 19, 20, 31, 31, 34].map(NativeCutoverSourceEventMatchV1::new);
+        let (_, matched) = join_native_cutover_source_facts_v1(&evidence, &mut reservations,
+            &mut replays, &mut probes, &mut |_| Ok::<_, ()>(()))
             .expect("signed Source-only ancestry has no fabricated Native reservation");
-        assert_eq!(joined.completed_source_request_for_event_v1(31, &mut |_| Ok::<_, ()>(())).unwrap()
-            .expect("exact Source-only event membership").2, None);
-        assert!(joined.completed_source_request_for_event_v1(19, &mut |_| Ok::<_, ()>(())).unwrap()
-            .expect("actual Native Watch event membership").2.is_some());
-        assert!(joined.completed_source_request_for_event_v1(34, &mut |_| Ok::<_, ()>(())).unwrap().is_none());
-        assert_eq!(joined.completed_source_request_for_event_v1(31, &mut |_| Err::<(), _>("event lookup cap")),
+        for (id, digest) in [(19, b'a'), (31, b'1')] {
+            assert_eq!(matched.source_for_event_v1(id, &mut |_| Ok::<_, ()>(())).unwrap()
+                .expect("exact completed Source event membership").transition_digest.0, [digest; 64]);
+        }
+        for id in [0, 20, 33, 34] {
+            assert_eq!(matched.source_for_event_v1(id, &mut |_| Ok::<_, ()>(())).unwrap(), None);
+        }
+        assert_eq!(matched.source_for_event_v1(31, &mut |_| Err::<(), _>("event lookup cap")),
             Err("event lookup cap"));
+        let mut unsorted = [31, 19].map(NativeCutoverSourceEventMatchV1::new);
+        assert!(matches!(join_native_cutover_source_facts_v1(&evidence, &mut reservations,
+            &mut replays, &mut unsorted, &mut |_| Ok::<_, ()>(())),
+            Err(NativeCutoverSourceJoinErrorV1::Refused("Host event lookup slots are unsorted"))));
 
         let mut duplicate = evidence;
         if let Some(Fact::CompletedSourceRequest { event_ids, .. }) = duplicate.source_facts.iter_mut()
@@ -5532,10 +5782,7 @@ mod tests {
     #[test]
     fn native_group_join_refuses_foreign_m_missing_ack_and_active_ast() {
         let refuses = |evidence: &NativeCutoverEvidenceV1| {
-            let mut reservations = Vec::with_capacity(evidence.source_facts.len());
-            let mut replays = Vec::with_capacity(evidence.source_facts.len());
-            assert!(matches!(join_native_cutover_source_facts_v1(evidence,
-                &mut reservations, &mut replays, &mut |_| Ok::<_, ()>(())),
+            assert!(matches!(join_test(evidence, &mut |_| Ok::<_, ()>(())),
                 Err(NativeCutoverSourceJoinErrorV1::Refused(_))));
         };
         let mut evidence = settled_native_successor_evidence(1);
@@ -5602,10 +5849,7 @@ mod tests {
         });
         refuses(&evidence);
         let evidence = settled_native_successor_evidence(1);
-        let mut reservations = Vec::with_capacity(evidence.source_facts.len());
-        let mut replays = Vec::with_capacity(evidence.source_facts.len());
-        assert!(matches!(join_native_cutover_source_facts_v1(&evidence,
-            &mut reservations, &mut replays, &mut |_| Err::<(), _>("work cap")),
+        assert!(matches!(join_test(&evidence, &mut |_| Err::<(), _>("work cap")),
             Err(NativeCutoverSourceJoinErrorV1::Work("work cap"))));
     }
 
@@ -6733,7 +6977,6 @@ fn join_mixed_legacy<'a, E>(
             current_legacy_sdk_ack: None,
             prior_sdk_acked_binding: None,
             completed_watch_sources: &[],
-            completed_source_requests: &[],
             native_initial_sources: &[],
             native_sdk_sources: &[],
             imported_legacy_sources: &[],

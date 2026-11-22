@@ -1,51 +1,119 @@
 //! A finite, ticket-bound admitted-owner universe for unanchored Boolean text.
 
 use super::text::{
-    Root, TextReadContext, TextRecipe, ValidatedUniverseOwner, validate_universe_owner,
+    Root, SegmentOwnerCursor, SelectedTextRoot, TextReadContext, TextRecipe, TextStatistics,
+    ValidatedUniverseOwner, validate_universe_owner,
 };
 use quanta_index_core::index::{IndexError, MapPageCursor, MapPageEntry, MapRoot};
 
 const OWNER_PAGE: u32 = 64;
 pub(super) const MAX_UNANCHORED_DOCS: u64 = 4_096;
 
-/// The source member's owner map, not the broader source map, defines the
-/// universe. It includes admitted empty text and excludes unadmitted sources.
+/// The pinned member defines the admitted universe. The source owner map is
+/// broader: it also contains excluded documents and cannot be a census.
 pub(super) struct TextOwnerCursor {
-    root: Root,
-    recipe: TextRecipe,
-    owners: MapRoot,
+    source: OwnerSource,
     declared: u64,
     visited: u64,
     declared_tokens: u64,
     visited_tokens: u64,
+}
+
+enum OwnerSource {
+    Tree(TreeOwnerCursor),
+    Segment(SegmentOwnerCursor),
+}
+
+struct TreeOwnerCursor {
+    root: Root,
+    recipe: TextRecipe,
+    owners: MapRoot,
     after: Option<MapPageEntry>,
     entries: MapPageCursor,
     more: bool,
 }
 
 impl TextOwnerCursor {
-    pub(super) fn new(root: Root, recipe: TextRecipe) -> Result<Self, IndexError> {
-        let (owners, declared, declared_tokens) = root.owner_universe();
-        if declared > MAX_UNANCHORED_DOCS {
+    pub(super) fn check_statistics(statistics: TextStatistics) -> Result<(), IndexError> {
+        if statistics.docs > MAX_UNANCHORED_DOCS {
             return Err(IndexError::ResourceLimited);
         }
+        Ok(())
+    }
+
+    pub(super) fn new(root: SelectedTextRoot, recipe: TextRecipe) -> Result<Self, IndexError> {
+        let statistics = root.statistics();
+        Self::check_statistics(statistics)?;
+        let source = match root {
+            SelectedTextRoot::Tree(root) => {
+                let (owners, _, _) = root.owner_universe();
+                OwnerSource::Tree(TreeOwnerCursor {
+                    root,
+                    recipe,
+                    owners,
+                    after: None,
+                    entries: MapPageCursor::default(),
+                    more: true,
+                })
+            }
+            SelectedTextRoot::Segment { artifact, .. } => {
+                OwnerSource::Segment(SegmentOwnerCursor::new(artifact, recipe))
+            }
+        };
         Ok(Self {
-            root,
-            recipe,
-            owners,
-            declared,
+            source,
+            declared: statistics.docs,
             visited: 0,
-            declared_tokens,
+            declared_tokens: statistics.indexed_tokens,
             visited_tokens: 0,
-            after: None,
-            entries: MapPageCursor::default(),
-            more: true,
         })
     }
 
     pub(super) fn next(
         &mut self,
         context: &mut TextReadContext<'_>,
+    ) -> Result<Option<ValidatedUniverseOwner>, IndexError> {
+        context.budget.checkpoint()?;
+        let declared_full = self.visited >= self.declared;
+        let owner = match &mut self.source {
+            OwnerSource::Tree(cursor) => cursor.next(context, declared_full)?,
+            OwnerSource::Segment(cursor) => cursor.next(context)?,
+        };
+        let Some(owner) = owner else {
+            if self.visited != self.declared || self.visited_tokens != self.declared_tokens {
+                return Err(IndexError::CorruptObject(
+                    "native text owner universe differs from declared statistics".into(),
+                ));
+            }
+            return Ok(None);
+        };
+        self.visited = self
+            .visited
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        if self.visited > self.declared {
+            return Err(IndexError::CorruptObject(
+                "native text owner universe exceeds declared docs".into(),
+            ));
+        }
+        self.visited_tokens = self
+            .visited_tokens
+            .checked_add(owner.doc_indexed_tokens)
+            .ok_or(IndexError::ResourceLimited)?;
+        if self.visited_tokens > self.declared_tokens {
+            return Err(IndexError::CorruptObject(
+                "native text owner universe exceeds indexed token total".into(),
+            ));
+        }
+        Ok(Some(owner))
+    }
+}
+
+impl TreeOwnerCursor {
+    fn next(
+        &mut self,
+        context: &mut TextReadContext<'_>,
+        declared_full: bool,
     ) -> Result<Option<ValidatedUniverseOwner>, IndexError> {
         loop {
             context.budget.checkpoint()?;
@@ -63,35 +131,17 @@ impl TextOwnerCursor {
                         "native text owner universe has invalid order or key".into(),
                     ));
                 }
-                self.visited = self
-                    .visited
-                    .checked_add(1)
-                    .ok_or(IndexError::ResourceLimited)?;
-                if self.visited > self.declared {
+                if declared_full {
                     return Err(IndexError::CorruptObject(
                         "native text owner universe exceeds declared docs".into(),
                     ));
                 }
                 let owner =
                     validate_universe_owner(key, *contribution, self.root, self.recipe, context)?;
-                self.visited_tokens = self
-                    .visited_tokens
-                    .checked_add(owner.doc_indexed_tokens)
-                    .ok_or(IndexError::ResourceLimited)?;
-                if self.visited_tokens > self.declared_tokens {
-                    return Err(IndexError::CorruptObject(
-                        "native text owner universe exceeds indexed token total".into(),
-                    ));
-                }
                 self.after = Some(entry);
                 return Ok(Some(owner));
             }
             if !self.more {
-                if self.visited != self.declared || self.visited_tokens != self.declared_tokens {
-                    return Err(IndexError::CorruptObject(
-                        "native text owner universe differs from declared statistics".into(),
-                    ));
-                }
                 return Ok(None);
             }
             let page = context.maps.scan(

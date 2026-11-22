@@ -18,6 +18,31 @@ struct StageRow {
     object: RegisteredObject,
 }
 
+/// A workspace without a published head cannot reuse a bootstrap stage if
+/// protected Native rows already claim its key.
+fn require_empty_workspace_children(
+    connection: &Connection,
+    workspace: WorkspaceKey,
+    budget: &WorkBudget,
+) -> Result<(), IndexError> {
+    budget.checkpoint()?;
+    let key = workspace_key(workspace)?;
+    let occupied: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_view_v1 WHERE workspace=?1)
+                 OR EXISTS(SELECT 1 FROM native_frontier_v1 WHERE workspace=?1)
+                 OR EXISTS(SELECT 1 FROM native_source_authority_v1 WHERE workspace=?1)",
+            params![&key],
+            |row| row.get(0),
+        )
+        .map_err(|error| sql(&error))?;
+    budget.checkpoint()?;
+    if occupied {
+        return Err(IndexError::Conflict);
+    }
+    Ok(())
+}
+
 fn stage_digest(
     workspace: &[u8],
     epoch: i64,
@@ -195,6 +220,7 @@ pub(super) fn begin_bootstrap(
     if current_view(&tx, workspace)?.is_some() {
         return Err(IndexError::Conflict);
     }
+    require_empty_workspace_children(&tx, workspace, budget)?;
     if let Some(prior) = read_stage(&tx, workspace)? {
         if prior.stage.epoch != epoch || prior.stage.profile != object.reference {
             return Err(IndexError::Conflict);
@@ -321,6 +347,7 @@ pub(super) fn publish_bootstrap(
     if current_view(&tx, stage.workspace)?.is_some() {
         return Err(IndexError::Conflict);
     }
+    require_empty_workspace_children(&tx, stage.workspace, budget)?;
     if genesis.identity.workspace != stage.workspace
         || genesis.identity.epoch != stage.epoch
         || genesis.identity.sequence != 0

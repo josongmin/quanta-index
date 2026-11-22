@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeSet,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use quanta_index_core::index::{
@@ -159,7 +159,7 @@ async fn check_selected_query(
             } else {
                 accepted.push(candidate.clone());
             }
-            Ok(eligible)
+            Ok(eligible.then_some(RefillProgress::Vector))
         },
     )
     .await?;
@@ -174,10 +174,8 @@ async fn check_selected_query(
     )?;
 
     let mut observed = BTreeSet::new();
-    let mut ranked = Vec::new();
     for candidate in &accepted {
         let value = ordinal(candidate)?;
-        let expected = vectors.get(value).ok_or("trained ANN row absent")?;
         verify(
             value.is_multiple_of(2) && value != QUERY_ORDINAL,
             "trained ANN returned an excluded member",
@@ -195,26 +193,18 @@ async fn check_selected_query(
             "trained ANN candidate escaped selected member/input binding",
         )?;
         verify(
-            (f64::from(candidate.cosine) - exact_cosine(query, expected)).abs() <= 0.01,
-            "trained ANN score differs from independent exact cosine",
-        )?;
-        verify(
             observed.insert(value),
             "trained ANN callback repeated a vector ID",
         )?;
-        ranked.push((candidate.cosine, value));
     }
-    ranked.sort_by(|left, right| {
-        right
-            .0
-            .total_cmp(&left.0)
-            .then_with(|| left.1.cmp(&right.1))
-    });
-    let actual: BTreeSet<_> = ranked
-        .into_iter()
+    // RegionCandidate carries identity only. The backend delivers its ranked
+    // prefix in callback order; compare the first eligible results with the
+    // fixed-vector oracle rather than reconstructing a score from candidates.
+    let actual: BTreeSet<_> = accepted
+        .iter()
         .take(TOP_K)
-        .map(|(_, value)| value)
-        .collect();
+        .map(ordinal)
+        .collect::<Result<_, _>>()?;
     let mut exact: Vec<_> = vectors
         .iter()
         .enumerate()

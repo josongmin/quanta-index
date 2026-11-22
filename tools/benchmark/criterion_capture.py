@@ -44,6 +44,21 @@ from profile_capture import (
 from registry import registry_digest
 
 
+def cargo_bench_command(repo: Path, producer: dict[str, object]) -> list[str]:
+    return [
+        str(repo / "scripts" / "cargow"),
+        "--lane",
+        "bench-lane",
+        "bench",
+        "-p",
+        str(producer["package"]),
+        "--bench",
+        str(producer["target"]),
+        "--no-default-features",
+        "--locked",
+    ]
+
+
 def listed_cases(raw: bytes) -> list[str]:
     cases = []
     for line in raw.decode("utf-8").splitlines():
@@ -291,7 +306,8 @@ def replay_run(store: RunStore, evidence: dict, producer: dict | None = None) ->
         len(argv) != 12
         or argv[1:5] != ["--lane", "bench-lane", "bench", "-p"]
         or argv[6] != "--bench"
-        or argv[8:] != ["--all-features", "--locked", "--no-run", "--message-format=json"]
+        or argv[8] not in ("--no-default-features", "--all-features")
+        or argv[9:] != ["--locked", "--no-run", "--message-format=json"]
         or build_command.get("status") != "completed"
         or build_command.get("exit_code") != 0
     ):
@@ -304,7 +320,8 @@ def replay_run(store: RunStore, evidence: dict, producer: dict | None = None) ->
         raise EvidenceError("Criterion build owner differs from the registered producer")
     binary, features = _binary(RawFile.capture(build_paths[0]), argv[7])
     if (
-        features != execution.get("features")
+        (argv[8] == "--no-default-features" and features)
+        or features != execution.get("features")
         or binary.name != binaries[0]["name"]
         or evidence["command"]["argv"][0] != str(binary)
         or argv[3:] != evidence["build"]["flags"]
@@ -401,23 +418,10 @@ def capture(
         env = {
             **os.environ,
             "CRITERION_HOME": str(work / "criterion"),
-            "DSL_BENCH_WARM_OUT": str(work / "dsl-native.json"),
+            "DSL_BENCH_WARM_OUT": str(work / "dsl-diagnostic.json"),
         }
         print(f"Criterion capture: build {family}", file=sys.stderr, flush=True)
-        build_argv = [
-            str(repo / "scripts/cargow"),
-            "--lane",
-            "bench-lane",
-            "bench",
-            "-p",
-            producer["package"],
-            "--bench",
-            producer["target"],
-            "--all-features",
-            "--locked",
-            "--no-run",
-            "--message-format=json",
-        ]
+        build_argv = [*cargo_bench_command(repo, producer), "--no-run", "--message-format=json"]
         output, stderr, build_command = current_capture().execute(
             execute,
             build_argv,
@@ -427,6 +431,8 @@ def capture(
             log_dir=work / "execution" / "build",
         )
         binary, features = _binary(output, producer["target"])
+        if features:
+            raise EvidenceError("Criterion executable has features on the NoFeatures build rail")
         binary_digest = RawFile.capture(binary).sha256
         rustc, rustc_stderr, _ = current_capture().execute(
             execute,
@@ -554,8 +560,8 @@ def capture(
         common["environment.json"] = write_raw_file(
             work / "environment.json", [canonical_json(build_environment).encode()]
         )
-        if (work / "dsl-native.json").exists():
-            common["dsl-native.json"] = RawFile.capture(work / "dsl-native.json")
+        if (work / "dsl-diagnostic.json").exists():
+            common["dsl-diagnostic.json"] = RawFile.capture(work / "dsl-diagnostic.json")
         build = {
             "toolchain": rustc_text.strip(),
             "target_triple": target,

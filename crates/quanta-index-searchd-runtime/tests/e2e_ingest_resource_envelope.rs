@@ -2,31 +2,30 @@
 //! typed with zero bytes changed, and the envelope does not touch batches
 //! that fit.
 //!
-//! The daemon runs under a deliberately tight envelope so a small batch
-//! overruns it. Oracles are external: the typed refusal code on the ingest
-//! socket, the absence of any generation directory on disk for the refused
-//! batch, and that a batch within the envelope applies and serves.
+//! A pinned old-Q process runs under a deliberately tight vector envelope.
+//! The typed SDK refusal, absent generation directories, and a served fitting
+//! batch are observations outside the daemon implementation.
 
 #![forbid(unsafe_code)]
 
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::Path;
 
 use quanta_index_contract::{
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, TextQuerySyntax,
+    GenerationPin, ManifestGeneration, RepoId, RevisionId, SourcePublicationEvent,
 };
 use quanta_index_core::{
     GenerationStorageKeyV1, INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, IngestResourcePolicy,
 };
-use quanta_index_searchd_harness as e2e_harness;
-
-use e2e_harness::E2eRuntime;
+use quanta_index_sdk::SdkError;
+use quanta_index_searchd_harness::{
+    legacy_reference::{LegacySearchdBinary, SearchdBinaryProcess, legacy_source_batch},
+    private_tempdir,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// Vector bytes one embedded record expands into under the harness's
-/// default embedder: the daemon's hash embedder has
-/// `SEARCH_OWNED_SEMANTIC_DIMENSION` components of four bytes each.
+/// The hash embedder produces one vector of this size per source record.
 fn one_record_vector_bytes() -> Result<u64, Box<dyn Error>> {
     Ok(
         u64::try_from(quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION)?
@@ -34,28 +33,23 @@ fn one_record_vector_bytes() -> Result<u64, Box<dyn Error>> {
     )
 }
 
-fn pair_dir(rt: &E2eRuntime, track_root: &str) -> PathBuf {
-    rt.state_root()
+fn pair_dir(
+    state_root: &Path,
+    track_root: &str,
+    repo: &RepoId,
+    revision: &RevisionId,
+) -> std::path::PathBuf {
+    state_root
         .join(track_root)
-        .join(GenerationStorageKeyV1::for_repo_revision(&rt.repo(), &rt.revision()).as_str())
+        .join(GenerationStorageKeyV1::for_repo_revision(repo, revision).as_str())
 }
 
-fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
-    match response {
-        SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.as_wire_str()),
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
-        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
-        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
-        | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => None,
+fn source_event(sequence: u64) -> SourcePublicationEvent {
+    SourcePublicationEvent {
+        stream_id: "e2e-harness-source-v1".into(),
+        event_id: format!("e2e-source-event-{sequence}"),
+        expected_base_event_id: None,
+        payload_sha256: [0; 32],
     }
 }
 
@@ -64,12 +58,6 @@ fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
 /// one-record batch still applies, seals and serves.
 #[test]
 fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> TestResult {
-    // The harness builds one chunk and one typed semantic source per text
-    // batch; the source is what the daemon embeds, so one batch is one
-    // embedded record.
-    // The byte ceilings are declared under the process memory envelope
-    // (QI-BB-016), so the text ceiling this test does not exercise keeps
-    // its default rather than an unbounded value the envelope would refuse.
     let policy = IngestResourcePolicy::new(
         usize::MAX,
         IngestResourcePolicy::DEFAULT.max_text_bytes(),
@@ -77,83 +65,107 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
             .saturating_mul(2)
             .saturating_sub(1),
     )?;
-    let mut rt = E2eRuntime::boot_with_ingest_resource_policy(policy)?;
-    rt.start()?;
-
-    let mut oversized =
-        rt.text_search_corpus_batch("src/envelope.rs", "fn envelope_body() { envelope_needle }")?;
-    // A second scope doubles the embedded records: two sources, two vectors.
-    let mut second = rt.text_search_corpus_batch(
-        "src/envelope_two.rs",
-        "fn envelope_second() { envelope_second_needle }",
-    )?;
-    oversized.replace_scopes.append(&mut second.replace_scopes);
-    oversized
-        .semantic_replace_scopes
-        .append(&mut second.semantic_replace_scopes);
-    // The body changed after the harness stamped it: re-stamp, as a
-    // producer does last (QI-BB-032), so the envelope is what refuses it.
-    rt.issue_fixture_source_event(&mut oversized)?;
-
-    let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-        oversized,
-    ))?;
-    if typed_code(&refused) != Some(INGEST_RESOURCE_BUDGET_EXCEEDED_CODE.as_wire_str()) {
-        return Err(format!(
-            "a two-record batch under a one-record envelope must be refused typed, got {refused:?}"
+    let parent = private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let binary = LegacySearchdBinary::from_environment()?;
+    let mut command = binary.command()?;
+    let _serve = command.arg("serve").arg("--state-root").arg(&state_root);
+    let _configured = command.apply_searchd_env(8);
+    let _policy = command
+        .env(
+            "QUANTA_INDEX_INGEST_MAX_RECORDS",
+            policy.max_records().to_string(),
         )
-        .into());
-    }
-    for track in ["indexes/lexical", "indexes/semantic"] {
-        let pair = pair_dir(&rt, track);
-        if pair.exists() {
+        .env(
+            "QUANTA_INDEX_INGEST_MAX_TEXT_BYTES",
+            policy.max_text_bytes().to_string(),
+        )
+        .env(
+            "QUANTA_INDEX_INGEST_MAX_VECTOR_BYTES",
+            policy.max_vector_bytes().to_string(),
+        );
+    let process = SearchdBinaryProcess::start_with_pinned_command(&state_root, command)?;
+
+    let outcome = (|| -> TestResult {
+        let client = process.connect()?;
+        let repo = RepoId::new("repo-e2e")?;
+        let revision = RevisionId::new("rev-e2e")?;
+        let pin = GenerationPin::new(repo.clone(), revision.clone(), ManifestGeneration::new(1));
+        let first = (
+            "src/envelope.rs",
+            "fn envelope_body() { envelope_needle }",
+            1,
+        );
+        let second = (
+            "src/envelope_two.rs",
+            "fn envelope_second() { envelope_second_needle }",
+            2,
+        );
+        // The original fixture issued two draft sequence numbers before
+        // stamping the combined body as event 3.
+        let oversized = legacy_source_batch(&repo, &revision, 1, None, &[first, second])?
+            .source_event(source_event(3));
+        let refused = client.search_corpus().publish_outcome(&oversized);
+        match refused {
+            Err(SdkError::Remote { code, .. })
+                if code.as_wire_str() == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE.as_wire_str() => {}
+            other => {
+                return Err(format!(
+                    "a two-record batch under a one-record envelope must be refused typed, got {other:?}"
+                )
+                .into());
+            }
+        }
+        for track in ["indexes/lexical", "indexes/semantic"] {
+            let pair = pair_dir(&state_root, track, &repo, &revision);
+            if pair.exists() {
+                return Err(format!(
+                    "a refused batch must leave no generation on disk, found {}",
+                    pair.display()
+                )
+                .into());
+            }
+        }
+
+        // The refused publication did not advance the durable source stream.
+        // The fitting batch uses the original target generation.
+        let fits =
+            legacy_source_batch(&repo, &revision, 1, None, &[first])?.source_event(source_event(4));
+        let accepted = client.search_corpus().publish_outcome(&fits)?;
+        if !accepted.receipt.applied || accepted.receipt.durable_sequence == 0 {
+            return Err(format!("a fitting batch must apply durably, got {accepted:?}").into());
+        }
+        // Preserve the original second publish of the same fitting body.
+        let _replayed = client.search_corpus().publish_outcome(&fits)?;
+        let evidence = quanta_index_sdk::PublishedBatchEvidence::from(&accepted);
+        let activated = client.search_corpus().activate_published(&evidence, None)?;
+        let active = client
+            .generations()
+            .active_head(repo.clone(), revision.clone())?
+            .ok_or("fitting batch activation has no observed active head")?;
+        if active != activated.active
+            || active.generation.lexical.manifest_generation != pin.manifest_generation
+        {
+            return Err("fitting batch activation selected another generation".into());
+        }
+        let served = client
+            .lexical()
+            .query()
+            .native("envelope_needle")
+            .active(repo, revision)
+            .top_k(5)
+            .execute()?;
+        if served.generation != pin || served.results.len() != 1 {
             return Err(format!(
-                "a refused batch must leave no generation on disk, found {}",
-                pair.display()
+                "the fitting batch must serve one chunk from generation 1, got {served:?}"
             )
             .into());
         }
-    }
-
-    // One record fits: the same daemon applies it and serves it.
-    let fits =
-        rt.text_search_corpus_batch("src/envelope.rs", "fn envelope_body() { envelope_needle }")?;
-    let accepted = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-        fits.clone(),
-    ))?;
-    match &accepted {
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) if outcome.receipt.applied => {}
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-        | SearchPlaneIngestIpcResponse::Error(_)
-        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
-        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
-        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
-        | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => {
-            return Err(format!("a fitting batch must apply, got {accepted:?}").into());
-        }
-    }
-    rt.publish_search_corpus_batch(fits)?;
-    rt.activate_last_sealed_generation()?;
-    let served = rt.query_text(TextQuerySyntax::Native, "envelope_needle", 5);
-    if let Some(error) = served.typed_error {
-        return Err(format!("the fitting batch must serve: {error}").into());
-    }
-    if served.candidate_ids.len() != 1 {
-        return Err(format!(
-            "the fitting batch must serve its one chunk, served {}",
-            served.candidate_ids.len()
-        )
-        .into());
-    }
-    Ok(())
+        Ok(())
+    })();
+    let stopped = process.stop();
+    outcome.and(stopped)?;
+    binary.verify()
 }
 
 // NOTE (TOPT-07): the record-ceiling daemon case lived here and was

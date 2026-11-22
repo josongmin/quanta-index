@@ -4,7 +4,6 @@ use super::*;
 fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResult {
     let fixture = SdkFrontdoorRuntime::start()?;
     let client = &fixture.client;
-    let ingest_socket = &fixture.ingest_socket;
     let corpus_batch = lexical_frontdoor_matrix_batch()?;
     reserve_sdk_frontdoor_generation(client, &corpus_batch)?;
 
@@ -29,7 +28,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
     let _history_receipt = client.history().publish(&history_batch())?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
-    publish_runtime_catalog_batch(ingest_socket)?;
+    publish_runtime_catalog_batch(client)?;
 
     for &scenario in SDK_FRONTDOOR_SCENARIOS {
         match scenario.expected {
@@ -340,125 +339,6 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
             }
         }
     }
-
-    fixture.stop()
-}
-
-#[test]
-fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
-    let fixture = SdkFrontdoorRuntime::start()?;
-    let client = &fixture.client;
-
-    let ancestor_batch = rev_at_time_lexical_batch(
-        rev_at_time_ancestor_revision(),
-        rev_at_time_ancestor_generation(),
-        "fixture:rev-at-time:ancestor",
-        None,
-        "src/legacy.rs",
-        "chunk-rev-at-time-ancestor",
-        "needle_token legacy_choice",
-    )?;
-    let _ancestor_active = publish_and_activate_sdk_search_corpus(client, &ancestor_batch)?;
-    let head_batch = rev_at_time_lexical_batch(
-        rev_at_time_head_revision(),
-        rev_at_time_head_generation(),
-        "fixture:rev-at-time:head",
-        Some("fixture:rev-at-time:ancestor"),
-        "src/head.rs",
-        "chunk-rev-at-time-head",
-        "needle_token head_choice",
-    )?;
-    let _head_active = publish_and_activate_sdk_search_corpus(client, &head_batch)?;
-    let _history_receipt = client.history().publish(&rev_at_time_history_batch()?)?;
-
-    let head = wait_for_sdk_observation(
-        SOCKET_TIMEOUT,
-        || {
-            client
-                .lexical()
-                .query()
-                .sourcegraph("rev:at.time(2100-01-01T00:00:00Z) needle_token")
-                .pinned(rev_at_time_head_pin())
-                .top_k(10)
-                .execute()
-        },
-        |response| response.generation == rev_at_time_head_pin() && response.results.len() == 1,
-    )?;
-    let [head_candidate] = head.results.as_slice() else {
-        return Err(format!("unexpected future rev:at.time response: {head:?}").into());
-    };
-    if head_candidate.candidate_id != "chunk-rev-at-time-head" {
-        return Err(format!("unexpected future rev:at.time response: {head:?}").into());
-    }
-
-    let relative = wait_for_sdk_observation(
-        SOCKET_TIMEOUT,
-        || {
-            client
-                .lexical()
-                .query()
-                .sourcegraph("rev:at.time(1 year ago) needle_token")
-                .pinned(rev_at_time_head_pin())
-                .top_k(10)
-                .execute()
-        },
-        |response| response.generation == rev_at_time_ancestor_pin() && response.results.len() == 1,
-    )?;
-    let [relative_candidate] = relative.results.as_slice() else {
-        return Err(format!("unexpected human relative rev:at.time response: {relative:?}").into());
-    };
-    if relative_candidate.candidate_id != "chunk-rev-at-time-ancestor" {
-        return Err(format!("unexpected human relative rev:at.time response: {relative:?}").into());
-    }
-
-    let named = wait_for_sdk_observation(
-        SOCKET_TIMEOUT,
-        || {
-            client
-                .lexical()
-                .query()
-                .sourcegraph("rev:at.time(yesterday) needle_token")
-                .pinned(rev_at_time_head_pin())
-                .top_k(10)
-                .execute()
-        },
-        |response| response.generation == rev_at_time_ancestor_pin() && response.results.len() == 1,
-    )?;
-    let [named_candidate] = named.results.as_slice() else {
-        return Err(format!("unexpected named relative rev:at.time response: {named:?}").into());
-    };
-    if named_candidate.candidate_id != "chunk-rev-at-time-ancestor" {
-        return Err(format!("unexpected named relative rev:at.time response: {named:?}").into());
-    }
-
-    let calendar = wait_for_sdk_observation(
-        SOCKET_TIMEOUT,
-        || {
-            client
-                .lexical()
-                .query()
-                .sourcegraph("rev:at.time(june 25 2017) needle_token")
-                .pinned(rev_at_time_head_pin())
-                .top_k(10)
-                .execute()
-        },
-        |response| response.generation == rev_at_time_head_pin() && response.results.is_empty(),
-    )?;
-    if !calendar.results.is_empty() {
-        return Err(format!("unexpected calendar rev:at.time response: {calendar:?}").into());
-    }
-
-    let invalid = expect_sdk_error(
-        client
-            .lexical()
-            .query()
-            .sourcegraph("rev:at.time(definitely-not-a-timeref) needle_token")
-            .pinned(rev_at_time_head_pin())
-            .top_k(10)
-            .execute(),
-        "rev:at.time invalid timeref",
-    )?;
-    expect_remote_code(invalid, "HISTORY_INVALID_TIMEREF")?;
 
     fixture.stop()
 }

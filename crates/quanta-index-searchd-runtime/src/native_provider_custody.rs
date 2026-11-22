@@ -20,13 +20,14 @@ use quanta_index_core::{
 use crate::native_resources::NativeClassScheduler;
 
 struct Shared {
-    reservation: ReservationGuard<NativeClassScheduler>,
     /// The state root that supplied the provider and attempt pool stays live
     /// until the last physical attempt exits after a cancelled request.
     _root_owner: Option<Arc<dyn Send + Sync>>,
     cap: u64,
     live: Mutex<u64>,
     invalid: AtomicBool,
+    // Refund only after the root owner and inline attempt state have dropped.
+    reservation: ReservationGuard<NativeClassScheduler>,
 }
 
 /// Authority for the exact Native execution reservation that admits provider
@@ -75,11 +76,11 @@ impl NativeProviderExecutionCustody {
         }
         Ok(Arc::new(Self {
             shared: Arc::new(Shared {
-                reservation,
                 _root_owner: root_owner,
                 cap,
                 live: Mutex::new(0),
                 invalid: AtomicBool::new(false),
+                reservation,
             }),
         }))
     }
@@ -256,6 +257,41 @@ mod tests {
 
     fn admitted(cap: u64) -> Result<Arc<NativeProviderExecutionCustody>, IndexError> {
         NativeProviderExecutionCustody::new(admitted_reservation(cap)?)
+    }
+
+    struct RootDropGrantProbe {
+        ledger: Arc<NativeResourceLedger>,
+        observed_grant: Arc<AtomicBool>,
+    }
+
+    impl Drop for RootDropGrantProbe {
+        fn drop(&mut self) {
+            let grant_held = self
+                .ledger
+                .snapshot()
+                .is_ok_and(|snapshot| snapshot.reserved.provider_units == 1);
+            self.observed_grant.store(grant_held, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn last_physical_attempt_drops_root_before_refunding_provider_grant() -> Result<(), IndexError>
+    {
+        let (ledger, reservation) = admitted_reservation_with_ledger(1)?;
+        let observed_grant = Arc::new(AtomicBool::new(false));
+        let owner: Arc<dyn Send + Sync> = Arc::new(RootDropGrantProbe {
+            ledger: Arc::clone(&ledger),
+            observed_grant: Arc::clone(&observed_grant),
+        });
+        let custody = NativeProviderExecutionCustody::new_with_owner(reservation, owner)?;
+        let attempt = core(custody.begin_attempt_v1())?;
+        drop(custody);
+        assert_eq!(ledger.snapshot()?.reserved.provider_units, 1);
+        assert!(!observed_grant.load(Ordering::SeqCst));
+        drop(attempt);
+        assert!(observed_grant.load(Ordering::SeqCst));
+        assert_eq!(ledger.snapshot()?.reserved.provider_units, 0);
+        Ok(())
     }
 
     fn core<T>(result: Result<T, CoreError>) -> Result<T, IndexError> {

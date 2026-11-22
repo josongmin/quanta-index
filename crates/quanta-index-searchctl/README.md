@@ -1,13 +1,14 @@
 # Search CLI usage
 
-Run commands from the repository root. Start `quanta-index-searchd` and publish
-an active generation before querying it. Run as the daemon's permitted Unix user.
-The generation commands below use the Legacy client. The explicit `native`
-family has its own parser and selected-view inputs, described below.
+Run commands from the repository root as the daemon's permitted Unix user.
+Unprefixed commands and commands beginning with `native` use the Native endpoint.
+Commands beginning with `legacy` use the Legacy generation interface against
+a separately pinned old-Q daemon. The current daemon executable refuses Legacy
+serving.
 
 Source routing: [src/lib.rs](src/lib.rs) binds commands to SDK calls,
-[src/parse.rs](src/parse.rs) owns argument parsing and validation, and
-[src/render.rs](src/render.rs) owns response-kind checks and output rendering.
+[src/native.rs](src/native.rs) parses Native requests, and
+[src/parse.rs](src/parse.rs) parses Legacy requests.
 
 ```sh
 ./scripts/cargow --lane dev-lane build -p quanta-index-searchctl --locked
@@ -18,32 +19,61 @@ The current help path prints usage to stderr and exits 2. Examples below use
 the built `quanta-index-searchctl` executable on `PATH`; `scripts/cargow run`
 accepts the same arguments after `--`.
 
-## Connect and choose output
+## Native selected views
+
+Start the configured Native daemon and publish a view before querying it. Use
+the daemon's absolute `--socket` path. The producer or configuration supplies
+the workspace as 128 hex characters, the epoch as a decimal integer, and the
+Text instance as 32 hex characters.
+
+```sh
+quanta-index-searchctl read-view --socket /absolute/native.sock \
+  --workspace "$workspace_hex" --epoch "$workspace_epoch" --output json
+quanta-index-searchctl search-text --socket /absolute/native.sock \
+  --workspace "$workspace_hex" --epoch "$workspace_epoch" \
+  --instance "$text_instance_hex" --query-text 'main' --top-k 20 --output json
+```
+
+Native selected-view queries accept `pretty` or `json` output. Retained-session
+commands include `read-session-open`, `read-session-renew`, `read-session-status`,
+`read-session-profile`, `read-session-release`, `read-session-settlement`, `search-text-page`,
+`search-hybrid-file` and `history`. The [retained parser](src/native/read_session.rs)
+and [wire contract](../quanta-index-contract/src/native_protocol/read_session.rs)
+define their required session and cursor arguments. Session release and
+settlement remain explicit caller operations.
+
+## Legacy generation commands
+
+Use an approved old-Q executable and its matching generation state before
+using these comparison commands. The current release binary cannot serve that
+state.
+
+### Connect and choose output
 
 Global flags: `--state-root PATH`, `--socket PATH`, and
 `--output pretty|json|prometheus`. Use an explicit state root or socket override.
 `prometheus` is accepted only for `metrics`.
 
 ```sh
-quanta-index-searchctl --state-root /absolute/state-root --output json readiness
-quanta-index-searchctl --state-root /absolute/state-root --output json generation-status \
+quanta-index-searchctl legacy --state-root /absolute/state-root --output json readiness
+quanta-index-searchctl legacy --state-root /absolute/state-root --output json generation-status \
   --repo-id my-repo --revision-id pinned-revision
-quanta-index-searchctl --state-root /absolute/state-root --output json doctor \
+quanta-index-searchctl legacy --state-root /absolute/state-root --output json doctor \
   --repo-id my-repo --revision-id pinned-revision
 ```
 
 `doctor` exits 0 when diagnosis completes; inspect `serve_ready`, `all_resolvable`
 and per-track `resolver_ok` to determine health.
 
-## Search
+### Search
 
 Use the published `repo-id`, `revision-id` and `manifest-generation`:
 
 ```sh
-quanta-index-searchctl --state-root /absolute/state-root --output json lexical \
+quanta-index-searchctl legacy --state-root /absolute/state-root --output json lexical \
   --repo-id my-repo --revision-id pinned-revision --manifest-generation 1 \
   --syntax sourcegraph --query-text 'file:src main' --top-k 20
-quanta-index-searchctl --state-root /absolute/state-root --output json semantic \
+quanta-index-searchctl legacy --state-root /absolute/state-root --output json semantic \
   --repo-id my-repo --revision-id pinned-revision --manifest-generation 1 \
   --query-text 'where is shutdown handled' --top-k 20
 ```
@@ -66,12 +96,12 @@ and the original query to `explain`. For a hybrid explanation, use
 `--hybrid-candidate-json PATH|-`, both original queries and the original `--top-k`.
 Inspect score reconciliation fields in the output.
 
-## Events and metrics
+### Events and metrics
 
 ```sh
-quanta-index-searchctl --state-root /absolute/state-root --output json events --plane query --limit 100
-quanta-index-searchctl --state-root /absolute/state-root --output json metrics
-quanta-index-searchctl --state-root /absolute/state-root metrics --output prometheus
+quanta-index-searchctl legacy --state-root /absolute/state-root --output json events --plane query --limit 100
+quanta-index-searchctl legacy --state-root /absolute/state-root --output json metrics
+quanta-index-searchctl legacy --state-root /absolute/state-root metrics --output prometheus
 ```
 
 Event planes: `query`, `control`, `ingest`; limit: 1–1024. Metrics are daemon
@@ -79,45 +109,28 @@ process totals. For a node_exporter textfile collector, write a temporary file
 and rename it only after a successful scrape:
 
 ```sh
-quanta-index-searchctl --state-root /absolute/state-root metrics --output prometheus \
+quanta-index-searchctl legacy --state-root /absolute/state-root metrics --output prometheus \
   > /absolute/textfile/quanta_index.prom.tmp && \
   mv /absolute/textfile/quanta_index.prom.tmp /absolute/textfile/quanta_index.prom
 ```
 
-## Quarantine
+### Quarantine
 
 ```sh
-quanta-index-searchctl --state-root /absolute/state-root --output json quarantine list
+quanta-index-searchctl legacy --state-root /absolute/state-root --output json quarantine list
 ```
 
 To remove an entry, copy its exact identity from the inventory into one form:
 
 ```sh
-quanta-index-searchctl --state-root /absolute/state-root quarantine discard \
+quanta-index-searchctl legacy --state-root /absolute/state-root quarantine discard \
   --track lexical --path /absolute/listed-generation --reason listed-code --detail listed-detail
-quanta-index-searchctl --state-root /absolute/state-root quarantine discard \
+quanta-index-searchctl legacy --state-root /absolute/state-root quarantine discard \
   --repomap-file listed-name --reason listed-reason
 ```
 
 `--track` is `lexical|semantic`. Discard deletes the identified entry and refuses
 stale or invented identities. Inspect the inventory before invoking it.
-
-## Native selected views
-
-Use `quanta-index-searchctl native <command>` with an absolute `--socket` for
-the configured Native endpoint. `read-view` requires `--workspace HEX128` and
-`--epoch N`; `search-text` additionally requires `--instance HEX32`,
-`--query-text TEXT` and `--top-k N`. Native output is `pretty|json`.
-Workspace, epoch and instance identities come from the admitted producer/configuration.
-
-Retained commands are `read-session-open`, `read-session-renew`,
-`read-session-status`, `read-session-release`, `read-session-settlement`,
-`search-text-page` and `search-hybrid-file`. Their typed session/cursor inputs
-and required flags are defined by the
-[retained parser](src/native/read_session.rs) and
-[wire contract](../quanta-index-contract/src/native_protocol/read_session.rs).
-Session release and settlement remain explicit caller operations.
-These routes do not imply default-client or installed-producer migration.
 
 ## Exit codes
 
@@ -128,6 +141,7 @@ These routes do not imply default-client or installed-producer migration.
 | 2 | Invalid usage, including the current help path |
 | 3 | Remote typed refusal |
 | 4 | Protocol/response mismatch |
+| 5 | Native capability unavailable |
 
 For architecture and accepted contracts use [ADRs](../../docs/adr/README.md).
 For offline state maintenance use the [state runbook](../../docs/operator/state-cutover-runbook.md).

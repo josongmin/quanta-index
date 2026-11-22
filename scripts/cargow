@@ -191,6 +191,10 @@ export QUANTA_INDEX_BUILD_LANE="$lane"
 if [[ "${QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR:-0}" != "1" ]]; then
   unset CARGO_TARGET_DIR
 fi
+# Cargo can store rlibs and fingerprints separately from target-directory
+# outputs. An inherited build-dir must not reconnect an isolated lane to
+# another checkout's intermediate cache. A deliberate override uses --config.
+unset CARGO_BUILD_BUILD_DIR
 
 # The env script exports cache paths that must affect this process before Cargo.
 # shellcheck disable=SC1091

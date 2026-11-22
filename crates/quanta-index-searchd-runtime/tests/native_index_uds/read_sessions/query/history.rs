@@ -1,15 +1,20 @@
 //! Legacy SDK History publication through Native Kernel CAS, SDK and UDS.
 //! The initial replay position remains a fixture input, not installed-producer qualification.
 use super::*;
+use crate::legacy_searchd_binary::LegacySearchdBinary;
+use quanta_index_contract::GenerationPin;
 use quanta_index_contract::{
     AuxEpochV1, BatchPublishReceipt, DiffHunkSide, FileContributorEntry,
-    FileContributorIdentityEntry, FileContributorIngestBatch, HistoryDiffHunkUpsert, HistoryIngestBatch,
-    HistoryOrderV1, HistoryQueryRequest, HistoryRefMutation, HistoryRefUpsert, ManifestGeneration,
-    RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoId, RepoRelativePath, RevisionId,
+    FileContributorIdentityEntry, FileContributorIngestBatch, HistoryDiffHunkUpsert,
+    HistoryIngestBatch, HistoryOrderV1, HistoryQueryRequest, HistoryRefMutation, HistoryRefUpsert,
+    ManifestGeneration, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoId,
+    RepoRelativePath, RevisionId,
     index::{
-        AuxiliaryGenerationKeyV1, HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryGenerationInputV1, HistoryReplayFenceV1, HistoryReplayPublicationV1,
+        AuxiliaryGenerationKeyV1, HistoryAppendV1, HistoryGenerationAdvanceV1,
+        HistoryGenerationInputV1, HistoryReplayFenceV1, HistoryReplayPublicationV1,
         HistorySnapshotCheckpointV1, HistorySnapshotPageV1, HistorySnapshotRowV1,
-        HistorySourceCutV1, HistorySourceInputV1, HistoryTransition, Refusal, SourceHistoryTransitionV1, ViewRef,
+        HistorySourceCutV1, HistorySourceInputV1, HistoryTransition, Refusal,
+        SourceHistoryTransitionV1, ViewRef,
     },
     lex::{CommitRecord, CommitSha, DiffHunkRecord},
     native_protocol::{NativeHistoryCursor, NativeHistoryPage, NativeReadSessionRequest},
@@ -23,7 +28,14 @@ use quanta_index_search_plane::native_history::{
     NATIVE_HISTORY_FORMAT_V1, NATIVE_HISTORY_KIND_V1, NATIVE_HISTORY_SCHEMA_V1,
     NativeHistoryBuildV1, native_history_policy_v1,
 };
-use quanta_index_searchd_harness::E2eRuntime;
+use quanta_index_searchd_harness::history_fixture::HISTORY_LEDGER;
+
+#[path = "history/dsl_fixture.rs"]
+mod dsl_fixture;
+#[path = "history/native_protected.rs"]
+mod native_protected;
+#[path = "history/native_restore.rs"]
+mod native_restore;
 
 fn history_spec() -> InstanceSpec {
     InstanceSpec {
@@ -213,39 +225,67 @@ type LegacyHistoryInputs = (
     HistorySourceInputV1,
 );
 
-const LEGACY_CHILD_ROOT: &str = "QUANTA_HISTORY_UDS_LEGACY_CHILD_ROOT";
-
-fn published_legacy_source(legacy_root: &std::path::Path) -> TestResult<LegacyHistoryInputs> {
-    let mut runtime = E2eRuntime::boot_in(legacy_root)?;
-    runtime.ingest_text("repo", "src/history_source.rs", "fn history_source() {}")?;
-    runtime.start()?;
-    let (query, control, ingest) = runtime
-        .socket_paths()
-        .ok_or("Legacy History publisher has no socket paths")?;
-    let publisher = QuantaIndex::connect_legacy(
-        ConnectOptions::from_state_root(runtime.state_root())
-            .with_query_socket(query)
-            .with_control_socket(control)
-            .with_ingest_socket(ingest),
-    )?;
-    let full = batch(
-        false,
-        runtime.repo(),
-        runtime.revision(),
-        runtime.current_generation(),
-    )?;
-    let delta = batch(
-        true,
-        runtime.repo(),
-        runtime.revision(),
-        runtime.current_generation(),
-    )?;
+fn published_legacy_source(
+    legacy_root: &std::path::Path,
+    dsl_fixed_ledger: bool,
+) -> TestResult<LegacyHistoryInputs> {
+    let binary = LegacySearchdBinary::from_environment()?;
+    let process = binary.start(legacy_root, 8)?;
+    let publisher = process.connect()?;
+    // This fixture has always published History independently of Source
+    // activation. These are declared input identities, checked against the
+    // daemon's actual acknowledgements and query response below.
+    let repo = RepoId::new("repo-e2e")?;
+    let revision = RevisionId::new("rev-e2e")?;
+    let generation = ManifestGeneration::new(1);
+    let full = if dsl_fixed_ledger {
+        let mut fixed = HISTORY_LEDGER.build_batch(repo.clone(), revision.clone(), generation)?;
+        stamp_batch_digest_v1(&mut fixed)?;
+        fixed
+    } else {
+        batch(false, repo.clone(), revision.clone(), generation)?
+    };
+    let delta = batch(true, repo.clone(), revision.clone(), generation)?;
     let full_ack = publisher.history().publish_history_borrowed_v1(&full)?;
     let delta_ack = publisher.history().publish_history_borrowed_v1(&delta)?;
     assert!(full_ack.applied && delta_ack.applied);
+    assert_eq!(full_ack.generation, full.generation);
+    assert_eq!(delta_ack.generation, delta.generation);
+    assert_eq!(full_ack.batch_digest, full.batch_digest);
+    assert_eq!(delta_ack.batch_digest, delta.batch_digest);
     assert!(full_ack.durable_sequence > 0);
     assert!(delta_ack.durable_sequence > full_ack.durable_sequence);
-    runtime.stop()?;
+    let pin = GenerationPin::new(repo, revision, generation);
+    let readback = publisher
+        .history()
+        .query()
+        .native("type:commit")
+        .pinned(pin.clone())
+        .top_k(64)
+        .order(HistoryOrderV1::Recency)
+        .execute()?;
+    assert_eq!(readback.generation, pin);
+    let expected = if dsl_fixed_ledger {
+        vec![
+            CommitSha::from_bytes([4; 20]),
+            CommitSha::from_hex(HISTORY_LEDGER.commit_sha)?,
+        ]
+    } else {
+        [4_u8, 2, 3, 1, 9]
+            .map(|id| CommitSha::from_bytes([id; 20]))
+            .to_vec()
+    };
+    assert_eq!(
+        readback
+            .commits
+            .iter()
+            .map(|row| row.sha)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert!(readback.next_cursor.is_none());
+    process.stop()?;
+    binary.verify()?;
 
     let scope = legacy_root
         .to_str()
@@ -268,32 +308,14 @@ fn published_legacy_source(legacy_root: &std::path::Path) -> TestResult<LegacyHi
 }
 
 fn publish_in_legacy_child() -> TestResult<LegacyHistoryInputs> {
-    // The runtime VFS owns a process-global registration. The same test runs
-    // its Legacy producer phase in a child so both roots use real VFS custody.
+    publish_in_legacy_child_with_fixture(false)
+}
+
+fn publish_in_legacy_child_with_fixture(dsl_fixed_ledger: bool) -> TestResult<LegacyHistoryInputs> {
+    // The external daemon owns its VFS registration. The current test binary
+    // contains only the Native consumer and the public SDK producer call.
     let root = private_root()?;
-    let full_selector = concat!(
-        module_path!(),
-        "::native_history_sdk_full_delta_retained_pages_and_reopen"
-    );
-    let (_, selector) = full_selector
-        .split_once("::")
-        .ok_or("History selector has no module path")?;
-    let output = std::process::Command::new(std::env::current_exe()?)
-        .args(["--exact", selector, "--nocapture"])
-        .env(LEGACY_CHILD_ROOT, root.path())
-        .output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "Legacy History producer exited {}: {} {}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-    Ok(serde_json::from_reader(std::fs::File::open(
-        root.path().join("originals.json"),
-    )?)?)
+    published_legacy_source(root.path(), dsl_fixed_ledger)
 }
 
 // Independent fixed-row commitment: never calls the target replay/digest helper
@@ -327,8 +349,29 @@ fn fixture_history_snapshot(
         frame(hash, key)?;
         let value = encode_cbor_payload(value)?;
         frame(hash, &value)?;
-        rows.push(HistorySnapshotRowV1 { family: family.into(), row_key: key.to_vec(), value });
+        rows.push(HistorySnapshotRowV1 {
+            family: family.into(),
+            row_key: key.to_vec(),
+            value,
+        });
         Ok(())
+    }
+    fn reference_rows<'a>(
+        base: &'a [HistoryRefMutation],
+        delta: Option<&'a [HistoryRefMutation]>,
+    ) -> std::collections::BTreeMap<&'a str, CommitSha> {
+        let mut output = std::collections::BTreeMap::new();
+        for mutation in base.iter().chain(delta.into_iter().flatten()) {
+            match mutation {
+                HistoryRefMutation::Upsert(update) => {
+                    let _replaced = output.insert(update.name.as_ref(), update.sha);
+                }
+                HistoryRefMutation::Delete(delete) => {
+                    let _removed = output.remove(delete.name.as_ref());
+                }
+            }
+        }
+        output
     }
     struct Meta {
         commits_materialized: bool,
@@ -362,7 +405,13 @@ fn fixture_history_snapshot(
         .collect();
     records.sort_by_key(|record| record.sha);
     for record in records {
-        row(&mut hash, &mut rows, "commit", record.sha.as_bytes(), record)?;
+        row(
+            &mut hash,
+            &mut rows,
+            "commit",
+            record.sha.as_bytes(),
+            record,
+        )?;
     }
     for hunk in full
         .diff_hunks
@@ -374,13 +423,9 @@ fn fixture_history_snapshot(
         key.extend_from_slice(hunk.file_path.as_bytes());
         row(&mut hash, &mut rows, "diff-hunk", &key, &hunk.record)?;
     }
-    row(
-        &mut hash,
-        &mut rows,
-        "ref",
-        b"main",
-        &CommitSha::from_bytes([if delta.is_some() { 4 } else { 2 }; 20]),
-    )?;
+    for (name, sha) in reference_rows(&full.refs, delta.map(|batch| batch.refs.as_slice())) {
+        row(&mut hash, &mut rows, "ref", name.as_bytes(), &sha)?;
+    }
     row(
         &mut hash,
         &mut rows,
@@ -393,17 +438,22 @@ fn fixture_history_snapshot(
             diff_hunks_materialized: true,
         },
     )?;
-    row(&mut hash, &mut rows, "tag", b"v1", &CommitSha::from_bytes([1; 20]))?;
-    Ok((HistorySourceCutV1 {
-        generation: AuxiliaryGenerationKeyV1 {
-            repo_id: full.repo_id.clone(),
-            revision_id: full.revision_id.clone(),
-            generation: full.generation,
+    for (name, sha) in reference_rows(&full.tags, delta.map(|batch| batch.tags.as_slice())) {
+        row(&mut hash, &mut rows, "tag", name.as_bytes(), &sha)?;
+    }
+    Ok((
+        HistorySourceCutV1 {
+            generation: AuxiliaryGenerationKeyV1 {
+                repo_id: full.repo_id.clone(),
+                revision_id: full.revision_id.clone(),
+                generation: full.generation,
+            },
+            durable_epoch: AuxEpochV1::new(epoch),
+            snapshot_digest: Digest(hash.finalize().into()),
+            replay_start,
         },
-        durable_epoch: AuxEpochV1::new(epoch),
-        snapshot_digest: Digest(hash.finalize().into()),
-        replay_start,
-    }, rows))
+        rows,
+    ))
 }
 
 fn stage_history<P: AsRef<std::path::Path>>(
@@ -493,18 +543,6 @@ fn refuse_cursor<P: AsRef<std::path::Path>>(
 
 #[test]
 fn native_history_sdk_full_delta_retained_pages_and_reopen() -> TestResult {
-    if let Some(child_root) = std::env::var_os(LEGACY_CHILD_ROOT) {
-        use std::os::unix::fs::DirBuilderExt as _;
-        let root = std::path::PathBuf::from(child_root);
-        let legacy = root.join("legacy");
-        std::fs::DirBuilder::new().mode(0o700).create(&legacy)?;
-        let published = published_legacy_source(&legacy)?;
-        serde_json::to_writer(
-            std::fs::File::create(root.join("originals.json"))?,
-            &published,
-        )?;
-        return Ok(());
-    }
     let (full, delta, full_input, delta_input) = publish_in_legacy_child()?;
     let root = private_root()?;
     let socket = root.path().join("native.sock");
@@ -522,7 +560,10 @@ fn native_history_sdk_full_delta_retained_pages_and_reopen() -> TestResult {
         let full_request =
             stage_history(&client, source_view, 3, &full_input, None, full_cut.clone())?;
         let held = published(&client.submit(full_request.clone(), &budget())?)?;
-        assert_eq!(published(&client.submit(full_request.clone(), &budget())?)?, held);
+        assert_eq!(
+            published(&client.submit(full_request.clone(), &budget())?)?,
+            held
+        );
         let mut changed_full = full_request.clone();
         let UpdateKind::HistoryAdvance(transition) = &mut changed_full.kind else {
             return Err("expected History FULL transition".into());
@@ -753,24 +794,58 @@ fn native_history_sdk_full_delta_retained_pages_and_reopen() -> TestResult {
         let deadline = Instant::now()
             .checked_add(Duration::from_secs(10))
             .ok_or("History FULL retention deadline overflow")?;
+        let db = rusqlite::Connection::open_with_flags(
+            quanta_index_catalog::catalog_dir(root.path())
+                .join(quanta_index_catalog::CATALOG_FILE_NAME),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let workspace = serde_json::to_vec(&held.workspace)?;
+        let epoch = i64::try_from(held.epoch)?;
+        let sequence = i64::try_from(held.sequence)?;
         loop {
             if Instant::now() >= deadline {
-                return Err("History FULL Exact view did not retire after session release".into());
+                return Err(
+                    "History FULL Exact view and Catalog row did not retire after session release"
+                        .into(),
+                );
             }
-            match client.read_view(ViewSelection::Exact(held), &RequestBudgetV1::until(deadline)) {
+            match client.read_view(
+                ViewSelection::Exact(held),
+                &RequestBudgetV1::until(deadline),
+            ) {
                 Err(NativeUdsError::Refused(error))
                     if error.code == NativeIndexErrorCode::SnapshotUnavailable =>
                 {
-                    break;
+                    // The floor can refuse Exact before the separate retirement
+                    // transaction deletes the durable view row.
+                    let stored: i64 = db.query_row(
+                        "SELECT count(*) FROM native_view_v1 WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
+                        rusqlite::params![&workspace, epoch, sequence],
+                        |row| row.get(0),
+                    )?;
+                    match stored {
+                        0 => break,
+                        1 => {}
+                        _ => {
+                            return Err(format!(
+                                "History FULL Catalog view count changed: {stored}"
+                            )
+                            .into());
+                        }
+                    }
                 }
                 Ok(view) if view.identity == held => {}
                 Ok(view) => {
-                    return Err(format!("History FULL Exact view changed before retirement: {view:?}").into());
+                    return Err(format!(
+                        "History FULL Exact view changed before retirement: {view:?}"
+                    )
+                    .into());
                 }
                 Err(error) => return Err(error.into()),
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+        drop(db);
         Ok((latest, held, full_request, changed_full))
     })();
     let stopped = running.stop();
@@ -784,7 +859,10 @@ fn native_history_sdk_full_delta_retained_pages_and_reopen() -> TestResult {
             Err(NativeUdsError::Refused(error))
                 if error.code == NativeIndexErrorCode::SnapshotUnavailable
         ));
-        assert_eq!(published(&client.submit(full_request, &budget())?)?, retired_full);
+        assert_eq!(
+            published(&client.submit(full_request, &budget())?)?,
+            retired_full
+        );
         assert!(matches!(
             client.submit(changed_full, &budget()),
             Err(NativeUdsError::Refused(error))
@@ -838,8 +916,16 @@ fn native_history_append_original_publishes_without_legacy_ack_and_reopens() -> 
     // The storage test stages rows with a real Legacy ACK. Installed scope
     // authentication is performed independently by the Catalog boot owner.
     full_cut.replay_start = quanta_index_ipc::history_snapshot_checkpoint_replay_with_progress_v1(
-        ["/history-test/writer", "/history-test/workspace", "test", "/history-test/legacy"],
-        &full_cut.generation, full_cut.durable_epoch, full_cut.snapshot_digest, ack,
+        [
+            "/history-test/writer",
+            "/history-test/workspace",
+            "test",
+            "/history-test/legacy",
+        ],
+        &full_cut.generation,
+        full_cut.durable_epoch,
+        full_cut.snapshot_digest,
+        ack,
         &mut |_| Ok::<_, std::convert::Infallible>(()),
     )?;
     let root = private_root()?;
@@ -850,9 +936,13 @@ fn native_history_append_original_publishes_without_legacy_ack_and_reopens() -> 
         let configured = create_text_workspace(&client)?;
         let full_operation = operation(2);
         let ingress = client.begin_input(full_operation, &budget())?;
-        let profile = client.stage_profile(ingress, IndexProfile {
-            instances: vec![native_text_spec(), history_spec()],
-        }, &budget())?;
+        let profile = client.stage_profile(
+            ingress,
+            IndexProfile {
+                instances: vec![native_text_spec(), history_spec()],
+            },
+            &budget(),
+        )?;
         let mut pages = Vec::new();
         for (index, chunk) in rows.chunks(4).enumerate() {
             let page = HistorySnapshotPageV1 {
@@ -862,7 +952,10 @@ fn native_history_append_original_publishes_without_legacy_ack_and_reopens() -> 
                 rows: chunk.to_vec(),
             };
             pages.push(client.stage_projection_output_with_children(
-                ingress, &serde_json::to_vec(&page)?, &[], &budget(),
+                ingress,
+                &serde_json::to_vec(&page)?,
+                &[],
+                &budget(),
             )?);
         }
         let mut children = pages.clone();
@@ -875,7 +968,10 @@ fn native_history_append_original_publishes_without_legacy_ack_and_reopens() -> 
             pages,
         };
         let input = client.stage_projection_output_with_children(
-            ingress, &serde_json::to_vec(&source)?, &children, &budget(),
+            ingress,
+            &serde_json::to_vec(&source)?,
+            &children,
+            &budget(),
         )?;
         let full_update = UpdateRequest {
             operation: full_operation,
@@ -909,7 +1005,8 @@ fn native_history_append_original_publishes_without_legacy_ack_and_reopens() -> 
         let append = |sequence, expected: HistorySourceCutV1| -> TestResult<UpdateRequest> {
             let operation = operation(sequence);
             let ingress = client.begin_input(operation, &budget())?;
-            let input = client.stage_projection_output_with_children(ingress, &bytes, &[], &budget())?;
+            let input =
+                client.stage_projection_output_with_children(ingress, &bytes, &[], &budget())?;
             Ok(UpdateRequest {
                 operation,
                 expected_view: before,
@@ -970,18 +1067,24 @@ fn native_history_append_original_publishes_without_legacy_ack_and_reopens() -> 
         let operation = operation(5);
         let ingress = client.begin_input(operation, &budget())?;
         let input = client.stage_projection_output_with_children(
-            ingress, &serde_json::to_vec(&original)?, &[], &budget(),
+            ingress,
+            &serde_json::to_vec(&original)?,
+            &[],
+            &budget(),
         )?;
-        let next = published(&client.submit(UpdateRequest {
-            operation,
-            expected_view: after,
-            kind: UpdateKind::HistoryAppend(HistoryAppendV1 {
-                instance: history_spec().instance,
-                expected: witness.cut,
-                input,
-                profile,
-            }),
-        }, &budget())?)?;
+        let next = published(&client.submit(
+            UpdateRequest {
+                operation,
+                expected_view: after,
+                kind: UpdateKind::HistoryAppend(HistoryAppendV1 {
+                    instance: history_spec().instance,
+                    expected: witness.cut,
+                    input,
+                    profile,
+                }),
+            },
+            &budget(),
+        )?)?;
         assert_eq!(next.sequence, after.sequence + 1);
         Ok(())
     })();
@@ -1000,41 +1103,63 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
     let root = private_root()?;
     let socket = root.path().join("native.sock");
     let running = NativeServiceGuard::start(history_service(root.path(), &socket)?);
-    let target = InstanceSpec { instance: IndexInstanceId([88; 16]), ..history_spec() };
+    let target = InstanceSpec {
+        instance: IndexInstanceId([88; 16]),
+        ..history_spec()
+    };
     let setup = (|| -> TestResult<_> {
         let client = NativeUdsClient::new(&socket);
         let configured = create_text_workspace(&client)?;
-        let (source_view, _) = publish_text_owner(
-            &client, configured, 2, 1, "old.rs", "needle old source",
-        )?;
+        let (source_view, _) =
+            publish_text_owner(&client, configured, 2, 1, "old.rs", "needle old source")?;
         let live = published(&client.submit(
             stage_history(&client, source_view, 3, &full_input, None, full_cut.clone())?,
             &budget(),
         )?)?;
         let old = client.read_view(ViewSelection::Exact(live), &budget())?;
-        let next = ManifestGeneration::new(full.generation.get().checked_add(1).ok_or("generation overflow")?);
-        let prepare = |sequence, generation, forged_recency| -> TestResult<(UpdateRequest, HistoryGenerationInputV1)> {
+        let next = ManifestGeneration::new(
+            full.generation
+                .get()
+                .checked_add(1)
+                .ok_or("generation overflow")?,
+        );
+        let prepare = |sequence,
+                       generation,
+                       forged_recency|
+         -> TestResult<(UpdateRequest, HistoryGenerationInputV1)> {
             let ingress = client.begin_input(operation(sequence), &budget())?;
-            let profile = client.stage_profile(ingress, IndexProfile {
-                instances: vec![native_text_spec(), history_spec(), target.clone()],
-            }, &budget())?;
+            let profile = client.stage_profile(
+                ingress,
+                IndexProfile {
+                    instances: vec![native_text_spec(), history_spec(), target.clone()],
+                },
+                &budget(),
+            )?;
             let mut child = commit(8, 50_000, "needle next-generation History", "alice");
             child.parents.push(CommitSha::from_bytes([2; 20]));
             let mut original = HistoryIngestBatch {
-                repo_id: full.repo_id.clone(), revision_id: next_revision.clone(),
-                generation, manifest_digest: Some("next-manifest".into()),
+                repo_id: full.repo_id.clone(),
+                revision_id: next_revision.clone(),
+                generation,
+                manifest_digest: Some("next-manifest".into()),
                 batch_digest: String::new(),
                 commits: vec![child],
-                refs: Vec::new(), tags: Vec::new(),
+                refs: Vec::new(),
+                tags: Vec::new(),
                 diff_hunks: vec![diff(8, "src/next.rs", "needle changed source")],
             };
             stamp_batch_digest_v1(&mut original)?;
             let original = client.stage_projection_output_with_children(
-                ingress, &serde_json::to_vec(&original)?, &[], &budget(),
+                ingress,
+                &serde_json::to_vec(&original)?,
+                &[],
+                &budget(),
             )?;
             let mut recency = RepoCommitRecencyIngestBatch {
-                repo_id: full.repo_id.clone(), revision_id: next_revision.clone(),
-                generation, batch_digest: String::new(),
+                repo_id: full.repo_id.clone(),
+                revision_id: next_revision.clone(),
+                generation,
+                batch_digest: String::new(),
                 entries: vec![RepoCommitRecencyEntry {
                     source_repo_id: full.repo_id.clone(),
                     latest_committer_time_ms: if forged_recency { 49_999 } else { 50_000 },
@@ -1042,32 +1167,52 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
             };
             stamp_batch_digest_v1(&mut recency)?;
             let recency = client.stage_projection_output_with_children(
-                ingress, &serde_json::to_vec(&recency)?, &[], &budget(),
+                ingress,
+                &serde_json::to_vec(&recency)?,
+                &[],
+                &budget(),
             )?;
             let mut contributor = FileContributorIngestBatch {
-                repo_id: full.repo_id.clone(), revision_id: next_revision.clone(),
-                generation, batch_digest: String::new(),
+                repo_id: full.repo_id.clone(),
+                revision_id: next_revision.clone(),
+                generation,
+                batch_digest: String::new(),
                 entries: vec![FileContributorEntry {
                     source_repo_id: full.repo_id.clone(),
                     repo_relative_path: RepoRelativePath::new("src/next.rs".to_owned()),
                     contributors: vec![FileContributorIdentityEntry {
-                        canonical: "alice".into(), name: Some("alice".into()), email: None,
+                        canonical: "alice".into(),
+                        name: Some("alice".into()),
+                        email: None,
                     }],
                 }],
             };
             stamp_batch_digest_v1(&mut contributor)?;
             let contributor = client.stage_projection_output_with_children(
-                ingress, &serde_json::to_vec(&contributor)?, &[], &budget(),
+                ingress,
+                &serde_json::to_vec(&contributor)?,
+                &[],
+                &budget(),
             )?;
             let closure = HistoryGenerationInputV1 {
-                original, repo_commit_recency: Some(recency), file_contributor: Some(contributor),
+                original,
+                repo_commit_recency: Some(recency),
+                file_contributor: Some(contributor),
             };
             let children = closure.child_references_v1().collect::<Vec<_>>();
             let input = client.stage_projection_output_with_children(
-                ingress, &serde_json::to_vec(&closure)?, &children, &budget(),
+                ingress,
+                &serde_json::to_vec(&closure)?,
+                &children,
+                &budget(),
             )?;
             let (request, _) = prepare_text_owner_in_ingress(
-                &client, live, ingress, 2, "new.rs", "needle next source",
+                &client,
+                live,
+                ingress,
+                2,
+                "new.rs",
+                "needle next source",
             )?;
             let UpdateKind::SourceAdvance(mut source) = request.kind else {
                 return Err("expected the ordinary Source fixture request".into());
@@ -1083,8 +1228,11 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
                 kind: UpdateKind::SourceHistoryAdvance(Box::new(SourceHistoryTransitionV1 {
                     source,
                     history: HistoryGenerationAdvanceV1 {
-                        prior_instance: history_spec().instance, expected: full_cut.clone(),
-                        instance: target.instance, input, profile,
+                        prior_instance: history_spec().instance,
+                        expected: full_cut.clone(),
+                        instance: target.instance,
+                        input,
+                        profile,
                     },
                 })),
                 expected_view: live,
@@ -1092,10 +1240,14 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
             };
             Ok((request, closure))
         };
-        assert!(matches!(client.submit(prepare(4, full.generation, false)?.0, &budget())?,
-            SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))));
-        assert!(matches!(client.submit(prepare(5, next, true)?.0, &budget())?,
-            SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))));
+        assert!(matches!(
+            client.submit(prepare(4, full.generation, false)?.0, &budget())?,
+            SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))
+        ));
+        assert!(matches!(
+            client.submit(prepare(5, next, true)?.0, &budget())?,
+            SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))
+        ));
         let (mut wrong_prior, _) = prepare(6, next, false)?;
         let UpdateKind::SourceHistoryAdvance(transition) = &mut wrong_prior.kind else {
             return Err("expected a combined publication to test the prior cut".into());
@@ -1105,7 +1257,10 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
             client.submit(wrong_prior, &budget())?,
             SubmitOutcome::Terminal(OperationStatus::Refused(_))
         ));
-        let latest = ViewSelection::Latest { workspace: workspace(), epoch: 1 };
+        let latest = ViewSelection::Latest {
+            workspace: workspace(),
+            epoch: 1,
+        };
         assert_eq!(client.read_view(latest, &budget())?, old);
         let (request, expected_inputs) = prepare(7, next, false)?;
         let view = published(&client.submit(request.clone(), &budget())?)?;
@@ -1123,7 +1278,10 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
     let result = (|| -> TestResult {
         let client = NativeUdsClient::new(&socket);
         let view = published_view.identity;
-        let latest = ViewSelection::Latest { workspace: workspace(), epoch: 1 };
+        let latest = ViewSelection::Latest {
+            workspace: workspace(),
+            epoch: 1,
+        };
         // Inspect the recovered Catalog before the original request can repair it.
         assert!(matches!(
             client.status(request.operation, &budget())?,
@@ -1135,7 +1293,8 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
         };
         let expected_source_input = transition.history.input;
         let sdk = QuantaIndex::connect_query_only(ConnectOptions::from_native_socket(
-            &socket, ViewSelection::Exact(view),
+            &socket,
+            ViewSelection::Exact(view),
         ))?;
         let mut session = sdk.reader().native()?.open([90; 32], &budget())?;
         let _profile = session.load_profile(&budget())?;
@@ -1146,7 +1305,8 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
                 instance: target.instance,
             }),
             &budget(),
-        )? else {
+        )?
+        else {
             return Err("missing published History generation outputs".into());
         };
         assert_eq!((output.view, output.member), (view, current.member));
@@ -1156,9 +1316,17 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
         assert_eq!(current.cut.generation.generation, next);
         assert_eq!(current.cut.generation.revision_id, next_revision);
         assert_eq!(current.cut.durable_epoch, AuxEpochV1::new(1));
-        let page = session.history(&target, query("type:commit needle", HistoryOrderV1::Recency, 4), None, &budget())?;
+        let page = session.history(
+            &target,
+            query("type:commit needle", HistoryOrderV1::Recency, 4),
+            None,
+            &budget(),
+        )?;
         assert_ids(&page, &[8, 2, 3, 1]);
-        assert_eq!(session.history_cut(&history_spec(), &budget())?.cut, full_cut);
+        assert_eq!(
+            session.history_cut(&history_spec(), &budget())?.cut,
+            full_cut
+        );
         let _released = session.release(&budget())?;
         assert_eq!(published(&client.submit(request, &budget())?)?, view);
         assert_eq!(client.read_view(latest, &budget())?, published_view);

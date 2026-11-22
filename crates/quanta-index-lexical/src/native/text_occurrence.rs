@@ -2,6 +2,7 @@
 //! Query heads and callbacks use this only within their execution scope.
 
 pub(super) mod block;
+pub(super) mod positions;
 pub(in crate::native) use block::is_packed;
 
 use std::{fmt, ops::Deref};
@@ -15,8 +16,8 @@ use serde::{
     de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor},
 };
 
-use super::text::{MAX_POSITIONS_PER_TERM, Occurrence, Positions};
-use super::text_memory::PreparedRows;
+use positions::{MAX_POSITIONS_PER_TERM, Occurrence, Positions};
+use super::text_memory::{PreparedRows, check_term_key};
 
 /// Execution-local bounded block DATA window.
 ///
@@ -66,8 +67,9 @@ impl OccurrenceReader {
     }
 
     /// Derived counts from a completely validated block are immutable DATA,
-    /// like a leaf's validated scalar. Only the prepare attempt's confirmed
-    /// memo uses this; query/prior reads still cross `read_retained`.
+    /// like a leaf's validated scalar. The prepare attempt's confirmed memo
+    /// and same-attempt canonical cold inventory cursor may use this; query
+    /// and prior reads still cross `read_retained`.
     pub(super) fn validated_count(
         &self,
         reference: ObjectRef,
@@ -191,7 +193,7 @@ impl OccurrenceReader {
         objects: &dyn ImmutableObjectPort,
         budget: &mut WorkBudget,
     ) -> Result<OccurrenceCount, IndexError> {
-        super::text_spool::check_term_key(term)?;
+        check_term_key(term)?;
         match self.block(reference, objects, budget)? {
             Ok(block) => Ok(OccurrenceCount {
                 value: block.position_count(term, budget)?,
@@ -211,7 +213,7 @@ impl OccurrenceReader {
         objects: &dyn ImmutableObjectPort,
         budget: &mut WorkBudget,
     ) -> Result<ScopedOccurrence, IndexError> {
-        super::text_spool::check_term_key(term)?;
+        check_term_key(term)?;
         match self.block(reference, objects, budget)? {
             Ok(block) => load_checked_block(block, term, budget),
             Err(stored) => decode_payload(&stored.payload, budget),
@@ -227,7 +229,7 @@ impl OccurrenceReader {
         objects: &dyn ImmutableObjectPort,
         budget: &mut WorkBudget,
     ) -> Result<ScopedOccurrence, IndexError> {
-        super::text_spool::check_term_key(term)?;
+        check_term_key(term)?;
         match self.block(reference, objects, budget)? {
             Ok(block) => load_checked_block(block, term, budget),
             Err(_stored) => Err(IndexError::CorruptObject(
@@ -286,6 +288,17 @@ pub(super) struct ScopedOccurrence {
     _memory: Option<MemoryLease>,
 }
 
+impl ScopedOccurrence {
+    pub(super) fn from_checked_positions(positions: Vec<u32>, memory: Option<MemoryLease>) -> Self {
+        Self {
+            value: Occurrence {
+                positions: Positions(positions),
+            },
+            _memory: memory,
+        }
+    }
+}
+
 impl Deref for ScopedOccurrence {
     type Target = Occurrence;
     fn deref(&self) -> &Self::Target {
@@ -321,7 +334,7 @@ fn load_count(
 pub(super) fn stored_leaf_count(
     stored: &StoredObject,
     reference: ObjectRef,
-    budget: &mut WorkBudget,
+    budget: &WorkBudget,
 ) -> Result<u64, IndexError> {
     budget.checkpoint()?;
     if stored.registration.reference != reference

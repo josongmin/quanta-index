@@ -547,6 +547,7 @@ fn is_blocked(
     candidate: &Candidate,
     budget: &mut WorkBudget,
 ) -> Result<bool, IndexError> {
+    // The page preflights pin-row integrity before this exact-byte lookup.
     if !matches!(
         candidate.row.status,
         WorkStatus::Completed(_) | WorkStatus::Superseded | WorkStatus::Blocked(_)
@@ -711,11 +712,16 @@ impl CatalogTerminalWorkRetentionPort for SqliteCatalog {
         let mut examined = 0_u32;
         let mut retired = 0_u32;
         let mut blocked = 0_u32;
+        let mut pins_checked = false;
         while examined < limit {
             let Some(candidate) = next_candidate(&tx, workspace, epoch, cursor, floor, budget)?
             else {
                 break;
             };
+            if !pins_checked {
+                self.require_pin_integrity(&tx, budget)?;
+                pins_checked = true;
+            }
             if candidate.row.created_view == current.identity {
                 return Err(IndexError::Storage(
                     "current view work lies below floor".into(),

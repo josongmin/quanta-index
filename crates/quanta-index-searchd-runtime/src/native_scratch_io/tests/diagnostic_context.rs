@@ -153,6 +153,8 @@ fn scratch_sqlite_read_scopes_emit_no_write_events_until_a_real_write() -> TestR
             | DiagnosticEventKindV1::OwnedRenewalRefusal { .. }
             | DiagnosticEventKindV1::SyncAggregate { .. }
             | DiagnosticEventKindV1::ObjectInstallAggregate { .. }
+            | DiagnosticEventKindV1::ManagedInstallCensusBatch { .. }
+            | DiagnosticEventKindV1::ManagedInstallCensusEntry { .. }
             | DiagnosticEventKindV1::ObjectKindAggregate { .. }
             | DiagnosticEventKindV1::AdoptionGroupAggregate { .. }
             | DiagnosticEventKindV1::Bm25CensusAggregate { .. }

@@ -78,6 +78,15 @@ impl Visitor<'_> for ContinuationTokenVisitor {
         ContinuationTokenV2::new(value)
             .map_err(|_error| E::invalid_value(de::Unexpected::Str(value), &self))
     }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        ContinuationTokenV2::new(value).map_err(|error| match error {
+            ContinuationTokenError::Empty => E::invalid_value(de::Unexpected::Str(""), &self),
+        })
+    }
 }
 
 impl<'de> Deserialize<'de> for ContinuationTokenV2 {
@@ -85,6 +94,6 @@ impl<'de> Deserialize<'de> for ContinuationTokenV2 {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_str(ContinuationTokenVisitor)
+        deserializer.deserialize_string(ContinuationTokenVisitor)
     }
 }

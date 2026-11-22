@@ -340,6 +340,7 @@ fn run_managed(
     record: bool,
     fail_confirmation: bool,
     inputs: usize,
+    replay: bool,
 ) -> Result<Run, Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let scratch = Arc::new(FileScratchSpace::open_standalone(
@@ -357,7 +358,7 @@ fn run_managed(
         authority,
     )?;
     let clock = Arc::new(StepClock::default());
-    let events = Arc::new(Events::default());
+    let events = Arc::new(Events::with_limit(256));
     let context = DiagnosticContextV1::new(
         DiagnosticCaptureIdV1([81; 16]),
         clock.clone(),
@@ -413,25 +414,36 @@ fn run_managed(
     };
     let sink = ManagedSink(scope);
     let result = if inputs == 1 {
-        store.install(b"managed-trace", &[], &sink, &mut budget)
+        let first = store.install(b"managed-trace", &[], &sink, &mut budget);
+        if replay {
+            drop(first?);
+            store.install(b"managed-trace", &[], &sink, &mut budget)
+        } else {
+            first
+        }
     } else {
         let rows =
             [b"managed-trace".as_slice(), b"second", b"third"].map(|payload| ObjectBatchInput {
                 payload: payload.to_vec(),
                 children: Vec::new(),
             });
-        store
-            .install_batch(&rows, &sink, &mut budget)
-            .and_then(|objects| {
-                if objects.len() != 3 {
-                    return Err(IndexError::BackendViolation(
-                        "managed batch lost output".into(),
-                    ));
-                }
-                objects.into_iter().next().ok_or_else(|| {
-                    IndexError::BackendViolation("managed batch returned no objects".into())
-                })
+        let first = store.install_batch(&rows, &sink, &mut budget);
+        let installed = if replay {
+            drop(first?);
+            store.install_batch(&rows, &sink, &mut budget)
+        } else {
+            first
+        };
+        installed.and_then(|objects| {
+            if objects.len() != 3 {
+                return Err(IndexError::BackendViolation(
+                    "managed batch lost output".into(),
+                ));
+            }
+            objects.into_iter().next().ok_or_else(|| {
+                IndexError::BackendViolation("managed batch returned no objects".into())
             })
+        })
     };
     let usage = budget.usage();
     if let Some(root) = root {
@@ -455,8 +467,8 @@ fn managed_reserve_confirm_trace_preserves_off_cost_and_closes_error()
 -> Result<(), Box<dyn std::error::Error>> {
     for count in [1, 3] {
         let expected_inputs = u64::try_from(count)?;
-        let off = run_managed(false, false, count)?;
-        let recorded = run_managed(true, false, count)?;
+        let off = run_managed(false, false, count, false)?;
+        let recorded = run_managed(true, false, count, false)?;
         let same_reference = matches!(
             (&off.result, &recorded.result),
             (Ok(left), Ok(right)) if left.reference == right.reference
@@ -471,8 +483,8 @@ fn managed_reserve_confirm_trace_preserves_off_cost_and_closes_error()
             )
             .into());
         }
-        let off_failed = run_managed(false, true, count)?;
-        let failed = run_managed(true, true, count)?;
+        let off_failed = run_managed(false, true, count, false)?;
+        let failed = run_managed(true, true, count, false)?;
         let same_failure = matches!(
             (&off_failed.result, &failed.result),
             (
@@ -668,6 +680,136 @@ fn managed_reserve_confirm_trace_preserves_off_cost_and_closes_error()
 }
 
 #[test]
+fn managed_cas_reuse_census_requires_verified_bytes_and_confirmed_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let off = run_managed(false, false, 1, true)?;
+    let recorded = run_managed(true, false, 1, true)?;
+    let reference = match (&off.result, &recorded.result) {
+        (Ok(left), Ok(right)) if left.reference == right.reference => right.reference,
+        _ => return Err("managed replay result changed under diagnostics".into()),
+    };
+    if off.usage != recorded.usage || !off.events.is_empty() || off.clock_calls != 0 {
+        return Err("managed replay changed Off Work or emitted Off events".into());
+    }
+    let confirms: Vec<_> = recorded
+        .events
+        .iter()
+        .filter_map(|event| match event.kind {
+            DiagnosticEventKindV1::SpanBegin {
+                span_id,
+                stage: DiagnosticStageV1::ManagedObjectConfirm,
+                ..
+            } => Some(span_id),
+            _ => None,
+        })
+        .collect();
+    let batches: Vec<_> = recorded
+        .events
+        .iter()
+        .filter_map(|event| match event.kind {
+            DiagnosticEventKindV1::ManagedInstallCensusBatch {
+                span_id,
+                kind: DiagnosticManagedInstallCensusKindV1::StorageCasReuse,
+                entries,
+            } => Some((span_id, entries)),
+            _ => None,
+        })
+        .collect();
+    let entries: Vec<_> = recorded
+        .events
+        .iter()
+        .filter_map(|event| match event.kind {
+            DiagnosticEventKindV1::ManagedInstallCensusEntry {
+                span_id,
+                kind: DiagnosticManagedInstallCensusKindV1::StorageCasReuse,
+                object,
+                child: None,
+            } => Some((span_id, object)),
+            _ => None,
+        })
+        .collect();
+    if confirms.len() != 2
+        || batches.as_slice() != [(confirms[0], 0), (confirms[1], 1)]
+        || entries.as_slice() != [(confirms[1], reference)]
+    {
+        return Err("managed CAS census did not distinguish fresh and confirmed reuse".into());
+    }
+    let batch = run_managed(true, false, 3, true)?;
+    let batch_reference = match &batch.result {
+        Ok(object) => object.reference,
+        Err(_error) => return Err("managed batch replay failed".into()),
+    };
+    let batch_confirms: Vec<_> = batch
+        .events
+        .iter()
+        .filter_map(|event| match event.kind {
+            DiagnosticEventKindV1::SpanBegin {
+                span_id,
+                stage: DiagnosticStageV1::ManagedObjectConfirm,
+                ..
+            } => Some(span_id),
+            _ => None,
+        })
+        .collect();
+    let batch_markers: Vec<_> = batch
+        .events
+        .iter()
+        .filter_map(|event| match event.kind {
+            DiagnosticEventKindV1::ManagedInstallCensusBatch {
+                span_id,
+                kind: DiagnosticManagedInstallCensusKindV1::StorageCasReuse,
+                entries,
+            } => Some((span_id, entries)),
+            _ => None,
+        })
+        .collect();
+    let batch_hits: Vec<_> = batch
+        .events
+        .iter()
+        .filter_map(|event| match event.kind {
+            DiagnosticEventKindV1::ManagedInstallCensusEntry {
+                span_id,
+                kind: DiagnosticManagedInstallCensusKindV1::StorageCasReuse,
+                object,
+                child: None,
+            } => Some((span_id, object)),
+            _ => None,
+        })
+        .collect();
+    if batch_confirms.len() != 2
+        || batch_markers.as_slice() != [(batch_confirms[0], 0), (batch_confirms[1], 3)]
+        || batch_hits.len() != 3
+        || !batch_hits.contains(&(batch_confirms[1], batch_reference))
+        || batch_hits
+            .iter()
+            .any(|(span, _)| *span != batch_confirms[1])
+        || batch_hits[0].1 == batch_hits[1].1
+        || batch_hits[0].1 == batch_hits[2].1
+        || batch_hits[1].1 == batch_hits[2].1
+    {
+        return Err("managed batch CAS census lost distinct confirmed ObjectRefs".into());
+    }
+    let failed = run_managed(true, true, 1, false)?;
+    if !failed.result.is_err()
+        || failed.events.iter().any(|event| {
+            matches!(
+                event.kind,
+                DiagnosticEventKindV1::ManagedInstallCensusBatch {
+                    kind: DiagnosticManagedInstallCensusKindV1::StorageCasReuse,
+                    ..
+                } | DiagnosticEventKindV1::ManagedInstallCensusEntry {
+                    kind: DiagnosticManagedInstallCensusKindV1::StorageCasReuse,
+                    ..
+                }
+            )
+        })
+    {
+        return Err("failed Catalog confirmation emitted a CAS hit census".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn managed_attempt_pair_holds_first_install_until_atomic_advance()
 -> Result<(), Box<dyn std::error::Error>> {
     for fail_advance in [false, true] {
@@ -693,7 +835,7 @@ fn managed_attempt_pair_holds_first_install_until_atomic_advance()
         )?
         .with_io_observation(Arc::clone(&observer));
         let clock = Arc::new(StepClock::default());
-        let events = Arc::new(Events::default());
+        let events = Arc::new(Events::with_limit(256));
         let context = DiagnosticContextV1::new(
             DiagnosticCaptureIdV1([82; 16]),
             clock,
@@ -784,6 +926,31 @@ fn managed_attempt_pair_holds_first_install_until_atomic_advance()
             .count();
         if packets != expected_packets || advances != 1 {
             return Err("paired install trace lost a physical or advance boundary".into());
+        }
+        let cas_batches = trace
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    DiagnosticEventKindV1::ManagedInstallCensusBatch {
+                        kind: DiagnosticManagedInstallCensusKindV1::StorageCasReuse,
+                        entries: 0,
+                        ..
+                    }
+                )
+            })
+            .count();
+        let cas_entries = trace.iter().any(|event| {
+            matches!(
+                event.kind,
+                DiagnosticEventKindV1::ManagedInstallCensusEntry {
+                    kind: DiagnosticManagedInstallCensusKindV1::StorageCasReuse,
+                    ..
+                }
+            )
+        });
+        if cas_batches != (if fail_advance { 0 } else { 2 }) || cas_entries {
+            return Err("prepared advance emitted unconfirmed or missing CAS census".into());
         }
         let writes = observer.snapshot()?.write_calls;
         if writes != u64::try_from(expected_packets)? {
@@ -988,8 +1155,8 @@ fn managed_attempt_run_holds_union_and_stops_at_failed_advance()
 #[test]
 fn managed_batch_physical_trace_is_one_packet_aggregate() -> Result<(), Box<dyn std::error::Error>>
 {
-    let off = run_managed(false, false, 3)?;
-    let recorded = run_managed(true, false, 3)?;
+    let off = run_managed(false, false, 3, false)?;
+    let recorded = run_managed(true, false, 3, false)?;
     if !matches!((&off.result, &recorded.result), (Ok(left), Ok(right)) if left == right)
         || off.usage != recorded.usage
         || off.clock_calls != 0

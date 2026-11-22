@@ -1,9 +1,60 @@
 //! Existing ROOT_CUSTODY lifecycle for one actually inventoried recovery reader.
 //! These guards do not issue Source or publication permission.
 use super::*;
-use crate::publication_inventory::InventoryMemory;
-use quanta_index_core::index::{IndexError, MemoryLease, MemoryLifetime, WorkBudget};
+use quanta_index_core::index::{
+    IndexError, MemoryLease, MemoryLifetime, WorkBudget, existing_file::ExistingFileReadFailureV1,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Memory grants retained through inventory and recovered reader custody.
+pub(crate) struct InventoryMemory {
+    grants: Vec<MemoryLease>,
+}
+impl InventoryMemory {
+    pub(crate) fn new() -> Self {
+        Self { grants: Vec::new() }
+    }
+    pub(crate) fn reserve(
+        &mut self,
+        bytes: u64,
+        budget: &WorkBudget,
+        lifetime: MemoryLifetime,
+    ) -> Result<(), ExistingFileReadFailureV1> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let growth = if self.grants.len() == self.grants.capacity() {
+            self.grants
+                .capacity()
+                .checked_mul(2)
+                .ok_or(IndexError::ResourceLimited)?
+                .max(1)
+        } else {
+            0
+        };
+        let backing = u64::try_from(
+            std::alloc::Layout::array::<MemoryLease>(growth)
+                .map_err(|_| IndexError::ResourceLimited)?
+                .size(),
+        )
+        .map_err(|_| IndexError::ResourceLimited)?;
+        let grant = budget
+            .reserve_memory(
+                bytes
+                    .checked_add(backing)
+                    .ok_or(IndexError::ResourceLimited)?,
+                lifetime,
+            )?
+            .ok_or(IndexError::ResourceLimited)?;
+        if growth > 0 {
+            self.grants
+                .try_reserve_exact(growth.saturating_sub(self.grants.len()))
+                .map_err(|_| IndexError::ResourceLimited)?;
+        }
+        self.grants.push(grant);
+        Ok(())
+    }
+}
 
 pub(crate) struct RecoveryReadMemoryV1 {
     root: PathBuf,

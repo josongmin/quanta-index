@@ -241,6 +241,55 @@ fn closed_credit_cannot_spend_a_later_credit_on_the_same_execution() -> Result<(
 }
 
 #[test]
+fn temporary_child_outlives_closed_credit_without_touching_later_credit() -> Result<(), IndexError>
+{
+    let configured = plan(256 * 1024);
+    let ledger = NativeResourceLedger::new(configured)?;
+    let guard =
+        ReservationGuard::try_acquire(ledger.scheduler(NativeResourceClass::Core), configured.core)
+            .ok_or(IndexError::ResourceLimited)?;
+    let parent = guard.memory_scope().ok_or_else(invalid_ledger)?;
+    let first = parent
+        .try_reserve_credit(MemoryCreditLimits {
+            temporary_data_bytes: 128,
+            retained_data_bytes: 0,
+            max_live_temporary_leases: 1,
+            max_live_retained_leases: 0,
+        })?
+        .ok_or(IndexError::ResourceLimited)?;
+    let stale = first.scope();
+    let escaped = stale.reserve(96, MemoryLifetime::Temporary)?;
+    drop(first);
+    let second = parent
+        .try_reserve_credit(limits())?
+        .ok_or(IndexError::ResourceLimited)?;
+    let current = second.scope().reserve(100, MemoryLifetime::Temporary)?;
+    let before_release = ledger.snapshot()?.live_memory_bytes;
+    drop(escaped);
+    if ledger.snapshot()?.live_memory_bytes >= before_release {
+        return Err(invalid_ledger());
+    }
+    if !matches!(
+        second.scope().reserve(1, MemoryLifetime::Temporary),
+        Err(IndexError::ResourceLimited)
+    ) {
+        return Err(invalid_ledger());
+    }
+    if !matches!(
+        stale.reserve(1, MemoryLifetime::Temporary),
+        Err(IndexError::BackendViolation(_))
+    ) {
+        return Err(invalid_ledger());
+    }
+    drop((current, second, stale, guard));
+    let settled = ledger.snapshot()?;
+    if settled.live_memory_bytes != 0 || settled.pending_escape_bytes != 0 {
+        return Err(invalid_ledger());
+    }
+    Ok(())
+}
+
+#[test]
 fn temporary_child_escaping_execution_fails_closed_until_its_last_drop() -> Result<(), IndexError> {
     let configured = plan(256 * 1024);
     let ledger = NativeResourceLedger::new(configured)?;

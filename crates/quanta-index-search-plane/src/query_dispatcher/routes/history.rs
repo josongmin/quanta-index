@@ -24,7 +24,7 @@
 use quanta_index_contract::lex::CommitSha;
 use quanta_index_contract::{
     AuxEpochV1, CursorAuxEpochKindV2, CursorAuxEpochV2, CursorRouteV2, HistoryCursor,
-    HistoryCursorOrderV1, HistoryOrderV1, HistoryQueryRequest, LqFilter, LqQuery,
+    HistoryCursorOrderV1, HistoryOrderV1, HistoryQueryRequest, HistoryScoreV1, LqFilter, LqQuery,
     QueryResultWindowV1, SearchPlaneHistoryQueryResponse, SearchPlaneTrackKind,
 };
 use quanta_index_core::{CoreError, QueryRouteV1, RequestBudgetV1, validate_query_top_k};
@@ -36,8 +36,9 @@ use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::{history_cursor_order_mismatch, history_shard_unavailable};
 use crate::query_dispatcher::read_view::{AuxEpochPinsV1, ReadViewRequestV1};
 use crate::query_dispatcher::routes::history_records::{
-    HistoryPage, HistoryQueryKind, commit_candidate_from_record, diff_candidate_from_record,
-    ensure_cursor_kind, history_commit_matches, history_diff_matches, resolve_history_query_kind,
+    HistoryPage, HistoryQueryKind, HistoryTextMatcher, LegacyHistoryTextMatcher,
+    commit_candidate_from_record, diff_candidate_from_record, ensure_cursor_kind,
+    history_commit_matches_with, history_diff_matches_with, resolve_history_query_kind,
     validate_history_since_timeref,
 };
 use crate::query_dispatcher::routes::history_relevance::execute_history_relevance;
@@ -48,8 +49,8 @@ use crate::query_dispatcher::text_plane::{
     ExecutableTextPlanePolicy, validate_executable_text_query,
 };
 use crate::query_dispatcher::timeref::parse_history_timeref_ms;
-use crate::query_dispatcher::window::{pageable_window_v2, top_k_limit};
-use crate::readiness::HistoryAuthorityState;
+use crate::query_dispatcher::window::pageable_window_v2;
+use crate::readiness::{HistoryAuthorityState, HistoryDiffKey};
 
 impl SearchPlaneDispatcher {
     pub(crate) fn history(
@@ -302,136 +303,247 @@ fn history_shard_requirements(query: &LqQuery) -> Result<HistoryShardRequirement
     Ok(requirements)
 }
 
-/// One history element's position under the recency order (QI-BB-023).
-///
-/// Newest committer time first, then sha, then — for diffs — path. The
-/// derived `Ord` is the wire contract's order, so a cursor is a rank and
-/// "after the cursor" is `>`.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct HistoryRank {
-    newest_first: std::cmp::Reverse<u64>,
-    sha: CommitSha,
-    file_path: Option<Box<str>>,
+/// A selected row borrows the pinned History state until projection.
+#[derive(Clone, Copy)]
+pub(crate) enum HistoryPageRow<'a> {
+    Commit(&'a quanta_index_contract::lex::CommitRecord),
+    Diff(
+        &'a HistoryDiffKey,
+        &'a quanta_index_contract::lex::DiffHunkRecord,
+        &'a quanta_index_contract::lex::CommitRecord,
+    ),
 }
 
-impl HistoryRank {
-    fn for_commit(record: &quanta_index_contract::lex::CommitRecord) -> Self {
-        Self {
-            newest_first: std::cmp::Reverse(record.committer_time_ms),
-            sha: record.sha,
-            file_path: None,
+impl<'a> HistoryPageRow<'a> {
+    fn sha(self) -> CommitSha {
+        match self {
+            Self::Commit(record) => record.sha,
+            Self::Diff(key, _, _) => key.commit_sha(),
         }
     }
 
-    fn for_diff(
-        commit: &quanta_index_contract::lex::CommitRecord,
-        key: &crate::readiness::HistoryDiffKey,
-    ) -> Self {
-        Self {
-            newest_first: std::cmp::Reverse(commit.committer_time_ms),
-            sha: commit.sha,
-            file_path: Some(key.file_path().into()),
+    fn committer_time_ms(self) -> u64 {
+        match self {
+            Self::Commit(record) | Self::Diff(_, _, record) => record.committer_time_ms,
         }
     }
 
-    /// The rank a recency cursor names; a cursor of another order does
-    /// not position a recency walk.
-    fn from_cursor(cursor: &HistoryCursor) -> Result<Self, CoreError> {
-        match cursor.order {
-            HistoryCursorOrderV1::Recency => Ok(Self {
-                newest_first: std::cmp::Reverse(cursor.committer_time_ms),
-                sha: cursor.sha,
-                file_path: cursor.file_path.as_deref().map(Into::into),
-            }),
-            HistoryCursorOrderV1::Relevance { .. } => Err(history_cursor_order_mismatch(
-                HistoryOrderV1::Relevance,
-                HistoryOrderV1::Recency,
-            )),
-        }
-    }
-
-    /// The cursor for this rank, in the epoch the page was cut from.
-    fn into_cursor(self, aux_epoch: AuxEpochV1) -> HistoryCursor {
-        HistoryCursor {
-            order: HistoryCursorOrderV1::Recency,
-            committer_time_ms: self.newest_first.0,
-            sha: self.sha,
-            file_path: self.file_path.map(Into::into),
-            aux_epoch,
+    fn file_path(self) -> Option<&'a str> {
+        match self {
+            Self::Commit(_) => None,
+            Self::Diff(key, _, _) => Some(key.file_path()),
         }
     }
 }
 
-/// Keeps the `limit` smallest ranks (the newest elements) of everything
-/// pushed, in `O(log limit)` per push, and counts what it saw.
-struct HistoryPageSelector {
+#[derive(Clone, Copy)]
+struct RankedHistoryRow<'a> {
+    row: HistoryPageRow<'a>,
+    score: Option<HistoryScoreV1>,
+}
+
+impl PartialEq for RankedHistoryRow<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for RankedHistoryRow<'_> {}
+
+impl PartialOrd for RankedHistoryRow<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedHistoryRow<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.rank().cmp(&other.rank())
+    }
+}
+
+/// Keeps the best `limit` borrowed rows, without copying a path or candidate.
+pub(crate) struct HistoryPageSelector<'a> {
     limit: usize,
-    kept: std::collections::BinaryHeap<HistoryRank>,
+    kept: std::collections::BinaryHeap<RankedHistoryRow<'a>>,
     matched: u64,
+    remaining: u64,
     examined: u64,
-    after: Option<HistoryRank>,
-    /// The epoch the page is cut from; its continuation names it.
+    after: Option<&'a HistoryCursor>,
     epoch: AuxEpochV1,
 }
 
-impl HistoryPageSelector {
-    fn new(
-        limit: usize,
-        cursor: Option<&HistoryCursor>,
+impl<'a> HistoryPageSelector<'a> {
+    pub(crate) fn new(
+        capacity: usize,
+        cursor: Option<&'a HistoryCursor>,
         epoch: AuxEpochV1,
-    ) -> Result<Self, CoreError> {
-        Ok(Self {
-            limit,
-            kept: std::collections::BinaryHeap::new(),
+    ) -> Self {
+        Self {
+            limit: capacity,
+            kept: std::collections::BinaryHeap::with_capacity(capacity),
             matched: 0,
+            remaining: 0,
             examined: 0,
-            after: cursor.map(HistoryRank::from_cursor).transpose()?,
+            after: cursor,
             epoch,
-        })
+        }
     }
 
-    fn examined_one(&mut self) {
+    /// The heap starts with this many borrowed rank slots and never grows.
+    pub(crate) fn heap_backing_bytes(capacity: usize) -> Option<u64> {
+        capacity
+            .checked_mul(std::mem::size_of::<RankedHistoryRow<'_>>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+    }
+
+    pub(crate) fn examined_one(&mut self) {
         self.examined = self.examined.saturating_add(1);
     }
 
-    /// Offer a matching element; elements at or before the cursor are
-    /// already on an earlier page.
-    fn offer(&mut self, rank: HistoryRank) {
-        if self.after.as_ref().is_some_and(|after| rank <= *after) {
+    /// Count every eligible row; cursor placement affects only `remaining`.
+    pub(crate) fn offer(&mut self, row: HistoryPageRow<'a>, score: Option<HistoryScoreV1>) {
+        self.matched = self.matched.saturating_add(1);
+        let ranked = RankedHistoryRow { row, score };
+        if self
+            .after
+            .is_some_and(|after| ranked.cmp_cursor(after) != std::cmp::Ordering::Greater)
+        {
             return;
         }
-        self.matched = self.matched.saturating_add(1);
-        self.kept.push(rank);
-        if self.kept.len() > self.limit {
-            // The heap's max is the oldest kept element; it leaves.
-            drop(self.kept.pop());
+        self.remaining = self.remaining.saturating_add(1);
+        if self.limit == 0 {
+            return;
         }
+        if self.kept.len() == self.limit {
+            if self.kept.peek().is_some_and(|last| ranked >= *last) {
+                return;
+            }
+            let _removed = self.kept.pop();
+        }
+        self.kept.push(ranked);
     }
 
-    /// The page in order, its window and its continuation.
-    fn finish(
-        self,
-    ) -> Result<(Vec<HistoryRank>, QueryResultWindowV1, Option<HistoryCursor>), CoreError> {
-        let ranks = self.kept.into_sorted_vec();
-        let returned = u32::try_from(ranks.len()).map_err(|error| {
+    pub(crate) fn finish(self) -> Result<HistoryPageSelection<'a>, CoreError> {
+        let rows = self.kept.into_sorted_vec();
+        let returned = u32::try_from(rows.len()).map_err(|error| {
             CoreError::Storage(format!("history: page row count overflows u32: {error}"))
         })?;
-        let has_more = self.matched > u64::from(returned);
+        let has_more = self.remaining > u64::from(returned);
         let window = QueryResultWindowV1::new(
             returned,
-            quanta_index_contract::CandidateCountV1::Exact(self.matched),
+            quanta_index_contract::CandidateCountV1::Exact(self.remaining),
             has_more,
         )
         .map_err(|error| CoreError::Storage(format!("history: result window: {error}")))?;
-        let next_cursor = if has_more {
-            ranks
+        Ok(HistoryPageSelection {
+            rows,
+            matched: self.matched,
+            window,
+            examined: self.examined,
+            epoch: self.epoch,
+        })
+    }
+}
+
+impl RankedHistoryRow<'_> {
+    fn rank(
+        &self,
+    ) -> (
+        std::cmp::Reverse<Option<HistoryScoreV1>>,
+        std::cmp::Reverse<u64>,
+        CommitSha,
+        Option<&str>,
+    ) {
+        (
+            std::cmp::Reverse(self.score),
+            std::cmp::Reverse(self.row.committer_time_ms()),
+            self.row.sha(),
+            self.row.file_path(),
+        )
+    }
+
+    fn cmp_cursor(&self, cursor: &HistoryCursor) -> std::cmp::Ordering {
+        let score = match cursor.order {
+            HistoryCursorOrderV1::Recency => None,
+            HistoryCursorOrderV1::Relevance { score } => Some(score),
+        };
+        self.rank().cmp(&(
+            std::cmp::Reverse(score),
+            std::cmp::Reverse(cursor.committer_time_ms),
+            cursor.sha,
+            cursor.file_path.as_deref(),
+        ))
+    }
+}
+
+pub(crate) struct HistoryPageSelection<'a> {
+    rows: Vec<RankedHistoryRow<'a>>,
+    matched: u64,
+    window: QueryResultWindowV1,
+    examined: u64,
+    epoch: AuxEpochV1,
+}
+
+impl<'a> HistoryPageSelection<'a> {
+    pub(crate) fn rows(&self) -> impl Iterator<Item = HistoryPageRow<'a>> + '_ {
+        self.rows.iter().map(|ranked| ranked.row)
+    }
+
+    pub(crate) fn matched(&self) -> u64 {
+        self.matched
+    }
+
+    pub(crate) fn cursor_path_len(&self) -> usize {
+        if self.window.has_more() {
+            self.rows
                 .last()
-                .cloned()
-                .map(|rank| rank.into_cursor(self.epoch))
+                .and_then(|ranked| ranked.row.file_path())
+                .map_or(0, str::len)
+        } else {
+            0
+        }
+    }
+
+    /// Project only after the caller funds the selected rows and cursor.
+    pub(crate) fn project(self) -> HistoryPage {
+        let next_cursor = if self.window.has_more() {
+            self.rows.last().map(|ranked| HistoryCursor {
+                order: ranked.score.map_or(HistoryCursorOrderV1::Recency, |score| {
+                    HistoryCursorOrderV1::Relevance { score }
+                }),
+                committer_time_ms: ranked.row.committer_time_ms(),
+                sha: ranked.row.sha(),
+                file_path: ranked.row.file_path().map(str::to_owned),
+                aux_epoch: self.epoch,
+            })
         } else {
             None
         };
-        Ok((ranks, window, next_cursor))
+        let commit_count = self
+            .rows
+            .iter()
+            .filter(|ranked| matches!(ranked.row, HistoryPageRow::Commit(_)))
+            .count();
+        let mut commits = Vec::with_capacity(commit_count);
+        let mut diffs = Vec::with_capacity(self.rows.len() - commit_count);
+        for ranked in self.rows {
+            match ranked.row {
+                HistoryPageRow::Commit(record) => {
+                    commits.push(commit_candidate_from_record(record, ranked.score));
+                }
+                HistoryPageRow::Diff(key, record, _) => {
+                    diffs.push(diff_candidate_from_record(key, record, ranked.score));
+                }
+            }
+        }
+        HistoryPage {
+            commits,
+            diffs,
+            window: self.window,
+            examined: self.examined,
+            next_cursor,
+        }
     }
 }
 
@@ -452,96 +564,58 @@ fn execute_history_query(
     top_k: u32,
     cursor: Option<&HistoryCursor>,
 ) -> Result<HistoryPage, CoreError> {
-    execute_history_query_with_work(query, state, epoch, top_k, cursor, &mut || Ok(()))
+    Ok(select_history_recency(
+        query,
+        state,
+        epoch,
+        top_k,
+        cursor,
+        &mut LegacyHistoryTextMatcher,
+    )?
+    .project())
 }
 
-pub(crate) fn execute_history_query_with_work(
+pub(crate) fn select_history_recency<'a>(
     query: &LqQuery,
-    state: &HistoryAuthorityState,
+    state: &'a HistoryAuthorityState,
     epoch: AuxEpochV1,
     top_k: u32,
-    cursor: Option<&HistoryCursor>,
-    work: &mut dyn FnMut() -> Result<(), CoreError>,
-) -> Result<HistoryPage, CoreError> {
+    cursor: Option<&'a HistoryCursor>,
+    matcher: &mut impl HistoryTextMatcher,
+) -> Result<HistoryPageSelection<'a>, CoreError> {
+    ensure_cursor_continues_order(HistoryOrderV1::Recency, cursor)?;
     let kind = resolve_history_query_kind(query)?;
     ensure_cursor_kind(kind, cursor)?;
-    let limit = top_k_limit(top_k);
-    let mut selector = HistoryPageSelector::new(limit, cursor, epoch)?;
+    let rows = match kind {
+        HistoryQueryKind::Commit => state.commits().len(),
+        HistoryQueryKind::Diff => state.diff_hunks().len(),
+    };
+    let capacity = usize::try_from(top_k).unwrap_or(usize::MAX).min(rows);
+    let mut selector = HistoryPageSelector::new(capacity, cursor, epoch);
     match kind {
         HistoryQueryKind::Commit => {
             for record in state.commits().values() {
-                work()?;
+                matcher.begin_row()?;
                 selector.examined_one();
-                if history_commit_matches(query, state, record)? {
-                    selector.offer(HistoryRank::for_commit(record));
+                if history_commit_matches_with(query, state, record, matcher)? {
+                    selector.offer(HistoryPageRow::Commit(record), None);
                 }
             }
-            let examined = selector.examined;
-            let (ranks, window, next_cursor) = selector.finish()?;
-            let commits = ranks
-                .iter()
-                .map(|rank| {
-                    state
-                        .commits()
-                        .get(&rank.sha)
-                        .map(|record| commit_candidate_from_record(record, None))
-                        .ok_or_else(|| {
-                            CoreError::Storage(format!(
-                                "history: selected commit {} vanished from the snapshot",
-                                rank.sha
-                            ))
-                        })
-                })
-                .collect::<Result<Vec<_>, CoreError>>()?;
-            Ok(HistoryPage {
-                commits,
-                diffs: Vec::new(),
-                window,
-                examined,
-                next_cursor,
-            })
         }
         HistoryQueryKind::Diff => {
             for (key, record) in state.diff_hunks() {
-                work()?;
+                matcher.begin_row()?;
                 selector.examined_one();
                 let Some(commit) = state.commits().get(&key.commit_sha()) else {
                     continue;
                 };
-                if history_diff_matches(query, state, key, record, commit)? {
-                    selector.offer(HistoryRank::for_diff(commit, key));
+                if history_diff_matches_with(query, state, key, record, commit, matcher)? {
+                    selector.offer(HistoryPageRow::Diff(key, record, commit), None);
                 }
             }
-            let examined = selector.examined;
-            let (ranks, window, next_cursor) = selector.finish()?;
-            let diffs = ranks
-                .iter()
-                .map(|rank| {
-                    let path = rank.file_path.as_deref().ok_or_else(|| {
-                        CoreError::Storage("history: a diff rank carries no path".to_string())
-                    })?;
-                    let key = crate::readiness::HistoryDiffKey::new(rank.sha, path);
-                    state
-                        .diff_hunks()
-                        .get(&key)
-                        .map(|record| diff_candidate_from_record(&key, record, None))
-                        .ok_or_else(|| {
-                            CoreError::Storage(format!(
-                                "history: selected diff {}:{path} vanished from the snapshot",
-                                rank.sha
-                            ))
-                        })
-                })
-                .collect::<Result<Vec<_>, CoreError>>()?;
-            Ok(HistoryPage {
-                commits: Vec::new(),
-                diffs,
-                window,
-                examined,
-                next_cursor,
-            })
         }
     }
+    selector.finish()
 }
 
 /// QI-BB-023 — history pages are in recency order, exact, and keyset-paged.
@@ -554,12 +628,15 @@ mod history_page_tests {
     use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
     use quanta_index_contract::{
         AuxEpochV1, HistoryCursor, HistoryCursorOrderV1, HistoryDiffHunkUpsert, HistoryIngestBatch,
-        LQ_VERSION_TAG, LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery, LqSpan, LqType,
-        ManifestGeneration, RepoId, RevisionId,
+        HistoryScoreV1, LQ_VERSION_TAG, LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery, LqSpan,
+        LqType, ManifestGeneration, RepoId, RevisionId,
     };
     use quanta_index_core::CoreError;
 
-    use super::{HistoryPage, ensure_history_shards_ready, execute_history_query};
+    use super::{
+        HistoryPage, HistoryPageRow, HistoryPageSelector, ensure_history_shards_ready,
+        execute_history_query,
+    };
     use crate::readiness::{AuxRead, HistoryAuthorityState, Ledger};
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -844,6 +921,52 @@ mod history_page_tests {
                 return Err(format!("a diff cursor on a commit page answered {other:?}").into());
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn borrowed_relevance_selector_pages_tied_diff_paths() -> TestRes {
+        let state = state(
+            vec![commit(1, 100, "fix")],
+            vec![hunk(1, "c.rs"), hunk(1, "a.rs"), hunk(1, "b.rs")],
+        )?;
+        let high = HistoryScoreV1::try_new(2.0)?;
+        let low = HistoryScoreV1::try_new(1.0)?;
+        let expected: &[&[&str]] = &[&["b.rs", "a.rs"], &["c.rs"]];
+        let mut cursor: Option<HistoryCursor> = None;
+        for (index, paths) in expected.iter().enumerate() {
+            let mut selector = HistoryPageSelector::new(2, cursor.as_ref(), AuxEpochV1::new(1));
+            for (key, hunk) in state.diff_hunks() {
+                selector.examined_one();
+                let commit = state
+                    .commits()
+                    .get(&key.commit_sha())
+                    .ok_or("missing commit")?;
+                selector.offer(
+                    HistoryPageRow::Diff(key, hunk, commit),
+                    Some(if key.file_path() == "b.rs" { high } else { low }),
+                );
+            }
+            let selection = selector.finish()?;
+            assert_eq!(selection.matched(), 3);
+            assert_eq!(selection.cursor_path_len(), if index == 0 { 4 } else { 0 });
+            let page = selection.project();
+            assert_eq!(page.examined, 3);
+            assert_eq!(
+                page.window.candidate_count(),
+                quanta_index_contract::CandidateCountV1::Exact(if index == 0 { 3 } else { 1 })
+            );
+            assert_eq!(
+                page.diffs
+                    .iter()
+                    .map(|diff| diff.repo_relative_path.as_str())
+                    .collect::<Vec<_>>(),
+                *paths
+            );
+            cursor = page.next_cursor;
+            assert_eq!(cursor.is_some(), index == 0);
+        }
+        assert!(cursor.is_none());
         Ok(())
     }
 

@@ -540,7 +540,7 @@ impl CatalogCustodyMaintenancePort for SqliteCatalog {
         let max_workspace_bytes = max_workspace_key_bytes()?;
         let mut guard = self.lock_native_budget(budget)?;
         let tx = begin(&mut guard)?;
-        let protected = super::boot_manifest::protected_roots(&tx, key, budget)?;
+        let protected = super::boot_record::protected_roots(&tx, key, budget)?;
         budget.charge(WorkUsage {
             reads: 1,
             ..WorkUsage::default()

@@ -150,6 +150,7 @@ fn run_bad_map_batch(
             // The fixture base has exactly one term. A declared final count of
             // two is an independent cardinality corruption at map apply.
             batch.counts.push(2, context.budget)?;
+            batch.directory_receipts.push(None, context.budget)?;
             batch.attempt = Some(context.attempt);
             let mut contributions = ContributionWrites::new()?;
             let mut inventories = InventoryReuse::new(fixture.recipe, 64)?;

@@ -18,7 +18,7 @@ source "${SCRIPT_DIR}/quanta-index-env.sh"
 # its lane-specific target dir. Otherwise nested `scripts/cargow --lane ...`
 # invocations inherit the ambient shared target and silently collapse distinct
 # release/test lanes into one cache root.
-unset CARGO_TARGET_DIR
+unset CARGO_TARGET_DIR CARGO_BUILD_BUILD_DIR
 
 log_profile_event() {
   local exit_code="$1"

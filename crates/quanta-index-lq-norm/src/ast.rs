@@ -363,6 +363,21 @@ pub enum LqExpr {
     Any(Vec<LqExpr>),
 }
 
+impl LqExpr {
+    /// Return the keyword to evaluate in the tokenized path field as well as
+    /// the body. The complete planned predicate must be a singleton keyword
+    /// in a non-regexp LQ mode.
+    #[must_use]
+    pub fn implicit_path_keyword(&self, pattern_type: LqPatternType) -> Option<&str> {
+        match self {
+            Self::Leaf(LqLeaf::Keyword(keyword)) if pattern_type != LqPatternType::Regexp => {
+                Some(keyword.as_str())
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Directive node per dsl.md §9.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LqDirective {
@@ -2391,6 +2406,37 @@ impl<'de> serde::Deserialize<'de> for LqNormalizedQuery {
             }
         }
         de.deserialize_map(V)
+    }
+}
+
+#[cfg(test)]
+mod implicit_path_keyword_tests {
+    use super::{LqExpr, LqLeaf, LqPatternType};
+
+    #[test]
+    fn only_a_top_level_keyword_in_a_token_mode_expands_to_path() {
+        let keyword = LqExpr::Leaf(LqLeaf::Keyword("file-name".into()));
+        assert_eq!(
+            keyword.implicit_path_keyword(LqPatternType::Standard),
+            Some("file-name")
+        );
+        assert_eq!(
+            keyword.implicit_path_keyword(LqPatternType::Keyword),
+            Some("file-name")
+        );
+        assert_eq!(keyword.implicit_path_keyword(LqPatternType::Regexp), None);
+
+        let phrase = LqExpr::Leaf(LqLeaf::Phrase("file name".into()));
+        let compound = [
+            LqExpr::Empty,
+            phrase.clone(),
+            LqExpr::Not(Box::new(keyword.clone())),
+            LqExpr::All(vec![keyword.clone(), phrase.clone()]),
+            LqExpr::Any(vec![keyword, phrase]),
+        ];
+        for expr in compound {
+            assert_eq!(expr.implicit_path_keyword(LqPatternType::Standard), None);
+        }
     }
 }
 

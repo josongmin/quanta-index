@@ -3,7 +3,7 @@
 use super::*;
 use quanta_index_catalog::{
     catalog_dir, verify_native_boot_candidate, verify_native_boot_current_candidate,
-    verify_native_rollback_with_source_publications,
+    verify_native_rollback_with_source_publications, verify_native_source_root_publications_v1,
 };
 use quanta_index_core::index::ports::{
     CatalogExactHistoryPort as _, CatalogGenesisPort as _, CatalogPublicationPort as _,
@@ -11,12 +11,50 @@ use quanta_index_core::index::ports::{
 };
 use quanta_index_core::index::{
     AdmissionOutcome, AttemptRef, CatalogView, CollectionId, Digest, ImmutableOperation,
-    IndexError, IndexProfile, MapRoot, ObjectBatchInput, ObjectRef, OperationKey, OperationStatus,
+    IndexError, IndexProfile, MapRoot, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope,
+    MemoryScopePort, ObjectBatchInput, ObjectRef, OperationKey, OperationStatus,
     PreparedPublication, ProducerId, Refusal, RegisteredObject, RegisteredObjectBatch, SlotId,
     SourceCut, SourceOperationMode, StoredObject, StreamId, TenantId, ViewRef, WorkAction,
     WorkActionSet, WorkBudget, WorkLimits, WorkspaceKey, WorktreeId,
 };
-use std::{os::unix::fs::MetadataExt as _, time::Instant};
+use std::{
+    os::unix::fs::MetadataExt as _,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
+
+struct PublicationReadMeter {
+    live: AtomicU64,
+    limit: AtomicU64,
+}
+
+impl MemoryLeaseOwner for PublicationReadMeter {
+    fn release(&self, bytes: u64) {
+        let previous = self.live.fetch_sub(bytes, Ordering::SeqCst);
+        assert!(
+            previous >= bytes,
+            "publication reader refunded unowned memory"
+        );
+    }
+}
+
+struct PublicationReadScope(Arc<PublicationReadMeter>);
+
+impl MemoryScopePort for PublicationReadScope {
+    fn reserve(&self, bytes: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+        let limit = self.0.limit.load(Ordering::SeqCst);
+        let _previous_live = self.0
+            .live
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                used.checked_add(bytes).filter(|total| *total <= limit)
+            })
+            .map_err(|_| IndexError::ResourceLimited)?;
+        Ok(MemoryLease::new(bytes, self.0.clone()))
+    }
+}
 
 fn budget() -> Result<WorkBudget, IndexError> {
     Ok(WorkBudget::new(
@@ -500,6 +538,166 @@ fn seed_current_native_pair(
         fs::set_permissions(entry?.path(), fs::Permissions::from_mode(0o600))?;
     }
     Ok((full, current, boot))
+}
+
+#[test]
+fn published_visitor_reads_predecessors_from_its_own_snapshot() -> TestResult {
+    let mut seeded = None;
+    let fixture = fixture_with_boot_input(|root| {
+        seeded = Some(seed_current_native_pair(root)?);
+        Ok(16 * 1024 * 1024)
+    })?;
+    let (full, current, boot) = seeded.ok_or("paired Catalog fixture absent")?;
+    let before = files(&fixture.root)?;
+    let mut visited = Vec::new();
+    let mut work = read_budget()?;
+    const MEMORY_LIMIT: u64 = 64 * 1024 * 1024;
+    let meter = Arc::new(PublicationReadMeter {
+        live: AtomicU64::new(0),
+        limit: AtomicU64::new(MEMORY_LIMIT),
+    });
+    work.bind_memory_scope(Some(MemoryScope::new(Arc::new(PublicationReadScope(
+        Arc::clone(&meter),
+    )))));
+    let mut point_reads = None;
+    let mut reclaimed_reads = None;
+    let result = verify_native_source_root_publications_v1(
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        key(35).workspace,
+        &mut work,
+        |snapshot, reader, head, operation, publication, budget| {
+            assert_eq!(
+                snapshot
+                    .selected
+                    .as_ref()
+                    .map(|selected| selected.operation.key),
+                Some(key(35))
+            );
+            assert_eq!(head.identity, boot.identity);
+            assert_eq!(
+                reader.published_operation(operation.key, budget)?,
+                *publication
+            );
+            assert_eq!(
+                reader.published_view(publication.identity, budget)?,
+                *publication
+            );
+            assert_eq!(reader.published_operation(key(31), budget)?, full);
+            assert_eq!(reader.published_view(full.identity, budget)?, full);
+            assert_eq!(reader.published_operation(key(32), budget)?, current);
+            let before_lookup = budget.usage().reads;
+            assert_eq!(reader.published_view(current.identity, budget)?, current);
+            if point_reads.is_none() {
+                point_reads = Some(budget.usage().reads - before_lookup);
+            }
+            let mut forged = current.identity;
+            forged.digest = Digest([99; 32]);
+            assert!(matches!(
+                reader.published_view(forged, budget),
+                Err(IndexError::SnapshotUnavailable)
+            ));
+            let mut foreign = current.identity;
+            foreign.workspace.tenant = TenantId([99; 16]);
+            assert!(matches!(
+                reader.published_view(foreign, budget),
+                Err(IndexError::SnapshotUnavailable)
+            ));
+            assert!(matches!(
+                reader.published_view(
+                    ViewRef {
+                        sequence: 99,
+                        ..current.identity
+                    },
+                    budget
+                ),
+                Err(IndexError::SnapshotUnavailable)
+            ));
+            assert!(matches!(
+                reader.published_operation(key(99), budget),
+                Err(IndexError::SnapshotUnavailable)
+            ));
+            if reclaimed_reads.is_none() {
+                // A mandatory allocation cannot fit until the optional
+                // index is released. The next lookup must still work.
+                let live = meter.live.load(Ordering::SeqCst);
+                meter.limit.store(live, Ordering::SeqCst);
+                let required = budget.reserve_memory(1, MemoryLifetime::Temporary);
+                meter.limit.store(MEMORY_LIMIT, Ordering::SeqCst);
+                let required = required?.ok_or(IndexError::ResourceLimited)?;
+                assert!(meter.live.load(Ordering::SeqCst) < live);
+                drop(required);
+                let reads = budget.usage().reads;
+                assert_eq!(reader.published_view(current.identity, budget)?, current);
+                reclaimed_reads = Some(budget.usage().reads - reads);
+            }
+            visited.push((operation.key, publication.identity));
+            Ok(())
+        },
+    )?;
+    assert_eq!(result.current_head.identity, boot.identity);
+    require(
+        point_reads.is_some_and(|reads| reads <= 4),
+        "funded publication view lookup rescanned the workspace",
+    )?;
+    require(
+        reclaimed_reads.is_some_and(|reads| reads > 4),
+        "evicted publication view lookup did not use the canonical scan",
+    )?;
+    assert_eq!(
+        visited,
+        vec![
+            (key(31), full.identity),
+            (key(32), current.identity),
+            (key(35), boot.identity),
+        ]
+    );
+    require(
+        work.usage().writes == 0 && work.usage().mutations == 0,
+        "publication visitor spent mutation credit",
+    )?;
+    drop(result);
+    require(
+        meter.live.load(Ordering::SeqCst) == 0,
+        "funded publication reader retained its index loan",
+    )?;
+    let mut fallback_work = read_budget()?;
+    let mut fallback_seen = Vec::new();
+    let fallback = verify_native_source_root_publications_v1(
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        key(35).workspace,
+        &mut fallback_work,
+        |_snapshot, reader, _head, operation, publication, budget| {
+            assert_eq!(reader.published_view(full.identity, budget)?, full);
+            assert_eq!(reader.published_view(current.identity, budget)?, current);
+            assert_eq!(reader.published_view(boot.identity, budget)?, boot);
+            let mut forged = current.identity;
+            forged.digest = Digest([99; 32]);
+            assert!(matches!(
+                reader.published_view(forged, budget),
+                Err(IndexError::SnapshotUnavailable)
+            ));
+            assert!(matches!(
+                reader.published_operation(key(99), budget),
+                Err(IndexError::SnapshotUnavailable)
+            ));
+            fallback_seen.push((operation.key, publication.identity));
+            Ok(())
+        },
+    )?;
+    assert_eq!(fallback.current_head.identity, boot.identity);
+    assert_eq!(fallback_seen, visited);
+    require(
+        fallback_work.usage().writes == 0 && fallback_work.usage().mutations == 0,
+        "unscoped publication reader spent mutation credit",
+    )?;
+    require(
+        files(&fixture.root)? == before,
+        "publication visitor changed Catalog bytes",
+    )?;
+    fixture.vfs.drain_retirements()?;
+    Ok(())
 }
 
 #[test]

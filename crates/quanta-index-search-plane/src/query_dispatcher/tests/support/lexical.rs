@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
     CandidatePresenceV1, GenerationSnapshot, LexicalCandidate, LqQuery, ManifestGeneration,
-    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SymbolCandidate,
+    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchPlaneErrorCodeV2,
+    SymbolCandidate,
 };
 use quanta_index_core::{
     CoreError, LexicalArtifactIdentityV1, LexicalCandidateExplanationV1, LexicalIndexOpenPort,
@@ -32,14 +33,12 @@ pub(crate) struct RejectLexicalOpener;
 impl LexicalIndexOpenPort for RejectLexicalOpener {
     fn preflight_query_primitives(
         &self,
-        plan: &quanta_index_core::ValidatedLexicalPlan,
+        _plan: &quanta_index_core::ValidatedLexicalPlan,
         budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<(), CoreError> {
-        quanta_index_lexical::planner::LexicalPlanner::validate_query_primitives(
-            plan,
-            &quanta_index_lexical::regex::RegexPolicy::defaults(),
-            budget,
-        )
+        // This double tests route orchestration only. The real adapter owns
+        // primitive validity; retain the request's cancellation checkpoint.
+        budget.checkpoint("lexical primitive admission")
     }
 
     fn open(
@@ -220,14 +219,11 @@ pub(crate) struct StubLexicalOpener {
 impl LexicalIndexOpenPort for StubLexicalOpener {
     fn preflight_query_primitives(
         &self,
-        plan: &quanta_index_core::ValidatedLexicalPlan,
+        _plan: &quanta_index_core::ValidatedLexicalPlan,
         budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<(), CoreError> {
-        quanta_index_lexical::planner::LexicalPlanner::validate_query_primitives(
-            plan,
-            &quanta_index_lexical::regex::RegexPolicy::defaults(),
-            budget,
-        )
+        // The stub supplies rows, not a lexical engine's admission policy.
+        budget.checkpoint("lexical primitive admission")
     }
 
     fn open(
@@ -262,6 +258,9 @@ pub(crate) struct RecordingLexicalState {
     /// the shared ready-ledger fixture; tests can inject a conflicting seal.
     pub(crate) manifest_digest: Option<String>,
     pub(crate) primitive_queries: Vec<LqQuery>,
+    /// Inject one typed adapter refusal after recording the exact plan. This
+    /// proves dispatcher ordering and propagation, not primitive validity.
+    pub(crate) preflight_refusal: Option<SearchPlaneErrorCodeV2>,
     pub(crate) search_top_ks: Vec<u32>,
     /// The boundary every text page was asked to continue after.
     pub(crate) search_afters: Vec<Option<quanta_index_contract::LexicalCursor>>,
@@ -510,16 +509,19 @@ impl LexicalIndexOpenPort for RecordingLexicalOpener {
         plan: &quanta_index_core::ValidatedLexicalPlan,
         budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<(), CoreError> {
-        self.state
+        budget.checkpoint("lexical primitive admission")?;
+        let mut state = self
+            .state
             .lock()
-            .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?
-            .primitive_queries
-            .push(plan.query().clone());
-        quanta_index_lexical::planner::LexicalPlanner::validate_query_primitives(
-            plan,
-            &quanta_index_lexical::regex::RegexPolicy::defaults(),
-            budget,
-        )
+            .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
+        state.primitive_queries.push(plan.query().clone());
+        if let Some(code) = state.preflight_refusal {
+            return Err(CoreError::Typed {
+                code,
+                message: "injected lexical preflight refusal".to_string(),
+            });
+        }
+        Ok(())
     }
 
     fn open(

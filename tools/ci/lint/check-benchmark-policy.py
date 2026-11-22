@@ -37,6 +37,11 @@ BENCHMARK_ROOT = "benchmarks/"
 
 #: Workflows may name a registered producer only through the registry CLI.
 JUST_INVOCATION = re.compile(r"\bjust\s+([a-z0-9][a-z0-9-]*)")
+PYTHON_INVOCATION = re.compile(
+    r"""(?<![\w.-])(?:[\w./-]+/)?python(?:3(?:\.\d+)?)?\s+"""
+    r"""(?:-[BIu]+\s+)*(?:(?P<module>-m)\s+)?['"]?"""
+    r"""(?P<entry>[\w./-]+)['"]?(?=\s|[;&|]|$)"""
+)
 SCORER_INVOCATION = re.compile(
     r"python3?\s+tools/benchmark/(?:compare_dsl_bench|quality_integration_summary)\.py"
 )
@@ -132,6 +137,11 @@ def workflow_bypasses(repo_root: Path, registry: dict) -> list[str]:
         for entry in registry["producers"].values()
         if entry["kind"] == "just-recipe"
     }
+    protected_modules = {
+        entry["module"]
+        for entry in registry["producers"].values()
+        if entry["kind"] == "python-module"
+    }
     bypasses: list[str] = []
     workflows = repo_root / ".github" / "workflows"
     if not workflows.is_dir():
@@ -158,6 +168,15 @@ def workflow_bypasses(repo_root: Path, registry: dict) -> list[str]:
                         continue
                     for match in JUST_INVOCATION.finditer(executable):
                         if match.group(1) in protected_recipes:
+                            bypasses.append(f"{path.name}:{job_id}: {executable}")
+                    for match in PYTHON_INVOCATION.finditer(executable):
+                        entry = match["entry"]
+                        script = (
+                            f"{entry.replace('.', '/')}.py"
+                            if match["module"]
+                            else entry.removeprefix("./")
+                        )
+                        if script in protected_modules:
                             bypasses.append(f"{path.name}:{job_id}: {executable}")
                     if SCORER_INVOCATION.search(executable):
                         bypasses.append(f"{path.name}:{job_id}: {executable}")

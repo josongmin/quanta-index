@@ -14,6 +14,7 @@ use quanta_index_core::index::{
     ports::{IndexFuture, IndexProjectionBuildPort},
 };
 use quanta_index_repomap::native::graph::GraphCandidate;
+use quanta_index_sdk::native_uds::NativeRepoMapAdvanceV1;
 use std::sync::{Arc, Mutex};
 
 struct ObservedGraph {
@@ -224,6 +225,7 @@ fn stage_rank_owner(
         nodes,
         edges: Vec::new(),
         projection,
+        facts: None,
     };
     let output_ref = client
         .stage_projection_output_with_children(
@@ -257,62 +259,30 @@ fn rank_advance(
     mutation: OwnerMutation,
     ingress: IngressRef,
 ) -> TestResult<SubmitOutcome> {
-    let key = operation(operation_sequence);
-    let affected = client.stage_mutations(ingress, vec![mutation], &budget())?;
+    if ingress.operation != operation(operation_sequence) {
+        return Err("rank ingress differs from publication operation".into());
+    }
     let source = client
         .read_view(ViewSelection::Exact(view), &budget())?
         .source;
-    let policy = native_repomap_rank_policy();
-    let mut transition = ProjectionTransition {
-        projection: PROJECTION,
-        producer: PRODUCER,
-        expected: prior.copied(),
-        target_source: source,
-        schema: SCHEMA,
-        producer_policy: policy,
-        dependency_context: Digest([50; 32]),
-        completeness: ProducerCompleteness::Partial {
-            missing: MapRoot(None),
-        },
-        owners: affected,
-        events: Vec::new(),
-    };
-    let certificate_ref = client.stage_projection_certificate(
+    let request = client.prepare_ranked_repomap_advance_v1(
         ingress,
-        ProjectionCertificate {
-            projection: PROJECTION,
-            producer: PRODUCER,
-            prior: prior.copied(),
+        NativeRepoMapAdvanceV1 {
+            expected_view: view,
             target_source: source,
+            projection: PROJECTION,
             schema: SCHEMA,
-            producer_policy: policy,
-            dependency_context: transition.dependency_context,
-            affected,
+            prior: prior.copied(),
+            dependency_context: Digest([50; 32]),
+            event_predecessor: event_sequence
+                .checked_sub(1)
+                .ok_or("rank event sequence has no predecessor")?,
         },
+        [Ok(mutation)],
         &budget(),
     )?;
-    transition.completeness = ProducerCompleteness::CompleteAffectedDomain {
-        certificate: certificate_ref,
-    };
-    transition.events.push(SourceEvent {
-        producer: PRODUCER,
-        stream: key.stream,
-        stream_epoch: 1,
-        predecessor: event_sequence
-            .checked_sub(1)
-            .ok_or("rank event sequence has no predecessor")?,
-        sequence: event_sequence,
-        payload: transition.payload_digest()?,
-    });
     client
-        .submit(
-            UpdateRequest {
-                operation: key,
-                expected_view: view,
-                kind: UpdateKind::ProjectionAdvance(Box::new(transition)),
-            },
-            &budget(),
-        )
+        .submit_borrowed(&request, &budget())
         .map_err(|cause| -> Box<dyn Error> { Box::new(cause) })
 }
 
@@ -358,6 +328,186 @@ fn require_subjects(
         return Err(format!("ranked view or subjects differ: {result:?}").into());
     }
     Ok(())
+}
+
+#[test]
+fn compiled_bundle_publishes_ranked_graph_and_reopens() -> TestResult {
+    use quanta_index_contract::{
+        ChunkId, ManifestGeneration, RepoId, RepoMapChunkExactness, RepoMapChunkNode,
+        RepoMapContainsEdge, RepoMapEdge, RepoMapExactnessSummary, RepoMapFileNode,
+        RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
+        RepoMapOwnsChunkEdge, RepoMapRedactionState, RepoMapSourceBundle, RepoMapSymbolNode,
+        RevisionId,
+        lex::{LanguageCode, SymbolKindCode},
+    };
+
+    let path = RepoRelativePath::new("src/live_ingress.rs");
+    let file_id = FileId::new("file://src/live_ingress.rs");
+    let symbol_id = SymbolId::new("symbol://live-owner");
+    let chunk_id = ChunkId::new("chunk://live-owner");
+    let bundle = RepoMapSourceBundle::new(
+        RepoId::new("repo")?,
+        RevisionId::new("revision")?,
+        ManifestGeneration::new(1),
+        "c".repeat(64),
+        "repomap-snapshot-live",
+        1,
+        "d".repeat(64),
+        RepoMapGraphCoverage {
+            item_index_availability: RepoMapItemIndexAvailability::Available,
+            graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+        },
+        RepoMapExactnessSummary::Exact,
+        RepoMapRedactionState::Unredacted,
+    )
+    .with_node(RepoMapNode::File(RepoMapFileNode {
+        file_id: file_id.clone(),
+        repo_relative_path: path.clone(),
+        line_count: 40,
+    }))
+    .with_node(RepoMapNode::Symbol(RepoMapSymbolNode {
+        symbol_id: symbol_id.clone(),
+        owner_path: path.clone(),
+        local_name: "LiveOwner".into(),
+        qualified_name: "src::live_ingress::LiveOwner".into(),
+        symbol_kind: SymbolKindCode::new("struct")?,
+    }))
+    .with_node(RepoMapNode::Chunk(RepoMapChunkNode {
+        chunk_id: chunk_id.clone(),
+        owner_path: path.clone(),
+        language: LanguageCode::new("rust")?,
+        start_byte: 0,
+        end_byte: 64,
+        start_line: 1,
+        end_line: 8,
+        token_count: 24,
+        preview_text: "live owner repomap query anchor".into(),
+        exactness: RepoMapChunkExactness::Exact,
+    }))
+    .with_edge(RepoMapEdge::Contains(RepoMapContainsEdge {
+        container: RepoMapNodeRef::File(file_id),
+        contained: RepoMapNodeRef::Symbol(symbol_id.clone()),
+    }))
+    .with_edge(RepoMapEdge::OwnsChunk(RepoMapOwnsChunkEdge {
+        owner: RepoMapNodeRef::Symbol(symbol_id.clone()),
+        chunk: RepoMapNodeRef::Chunk(chunk_id),
+    }));
+    let compiled = quanta_index_repomap::RepoMapGraphCompiler::with_default_budget()
+        .compile_native_owner(&bundle)?;
+    let root = tempfile::tempdir()?;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
+    let socket = root.path().join("native.sock");
+    let first_error = Arc::new(Mutex::new(None));
+    let service = RunningService::start(observed_service(
+        root.path(),
+        &socket,
+        Arc::clone(&first_error),
+    )?);
+    let client = NativeUdsClient::new(socket.clone());
+    let NativeIndexResponse::Created(base) = client.request(
+        NativeIndexRequest::CreateWorkspace {
+            workspace: workspace(),
+            epoch: 1,
+        },
+        &budget(),
+    )?
+    else {
+        return Err("expected Native workspace view".into());
+    };
+    let key = operation(1);
+    let ingress = client.begin_input(key, &budget())?;
+    let mut leaves = Vec::new();
+    for row in compiled.rank_rows() {
+        leaves.push(GraphProjectionRow {
+            subject: row.subject.clone(),
+            row: client.stage_projection_output(ingress, &serde_json::to_vec(row)?, &budget())?,
+        });
+    }
+    let (output, commitments) = compiled.bind_rank_leaves(&leaves)?;
+    let mut children: Vec<_> = leaves.into_iter().map(|leaf| leaf.row).collect();
+    children.sort_unstable();
+    let graph = client.stage_projection_output_with_children(
+        ingress,
+        &serde_json::to_vec(&output)?,
+        &children,
+        &budget(),
+    )?;
+    let owner = owner(1);
+    let contribution = client.stage_projection_owner(
+        ingress,
+        ProjectionOwnerContribution {
+            projection: PROJECTION,
+            producer: PRODUCER,
+            owner,
+            source_owner: None,
+            source: None,
+            dependency_stamp: Digest(commitments.producer_authority),
+            output: Some(graph),
+        },
+        &budget(),
+    )?;
+    let initial = published(&rank_advance(
+        &client,
+        base,
+        None,
+        1,
+        1,
+        OwnerMutation {
+            owner,
+            expected: None,
+            next: Some(contribution),
+        },
+        ingress,
+    )?)?;
+    let active = rank_configure(&client, initial, &first_error)?;
+    let query = || NativeRepoMapQuery {
+        query_text: "live owner".into(),
+        focus_subjects: vec![focus("symbol://live-owner")],
+        top_k: 1,
+        token_budget: 64,
+    };
+    let before =
+        client.query_repomap(ViewSelection::Exact(active), INSTANCE, query(), &budget())?;
+    if before.hits
+        != [NativeRepoMapHit {
+            subject: RepoMapNodeRef::Symbol(symbol_id),
+            owner_path: path,
+            final_score_millis: 419,
+            rank: 1,
+        }]
+        || before.dropped_entries_count != 1
+        || before.drop_reason_codes != ["top_k_exhausted"]
+        || !before.degraded_reason_codes.is_empty()
+        || !before.exhaustive
+    {
+        return Err(format!("unexpected compiled bundle ranks: {before:?}").into());
+    }
+    service.stop()?;
+    let reopened = RunningService::start(observed_service(root.path(), &socket, first_error)?);
+    let client = NativeUdsClient::new(socket);
+    let NativeIndexResponse::Status(status) =
+        client.request(NativeIndexRequest::Status(key), &budget())?
+    else {
+        return Err("expected original RepoMap operation status after reopen".into());
+    };
+    if status.payload != OperationStatus::Published(initial)
+        || published(&client.resume(key, &budget())?)? != initial
+        || client
+            .read_view(
+                ViewSelection::Latest {
+                    workspace: workspace(),
+                    epoch: 1,
+                },
+                &budget(),
+            )?
+            .identity
+            != active
+        || client.query_repomap(ViewSelection::Exact(active), INSTANCE, query(), &budget())?
+            != before
+    {
+        return Err("retained RepoMap operation or rank result changed after reopen".into());
+    }
+    reopened.stop()
 }
 
 #[test]

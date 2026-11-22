@@ -7,13 +7,13 @@ use quanta_index_contract::{
     AuxEpochV1, FiniteScore, ManifestGeneration, QueryConstraintSetV1, RepoId, RevisionId,
     TextQuerySyntax,
     index::{
-        Digest, HistoryGenerationInputV1, HistorySourceCutV1, IndexInstanceId, InstanceSpec, ObjectRef, OwnerKey,
-        ViewSelection,
+        Digest, HistoryGenerationInputV1, HistorySourceCutV1, IndexInstanceId, InstanceSpec,
+        ObjectRef, OwnerKey, ViewSelection,
     },
     native_protocol::{
         NativeIndexErrorCode, NativeIndexRequestEnvelope, NativeIndexResponseEnvelope,
-        NativeIndexWireError, NativeReadSessionHistoryCutV1, NativeReadSessionHistoryGenerationV1, NativeTextCoverage, NativeTextHit,
-        NativeTextResult,
+        NativeIndexWireError, NativeReadSessionHistoryCutV1, NativeReadSessionHistoryGenerationV1,
+        NativeTextCoverage, NativeTextHit, NativeTextResult,
     },
 };
 use quanta_index_ipc::{
@@ -331,22 +331,44 @@ fn admitted_history_cut_retains_reply_and_rejects_wrong_view() -> TestResult {
             file_contributor: Some(ObjectRef(Digest([15; 32]))),
         },
     };
-    let request = NativeIndexRequest::ReadSession(NativeReadSessionRequest::ReadHistoryGeneration {
-        session: status.session,
-        instance,
-    });
-    let reply = exchange(request.clone(), NativeIndexResponse::HistoryGeneration(result), |client| {
-        client.read_history_generation_in_read_session_admitted(&status, instance, source_input, &budget(), &memory)
-    })??;
-    assert_eq!(reply.response(), &NativeIndexResponse::HistoryGeneration(result));
+    let request =
+        NativeIndexRequest::ReadSession(NativeReadSessionRequest::ReadHistoryGeneration {
+            session: status.session,
+            instance,
+        });
+    let reply = exchange(
+        request.clone(),
+        NativeIndexResponse::HistoryGeneration(result),
+        |client| {
+            client.read_history_generation_in_read_session_admitted(
+                &status,
+                instance,
+                source_input,
+                &budget(),
+                &memory,
+            )
+        },
+    )??;
+    assert_eq!(
+        reply.response(),
+        &NativeIndexResponse::HistoryGeneration(result)
+    );
     charged_borrow(&reply, &counts)?;
     drop(reply);
     empty(&counts);
-    let rejected = exchange(request, NativeIndexResponse::HistoryGeneration(result), |client| {
-        client.read_history_generation_in_read_session_admitted(
-            &status, instance, ObjectRef(Digest([16; 32])), &budget(), &memory,
-        )
-    })?;
+    let rejected = exchange(
+        request,
+        NativeIndexResponse::HistoryGeneration(result),
+        |client| {
+            client.read_history_generation_in_read_session_admitted(
+                &status,
+                instance,
+                ObjectRef(Digest([16; 32])),
+                &budget(),
+                &memory,
+            )
+        },
+    )?;
     assert!(matches!(rejected, Err(NativeUdsError::Protocol(_))));
     empty(&counts);
     Ok(())
@@ -782,7 +804,7 @@ fn admitted_read_preflight_rejects_oversize_and_truncated_before_typed_decode() 
         },
         &mut bytes,
     )?;
-    assert!(decoder::prepare(&bytes, false, true).is_err());
+    assert!(decoder::prepare(&bytes, decoder::ReplyMode::ReadSession).is_err());
     let (_, mut page, _, _) = super::super::page::tests::fixture()?;
     page.hits[0].path = "x".repeat(quanta_index_contract::index::MAX_SOURCE_PATH_BYTES + 1);
     bytes.clear();
@@ -793,7 +815,7 @@ fn admitted_read_preflight_rejects_oversize_and_truncated_before_typed_decode() 
         },
         &mut bytes,
     )?;
-    assert!(decoder::prepare(&bytes, false, true).is_err());
+    assert!(decoder::prepare(&bytes, decoder::ReplyMode::ReadSession).is_err());
     bytes.clear();
     ciborium::ser::into_writer(
         &NativeIndexResponseEnvelope {
@@ -802,8 +824,8 @@ fn admitted_read_preflight_rejects_oversize_and_truncated_before_typed_decode() 
         },
         &mut bytes,
     )?;
-    assert!(decoder::prepare(&bytes[..bytes.len() - 1], false, true).is_err());
-    assert!(decoder::prepare(&bytes, false, false).is_err());
+    assert!(decoder::prepare(&bytes[..bytes.len() - 1], decoder::ReplyMode::ReadSession).is_err());
+    assert!(decoder::prepare(&bytes, decoder::ReplyMode::Publication).is_err());
     // Integer-only fixed ID arrays cannot hide sequence-form records/strings.
     let (_, profile) = super::super::profile::tests::fixture()?;
     bytes.clear();
@@ -814,7 +836,7 @@ fn admitted_read_preflight_rejects_oversize_and_truncated_before_typed_decode() 
         },
         &mut bytes,
     )?;
-    let prepared = decoder::prepare(&bytes, false, true)?;
+    let prepared = decoder::prepare(&bytes, decoder::ReplyMode::ReadSession)?;
     assert!(prepared.decoded_retained_limit()? >= std::mem::size_of::<InstanceSpec>() as u64);
     assert!(matches!(
         prepared.decode()?.payload,

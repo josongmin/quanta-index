@@ -31,13 +31,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result as AnyResult};
+use quanta_index_contract::lex::{
+    LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
+};
 use quanta_index_contract::{
-    GenerationPin, HybridQueryRequest, QueryConstraintSetV1, SearchPlaneErrorCodeV2,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    ChunkId, ChunkRecord, GenerationPin, HybridQueryRequest, QueryConstraintSetV1, RepoId,
+    RepoRelativePath, RevisionId, SearchPlaneErrorCodeV2, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SemanticQueryRequest, SymbolQueryRequest,
     TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
+use quanta_index_sdk::{ConnectOptions, QuantaIndex};
+use quanta_index_searchd::app::SemanticEmbedderProfile;
 use serde_json::{Value, json};
 
 use crate::artifact::{
@@ -45,8 +51,14 @@ use crate::artifact::{
     LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest,
     corpus_digest, model_revision_of, saturating_u64,
 };
-use crate::harness::{E2eRuntime, E2eTextChunkSpec};
-use crate::scale::{ScaleTier, generate_corpus};
+use crate::fixture_support::private_tempdir;
+use crate::legacy_reference::{
+    LegacySearchdBinary, SearchdBinaryProcess, daemon_socket_paths,
+    legacy_source_replacement_from_chunks_and_symbols, publish_legacy_source_batch,
+    request_when_ready,
+};
+use crate::scale_runtime_policy::DEFAULT_HISTORY_MAX_GENERATIONS;
+use crate::source_fixture::{ScaleTier, generate_corpus};
 
 /// The artifact dimension this rail writes.
 pub const DIMENSION: &str = "concurrency";
@@ -70,8 +82,9 @@ const MAX_SAMPLES_PER_WORKER: u32 = 100_000;
 /// at most `REQUEST_TIMEOUT` longer. Exhaustion is an error, never a partial rail.
 const MEASUREMENT_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Repo id of the seeded corpus.
-const CONCURRENCY_REPO: &str = "repo-concurrency";
+/// Containing generation identity used by the original harness fixture.
+const SERVING_REPO: &str = "repo-e2e";
+const SERVING_REVISION: &str = "rev-e2e";
 
 /// The token every generated file carries, so every fast query serves.
 const FAST_QUERY_TOKEN: &str = "scale_needle_token";
@@ -644,24 +657,82 @@ pub struct ConcurrencyReport {
     pub requests_per_client: u32,
     pub measurements: Vec<ConcurrencyMeasurement>,
     pub model_revision: Option<String>,
+    pub daemon_sha256: String,
+    pub peak_daemon_rss_bytes: u64,
     /// `true` when every request of every client count was answered (served
     /// or typed) and none timed out: the blocking signal on this host.
     pub passed: bool,
 }
 
 /// Keep each bulk record identical to the public single-file ingest fixture.
-fn corpus_ingest_chunks(corpus: &[(String, String)]) -> Vec<[E2eTextChunkSpec<'_>; 1]> {
-    corpus
-        .iter()
-        .map(|(_, content)| {
-            [E2eTextChunkSpec {
-                content,
+fn corpus_ingest_chunks(corpus: &[(String, String)]) -> AnyResult<Vec<ChunkRecord>> {
+    (1_u64..)
+        .zip(corpus)
+        .map(|(id, (path, content))| {
+            Ok(ChunkRecord {
+                chunk_id: ChunkId::new(format!("e2e-{id}-{path}")),
+                repo_relative_path: RepoRelativePath::new(path),
+                language: LanguageCode::new("rust").map_err(anyhow::Error::msg)?,
+                start_byte: 0,
+                end_byte: u32::try_from(content.len())?,
                 start_line: 1,
                 end_line: 2,
+                text: content.clone().into_boxed_str(),
+                structural: None,
+                parent_chunk_id: None,
                 source_repo_id: None,
-            }]
+            })
         })
         .collect()
+}
+
+fn symbol_fixture() -> AnyResult<SymbolRecord> {
+    let path = "repo0/src/file_0.rs";
+    Ok(SymbolRecord {
+        symbol_id: quanta_index_contract::SymbolId::new("concurrency-scale-needle"),
+        repo_relative_path: RepoRelativePath::new(path),
+        language: LanguageCode::new("rust").map_err(anyhow::Error::msg)?,
+        symbol_kind: SymbolKindCode::new("function").map_err(anyhow::Error::msg)?,
+        symbol_kind_family: Some(SymbolKindFamily::Callable),
+        local_name: FAST_QUERY_TOKEN.to_owned().into_boxed_str(),
+        qualified_name: format!("crate::{FAST_QUERY_TOKEN}").into_boxed_str(),
+        signature: None,
+        visibility: None,
+        definition_span: SymbolSpan {
+            path: path.to_owned().into_boxed_str(),
+            byte_start: 0,
+            byte_end: u32::try_from(FAST_QUERY_TOKEN.len())?,
+            line_start: 1,
+            line_end: 1,
+        },
+        container_qualified_name: Some("crate".to_owned().into_boxed_str()),
+        relationship: SymbolRelationship::Def,
+    })
+}
+
+fn prime_request(
+    socket: &Path,
+    pin: &GenerationPin,
+    request_id: u64,
+    route: Option<MixedRoute>,
+    payload: SearchPlaneQueryIpcRequest,
+) -> AnyResult<()> {
+    let response: SearchPlaneQueryIpcResponseEnvelope = send_request(
+        socket,
+        &SearchPlaneQueryIpcRequestEnvelope {
+            request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
+            payload,
+        },
+        ClientIoPolicy::try_new(FIXTURE_REQUEST_TIMEOUT)?,
+    )?;
+    match classify_response(request_id, route, pin, &response)? {
+        RequestOutcome::Served { .. } => Ok(()),
+        RequestOutcome::TypedError { code } => Err(anyhow::anyhow!(
+            "concurrency prime: fixture route refused: {code}"
+        )),
+        RequestOutcome::Timeout => Err(anyhow::anyhow!("concurrency prime: fixture timed out")),
+    }
 }
 
 /// Seed the medium corpus, serve it, and measure every client count.
@@ -670,72 +741,70 @@ pub fn run_concurrency_report(seed: u64, requests_per_client: u32) -> AnyResult<
         .context("concurrency configuration: request budget")?;
     let tier = ScaleTier::Medium;
     let corpus = generate_corpus(tier, seed);
-    let mut rt = E2eRuntime::boot_with_client_request_timeout(FIXTURE_REQUEST_TIMEOUT)
-        .context("concurrency bootstrap: runtime boot")?;
-    let model_revision = model_revision_of(rt.embedder_profile());
-    // Preserve the one-chunk-per-file fixture while publishing one ingest
-    // wave, avoiding a semantic dataset append and transaction per file.
-    let chunks = corpus_ingest_chunks(&corpus);
-    let files: Vec<(&str, &[E2eTextChunkSpec<'_>])> = corpus
-        .iter()
-        .zip(&chunks)
-        .map(|((path, _), chunks)| (path.as_str(), chunks.as_slice()))
-        .collect();
-    let ids = rt
-        .ingest_text_files_one_batch(&files)
-        .with_context(|| format!("concurrency bootstrap: ingest {} corpus files", files.len()))?;
-    if ids.len() != corpus.len() {
+    let binary = LegacySearchdBinary::from_environment()
+        .map_err(|error| anyhow::anyhow!("concurrency bootstrap: pinned Legacy input: {error}"))?;
+    let state = private_tempdir().context("concurrency bootstrap: private state root")?;
+    let command = binary
+        .benchmark_command(state.path(), DEFAULT_HISTORY_MAX_GENERATIONS)
+        .map_err(|error| anyhow::anyhow!("concurrency bootstrap: pinned command: {error}"))?;
+    let process = SearchdBinaryProcess::start_with_pinned_command(state.path(), command)
+        .map_err(|error| anyhow::anyhow!("concurrency bootstrap: start daemon: {error}"))?;
+    let client = QuantaIndex::connect_legacy(
+        ConnectOptions::from_state_root(state.path())
+            .with_request_io_timeout(FIXTURE_REQUEST_TIMEOUT),
+    )?;
+    let repo = RepoId::new(SERVING_REPO)?;
+    let revision = RevisionId::new(SERVING_REVISION)?;
+    let chunks = corpus_ingest_chunks(&corpus)?;
+    if chunks.len() != corpus.len() {
         return Err(anyhow::anyhow!(
-            "concurrency bootstrap: ingest returned {} chunk IDs for {} files",
-            ids.len(),
-            corpus.len()
+            "concurrency bootstrap: source chunk count differs"
         ));
     }
-    rt.ingest_symbol(
-        CONCURRENCY_REPO,
-        "repo0/src/file_0.rs",
-        "concurrency-scale-needle",
-        FAST_QUERY_TOKEN,
+    let batch = legacy_source_replacement_from_chunks_and_symbols(
+        &repo,
+        &revision,
+        1,
+        chunks,
+        vec![symbol_fixture()?],
     )
-    .context("concurrency bootstrap: ingest symbol needle")?;
-    let sealed = rt
-        .seal()
-        .context("concurrency bootstrap: seal generation")?;
-    rt.activate_last_sealed_generation()
-        .context("concurrency bootstrap: activate generation")?;
-    let pin = GenerationPin::new(rt.repo(), rt.revision(), sealed);
+    .map_err(|error| anyhow::anyhow!("concurrency bootstrap: Source fixture: {error}"))?;
+    if batch.replace_scopes().len() != corpus.len() {
+        return Err(anyhow::anyhow!(
+            "concurrency bootstrap: source file count differs"
+        ));
+    }
+    let (head, _receipt) = publish_legacy_source_batch(&client, &batch, None).map_err(|error| {
+        anyhow::anyhow!("concurrency bootstrap: SDK Source publication: {error}")
+    })?;
+    let pin = GenerationPin::new(repo, revision, head.generation.lexical.manifest_generation);
+    let model_revision = model_revision_of(&SemanticEmbedderProfile::hash_dev());
     // One served request of every route before timing, so readiness and
     // the cold open are not inside any window and a route the fixture
     // cannot serve is a rail error, not a row of typed errors. The first
     // probe waits for the activated generation to serve.
-    let primed = rt.query_text(TextQuerySyntax::Native, FAST_QUERY_TOKEN, FAST_TOP_K);
-    if let Some(error) = primed.typed_error {
-        return Err(anyhow::anyhow!(
-            "concurrency prime: the fixture does not serve: {} {}",
-            error.code,
-            error.message
-        ));
-    }
+    let primed = request_when_ready(|| {
+        client
+            .lexical()
+            .query_request(text_request(&pin, FAST_QUERY_TOKEN, FAST_TOP_K))
+    })?;
+    anyhow::ensure!(
+        primed.generation == pin && !primed.results.is_empty(),
+        "concurrency prime: the fixture did not return a pinned lexical result"
+    );
+    let [socket, _, _] = daemon_socket_paths(state.path());
     let probes = MixedRoute::ALL
         .iter()
         .map(|route| (route.as_str(), fast_request(*route, &pin)))
         .chain(std::iter::once(("slow", slow_request(&pin))));
-    for (label, request) in probes {
-        if let SearchPlaneQueryIpcResponse::Error(error) = rt
-            .query_once(|_| request)
-            .with_context(|| format!("concurrency prime: {label} route"))?
-        {
-            return Err(anyhow::anyhow!(
-                "concurrency prime: {label} refused before timing: {} {}",
-                error.code,
-                error.message
-            ));
-        }
+    for (request_id, (label, request)) in (101_u64..).zip(probes) {
+        let route = MixedRoute::ALL
+            .iter()
+            .copied()
+            .find(|route| route.as_str() == label);
+        prime_request(&socket, &pin, request_id, route, request)
+            .with_context(|| format!("concurrency prime: {label} route"))?;
     }
-    let Some((socket, _, _)) = rt.socket_paths() else {
-        return Err(anyhow::anyhow!("concurrency: the daemon is not running"));
-    };
-    let socket = socket.to_path_buf();
     let mut measurements = Vec::with_capacity(CLIENT_COUNTS.len());
     for clients in CLIENT_COUNTS {
         measurements.push(
@@ -750,12 +819,21 @@ pub fn run_concurrency_report(seed: u64, requests_per_client: u32) -> AnyResult<
                 .as_ref()
                 .is_none_or(|slow| slow.timeout_count == 0)
     });
+    let peak_daemon_rss_bytes = process.observe_peak_rss(&client)?;
+    process
+        .stop()
+        .map_err(|error| anyhow::anyhow!("concurrency close: stop daemon: {error}"))?;
+    binary
+        .verify()
+        .map_err(|error| anyhow::anyhow!("concurrency close: pinned binary changed: {error}"))?;
     Ok(ConcurrencyReport {
         tier,
         seed,
         requests_per_client,
         measurements,
         model_revision,
+        daemon_sha256: binary.sha256().to_owned(),
+        peak_daemon_rss_bytes,
         passed,
     })
 }
@@ -820,6 +898,9 @@ pub fn detail_json(report: &ConcurrencyReport) -> Value {
         "passed": report.passed,
         "blocking_signal": "every request answered (served or typed) and none timed out; latency is advisory on this host",
         "corpus_tier": report.tier.as_str(),
+        "backend": "legacy-reference",
+        "daemon_sha256": report.daemon_sha256,
+        "peak_rss_scope": "daemon_process",
         "seed": report.seed,
         "client_counts": CLIENT_COUNTS,
         "slow_client": {
@@ -831,8 +912,8 @@ pub fn detail_json(report: &ConcurrencyReport) -> Value {
         "minimum_row_samples": MINIMUM_ROW_SAMPLES,
         "maximum_samples_per_worker": MAX_SAMPLES_PER_WORKER,
         "measurement_timeout_secs": MEASUREMENT_TIMEOUT.as_secs(),
-        "bootstrap_request_timeout_secs": FIXTURE_REQUEST_TIMEOUT.as_secs(),
         "prime_request_timeout_secs": FIXTURE_REQUEST_TIMEOUT.as_secs(),
+        "bootstrap_source": "public SDK single Source batch with 256 chunks and one symbol",
         "sampling_policy": "fast clients run at least requests_per_client and remain active until the slow client reaches minimum_row_samples; slow client runs through the fast window",
         "head_of_line_ratio_p50": head_of_line_ratio_p50(report),
         "dispatch_policy": "ServerAdmissionPolicy::DEFAULT (4 dispatch slots, 2s queue wait)",
@@ -879,7 +960,9 @@ pub fn artifacts(
     host: &HostV1,
 ) -> AnyResult<Vec<(u32, BenchArtifactV1)>> {
     let corpus_digest = corpus_digest(DIMENSION, &generate_corpus(report.tier, report.seed));
-    let resources = ResourceUsageV1::observe_self()?;
+    let resources = ResourceUsageV1 {
+        peak_rss_bytes: report.peak_daemon_rss_bytes,
+    };
     report
         .measurements
         .iter()
@@ -909,6 +992,12 @@ pub fn artifacts(
                             DIMENSION,
                             &[
                                 ("tier", report.tier.as_str().to_string()),
+                                ("backend", "legacy-reference".to_owned()),
+                                ("daemon_sha256", report.daemon_sha256.clone()),
+                                (
+                                    "backend",
+                                    "pinned-legacy-external-sdk-source-v1".to_string(),
+                                ),
                                 ("seed", report.seed.to_string()),
                                 ("clients", measurement.clients.to_string()),
                                 (
@@ -927,10 +1016,9 @@ pub fn artifacts(
                                     "request_identity_policy",
                                     "positive-disjoint-worker-ranges-v1".to_string(),
                                 ),
-                                ("bootstrap_ingest", "single-corpus-batch-v1".to_string()),
                                 (
-                                    "bootstrap_request_timeout_secs",
-                                    FIXTURE_REQUEST_TIMEOUT.as_secs().to_string(),
+                                    "bootstrap_ingest",
+                                    "sdk-single-source-batch-symbol-v2".to_string(),
                                 ),
                                 (
                                     "prime_request_timeout_secs",
@@ -999,18 +1087,55 @@ mod tests {
     }
 
     #[test]
-    fn bulk_bootstrap_preserves_public_single_file_chunk_contract() {
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "fixed seeded Source records are checked directly"
+    )]
+    fn bulk_bootstrap_preserves_public_single_file_chunk_contract() -> AnyResult<()> {
         let corpus = generate_corpus(ScaleTier::Medium, 7);
-        let chunks = corpus_ingest_chunks(&corpus);
+        let chunks = corpus_ingest_chunks(&corpus)?;
         assert_eq!(corpus.len(), 256, "the medium fixture has 4 * 64 files");
         assert_eq!(chunks.len(), corpus.len());
-        for ((_, content), [chunk]) in corpus.iter().zip(&chunks) {
+        for ((path, content), chunk) in corpus.iter().zip(&chunks) {
             // E2eRuntime::ingest_text_with_candidate_id's public fixture:
             // one complete content record, lines 1..2, no source-repo override.
-            assert_eq!(chunk.content.as_bytes(), content.as_bytes());
+            assert_eq!(chunk.text.as_bytes(), content.as_bytes());
+            assert_eq!(chunk.repo_relative_path.as_str(), path);
             assert_eq!((chunk.start_line, chunk.end_line), (1, 2));
             assert!(chunk.source_repo_id.is_none());
         }
+        let repo = RepoId::new(SERVING_REPO)?;
+        let revision = RevisionId::new(SERVING_REVISION)?;
+        let batch = legacy_source_replacement_from_chunks_and_symbols(
+            &repo,
+            &revision,
+            1,
+            chunks,
+            vec![symbol_fixture()?],
+        )
+        .map_err(|error| anyhow::anyhow!("Source fixture: {error}"))?;
+        assert_eq!(batch.replace_scopes().len(), 256);
+        assert_eq!(batch.semantic_replace_scopes().len(), 256);
+        let symbol_scopes = batch
+            .replace_scopes()
+            .iter()
+            .filter(|scope| !scope.symbols.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(symbol_scopes.len(), 1);
+        assert_eq!(
+            symbol_scopes[0].symbols[0].local_name.as_ref(),
+            FAST_QUERY_TOKEN
+        );
+        assert_eq!(
+            symbol_scopes[0]
+                .coverage
+                .source
+                .file
+                .repo_relative_path
+                .as_str(),
+            "repo0/src/file_0.rs"
+        );
+        Ok(())
     }
 
     #[test]
@@ -1497,6 +1622,8 @@ mod tests {
                 measurement(32, 6.0, true),
             ],
             model_revision: Some("model@rev:d16".to_string()),
+            daemon_sha256: "a".repeat(64),
+            peak_daemon_rss_bytes: 16_384,
             passed: true,
         }
     }

@@ -1802,7 +1802,7 @@ mod tests {
         let key = fixture.request.operation;
         let children = match &fixture.request.kind {
             UpdateKind::Reconfigure { profile } => vec![*profile],
-            UpdateKind::Materialize { .. } => Vec::new(),
+            UpdateKind::Materialize { .. } | UpdateKind::CompactSourceLocal { .. } => Vec::new(),
             UpdateKind::SourceAdvance(_)
             | UpdateKind::SourceHistoryAdvance(_)
             | UpdateKind::SourceResync { .. }

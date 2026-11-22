@@ -3,7 +3,8 @@
 use super::*;
 use crate::native_result::{ResultValue, ScopedNativeResult, shared_value_bytes};
 use quanta_index_contract::native_protocol::{
-    NativeReadSessionId, NativeTextCursor, NativeTextHit, NativeTextPage, native_text_query_digest,
+    NativeReadSessionId, NativeTextCursor, NativeTextHit, NativeTextPage, NativeTextPathCursorV1,
+    native_text_query_digest,
 };
 use quanta_index_core::index::{MemoryLease, QueryCoverage, QueryOutcome};
 use quanta_index_lexical::native::{NativeTextHitSource, TextReadResult};
@@ -68,6 +69,85 @@ pub(super) fn search(
     )
 }
 
+pub(super) fn search_paths(
+    dispatcher: &NativeDispatcher,
+    ticket: &quanta_index_kernel::ReadTicket,
+    attempt: &mut quanta_index_kernel::TicketReadAttempt<'_>,
+    session: NativeReadSessionId,
+    instance: IndexInstanceId,
+    query: &TextQueryRequest,
+    after: Option<NativeTextPathCursorV1>,
+    work: &mut WorkBudget,
+    timer: &RetainedSearchTimer,
+    control: ReservationGuard<NativeClassScheduler>,
+) -> Result<crate::native_text_result::ScopedNativeTextPathPage, IndexError> {
+    work.bind_memory_scope(control.memory_scope());
+    timer.mark(ReadFailureStage::QueryPreparation);
+    let digest = native_text_query_digest(instance, query).map_err(IndexError::InvalidInput)?;
+    if after.as_ref().is_some_and(|cursor| {
+        cursor.view != ticket.view().identity
+            || cursor.instance != instance
+            || cursor.query != digest
+            || cursor.score.get() < 0.0
+            || !crate::native_source_path::valid_native_source_path(&cursor.path)
+            || query
+                .constraints
+                .repo_relative_path_exact
+                .as_ref()
+                .is_some_and(|expected| expected.as_str() != cursor.path)
+    }) {
+        return Err(IndexError::InvalidInput(
+            "path page cursor binding differs".into(),
+        ));
+    }
+    let planned = plan_native_projected_text(query, |bytes, lifetime| {
+        work.reserve_memory(bytes, lifetime)
+    })?;
+    if planned.plan.filters.surface != quanta_index_lexical::symbol::ResultSurface::Path
+        || planned.plan.options.count.is_some()
+    {
+        return Err(IndexError::InvalidInput(
+            "path pages require select:path without count".into(),
+        ));
+    }
+    let planned = if let Some(cursor) = &after {
+        let bytes = cursor
+            .path
+            .len()
+            .checked_add(cursor.repository.as_str().len())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(IndexError::ResourceLimited)?;
+        let memory = work.reserve_memory(bytes, MemoryLifetime::Retained)?;
+        planned.with_path_rank_after_v1(
+            Some((cursor.score, cursor.repository.clone(), cursor.path.clone())),
+            memory,
+        )
+    } else {
+        planned
+    };
+    execute_text(
+        dispatcher,
+        ticket,
+        attempt,
+        instance,
+        planned,
+        work,
+        timer,
+        control,
+        |outcome, work| {
+            crate::native_text_result::convert_path_page(
+                outcome,
+                session,
+                instance,
+                query.top_k,
+                digest,
+                after.as_ref(),
+                |bytes, lifetime| work.reserve_memory(bytes, lifetime),
+            )
+        },
+    )
+}
+
 fn convert(
     outcome: QueryOutcome<TextReadResult>,
     session: NativeReadSessionId,
@@ -116,7 +196,7 @@ fn convert(
         .map_err(|_error| IndexError::ResourceLimited)?;
     let mut prior = after.map(|cursor| (cursor.score, cursor.owner));
     for hit in &raw.hits {
-        if !crate::native::valid_native_source_path(&hit.path)
+        if !crate::native_source_path::valid_native_source_path(&hit.path)
             || constraints
                 .repo_relative_path_exact
                 .as_ref()

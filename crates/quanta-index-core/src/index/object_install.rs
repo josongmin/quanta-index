@@ -1,6 +1,6 @@
 //! Prepared DATA for two bounded childless install packets in one attempt.
 
-use super::ports::ObjectWriteSink;
+use super::install_ports::ObjectWriteSink;
 use super::{AttemptRef, IndexError, ObjectRef, StagedObjectReferences, WorkBudget};
 
 /// Owns the exact original wire, registration and output-slot allocations.

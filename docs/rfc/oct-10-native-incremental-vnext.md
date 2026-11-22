@@ -5,7 +5,7 @@
 새 실행 현황·분업·체크포인트를 이 RFC에 추가하지 않는다. 현재 상태는 SSOT의 기존 행, 실행 판정은 VALIDATION의 해당 scope에만 반영한다. 이전 action register·진척률·배정 본문은 [보존 이력](../history/oct-10-index-closeout/RFC-DELIVERY-CHECKPOINTS.md)으로 이전했다.
 
 - Date: 2026-10-10
-- Document maintenance: 2026-11-15 (source-map reconciliation only). Dated implementation checkpoints are
+- Document maintenance: 2026-11-17 (source-map reconciliation only). Dated implementation checkpoints are
   [historical records](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md),
   not current task assignments. Dated implementation rechecks from sections
   17.2.3–17.2.4 and 22 are [preserved separately](../history/oct-10-index-closeout/RFC-IMPLEMENTATION-CHECKPOINTS-2026-10-21.md).
@@ -105,7 +105,7 @@ The concrete implementation direction, rather than an unselected backend list, i
 | Native physical data and persistent maps | FileObjectStore immutable content-addressed files plus COW compressed radix maps, behind core object/map ports | Section 8.3.1 permits a focused pack/KV alternative only for a failed contract, material measured cost or explicit comparative claim; RocksDB is not a current dependency or required implementation |
 | Preparation scratch | Disposable SQLite sorting/staging under service-owned scratch allocation; one map edit with a key of at most 64 bytes may use bounded request-owned resident staging with the same radix codec and durable installer | Staging is not a search engine or publication authority; resident nodes/wires retain original memory admission, and relaxed disposable synchronization does not apply to the durable Catalog or immutable objects |
 | Native lexical | R14 NativeLiteral and R15 NativeTextIndex owner postings, live statistics and query semantics; reuse normalization/planner/oracle primitives | The October R15 direction implements BM25 itself. The later accepted Nov-12 single-engine shipping decision selects Native and requires Tantivy code/dependency retirement in the final candidate; backend-independent correctness laws still apply |
-| Existing product lexical | Legacy Tantivy plus paged Native/File authorities until replacement is qualified | R35/R36 retain the original default-switch and lifetime gates. The later Nov-12 retirement plan additionally requires zero Tantivy code, workspace Cargo/lock/vendor references and shipping bundle entries; their presence in current source is open removal work |
+| Legacy comparison/recovery lexical | Explicit Legacy Tantivy plus its paged Native/File authorities; ordinary SDK/CLI select Native | R35/R36 retain the original default-switch and lifetime gates. The later Nov-12 retirement plan additionally requires zero Tantivy code, workspace Cargo/lock/vendor references and shipping bundle entries; their presence in current source is open removal work |
 
 Native correctness laws are backend-independent. The shipped backend choice is
 now fixed by the [Nov-12 retirement decision](../plans/nov-12-native-cutover/TANTIVY-RETIREMENT.md):
@@ -3922,10 +3922,13 @@ correctness change requires edits. One canonical internal IR remains required.
 ### 17.5 Current implementation and pending retirement
 
 Module delivery and shipped Legacy retirement are separate. Ordinary SDK profiles
-and supported ordinary CLI commands now use Native. Legacy lexical still declares
-`legacy-tantivy` as its default feature and Legacy Semantic retains Lance/LanceDB
-dependencies. The current [retirement plan](../plans/nov-12-native-cutover/TANTIVY-RETIREMENT.md)
-owns the remaining caller/dependency removal; do not infer it from Native file presence.
+and supported ordinary CLI commands now use Native. Lexical and Runtime have empty
+default feature lists. Explicit Legacy builds, workspace/lock/vendor cleanup
+and the retained Semantic Lance/LanceDB dependencies still require the
+[engine-retirement contract](../adr/NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement)
+and [current retirement plan](../plans/nov-12-native-cutover/TANTIVY-RETIREMENT.md).
+Native module delivery or an empty default feature list does not establish
+whole-workspace or shipped-candidate retirement.
 
 | Existing boundary | Gate retained from the original retirement map |
 | --- | --- |

@@ -369,6 +369,7 @@ mod tests {
             UpdateKind::SourceAdvance(_)
             | UpdateKind::SourceResync { .. }
             | UpdateKind::ProjectionAdvance(_)
+            | UpdateKind::CompactSourceLocal { .. }
             | UpdateKind::Materialize { .. } => ObjectRef(Digest([12; 32])),
         };
         let mut publication = CatalogView {

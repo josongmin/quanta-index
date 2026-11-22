@@ -94,6 +94,7 @@ fn cause(stage: Option<&str>, error: &Error) -> &'static str {
                 "sdk_cancelled"
             }
             NativeUdsError::Refused(_) => "sdk_refused",
+            NativeUdsError::QueryRejected { .. } => "local_rejection",
             NativeUdsError::Protocol(_) => "sdk_protocol",
             NativeUdsError::Transport(_) => "sdk_transport",
             NativeUdsError::PeerBindingRefused(_) => "sdk_peer_binding_refused",
@@ -363,6 +364,16 @@ mod tests {
     #[test]
     fn sdk_labels_do_not_invent_server_causality() {
         use quanta_index_contract::native_protocol::NativeIndexWireError;
+        let error = Error::new(NativeUdsError::QueryRejected {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                quanta_index_contract::lex::LexicalErrorCode::ParseFail,
+            ),
+            message: "unterminated phrase".into(),
+        });
+        assert_eq!(
+            cause(Some("miss_read_session_search"), &error),
+            "local_rejection"
+        );
         for (code, expected) in [
             (NativeIndexErrorCode::Overloaded, "sdk_refused"),
             (NativeIndexErrorCode::Cancelled, "sdk_cancelled"),

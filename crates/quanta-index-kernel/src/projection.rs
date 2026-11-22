@@ -1,13 +1,46 @@
 use quanta_index_core::index::{
-    AttemptContext, Digest, IndexError, MapRoot, ObjectChildren, ObjectRef, OperationKey,
+    AttemptContext, CatalogView, Digest, IndexError, MapRoot, ObjectChildren, ObjectRef, OperationKey,
     OrdinalMapEdit, OwnerKey, OwnerMutationCursor, OwnerMutationSet, ProducerCompleteness,
     ProjectionBinding, ProjectionCertificate, ProjectionId, ProjectionOwnerContribution,
-    ProjectionTransition, RegisteredObject, SourceCut, decode_projection_binding,
+    ProjectionTransition, RegisteredObject, WorkBudget, decode_projection_binding,
     decode_projection_certificate, decode_projection_owner, owner_map_key,
-    ports::{ImmutableObjectPort, MapEditCursor},
+    ports::{ImmutableObjectPort, MapEditCursor, PersistentMapPort},
 };
 
 use crate::{binding_metadata, member_staging::PreparedEdit};
+
+/// Immutable reads for validating a prepared projection against its CAS base.
+pub struct ProjectionCommitBasis<'a> {
+    pub view: &'a CatalogView,
+    pub operation: OperationKey,
+    pub transition: &'a ProjectionTransition,
+    pub objects: &'a dyn ImmutableObjectPort,
+    pub maps: &'a dyn PersistentMapPort,
+}
+
+impl ProjectionCommitBasis<'_> {
+    pub fn binding(
+        &self,
+        projection: ProjectionId,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<ProjectionBinding>, IndexError> {
+        self.maps
+            .lookup_object(self.view.projections, &projection_key(projection), budget)?
+            .map(|reference| read_binding_from(reference, projection, self.objects, budget))
+            .transpose()
+    }
+}
+
+/// Domain validation and derived index sealing, inside the publishing attempt.
+/// Derived keys must be disjoint from caller-owned mutation keys.
+pub trait ProjectionCommitValidator: Send + Sync {
+    fn seal(
+        &self,
+        basis: ProjectionCommitBasis<'_>,
+        next: &ProjectionBinding,
+        context: &mut AttemptContext<'_>,
+    ) -> Result<MapRoot, IndexError>;
+}
 
 pub(crate) struct ProjectionChange {
     pub owner: OwnerKey,
@@ -277,11 +310,13 @@ pub(crate) fn validate_events(
 
 pub(crate) fn apply_projection(
     operation: OperationKey,
-    base_root: MapRoot,
-    current_source: SourceCut,
+    base: &CatalogView,
     transition: &ProjectionTransition,
+    validator: Option<&dyn ProjectionCommitValidator>,
     context: &mut AttemptContext<'_>,
 ) -> Result<ProjectionDelta, IndexError> {
+    let base_root = base.projections;
+    let current_source = base.source;
     let count = transition.owners.count;
     validate_events(operation, transition)?;
     if transition.target_source != current_source {
@@ -384,7 +419,7 @@ pub(crate) fn apply_projection(
         })?;
         root
     };
-    let next = ProjectionBinding {
+    let mut next = ProjectionBinding {
         projection: transition.projection,
         producer: transition.producer,
         owners,
@@ -394,6 +429,19 @@ pub(crate) fn apply_projection(
         dependency_context: transition.dependency_context,
         certificate,
     };
+    if let Some(validator) = validator {
+        next.owners = validator.seal(
+            ProjectionCommitBasis {
+                view: base,
+                operation,
+                transition,
+                objects: context.objects,
+                maps: context.maps,
+            },
+            &next,
+            context,
+        )?;
+    }
     let payload = binding_metadata::encode_projection_binding(&next, context.budget)?;
     let reference = context.put(&payload.bytes, binding_children(&next).as_slice())?;
     let edit = PreparedEdit::new(&key, actual_ref, Some(reference), context.budget)?;
@@ -453,7 +501,7 @@ mod tests {
     #[test]
     fn projection_edges_match_old_contract_and_exclude_historical_roots() -> Result<(), IndexError>
     {
-        use quanta_index_core::index::{ProducerId, SchemaId, StableOwnerId};
+        use quanta_index_core::index::{ProducerId, SchemaId, SourceCut, StableOwnerId};
         let source = SourceCut {
             owners: MapRoot(Some(reference(3))),
             paths: MapRoot(Some(reference(2))),

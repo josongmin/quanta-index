@@ -20,24 +20,15 @@ use quanta_index_ipc::{DispatchContextV1, IpcError, StreamDispatch};
 
 use crate::{
     native::{NativeDispatcher, wire_error},
+    native_authorization::request_authorized,
     native_effort::{
         NativeEffortObserver, NativeEffortOverlay, NativeEffortRequest, NativeEffortStage,
         NativeEffortSummary, check_original, query_effort_on_dispatcher,
     },
-    native_reply::NativeReply,
+    native_reply::{NativeReply, ScopedNativeEffortDone},
     native_work_diagnostic::{self, QueryDelivery},
 };
 
-pub(crate) struct ScopedNativeEffortDone {
-    result: NativeEffortDone,
-    _memory: Option<quanta_index_core::index::MemoryLease>,
-}
-impl std::ops::Deref for ScopedNativeEffortDone {
-    type Target = NativeEffortDone;
-    fn deref(&self) -> &Self::Target {
-        &self.result
-    }
-}
 struct WireObserver<'a> {
     dispatcher: &'a NativeDispatcher,
     request: &'a RequestBudgetV1,
@@ -160,15 +151,15 @@ impl NativeEffortObserver for WireObserver<'_> {
         } else {
             None
         };
-        let done = ScopedNativeEffortDone {
-            result: NativeEffortDone {
+        let done = ScopedNativeEffortDone::new(
+            NativeEffortDone {
                 view: summary.view,
                 reason: wire_reason(summary.reason),
                 deep_delivered: summary.deep_delivered,
                 corpus,
             },
-            _memory: memory,
-        };
+            memory,
+        );
         check_original(self.request)?;
         (self.emit)(NativeReply::EffortDone(done))
             .map_err(|error| IndexError::Storage(error.to_string()))?;
@@ -184,7 +175,7 @@ pub(super) fn dispatch_stream(
     budget: &RequestBudgetV1,
     emit: &mut dyn FnMut(NativeReply) -> Result<(), IpcError>,
 ) -> StreamDispatch<NativeReply> {
-    let authorized = crate::native_dispatch::request_authorized(
+    let authorized = request_authorized(
         context.plane,
         context.principal,
         context.owner_uid,

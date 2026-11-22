@@ -271,13 +271,20 @@ def tree_usage(path: Path) -> tuple[int, int]:
     return total, files
 
 
+def _remove_retired_path(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
 def remove_via_trash(path: Path) -> None:
     trash = path.with_name(f"{TRASH_PREFIX}{path.name}-{os.getpid()}-{time.time_ns()}")
     os.rename(path, trash)
-    if trash.is_dir() and not trash.is_symlink():
-        shutil.rmtree(trash, ignore_errors=True)
-    else:
-        trash.unlink(missing_ok=True)
+    try:
+        _remove_retired_path(trash)
+    except OSError as exc:
+        raise OSError(exc.errno, f"delete retired path: {exc}", trash) from exc
 
 
 @dataclass
@@ -336,6 +343,7 @@ class Policy:
     prune_idle_lanes: bool = True
     prune_artifacts: bool = True
     prune_incremental: bool = True
+    incremental_only_lane: str | None = None
     max_total_bytes: int | None = None
     budget_min_idle_seconds: float = HOUR
 
@@ -420,13 +428,17 @@ class Collector:
                     if e.name.startswith(TRASH_PREFIX)
                 ]
         for path in candidates:
-            size = tree_usage(path)
-            if not self.dry_run:
-                if path.is_dir() and not path.is_symlink():
-                    shutil.rmtree(path, ignore_errors=True)
-                else:
-                    path.unlink(missing_ok=True)
-            self.report.action("trash", path, size, "leftover from an interrupted gc")
+            self._remove_existing_trash(path)
+
+    def _remove_existing_trash(self, path: Path) -> None:
+        size = tree_usage(path)
+        if not self.dry_run:
+            try:
+                _remove_retired_path(path)
+            except OSError as exc:
+                self.report.errors.append(f"remove {path}: {exc}")
+                return
+        self.report.action("trash", path, size, "leftover from an interrupted gc")
 
     def lanes(self, hash_dir: Path, checkout: str) -> list[LaneInfo]:
         lanes = []
@@ -500,22 +512,23 @@ class Collector:
                         else "process census unavailable",
                     )
                     return
-                for profile in self._profile_dirs(lane.path):
-                    self._prune_deps(profile / "deps")
-                    if self.policy.prune_incremental:
-                        self._prune_incremental(profile / "incremental")
+                for directory in self._artifact_dirs(lane.path):
+                    if directory.name == "incremental" and self.policy.prune_incremental:
+                        self._prune_incremental(directory)
+                    elif directory.name == "deps" and self.policy.incremental_only_lane is None:
+                        self._prune_deps(directory)
         except LockBusy as exc:
             self.report.keep("stale-artifacts", lane.path, f"cargo lock held: {exc}")
         except OSError as exc:
             self.report.errors.append(f"prune {lane.path}: {exc}")
 
-    def _profile_dirs(self, lane: Path) -> list[Path]:
+    def _artifact_dirs(self, lane: Path) -> list[Path]:
+        # Keep the exact directories accepted by the non-following walk. A
+        # real deps directory does not authorize an incremental symlink next to it.
         return sorted(
-            {
-                path.parent
-                for path, _st, is_dir in _shallow_walk(lane)
-                if is_dir and path.name in {"deps", "incremental"}
-            }
+            path
+            for path, _st, is_dir in _shallow_walk(lane)
+            if is_dir and path.name in {"deps", "incremental"}
         )
 
     @staticmethod
@@ -594,6 +607,9 @@ class Collector:
     def _prune_incremental(self, incremental: Path) -> None:
         dirs = []
         for entry in _scandir(incremental):
+            if entry.name.startswith(TRASH_PREFIX):
+                self._remove_existing_trash(Path(entry.path))
+                continue
             if not entry.is_dir(follow_symlinks=False):
                 continue
             dirs.append((entry.name, dir_activity(Path(entry.path))))
@@ -654,6 +670,19 @@ class Collector:
 
     def run(self) -> None:
         if not self.target_root.is_dir():
+            return
+        if self.policy.incremental_only_lane is not None:
+            # The scope includes stale incremental dirs and their trash in
+            # this lane. Other checkouts, lanes, deps and whole-lane eviction
+            # paths stay outside this cleanup.
+            for checkout_id, checkout in self.known.items():
+                hash_dir = self.target_root / checkout_id
+                if hash_dir.is_symlink():
+                    self.report.keep("stale-artifacts", hash_dir, "checkout target is a symlink")
+                    continue
+                for lane in self.lanes(hash_dir, checkout):
+                    if lane.path.name == self.policy.incremental_only_lane:
+                        self.prune_artifacts(lane)
             return
         self.sweep_trash()
         retained: list[LaneInfo] = []
@@ -738,6 +767,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--no-idle-lanes", action="store_true")
     parser.add_argument("--no-artifacts", action="store_true")
     parser.add_argument("--no-incremental", action="store_true")
+    parser.add_argument(
+        "--incremental-only", metavar="LANE",
+        help="prune only superseded incremental dirs in this checkout's named lane",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
@@ -747,6 +780,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--min-interval-hours", type=float, default=6.0)
     args = parser.parse_args(argv)
+    if args.incremental_only is not None:
+        lane = args.incremental_only
+        if lane in {"", ".", ".."} or Path(lane).name != lane:
+            parser.error("--incremental-only requires a single lane name")
+        if args.no_incremental or args.no_artifacts or args.max_total_gb is not None:
+            parser.error("--incremental-only conflicts with disabled artifacts or size eviction")
     for name in ("idle_hours", "artifact_hours", "min_interval_hours", "budget_min_idle_hours"):
         if getattr(args, name) < 0:
             parser.error(f"--{name.replace('_', '-')} must be non-negative")
@@ -790,6 +829,7 @@ def main(argv: list[str] | None = None) -> int:
         prune_idle_lanes=not args.no_idle_lanes,
         prune_artifacts=not args.no_artifacts,
         prune_incremental=not args.no_incremental,
+        incremental_only_lane=args.incremental_only,
         max_total_bytes=None if args.max_total_gb is None else int(args.max_total_gb * 1e9),
         budget_min_idle_seconds=args.budget_min_idle_hours * HOUR,
     )
@@ -810,14 +850,18 @@ def main(argv: list[str] | None = None) -> int:
                     os.nice(10)
                 except OSError:
                     pass
-            worktrees, error = git_worktrees(args.repo_root)
-            checkouts = [str(args.repo_root), *worktrees]
-            if os.environ.get("QUANTA_INDEX_REPO_ROOT"):
-                checkouts.append(os.environ["QUANTA_INDEX_REPO_ROOT"])
-            if error:
-                # Without the worktree list every sibling checkout would look
-                # orphaned; disable orphan removal instead of guessing.
-                policy.prune_orphans = False
+            if args.incremental_only is not None:
+                checkouts = [str(args.repo_root)]
+                error = None
+            else:
+                worktrees, error = git_worktrees(args.repo_root)
+                checkouts = [str(args.repo_root), *worktrees]
+                if os.environ.get("QUANTA_INDEX_REPO_ROOT"):
+                    checkouts.append(os.environ["QUANTA_INDEX_REPO_ROOT"])
+                if error:
+                    # Without the worktree list every sibling checkout would look
+                    # orphaned; disable orphan removal instead of guessing.
+                    policy.prune_orphans = False
             report = run_gc(cache_root, checkouts, policy, dry_run=args.dry_run)
             if error:
                 report.errors.append(f"{error}; orphan removal disabled")

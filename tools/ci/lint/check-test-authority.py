@@ -42,6 +42,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 
 ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tools.ci.rust_test_mount import parse_test_mounts  # noqa: E402
+
 DEFAULT_CATALOG = ROOT / "tools" / "ci" / "test-authority.toml"
 SUPPORTED_TIERS = frozenset({"pr", "merge", "main", "correctness", "nightly", "weekly"})
 SUPPORTED_TARGET_KINDS = frozenset({"integration", "fuzz", "python"})
@@ -338,6 +342,49 @@ def _circleci_gate_enabled(
     return enabled if gates[0] == "when" else not enabled
 
 
+def _circleci_run_error(job: dict, run: dict) -> str | None:
+    """A CircleCI run must finish successfully before dependent evidence starts."""
+    if job.get("type", "build") != "build":
+        return "must belong to a build job"
+    default_shell = "/bin/bash -eo pipefail"
+    if run.get("shell", job.get("shell", default_shell)) != default_shell:
+        return "must use the standard Bash shell"
+    if run.get("when", "on_success") != "on_success":
+        return "is conditional"
+    if run.get("background", False) is not False:
+        return "must run in the foreground"
+    script = run.get("command")
+    if not isinstance(script, str) or not script.strip():
+        return "has no command"
+    return None
+
+
+def _circleci_run_halts_job(run: object) -> bool:
+    """Find literal native early-success calls, including conditional branches."""
+    script = run.get("command") if isinstance(run, dict) else run
+    if not isinstance(script, str) or "circleci-agent" not in script:
+        return False
+    from tree_sitter_language_pack import get_parser
+
+    source = script.encode("utf-8")
+    tree = get_parser("bash").parse(source)
+    for node in _shell_nodes(tree.root_node):
+        if node.type != "command":
+            continue
+        words = _literal_shell_argv(source[node.start_byte : node.end_byte].decode("utf-8"))
+        if words is None:
+            continue
+        if words[0] == "command":
+            words = words[1:]
+        if (
+            len(words) >= 3
+            and Path(words[0]).name == "circleci-agent"
+            and words[1:3] == ["step", "halt"]
+        ):
+            return True
+    return False
+
+
 def _validate_circleci_rail_binding(
     *,
     root: Path,
@@ -425,29 +472,46 @@ def _validate_circleci_rail_binding(
     if not isinstance(steps, list):
         violations.append(_violation(catalog, f"rail {rail_id} job {job_id} has no steps"))
         return
-    for step in steps:
-        run = step.get("run") if isinstance(step, dict) else None
-        if not isinstance(run, dict) or run.get("name") != step_name:
-            continue
-        if run.get("when", "on_success") != "on_success":
-            violations.append(_violation(catalog, f"rail {rail_id} CircleCI step is conditional"))
-            return
-        script = run.get("command")
-        if (
-            isinstance(script, str)
-            and script.lstrip().startswith("set -euo pipefail\n")
-            and _executes_declared_command(script, command)
-        ):
-            return
+    targets = [
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), dict)
+        and step["run"].get("name") == step_name
+    ]
+    if len(targets) > 1:
         violations.append(
-            _violation(
-                catalog,
-                f"rail {rail_id} workflow step {step_name!r} does not execute declared command",
-            )
+            _violation(catalog, f"rail {rail_id} must have exactly one CircleCI step {step_name!r}")
         )
         return
+    if not targets:
+        violations.append(
+            _violation(catalog, f"rail {rail_id} workflow step does not exist: {step_name!r}")
+        )
+        return
+    target_index = targets[0]
+    for step in steps[: target_index + 1]:
+        run = step.get("run") if isinstance(step, dict) else None
+        if _circleci_run_halts_job(run):
+            violations.append(
+                _violation(catalog, f"rail {rail_id} CircleCI step can halt the job early")
+            )
+            return
+    run = steps[target_index]["run"]
+    error = _circleci_run_error(job, run)
+    if error is not None:
+        violations.append(_violation(catalog, f"rail {rail_id} CircleCI step {error}"))
+        return
+    script = run["command"]
+    if script.lstrip().startswith("set -euo pipefail\n") and _executes_declared_command(
+        script, command
+    ):
+        return
     violations.append(
-        _violation(catalog, f"rail {rail_id} workflow step does not exist: {step_name!r}")
+        _violation(
+            catalog,
+            f"rail {rail_id} workflow step {step_name!r} does not execute declared command",
+        )
     )
 
 
@@ -1338,67 +1402,32 @@ def _validate_grouped_integration_targets(
             violations.append(_violation(launcher, f"cannot read grouped test launcher: {error}"))
             continue
         declared_modules: dict[Path, str] = {}
-        launcher_lines = launcher_text.splitlines()
-        line_index = 0
-        while line_index < len(launcher_lines):
-            line = launcher_lines[line_index].strip()
-            if (
-                not line
-                or line.startswith("//")
-                or line == "#![forbid(unsafe_code)]"
-                or re.fullmatch(r"use\s+[A-Za-z_][\w:]*\s+as\s+[A-Za-z_]\w*;", line)
-            ):
-                line_index += 1
-                continue
-            cfg = ""
-            path_index = line_index
-            if re.fullmatch(r"#\[\s*cfg\s*\(\s*debug_assertions\s*\)\s*\]", line):
-                cfg = "debug_assertions"
-                path_index += 1
-            path_line = (
-                launcher_lines[path_index].strip() if path_index < len(launcher_lines) else ""
-            )
-            path_match = re.fullmatch(r'#\[\s*path\s*=\s*"([A-Za-z0-9_./-]+)"\s*\]', path_line)
-            next_line = (
-                launcher_lines[path_index + 1].strip()
-                if path_index + 1 < len(launcher_lines)
-                else ""
-            )
-            if path_match and re.fullmatch(r"mod\s+[A-Za-z_]\w*;", next_line):
-                relative_source = path_match.group(1)
-                if Path(relative_source).is_absolute():
-                    violations.append(
-                        _violation(launcher, f"grouped source must be relative: {relative_source}")
-                    )
-                    line_index = path_index + 2
-                    continue
-                resolved_source = _resolve_test_source(
-                    root=root,
-                    path=launcher.parent / relative_source,
-                    origin=launcher,
-                    label="grouped source",
-                    violations=violations,
+        mounts, errors = parse_test_mounts(launcher_text)
+        for error in errors:
+            violations.append(_violation(launcher, f"grouped test {owner}:{cargo_target} {error}"))
+        for relative_source, _, cfg in mounts:
+            if Path(relative_source).is_absolute():
+                violations.append(
+                    _violation(launcher, f"grouped source must be relative: {relative_source}")
                 )
-                if resolved_source is None:
-                    line_index = path_index + 2
-                    continue
-                if resolved_source in declared_modules:
-                    violations.append(
-                        _violation(
-                            launcher,
-                            f"grouped test {owner}:{cargo_target} duplicates source {relative_source}",
-                        )
-                    )
-                declared_modules[resolved_source] = cfg
-                line_index = path_index + 2
                 continue
-            violations.append(
-                _violation(
-                    launcher,
-                    f"grouped test {owner}:{cargo_target} has unsupported launcher syntax on line {line_index + 1}",
-                )
+            resolved_source = _resolve_test_source(
+                root=root,
+                path=launcher.parent / relative_source,
+                origin=launcher,
+                label="grouped source",
+                violations=violations,
             )
-            line_index += 1
+            if resolved_source is None:
+                continue
+            if resolved_source in declared_modules:
+                violations.append(
+                    _violation(
+                        launcher,
+                        f"grouped test {owner}:{cargo_target} duplicates source {relative_source}",
+                    )
+                )
+            declared_modules[resolved_source] = cfg
         for member in source_members:
             member_path = PurePosixPath(member["path"])
             try:
@@ -1698,6 +1727,7 @@ def _validate_local_scopes(
             )
 
         raw_targets = raw_scope.get("targets")
+        raw_modules = raw_scope.get("module_targets")
         raw_owners = raw_scope.get("owners")
         raw_includes = raw_scope.get("includes", [])
         raw_packages = raw_scope.get("packages", [])
@@ -1740,7 +1770,9 @@ def _validate_local_scopes(
         if not isinstance(include_lib, bool):
             violations.append(_violation(catalog, f"{context}.lib must be boolean"))
             include_lib = False
-        if include_lib and (raw_targets is not None or raw_owners is not None or includes):
+        if include_lib and (
+            raw_targets is not None or raw_modules is not None or raw_owners is not None or includes
+        ):
             violations.append(
                 _violation(
                     catalog,
@@ -1749,6 +1781,7 @@ def _validate_local_scopes(
             )
         if (
             raw_targets is None
+            and raw_modules is None
             and raw_owners is None
             and not includes
             and not (include_lib and raw_packages)
@@ -1756,29 +1789,39 @@ def _validate_local_scopes(
             violations.append(_violation(catalog, f"{context} selects no tests"))
             continue
 
-        if raw_targets is not None:
-            if not isinstance(raw_targets, list) or not raw_targets:
+        seen: set[str] = set()
+        for field, rows in (("targets", raw_targets), ("module_targets", raw_modules)):
+            if rows is None:
+                continue
+            if not isinstance(rows, list) or not rows:
                 violations.append(
-                    _violation(catalog, f"{context}.targets must be a non-empty list")
+                    _violation(catalog, f"{context}.{field} must be a non-empty list")
                 )
                 continue
-            seen: set[str] = set()
-            for target_id in raw_targets:
+            for target_id in rows:
                 if not isinstance(target_id, str) or not target_id:
                     violations.append(
-                        _violation(catalog, f"{context}.targets must contain non-empty strings")
+                        _violation(catalog, f"{context}.{field} must contain non-empty strings")
                     )
                     continue
                 if target_id in seen:
                     violations.append(_violation(catalog, f"{context} repeats target {target_id}"))
                 seen.add(target_id)
-                if target_id not in integration_targets:
+                target = integration_targets.get(target_id)
+                if target is None:
                     violations.append(
                         _violation(
                             catalog, f"{context} references unknown integration target {target_id}"
                         )
                     )
-        elif raw_owners is not None:
+                elif field == "module_targets" and Path(target["path"]).stem == target["target"]:
+                    violations.append(
+                        _violation(
+                            catalog,
+                            f"{context} module target {target_id} must name a grouped test source",
+                        )
+                    )
+        if raw_owners is not None:
             if not isinstance(raw_owners, list) or not raw_owners:
                 violations.append(_violation(catalog, f"{context}.owners must be a non-empty list"))
                 continue

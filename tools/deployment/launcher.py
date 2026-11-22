@@ -99,6 +99,7 @@ _CONFIG_ENV = frozenset(
     QUANTA_INDEX_PROCESS_RSS_CEILING_BYTES QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS
     QUANTA_INDEX_PROVIDER_ENDPOINT QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_BYTES
     QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_REQUESTS QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS
+    QUANTA_INDEX_PROVIDER_OPENAI_MAX_REQUEST_COST_MICROS
     QUANTA_INDEX_PROVIDER_PROFILE QUANTA_INDEX_PROVIDER_REGION QUANTA_INDEX_PROVIDER_RETENTION
     QUANTA_INDEX_PROVIDER_SOURCE_CONTENT_CONSENT QUANTA_INDEX_PROVIDER_TENANT
     QUANTA_INDEX_QUERY_DISPATCH_BUDGET_MS QUANTA_INDEX_QUERY_DISPATCH_SLOTS
@@ -184,31 +185,46 @@ class NativeBootReceipt:
     manifest_object_hex: str
     source_cut_digest_hex: str
     install_catalog_digest_hex: str
+    protected_source_routes_hex: str | None = None
 
     @classmethod
     def from_wire(cls, wire: object) -> NativeBootReceipt:
-        if not isinstance(wire, dict) or set(wire) != _NATIVE_RECEIPT_FIELDS:
+        if (
+            not isinstance(wire, dict)
+            or not _NATIVE_RECEIPT_FIELDS <= set(wire)
+            or set(wire) - _NATIVE_RECEIPT_FIELDS - {"protected_source_routes_hex"}
+        ):
             raise SelectionError("native boot receipt fields differ from format version")
         nonce = _hex_digest(wire["root_nonce_hex"], "root_nonce_hex")
         source = _hex_digest(wire["source_cut_digest_hex"], "source_cut_digest_hex")
         if nonce == "0" * 64 or source == "0" * 64:
             raise SelectionError("native boot receipt has a zero identity digest")
+        routes = (
+            _hex_digest(wire["protected_source_routes_hex"], "protected_source_routes_hex")
+            if "protected_source_routes_hex" in wire else None
+        )
+        if routes == "0" * 64:
+            raise SelectionError("native boot receipt has a zero protected Source route")
         return cls(
             nonce,
             _canonical_operation(wire["manifest_operation"]),
             _hex_digest(wire["manifest_object_hex"], "manifest_object_hex"),
             source,
             _hex_digest(wire["install_catalog_digest_hex"], "install_catalog_digest_hex"),
+            routes,
         )
 
     def to_wire(self) -> dict[str, object]:
-        return {
+        wire = {
             "root_nonce_hex": self.root_nonce_hex,
             "manifest_operation": json.loads(self.manifest_operation_json),
             "manifest_object_hex": self.manifest_object_hex,
             "source_cut_digest_hex": self.source_cut_digest_hex,
             "install_catalog_digest_hex": self.install_catalog_digest_hex,
         }
+        if self.protected_source_routes_hex is not None:
+            wire["protected_source_routes_hex"] = self.protected_source_routes_hex
+        return wire
 
 
 @dataclass(frozen=True)
@@ -545,6 +561,8 @@ def _native_identity_args(receipt: NativeBootReceipt, *, install: bool) -> list[
     ]
     if install:
         args.extend(("--catalog-content-digest", receipt.install_catalog_digest_hex))
+    if receipt.protected_source_routes_hex is not None:
+        args.extend(("--protected-source-routes", receipt.protected_source_routes_hex))
     return args
 
 
@@ -554,7 +572,7 @@ def _run_selected_command(
     lock_fd: int,
     *,
     shutdown_timeout_seconds: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
-    candidate_receipt: tuple[Path, str, str, str] | None = None,
+    candidate_receipt: tuple[Path, str, str, str, str | None] | None = None,
     with_candidate: Callable[[subprocess.Popen[bytes], Callable[[], bool]], None] | None = None,
     fail_on_external_signal: bool = False,
 ) -> int:
@@ -575,7 +593,7 @@ def _run_selected_command(
         and selection.native_config is not None
         and candidate_receipt is not None
     ):
-        path, nonce, published_operation, source_cut = candidate_receipt
+        path, nonce, published_operation, source_cut, protected_routes = candidate_receipt
         args.extend(
             (
                 "--config", str(selection.native_config),
@@ -586,6 +604,8 @@ def _run_selected_command(
                 "--receipt", str(path),
             )
         )
+        if protected_routes is not None:
+            args.extend(("--protected-source-routes", protected_routes))
     elif operation in {"verify-native-state", "verify-native-candidate"} and selection.native_config is not None:
         args.extend(("--config", str(selection.native_config)))
         if selection.native_boot_receipt is None:
@@ -941,6 +961,7 @@ def _prepare_native_candidate_locked(
     manifest_operation: str,
     source_cut_digest: str,
     lock_fd: int,
+    protected_source_routes: str | None = None,
 ) -> str:
     _require_candidate_source_selection(active, expected_current_sha256, selection.state_root)
     if not os.path.lexists(receipt_path):
@@ -948,7 +969,8 @@ def _prepare_native_candidate_locked(
             raise SelectionError("retained candidate has no BOOT receipt")
         status = _run_selected_command(
             selection, "select-native-candidate", lock_fd,
-            candidate_receipt=(receipt_path, root_nonce, manifest_operation, source_cut_digest),
+            candidate_receipt=(receipt_path, root_nonce, manifest_operation, source_cut_digest,
+                               protected_source_routes),
             fail_on_external_signal=True,
         )
         if status != 0 and not os.path.lexists(receipt_path):
@@ -960,6 +982,7 @@ def _prepare_native_candidate_locked(
         receipt.root_nonce_hex != root_nonce
         or receipt.manifest_operation_json != manifest_operation
         or receipt.source_cut_digest_hex != source_cut_digest
+        or receipt.protected_source_routes_hex != protected_source_routes
     ):
         raise SelectionError("candidate receipt differs from expected publication identity")
     selection = replace(selection, native_boot_receipt=receipt)
@@ -987,21 +1010,26 @@ def _prepare_native_candidate_locked(
     return _selection_fingerprint(selection)
 
 
-def _candidate_source_handoff(payload: bytes) -> tuple[str, str, str, int]:
+def _candidate_source_handoff(payload: bytes) -> tuple[str, str, str, int, str | None]:
     try:
         wire = json.loads(payload.decode("utf-8"), object_pairs_hook=_reject_duplicate_fields)
     except (UnicodeError, ValueError) as error:
         raise SelectionError("invalid candidate FULL handoff JSON") from error
-    if not isinstance(wire, dict) or set(wire) != {
+    required = {
         "root_nonce_hex", "manifest_operation", "source_cut_digest_hex", "original_full_sequence",
-    }:
+    }
+    if not isinstance(wire, dict) or set(wire) not in (required, required | {"protected_source_routes_hex"}):
         raise SelectionError("candidate FULL handoff has unexpected fields")
     root_nonce = _hex_digest(wire["root_nonce_hex"], "candidate root nonce")
     source_cut = _hex_digest(wire["source_cut_digest_hex"], "candidate SourceCut")
+    protected_routes = (
+        _hex_digest(wire["protected_source_routes_hex"], "candidate protected Source routes")
+        if "protected_source_routes_hex" in wire else None
+    )
     sequence = _uint64(wire["original_full_sequence"], "candidate Original FULL sequence")
-    if not sequence or root_nonce == "0" * 64 or source_cut == "0" * 64:
+    if not sequence or root_nonce == "0" * 64 or source_cut == "0" * 64 or protected_routes == "0" * 64:
         raise SelectionError("candidate FULL handoff has an empty identity")
-    return root_nonce, _canonical_operation(wire["manifest_operation"]), source_cut, sequence
+    return root_nonce, _canonical_operation(wire["manifest_operation"]), source_cut, sequence, protected_routes
 
 
 def _unreaped_child_exited(process: subprocess.Popen[bytes]) -> bool:
@@ -1201,14 +1229,22 @@ def build_native_candidate(
     history_sources = [value for flag, value in zip(
         producer_arguments[::2], producer_arguments[1::2]
     ) if flag == "--native-candidate-history-source"]
-    if len(history_sources) > 1 or (history_sources and history_sources[0] not in {"replay", "snapshot"}):
-        raise SelectionError("candidate History source must be replay or snapshot exactly once")
+    if len(history_sources) > 1 or (history_sources and history_sources[0] not in {"replay", "snapshot", "native"}):
+        raise SelectionError("candidate History source must be replay, snapshot or native exactly once")
     snapshot_history = history_sources == ["snapshot"]
+    native_history = history_sources == ["native"]
+    source_modes = [value for flag, value in zip(
+        producer_arguments[::2], producer_arguments[1::2]
+    ) if flag == "--native-candidate-source-mode"]
+    if len(source_modes) > 1 or (source_modes and source_modes[0] != "legacy-multiactive"):
+        raise SelectionError("candidate Source mode must be legacy-multiactive exactly once")
+    multiactive_source = source_modes == ["legacy-multiactive"]
     pinned_flags = {
         "--native-source-socket": str(socket),
         "--native-q-executable": str(selection.binary),
         "--native-q-sha256": selection.binary_sha256,
         "--native-q-root": str(selection.state_root),
+        "--native-q-config-sha256": selection.native_config_sha256,
     }
     if set(producer_arguments[::2]) & (
         pinned_flags.keys() | {
@@ -1217,10 +1253,12 @@ def build_native_candidate(
             "--native-candidate-active-selection-sha256",
             "--native-candidate-q-config",
             "--native-candidate-q-config-sha256",
+            "--native-candidate-source-exporter-executable",
+            "--native-candidate-source-exporter-executable-sha256",
         }
     ):
         raise SelectionError("launcher owns the candidate Q endpoint and PID flags")
-    if snapshot_history:
+    if snapshot_history or native_history or multiactive_source:
         pinned_flags.update({
             "--native-candidate-active-selection-path": str(active),
             "--native-candidate-active-selection-sha256": _hex_digest(
@@ -1228,6 +1266,14 @@ def build_native_candidate(
             ),
             "--native-candidate-q-config": str(selection.native_config),
             "--native-candidate-q-config-sha256": selection.native_config_sha256,
+        })
+    if multiactive_source:
+        current_source = _require_current_selection(active, expected_current_sha256)
+        if current_source.native_config is not None:
+            raise SelectionError("multi-active Source export requires an active Legacy selection")
+        pinned_flags.update({
+            "--native-candidate-source-exporter-executable": str(current_source.binary),
+            "--native-candidate-source-exporter-executable-sha256": current_source.binary_sha256,
         })
     arguments = list(producer_arguments)
     for flag, value in pinned_flags.items():
@@ -1255,6 +1301,10 @@ def build_native_candidate(
         _require_candidate_source_selection(active, expected_current_sha256, selection.state_root)
         if snapshot_history and _require_current_selection(active, expected_current_sha256).native_config is not None:
             raise SelectionError("candidate History snapshot requires an active Legacy selection")
+        if native_history and _require_current_selection(active, expected_current_sha256).native_config is None:
+            raise SelectionError("candidate Native History source requires an active Native selection")
+        if multiactive_source and _require_current_selection(active, expected_current_sha256).native_config is not None:
+            raise SelectionError("multi-active Source export requires an active Legacy selection")
         completed_drain = False
         if not os.path.lexists(handoff):
             if any(os.path.lexists(path) for path in (drained, receipt_path, candidate)):
@@ -1306,10 +1356,10 @@ def build_native_candidate(
             drained, lock_fd, publication, MAX_NATIVE_RECEIPT_BYTES,
             lambda payload: _decode_candidate_handoff(payload, binding),
         )
-        root_nonce, operation, source_cut, original_full_sequence = publication
+        root_nonce, operation, source_cut, original_full_sequence, protected_routes = publication
         digest = _prepare_native_candidate_locked(
             active, candidate, selection, expected_current_sha256, receipt_path,
-            root_nonce, operation, source_cut, lock_fd,
+            root_nonce, operation, source_cut, lock_fd, protected_routes,
         )
     return {
         "candidate_path": str(candidate),
@@ -1318,23 +1368,26 @@ def build_native_candidate(
     }
 
 
-def _candidate_handoff_envelope(binding: str, publication: tuple[str, str, str, int]) -> bytes:
-    nonce, operation, source_cut, sequence = publication
+def _candidate_handoff_envelope(binding: str, publication: tuple[str, str, str, int, str | None]) -> bytes:
+    nonce, operation, source_cut, sequence, protected_routes = publication
+    published = {
+        "root_nonce_hex": nonce,
+        "manifest_operation": json.loads(operation),
+        "source_cut_digest_hex": source_cut,
+        "original_full_sequence": sequence,
+    }
+    if protected_routes is not None:
+        published["protected_source_routes_hex"] = protected_routes
     payload = json.dumps({
         "binding": binding,
-        "publication": {
-            "root_nonce_hex": nonce,
-            "manifest_operation": json.loads(operation),
-            "source_cut_digest_hex": source_cut,
-            "original_full_sequence": sequence,
-        },
+        "publication": published,
     }, sort_keys=True, separators=(",", ":")).encode() + b"\n"
     if len(payload) > MAX_NATIVE_RECEIPT_BYTES:
         raise SelectionError("candidate FULL handoff exceeds byte bound")
     return payload
 
 
-def _decode_candidate_handoff(payload: bytes, binding: str) -> tuple[str, str, str, int]:
+def _decode_candidate_handoff(payload: bytes, binding: str) -> tuple[str, str, str, int, str | None]:
     try:
         wire = json.loads(payload.decode("utf-8"), object_pairs_hook=_reject_duplicate_fields)
     except (UnicodeError, ValueError) as error:
@@ -1344,7 +1397,7 @@ def _decode_candidate_handoff(payload: bytes, binding: str) -> tuple[str, str, s
     return _candidate_source_handoff(json.dumps(wire["publication"]).encode())
 
 
-def _read_candidate_handoff(path: Path, binding: str) -> tuple[str, str, str, int]:
+def _read_candidate_handoff(path: Path, binding: str) -> tuple[str, str, str, int, str | None]:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, "rb") as stream:

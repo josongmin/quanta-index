@@ -4,7 +4,10 @@
 //! engines. This gate runs before it on the native text route so unsupported
 //! leaves cannot allocate their plans before the route refuses them.
 
-use quanta_index_contract::{LqCountBound, LqExpr, LqFilter, LqLeaf, LqPatternType, LqQuery};
+use crate::plan::file_contains_raw_literal_supported;
+use quanta_index_contract::{
+    LqCountBound, LqExpr, LqFilter, LqLeaf, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
+};
 use quanta_index_core::index::IndexError;
 use quanta_index_lq_text_normalizer::is_token_char;
 
@@ -14,6 +17,7 @@ const MAX_CONTENT_TERMS: usize = 64;
 const MAX_LITERAL_BYTES: usize = 4_096;
 const MAX_TOTAL_LITERAL_BYTES: usize = 16 * 1_024;
 const MAX_REGEX_LEAVES: usize = super::text_regex::MAX_NATIVE_CONTENT_REGEX;
+pub(super) const MAX_FILE_CONTAINS_LEAVES: usize = 4;
 const MAX_PATH_FILTERS: usize = super::text_regex::MAX_NATIVE_PATH_FILTERS;
 
 #[derive(Default)]
@@ -22,6 +26,8 @@ struct Shape {
     terms: usize,
     literal_bytes: usize,
     regexes: usize,
+    file_contains: usize,
+    repo_has_file: usize,
     path_regexes: usize,
 }
 
@@ -66,6 +72,73 @@ impl Shape {
                     .checked_add(1)
                     .ok_or(IndexError::ResourceLimited)?;
                 if self.regexes > MAX_REGEX_LEAVES {
+                    return Err(IndexError::ResourceLimited);
+                }
+                Ok(false)
+            }
+            LqExpr::Leaf(LqLeaf::Predicate { name, args }) if name == "file.contains" => {
+                let [LqPredicateArg::RawString(needle)] = args.as_slice() else {
+                    return Err(IndexError::InvalidInput(
+                        "native file.contains requires one raw string".into(),
+                    ));
+                };
+                if !file_contains_raw_literal_supported(needle) {
+                    return Err(IndexError::InvalidInput(
+                        "native file.contains requires a bounded literal raw substring".into(),
+                    ));
+                }
+                self.literal(needle)?;
+                self.file_contains = self
+                    .file_contains
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                if self.file_contains > MAX_FILE_CONTAINS_LEAVES {
+                    return Err(IndexError::ResourceLimited);
+                }
+                Ok(false)
+            }
+            LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                if matches!(
+                    name.as_str(),
+                    "repo.has.file" | "repo.has.path" | "repo.contains.file" | "repo.contains.path"
+                ) =>
+            {
+                if args.is_empty() || args.len() > 4 {
+                    return Err(IndexError::InvalidInput(
+                        "native repo.has.file requires bounded file matchers".into(),
+                    ));
+                }
+                for arg in args {
+                    match arg {
+                        LqPredicateArg::Filter { name, value }
+                            if matches!(name.as_str(), "path" | "name" | "content" | "lang")
+                                && !value.trim().is_empty() =>
+                        {
+                            self.literal(value)?;
+                        }
+                        LqPredicateArg::Keyword(value)
+                        | LqPredicateArg::Phrase(value)
+                        | LqPredicateArg::RawString(value)
+                            if args.len() == 1 && !value.trim().is_empty() =>
+                        {
+                            self.literal(value)?;
+                        }
+                        LqPredicateArg::Keyword(_)
+                        | LqPredicateArg::Phrase(_)
+                        | LqPredicateArg::RawString(_)
+                        | LqPredicateArg::Number(_)
+                        | LqPredicateArg::Filter { .. } => {
+                            return Err(IndexError::InvalidInput(
+                                "native repo.has.file has unsupported file matcher".into(),
+                            ));
+                        }
+                    }
+                }
+                self.repo_has_file = self
+                    .repo_has_file
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                if self.repo_has_file > 4 {
                     return Err(IndexError::ResourceLimited);
                 }
                 Ok(false)
@@ -153,6 +226,8 @@ impl Shape {
             .and_then(|total| {
                 self.regexes
                     .checked_add(self.path_regexes)?
+                    .checked_add(self.file_contains)?
+                    .checked_add(self.repo_has_file.checked_mul(4)?)?
                     .checked_mul(
                         match usize::try_from(quanta_index_lq_regex::MAX_NFA_STATES) {
                             Ok(value) => value,
@@ -204,19 +279,29 @@ pub fn validate_native_text_input(query: &LqQuery) -> Result<u64, IndexError> {
     }
     let mut shape = Shape::default();
     let mut path_filters = 0usize;
+    let mut path_selection = false;
     for filter in &query.filters {
-        let LqFilter::File { pattern, .. } = filter else {
-            return Err(IndexError::InvalidInput(
-                "native BM25 filter requires authoritative file path".into(),
-            ));
-        };
-        path_filters = path_filters
-            .checked_add(1)
-            .ok_or(IndexError::ResourceLimited)?;
-        if path_filters > MAX_PATH_FILTERS {
-            return Err(IndexError::ResourceLimited);
+        match filter {
+            LqFilter::File { pattern, .. } => {
+                path_filters = path_filters
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                if path_filters > MAX_PATH_FILTERS {
+                    return Err(IndexError::ResourceLimited);
+                }
+                shape.literal(pattern)?;
+            }
+            LqFilter::Select {
+                dim: LqSelect::Path,
+            } if !path_selection => {
+                path_selection = true;
+            }
+            _ => {
+                return Err(IndexError::InvalidInput(
+                    "native BM25 filter requires authoritative file path".into(),
+                ));
+            }
         }
-        shape.literal(pattern)?;
     }
     shape.path_regexes = path_filters;
     // The selected member's admitted document count is available only after
@@ -229,7 +314,7 @@ pub fn validate_native_text_input(query: &LqQuery) -> Result<u64, IndexError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quanta_index_contract::{LqFileScope, LqFilter, LqSpan};
+    use quanta_index_contract::{LqFileScope, LqFilter, LqPredicateArg, LqSpan, LqType};
 
     fn query(expr: LqExpr) -> LqQuery {
         let mut query = LqQuery::empty(LqSpan::synthetic(0));
@@ -295,6 +380,47 @@ mod tests {
     }
 
     #[test]
+    fn explicit_path_selection_preserves_file_filter_and_refuses_other_surfaces() {
+        let mut selected = query(LqExpr::Leaf(LqLeaf::Keyword("needle".into())));
+        selected.filters.push(LqFilter::Select {
+            dim: LqSelect::Path,
+        });
+        selected.filters.push(LqFilter::File {
+            pattern: "src/*".into(),
+            scope: LqFileScope::PathOnly,
+        });
+        assert!(validate_native_text_input(&selected).is_ok());
+
+        selected.filters.push(LqFilter::Select {
+            dim: LqSelect::Path,
+        });
+        assert!(matches!(
+            validate_native_text_input(&selected),
+            Err(IndexError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            selected.filters.pop(),
+            Some(LqFilter::Select {
+                dim: LqSelect::Path
+            })
+        ));
+
+        for unsupported in [
+            LqFilter::Select {
+                dim: LqSelect::Repo,
+            },
+            LqFilter::Type { kind: LqType::Path },
+        ] {
+            selected.filters.push(unsupported);
+            assert!(matches!(
+                validate_native_text_input(&selected),
+                Err(IndexError::InvalidInput(_))
+            ));
+            assert!(selected.filters.pop().is_some());
+        }
+    }
+
+    #[test]
     fn admits_bounded_regex_and_rejects_unsupported_engine_leaf() {
         let regex_query = query(LqExpr::Leaf(LqLeaf::Regex("(a|b)*".into())));
         assert!(validate_native_text_input(&regex_query).is_ok());
@@ -303,6 +429,110 @@ mod tests {
             validate_native_text_input(&raw),
             Err(IndexError::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn file_contains_raw_substring_has_bounded_shape_without_admitting_other_predicates() {
+        let file_contains = query(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "file.contains".into(),
+            args: vec![LqPredicateArg::RawString("oo_ba".into())],
+        }));
+        assert!(validate_native_text_input(&file_contains).is_ok());
+        for name in ["file.unknown", "symbol.has.name"] {
+            let other = query(LqExpr::Leaf(LqLeaf::Predicate {
+                name: name.into(),
+                args: vec![LqPredicateArg::RawString("oo_ba".into())],
+            }));
+            assert!(matches!(
+                validate_native_text_input(&other),
+                Err(IndexError::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn repo_file_gate_admits_correlated_source_and_language_matchers() {
+        let admitted = query(LqExpr::All(vec![
+            LqExpr::Leaf(LqLeaf::Keyword("needle".into())),
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "repo.has.file".into(),
+                args: vec![
+                    LqPredicateArg::Filter {
+                        name: "path".into(),
+                        value: "src/lib.rs".into(),
+                    },
+                    LqPredicateArg::Filter {
+                        name: "name".into(),
+                        value: "lib.rs".into(),
+                    },
+                    LqPredicateArg::Filter {
+                        name: "content".into(),
+                        value: "needle".into(),
+                    },
+                ],
+            }),
+        ]));
+        assert!(validate_native_text_input(&admitted).is_ok());
+
+        let language = query(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".into(),
+            args: vec![LqPredicateArg::Filter {
+                name: "lang".into(),
+                value: "rust".into(),
+            }],
+        }));
+        assert!(validate_native_text_input(&language).is_ok());
+        let empty = query(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".into(),
+            args: vec![LqPredicateArg::Filter {
+                name: "lang".into(),
+                value: "  ".into(),
+            }],
+        }));
+        assert!(matches!(
+            validate_native_text_input(&empty),
+            Err(IndexError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn file_contains_refuses_regex_spelling_and_unavailable_scopes() {
+        for args in [
+            vec![LqPredicateArg::RawString("/foo.*/".into())],
+            vec![LqPredicateArg::RawString(String::new())],
+            vec![LqPredicateArg::Keyword("foo".into())],
+            vec![
+                LqPredicateArg::RawString("foo".into()),
+                LqPredicateArg::Filter {
+                    name: "path".into(),
+                    value: "src/lib.rs".into(),
+                },
+            ],
+        ] {
+            let unsupported = query(LqExpr::Leaf(LqLeaf::Predicate {
+                name: "file.contains".into(),
+                args,
+            }));
+            assert!(matches!(
+                validate_native_text_input(&unsupported),
+                Err(IndexError::InvalidInput(_))
+            ));
+        }
+        let alias = query(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "file.contains.content".into(),
+            args: vec![LqPredicateArg::RawString("foo".into())],
+        }));
+        assert!(matches!(
+            validate_native_text_input(&alias),
+            Err(IndexError::InvalidInput(_))
+        ));
+        for literal in ["oo", "/"] {
+            let short_literal = query(LqExpr::Leaf(LqLeaf::Predicate {
+                name: "file.contains".into(),
+                args: vec![LqPredicateArg::RawString(literal.into())],
+            }));
+            assert!(validate_native_text_input(&short_literal).is_ok());
+        }
     }
 
     #[test]

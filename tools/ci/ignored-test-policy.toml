@@ -98,24 +98,8 @@ cadence = "quarterly"
 review_by = "2026-12-31"
 
 [[exceptions]]
-path = "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs"
-test = "l1_real_daemon_sdk_domain_primitives_and_symbol_windows"
-reason = "requires a fresh daemon: set QUANTA_INDEX_L1_TEST_STATE_ROOT and run --ignored"
-owner = "quanta-index-sdk"
-cadence = "release"
-review_by = "2026-12-31"
-
-[[exceptions]]
 path = "crates/quanta-index-sdk/tests/l2_daemon_publication.rs"
 test = "original_binding_delta_lineage_and_restart_through_real_daemon"
-reason = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"
-owner = "quanta-index-sdk"
-cadence = "release"
-review_by = "2026-12-31"
-
-[[exceptions]]
-path = "crates/quanta-index-sdk/tests/l2_daemon_publication.rs"
-test = "reserved_generation_survives_restart_and_requires_explicit_activation"
 reason = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"
 owner = "quanta-index-sdk"
 cadence = "release"
@@ -151,78 +135,6 @@ test = "delta_recovers_across_named_crash_cuts_with_rolled_back_active_head"
 reason = "requires debug daemon crash hooks: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"
 owner = "quanta-index-sdk"
 cadence = "release"
-review_by = "2026-12-31"
-
-[[exceptions]]
-path = "crates/quanta-index-lexical/src/publication_faults/tests.rs"
-test = "publication_crash_child"
-reason = "private subprocess entrypoint; parent matrix supplies cut and kills process"
-owner = "quanta-index-lexical"
-cadence = "release"
-review_by = "2026-12-31"
-
-[[exceptions]]
-path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
-test = "total_delta_pipeline_cost_128_files"
-reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
-owner = "quanta-index-lexical"
-cadence = "quarterly"
-review_by = "2026-12-31"
-
-[[exceptions]]
-path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
-test = "total_delta_pipeline_cost_512_files"
-reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
-owner = "quanta-index-lexical"
-cadence = "quarterly"
-review_by = "2026-12-31"
-
-[[exceptions]]
-path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
-test = "total_delta_pipeline_cost_2048_files"
-reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
-owner = "quanta-index-lexical"
-cadence = "quarterly"
-review_by = "2026-12-31"
-
-[[exceptions]]
-path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
-test = "total_delta_pipeline_cost_configured_files"
-reason = "manual whole-adapter cost probe; set QUANTA_INDEX_DIAGNOSTIC_FILE_COUNT and run in a fresh process"
-owner = "quanta-index-lexical"
-cadence = "quarterly"
-review_by = "2026-12-31"
-
-[[exceptions]]
-path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
-test = "cold_open_only_child"
-reason = "manual child of the configured scale probe"
-owner = "quanta-index-lexical"
-cadence = "quarterly"
-review_by = "2026-12-31"
-
-[[exceptions]]
-path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
-test = "one_file_delta_pipeline_cost_128_files"
-reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
-owner = "quanta-index-lexical"
-cadence = "quarterly"
-review_by = "2026-12-31"
-
-[[exceptions]]
-path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
-test = "one_file_delta_pipeline_cost_512_files"
-reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
-owner = "quanta-index-lexical"
-cadence = "quarterly"
-review_by = "2026-12-31"
-
-[[exceptions]]
-path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
-test = "one_file_delta_pipeline_cost_2048_files"
-reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
-owner = "quanta-index-lexical"
-cadence = "quarterly"
 review_by = "2026-12-31"
 
 [[exceptions]]
@@ -298,7 +210,7 @@ cadence = "release"
 review_by = "2026-12-31"
 
 [[exceptions]]
-path = "crates/quanta-index-searchd-runtime/tests/e2e_scale_process_restart.rs"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_legacy_reference_scale_restart.rs"
 test = "large_scale_source_survives_real_daemon_process_restart_and_delete"
 reason = "manual costly Large4096 supported-profile real daemon process restart"
 owner = "quanta-index-searchd-runtime"
@@ -306,7 +218,7 @@ cadence = "release"
 review_by = "2026-12-31"
 
 [[exceptions]]
-path = "crates/quanta-index-searchd-runtime/tests/e2e_scale_process_restart.rs"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_legacy_reference_scale_restart.rs"
 test = "xlarge_scale_source_survives_real_daemon_process_restart_and_delete"
 reason = "manual costly XL32768 supported-profile real daemon process restart"
 owner = "quanta-index-searchd-runtime"
@@ -378,6 +290,14 @@ cadence = "release"
 review_by = "2026-12-31"
 
 [[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/offline_state_custody.rs"
+test = "actual_bounded_volume_enospc_preserves_source_and_unpublished_target"
+reason = "requires QUANTA_INDEX_PHYSICAL_ENOSPC_ROOT on an isolated bounded filesystem"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
 path = "crates/quanta-index-searchd-runtime/src/native_object_write_io/ann_enospc.rs"
 test = "real_ann_seal_file_fsync_eio_preserves_selected_views_and_recovers_same_operation"
 reason = "requires bounded FUSE fault backend, exact control and isolated mount"
@@ -411,8 +331,24 @@ review_by = "2026-12-31"
 
 [[exceptions]]
 path = "crates/quanta-index-searchd-harness/src/scale/native_index.rs"
+test = "real_daemon_small_quality_runs_32_sdk_queries_and_lifecycle"
+reason = "requires an explicitly built Native daemon and quiet functional execution"
+owner = "quanta-index-searchd-harness"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-harness/src/scale/native_index.rs"
 test = "real_daemon_small_off_record_capture_preserves_product_gold"
 reason = "requires an explicitly built daemon, native sampling=1 and churn cycles=20"
+owner = "quanta-index-searchd-harness"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-harness/src/scale/native_index/source_identity_tests.rs"
+test = "equal_relative_paths_remain_distinct_through_delta_delete_and_process_reopen"
+reason = "requires an explicitly built Native daemon via QUANTA_INDEX_SEARCHD_BIN"
 owner = "quanta-index-searchd-harness"
 cadence = "release"
 review_by = "2026-12-31"
@@ -450,9 +386,33 @@ cadence = "release"
 review_by = "2026-12-31"
 
 [[exceptions]]
-path = "crates/quanta-index-searchd-runtime/tests/state_migration_owner_v1/physical_os_faults.rs"
-test = "actual_bounded_volume_enospc_preserves_source_and_unpublished_target"
-reason = "requires QUANTA_INDEX_PHYSICAL_ENOSPC_ROOT on an isolated 32..=128 MiB mount"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_crash_matrix.rs"
+test = "every_seal_crash_converges_on_the_same_generation"
+reason = "requires a pinned old-Q debug binary with QUANTA_INDEX_CRASH_POINT"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/e2e_crash_matrix.rs"
+test = "every_gc_crash_loses_nothing_retained"
+reason = "requires a pinned old-Q debug binary with QUANTA_INDEX_CRASH_POINT"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/e2e_crash_matrix.rs"
+test = "an_interrupted_removal_is_finished_at_boot"
+reason = "requires a pinned old-Q debug binary with QUANTA_INDEX_CRASH_POINT"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/e2e_hard_scan_checkpoint_restart.rs"
+test = "staged_target_resumes_first_hard_scan_window_after_daemon_crash"
+reason = "requires a pinned old-Q debug binary with QUANTA_INDEX_CRASH_POINT"
 owner = "quanta-index-searchd-runtime"
 cadence = "release"
 review_by = "2026-12-31"
@@ -495,4 +455,28 @@ test = "foreign_device_staging_bind_refuses_and_keeps_ticket"
 reason = "requires QIDX_P08_TEST_IMAGE pointing to a private mountable image"
 owner = "quanta-index-searchd-runtime"
 cadence = "release; isolated macOS mount fixture"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-harness/src/relevance/process.rs"
+test = "pinned_hash_reference_publishes_and_scores_the_full_roster"
+reason = "requires QUANTA_INDEX_LEGACY_SEARCHD_BIN and matching SHA256"
+owner = "quanta-index-searchd-harness"
+cadence = "release; exact hash-dev relevance recipe"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-harness/src/tail.rs"
+test = "pinned_old_q_tail_golden_routes"
+reason = "requires a SHA-pinned Legacy daemon executable"
+owner = "quanta-index-searchd-harness"
+cadence = "release; exact warm tail process fixture"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/dsl.rs"
+test = "native_dsl_twelve_retained_rows_match_pinned_cli_v1"
+reason = "requires a release searchctl executable and its SHA-256"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
 review_by = "2026-12-31"

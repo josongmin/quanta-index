@@ -159,20 +159,29 @@ fn duplicate_members_cannot_hide_an_unrelated_vector_at_equal_cardinality()
     Ok(())
 }
 
-struct ChunkMemoryScope(Arc<EncodingMemory>);
+struct ChunkMemoryScope {
+    memory: Arc<EncodingMemory>,
+    denied_temporary_bytes: Option<u64>,
+}
 
 impl quanta_index_core::index::MemoryScopePort for ChunkMemoryScope {
-    fn reserve(&self, bytes: u64, _lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
-        let _previous = self.0.reservations.fetch_add(1, AtomicOrdering::SeqCst);
+    fn reserve(&self, bytes: u64, lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+        if lifetime == MemoryLifetime::Temporary && self.denied_temporary_bytes == Some(bytes) {
+            return Err(IndexError::ResourceLimited);
+        }
+        let _previous = self
+            .memory
+            .reservations
+            .fetch_add(1, AtomicOrdering::SeqCst);
         let _previous_live = self
-            .0
+            .memory
             .live
             .fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::SeqCst, |live| {
                 live.checked_add(bytes)
-                    .filter(|next| *next <= self.0.capacity)
+                    .filter(|next| *next <= self.memory.capacity)
             })
             .map_err(|_live| IndexError::ResourceLimited)?;
-        Ok(MemoryLease::new(bytes, self.0.clone()))
+        Ok(MemoryLease::new(bytes, self.memory.clone()))
     }
 }
 
@@ -207,7 +216,10 @@ fn chunk_membership_admission_and_mismatch_refund_all_memory()
     );
     let mut denied_work = budget()?;
     denied_work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
-        ChunkMemoryScope(Arc::clone(&denied)),
+        ChunkMemoryScope {
+            memory: Arc::clone(&denied),
+            denied_temporary_bytes: None,
+        },
     ))));
     check!(matches!(
         prepare_chunk_members(payload, &vectors, &recipe, &mut denied_work),
@@ -218,7 +230,10 @@ fn chunk_membership_admission_and_mismatch_refund_all_memory()
     let admitted = encoding_memory(4096, 0, None);
     let mut work = budget()?;
     work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
-        ChunkMemoryScope(Arc::clone(&admitted)),
+        ChunkMemoryScope {
+            memory: Arc::clone(&admitted),
+            denied_temporary_bytes: None,
+        },
     ))));
     let (members, lease) = prepare_chunk_members(payload, &vectors, &recipe, &mut work)?;
     check_eq!(members.len(), 3);
@@ -343,6 +358,108 @@ fn chunk_owner_prepare_verify_and_readback_preserve_ordered_gold_and_provider_in
             .1,
         9
     );
+    drop(loaded);
+
+    // The gold is in source order, and these three IDs sort differently.
+    // Repeated ANN candidates reuse one decoded member as run below.
+    let old_index_bytes = expected_chunks
+        .len()
+        .checked_mul(std::mem::size_of::<(Digest, usize)>())
+        .ok_or("chunk index size overflow")?;
+    let memory = encoding_memory(1_048_576, 0, None);
+    work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+        ChunkMemoryScope {
+            memory: Arc::clone(&memory),
+            denied_temporary_bytes: None,
+        },
+    ))));
+    let (coverage, _coverage_ref) =
+        semantic_group_coverage(&store, &spec, source, CoverageStatus::Complete)?;
+    let query = SearchQuery {
+        source_files: false,
+        lexical_eligibility: None,
+        exact_path: None,
+        coverage: &coverage,
+        projection: None,
+        source_owners: MapRoot(None),
+        source_paths: MapRoot(None),
+        instance: spec.instance,
+        format: spec.format,
+        recipe: &recipe,
+        vector: &[1.0, 0.0],
+        top_k: 3,
+        page_size: 3,
+        max_owners: 1,
+        overlay: None,
+    };
+    let mut read = ReadContext {
+        objects: &store,
+        maps: &maps,
+        budget: &mut work,
+    };
+    let LoadedRankMember {
+        loaded: mut decoded,
+        file,
+        vector_index,
+    } = load_rank_member(&member, None, None, None, &query, &mut read)?;
+    check!(file.is_none());
+    check_eq!(vector_index, None);
+    // Canonical readback needs its chunk identity index to authenticate the
+    // rows. Deny the removed side table only once ranking starts.
+    read.budget
+        .bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+            ChunkMemoryScope {
+                memory: Arc::clone(&memory),
+                denied_temporary_bytes: Some(u64::try_from(old_index_bytes)?),
+            },
+        ))));
+    let mut hits = RankedHits::for_query(&query, read.budget)?;
+    for (expected, slot) in expected_chunks.iter().zip([1, 0, 2]) {
+        let id = expected.id.0.as_slice();
+        let vector_index = decoded.artifact.vector_index(Some(id))?;
+        check_eq!(vector_index, Some(slot));
+        check!(rank_decoded_member(
+            member.owner,
+            &mut decoded.artifact,
+            None,
+            vector_index,
+            &query,
+            1.0,
+            &mut hits,
+            &mut read,
+        )?);
+        check!(matches!(
+            decoded.artifact.vector_index(Some(id)),
+            Err(IndexError::CorruptObject(_))
+        ));
+    }
+    drop(decoded);
+    let (hits, hit_memory) = hits.into_sorted(read.budget)?;
+    check_eq!(hits.len(), expected_chunks.len());
+    let mut spans = Vec::new();
+    for hit in &hits {
+        let chunk = hit.chunk.ok_or("ranked hit lacks provenance")?;
+        let expected = expected_chunks
+            .iter()
+            .find(|expected| expected.id == chunk.id)
+            .ok_or("ranked hit has unknown chunk ID")?;
+        check_eq!(chunk.input_digest, expected.input_digest);
+        let (start_byte, end_byte) = expected.payload_span()?;
+        check_eq!(
+            chunk.span,
+            NativeSemanticChunkSpan::SourcePayload {
+                start_byte,
+                end_byte
+            }
+        );
+        spans.push((start_byte, end_byte));
+    }
+    check_eq!(spans, vec![(0, 4), (8, 9), (4, 8)]);
+    drop(hits);
+    drop(hit_memory);
+    check_eq!(read.budget.first_denial(), None);
+    check_eq!(memory.live.load(AtomicOrdering::SeqCst), 0);
+    check!(!memory.invalid.load(AtomicOrdering::SeqCst));
     Ok(())
 }
 

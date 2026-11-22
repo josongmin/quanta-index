@@ -239,13 +239,15 @@ impl<
 
 impl SemanticQueryBuilder<'_, true, true, true, false, false> {
     pub fn execute(self) -> Result<SemanticQueryResponse, SdkError> {
-        dispatch_semantic_query_request_v1(self.client, self.state.build_semantic_request()?)
+        let request = self.state.build_semantic_request(self.client)?;
+        dispatch_semantic_query_request_v1(self.client, request)
     }
 }
 
 impl SemanticQueryBuilder<'_, true, true, true, true, true> {
     pub fn execute(self) -> Result<SemanticQueryResponse, SdkError> {
-        dispatch_semantic_query_request_v1(self.client, self.state.build_semantic_request()?)
+        let request = self.state.build_semantic_request(self.client)?;
+        dispatch_semantic_query_request_v1(self.client, request)
     }
 }
 

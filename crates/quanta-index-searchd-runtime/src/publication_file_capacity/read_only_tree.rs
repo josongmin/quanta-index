@@ -160,13 +160,16 @@ impl ExistingTreeMetadataIoPortV1 for ExistingTreeReadIoV1 {
                 })?;
                 let stat = statat(file, Path::new(name), AtFlags::SYMLINK_NOFOLLOW)
                     .map_err(std::io::Error::from)?;
+                let file_type = FileType::from_raw_mode(stat.st_mode);
+                // Linux symlink permission bits do not control access. Report
+                // the unfollowed kind so callers can classify the refusal.
                 if stat.st_ino != entry.ino()
                     || stat.st_uid != rustix::process::geteuid().as_raw()
-                    || stat.st_mode & 0o022 != 0
+                    || (file_type != FileType::Symlink && stat.st_mode & 0o022 != 0)
                 {
                     return Err(IndexError::DigestConflict.into());
                 }
-                let (kind, bytes) = match FileType::from_raw_mode(stat.st_mode) {
+                let (kind, bytes) = match file_type {
                     FileType::Directory => (ExistingTreeEntryKindV1::Directory, 0),
                     FileType::RegularFile => (
                         ExistingTreeEntryKindV1::File,
@@ -177,6 +180,9 @@ impl ExistingTreeMetadataIoPortV1 for ExistingTreeReadIoV1 {
                     _ => return Err(IndexError::DigestConflict.into()),
                 };
                 visit(name, kind, bytes, budget)?;
+                if file_type == FileType::Symlink {
+                    return Err(IndexError::DigestConflict.into());
+                }
             }
             drop(entries);
             budget.charge(WorkUsage {
@@ -377,6 +383,8 @@ mod tests {
     }
     #[test]
     fn admitted_existing_tree_refuses_missing_extra_resized_and_symlink_data() -> TestResult {
+        use quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt;
+
         for case in 0..4 {
             with_fixture(|root, common, _ledger, budget| {
                 let target = root.join("dataset/a");
@@ -387,6 +395,33 @@ mod tests {
                     _ => {
                         std::fs::remove_file(&target)?;
                         std::os::unix::fs::symlink(root.join("dataset/nested/b"), &target)?;
+                        let mut observed = None;
+                        let metadata = common.existing_tree_read_io_v1().visit_directory_v1(
+                            &root.join("dataset"),
+                            budget,
+                            &mut |name, kind, bytes, _| {
+                                if name != OsStr::new("a") {
+                                    return Ok(());
+                                }
+                                observed = Some((kind, bytes));
+                                Err(CoreError::Typed {
+                                    code: GenerationSidecarCorrupt,
+                                    message: "fixture symlink refusal".into(),
+                                }
+                                .into())
+                            },
+                        );
+                        require(
+                            matches!(observed, Some((ExistingTreeEntryKindV1::Symlink, 0)))
+                                && matches!(
+                                    metadata,
+                                    Err(ExistingFileReadFailureV1::Canonical(CoreError::Typed {
+                                        code: GenerationSidecarCorrupt,
+                                        message,
+                                    })) if message == "fixture symlink refusal"
+                                ),
+                            "the unfollowed symlink did not preserve the visitor's typed refusal",
+                        )?;
                     }
                 }
                 let result = verify_tree_layout_admitted_v1(

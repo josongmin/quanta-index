@@ -129,7 +129,7 @@ pub(crate) struct LockedDeploymentSelectionV1 {
     active_file_version: Digest,
     recovery_publication: Option<Digest>,
     witness_binding: Option<RecoveryWitnessBindingV1>,
-    prepared_witness: Option<PreparedRecoveryWitnessV1>,
+    recovery_witness: Option<RecoveryWitnessV1>,
     candidate: DeploymentSelectionDocumentV1,
     path: PathBuf,
     candidate_path: PathBuf,
@@ -273,9 +273,12 @@ fn same_durable_repomap_receipt_v1(
         && source_bundle_digest == &right.source_bundle_digest
 }
 
-struct PreparedRecoveryWitnessV1 {
-    bytes: Vec<u8>,
-    _memory: MemoryLease,
+enum RecoveryWitnessV1 {
+    Prepared {
+        bytes: Vec<u8>,
+        _memory: MemoryLease,
+    },
+    Selected(Digest),
 }
 
 type OwnedRecoveryWitnessV1 = RecoveryWitnessWireV1<
@@ -420,7 +423,7 @@ pub(crate) fn with_locked_published_recovery_v1(
         NativeCutoverRecoveryModeV1::RestoreForward => locked.candidate.binary_sha256_v1(),
     };
     locked
-        .with_observed_witness_v1(budget, |wire, memory, budget| {
+        .with_observed_witness_v1(budget, |wire, _digest, memory, budget| {
             ensure!(
                 wire.binding.mode == mode
                     && wire.binding.config_sha256 == config_sha256
@@ -588,7 +591,7 @@ impl LockedDeploymentSelectionV1 {
             "recovery physical witness differs from its mode"
         );
         if self.phase == PublicationPhase::ReconciliationPending {
-            let _verified = self.with_observed_witness_v1(budget, |wire, _memory, _budget| {
+            let observed = self.with_observed_witness_v1(budget, |wire, digest, _memory, _budget| {
                 let same_legacy = match (wire.legacy.as_ref(), legacy.as_ref()) {
                     (Some(retained), Some(actual)) => {
                         &retained.repo_id == actual.repo_id
@@ -614,12 +617,14 @@ impl LockedDeploymentSelectionV1 {
                         && same_legacy,
                     "recovery witness differs from the verified outcome"
                 );
-                Ok(())
+                Ok(digest)
             })?;
+            let digest = observed.ok_or_else(|| anyhow!("selected recovery witness is absent"))?;
+            self.recovery_witness = Some(RecoveryWitnessV1::Selected(digest));
             return Ok(());
         }
         ensure!(
-            self.phase == PublicationPhase::BeforeRename && self.prepared_witness.is_none(),
+            self.phase == PublicationPhase::BeforeRename && self.recovery_witness.is_none(),
             "recovery witness requires an unused selection transaction"
         );
         if let Some(history) = history {
@@ -649,17 +654,17 @@ impl LockedDeploymentSelectionV1 {
         )?;
         let used = usize::try_from(output.position())?;
         bytes.truncate(used);
-        self.prepared_witness = Some(PreparedRecoveryWitnessV1 {
+        self.recovery_witness = Some(RecoveryWitnessV1::Prepared {
             bytes,
             _memory: memory,
         });
         Ok(())
     }
 
-    fn with_observed_witness_v1<T>(
+    fn with_selected_recovery_witness_v1<T>(
         &self,
         budget: &mut WorkBudget,
-        read: impl FnOnce(OwnedRecoveryWitnessV1, MemoryLease, &mut WorkBudget) -> Result<T>,
+        read: impl FnOnce(&[u8], Digest, &mut WorkBudget) -> Result<T>,
     ) -> Result<Option<T>> {
         ensure!(
             self.phase == PublicationPhase::ReconciliationPending,
@@ -679,7 +684,15 @@ impl LockedDeploymentSelectionV1 {
             .path
             .file_name()
             .ok_or_else(|| anyhow!("selection basename missing"))?;
-        completion_witness::with_read(&self.directory, name, &selected, budget, |bytes, budget| {
+        completion_witness::with_read(&self.directory, name, &selected, budget, read)
+    }
+
+    fn with_observed_witness_v1<T>(
+        &self,
+        budget: &mut WorkBudget,
+        read: impl FnOnce(OwnedRecoveryWitnessV1, Digest, MemoryLease, &mut WorkBudget) -> Result<T>,
+    ) -> Result<Option<T>> {
+        self.with_selected_recovery_witness_v1(budget, |bytes, digest, budget| {
             let bytes_len = u64::try_from(bytes.len())?;
             let memory = budget
                 .reserve_memory(64 * 1024 + 4 * bytes_len, MemoryLifetime::Temporary)?
@@ -715,7 +728,7 @@ impl LockedDeploymentSelectionV1 {
                 },
                 "published recovery witness has the wrong physical scope"
             );
-            read(wire, memory, budget)
+            read(wire, digest, memory, budget)
         })
     }
 
@@ -951,7 +964,7 @@ impl LockedDeploymentSelectionV1 {
             active_file_version,
             recovery_publication,
             witness_binding: None,
-            prepared_witness: None,
+            recovery_witness: None,
             candidate,
             path: request.selection_path_v1.to_owned(),
             candidate_path: request.candidate_path_v1.to_owned(),
@@ -1104,7 +1117,11 @@ impl LockedDeploymentSelectionV1 {
                 "deployment transaction already attempted publication"
             );
             ensure!(
-                self.witness_binding.is_none() || self.prepared_witness.is_some(),
+                self.witness_binding.is_none()
+                    || matches!(
+                        self.recovery_witness.as_ref(),
+                        Some(RecoveryWitnessV1::Prepared { .. })
+                    ),
                 "verified recovery outcome is missing its publication witness"
             );
             drop(self.recheck_documents(budget)?);
@@ -1147,7 +1164,7 @@ impl LockedDeploymentSelectionV1 {
             if let Some(publication) = self.recovery_publication {
                 write_recovery_publication(file, publication, budget)?;
             }
-            if let Some(witness) = &self.prepared_witness {
+            if let Some(RecoveryWitnessV1::Prepared { bytes, .. }) = &self.recovery_witness {
                 let (_, version, active) =
                     read_active_control(&self.directory, &self.path, budget)?;
                 ensure!(
@@ -1159,7 +1176,7 @@ impl LockedDeploymentSelectionV1 {
                     OsStr::new(name),
                     &active,
                     file,
-                    &witness.bytes,
+                    bytes,
                     budget,
                 )?;
             }
@@ -1223,8 +1240,8 @@ impl LockedDeploymentSelectionV1 {
         file: &File,
         budget: &mut WorkBudget,
     ) -> Result<()> {
-        if let Some(witness) = &self.prepared_witness {
-            completion_witness::require(&self.directory, name, file_name, file, &witness.bytes, budget)?;
+        if let Some(RecoveryWitnessV1::Prepared { bytes, .. }) = &self.recovery_witness {
+            completion_witness::require(&self.directory, name, file_name, file, bytes, budget)?;
         }
         Ok(())
     }
@@ -1235,7 +1252,18 @@ impl LockedDeploymentSelectionV1 {
         checkpoint: &mut dyn FnMut(&mut WorkBudget) -> Result<()>,
         hook: &mut impl FnMut(PublishStage) -> Result<()>,
     ) -> std::result::Result<DeploymentSelectionPublishedV1, DeploymentSelectionErrorV1> {
-        let result = self.sync_observed_recovery_v1(budget, checkpoint, hook);
+        let result = match (&self.recovery_witness, &self.witness_binding) {
+            (Some(RecoveryWitnessV1::Selected(expected_digest)), _) => self
+                .with_selected_recovery_witness_v1(budget, |_, digest, budget| {
+                    ensure!(digest == *expected_digest, "selected recovery witness changed");
+                    self.sync_observed_recovery_v1(budget, checkpoint, hook)
+                })
+                .and_then(|observed| {
+                    observed.ok_or_else(|| anyhow!("selected recovery witness is absent"))
+                }),
+            (None, None) => self.sync_observed_recovery_v1(budget, checkpoint, hook),
+            _ => Err(anyhow!("verified recovery outcome is missing its publication witness")),
+        };
         if result.is_ok() {
             self.phase = PublicationPhase::Durable;
         }

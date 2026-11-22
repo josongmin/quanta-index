@@ -21,7 +21,8 @@ from tools.ci.tests.test_retrieval_benchmark import fixture_v3
 def test_combined_suite_accepts_quanta_projection_and_refuses_digest_or_route_drift(tmp_path):
     repo, suite, record, *_ = fixture_v3(tmp_path, answerable_only=True)
     suite["routes"] = sorted(scorer.ROUTES)
-    record["route_provenance"]["semantic"] = {"capture_id": "q0"}
+    # The semantic route shares the modeled Hybrid capture; q0 is lexical only.
+    record["route_provenance"]["semantic"] = {"capture_id": "q1"}
     record["results"].extend(
         {**copy.deepcopy(row), "route": "semantic"}
         for row in list(record["results"])

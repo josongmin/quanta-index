@@ -13,6 +13,8 @@ use quanta_index_core::index::{
 
 use crate::codec::cbor_serde;
 
+use super::super::ann_files;
+use super::super::ann_region_policy::{MAX_REGION_CELLS, MAX_REGION_DIMENSION, MAX_REGION_ROWS};
 use super::native_graph;
 use super::selected_owner::scan_ordered_page;
 use super::{EmbeddingRecipe, LoadedOwnerArtifact, ReadContext, load_query_owner_artifact};
@@ -21,12 +23,46 @@ mod consolidation;
 mod maintenance;
 mod source_reverse;
 
-const DIRECTORY_FORMAT: u32 = 4;
+const GRAPH_DIRECTORY_FORMAT: u32 = 4;
+const LANCEDB_DIRECTORY_FORMAT: u32 = 5;
 const MAX_DIRECTORY_BYTES: usize = 4096;
 const MAX_DESCRIPTOR_BYTES: usize = 256 * 1024;
 pub(super) const MAX_REGIONS: u64 = 4096;
 pub(super) const MAX_DELTA_OWNERS: u32 = 64;
 pub(super) const MAX_DELTA_ROWS: u32 = 8_192;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AnnBackend {
+    Graph,
+    LanceDb,
+}
+
+impl AnnBackend {
+    const fn directory_format(self) -> u32 {
+        match self {
+            Self::Graph => GRAPH_DIRECTORY_FORMAT,
+            Self::LanceDb => LANCEDB_DIRECTORY_FORMAT,
+        }
+    }
+
+    fn from_directory_format(format: u32) -> Result<Self, IndexError> {
+        match format {
+            GRAPH_DIRECTORY_FORMAT => Ok(Self::Graph),
+            LANCEDB_DIRECTORY_FORMAT => Ok(Self::LanceDb),
+            _ => Err(IndexError::RebuildRequired),
+        }
+    }
+}
+
+pub(super) struct RegionSealMetadata {
+    pub recipe: Digest,
+    pub generation: u64,
+    pub dimension: u32,
+    pub rows: u32,
+    pub index_kind: quanta_index_core::DiagnosticAnnIndexKindV1,
+    pub files: u32,
+    pub chunks: u32,
+}
 
 pub(super) struct PreparedDeltaEdit {
     pub(super) edit: MapEdit,
@@ -209,8 +245,8 @@ fn validate_delta_counts(owners: u32, rows: u32) -> Result<(), IndexError> {
 }
 
 fn validate_directory(directory: &AnnDirectory) -> Result<(), IndexError> {
-    if directory.format != DIRECTORY_FORMAT
-        || u64::from(directory.region_count) > MAX_REGIONS
+    let _backend = directory.backend()?;
+    if u64::from(directory.region_count) > MAX_REGIONS
         || u64::from(directory.region_count) > directory.next_region
         || (directory.region_count == 0) != directory.regions.0.is_none()
         || directory
@@ -230,13 +266,13 @@ fn validate_descriptor(descriptor: &RegionDescriptor, dimension: u32) -> Result<
     let dimension = usize::try_from(dimension).map_err(|_error| IndexError::ResourceLimited)?;
     if descriptor.members.0.is_none()
         || rows == 0
-        || rows > native_graph::MAX_REGION_ROWS
+        || rows > MAX_REGION_ROWS
         || dimension == 0
-        || dimension > native_graph::MAX_REGION_DIMENSION
+        || dimension > MAX_REGION_DIMENSION
         || descriptor.center.len() != dimension
         || rows
             .checked_mul(dimension)
-            .is_none_or(|cells| cells > native_graph::MAX_REGION_CELLS)
+            .is_none_or(|cells| cells > MAX_REGION_CELLS)
         || descriptor.center.iter().any(|value| !value.is_finite())
         || descriptor
             .center
@@ -369,9 +405,7 @@ fn require_directory_format(
         serde_json::from_slice(&object.payload).map_err(|error| {
             IndexError::CorruptObject(format!("Native ANN directory format: {error}"))
         })?;
-    if header.format != DIRECTORY_FORMAT {
-        return Err(IndexError::RebuildRequired);
-    }
+    let _backend = AnnBackend::from_directory_format(header.format)?;
     Ok(())
 }
 
@@ -463,9 +497,18 @@ impl AnnDirectory {
         result
     }
 
+    #[cfg(test)]
     pub(super) const fn empty(recipe: Digest, owners: MapRoot) -> Self {
+        Self::empty_with_backend(recipe, owners, AnnBackend::Graph)
+    }
+
+    pub(super) const fn empty_with_backend(
+        recipe: Digest,
+        owners: MapRoot,
+        backend: AnnBackend,
+    ) -> Self {
         Self {
-            format: DIRECTORY_FORMAT,
+            format: backend.directory_format(),
             recipe,
             owners,
             regions: MapRoot(None),
@@ -476,6 +519,78 @@ impl AnnDirectory {
             maintenance_after: None,
             delta_owners: 0,
             delta_rows: 0,
+        }
+    }
+
+    pub(super) fn backend(&self) -> Result<AnnBackend, IndexError> {
+        AnnBackend::from_directory_format(self.format)
+    }
+
+    pub(super) fn inspect_region_seal(
+        &self,
+        fileset: ObjectRef,
+        objects: &dyn quanta_index_core::index::ports::ImmutableObjectPort,
+        budget: &mut WorkBudget,
+    ) -> Result<RegionSealMetadata, IndexError> {
+        match self.backend()? {
+            AnnBackend::Graph => {
+                let seal = native_graph::load_seal(objects, fileset, budget)?;
+                Ok(RegionSealMetadata {
+                    recipe: seal.recipe,
+                    generation: seal.generation,
+                    dimension: seal.dimension,
+                    rows: seal.rows,
+                    index_kind: quanta_index_core::DiagnosticAnnIndexKindV1::Hnsw,
+                    files: 1,
+                    chunks: 1,
+                })
+            }
+            AnnBackend::LanceDb => {
+                let summary = ann_files::inspect_fileset(objects, fileset, budget)?;
+                Ok(RegionSealMetadata {
+                    recipe: summary.seal.recipe,
+                    generation: summary.seal.generation,
+                    dimension: summary.seal.dimension,
+                    rows: summary.seal.rows,
+                    index_kind: summary.index_kind,
+                    files: summary.files,
+                    chunks: summary.chunks,
+                })
+            }
+        }
+    }
+
+    fn inspect_region_metadata(
+        &self,
+        fileset: ObjectRef,
+        objects: &dyn quanta_index_core::index::ports::ImmutableObjectPort,
+        budget: &mut WorkBudget,
+    ) -> Result<RegionSealMetadata, IndexError> {
+        match self.backend()? {
+            AnnBackend::Graph => {
+                let seal = native_graph::load_seal(objects, fileset, budget)?;
+                Ok(RegionSealMetadata {
+                    recipe: seal.recipe,
+                    generation: seal.generation,
+                    dimension: seal.dimension,
+                    rows: seal.rows,
+                    index_kind: quanta_index_core::DiagnosticAnnIndexKindV1::Hnsw,
+                    files: 1,
+                    chunks: 1,
+                })
+            }
+            AnnBackend::LanceDb => {
+                let summary = ann_files::inspect_fileset_manifest(objects, fileset, budget)?;
+                Ok(RegionSealMetadata {
+                    recipe: summary.seal.recipe,
+                    generation: summary.seal.generation,
+                    dimension: summary.seal.dimension,
+                    rows: summary.seal.rows,
+                    index_kind: summary.index_kind,
+                    files: summary.files,
+                    chunks: summary.chunks,
+                })
+            }
         }
     }
 
@@ -716,9 +831,8 @@ impl AnnDirectory {
         );
         let ordinal = self.next_region;
         let result = self.append_region_inner(descriptor, context);
-        // The directory owns the authenticated descriptor identity. A graph
-        // build or put alone cannot certify a successful region append.
-        if let (Some(diagnostic), Some(span), Ok(reference)) = (
+        // Report installation only after the authenticated region append.
+        if let (Some(diagnostic), Some(span), Ok((reference, seal))) = (
             context.budget.request().diagnostic_context(),
             span.as_ref(),
             result.as_ref(),
@@ -728,24 +842,27 @@ impl AnnDirectory {
                 quanta_index_core::DiagnosticAnnRegionObservationV1 {
                     phase: quanta_index_core::DiagnosticAnnRegionPhaseV1::Installed,
                     fileset_ref: descriptor.fileset.0.0,
-                    descriptor_ref: Some(reference.0.0),
+                    descriptor_ref: match seal.index_kind {
+                        quanta_index_core::DiagnosticAnnIndexKindV1::Hnsw => Some(reference.0.0),
+                        _ => None,
+                    },
                     ordinal,
                     rows: descriptor.rows,
-                    index_kind: quanta_index_core::DiagnosticAnnIndexKindV1::Hnsw,
-                    files: 1,
-                    chunks: 1,
+                    index_kind: seal.index_kind,
+                    files: seal.files,
+                    chunks: seal.chunks,
                 },
             );
         }
         crate::build_diagnostic::finish_build_stage(span, result.is_ok());
-        result
+        result.map(|(reference, _seal)| reference)
     }
 
     fn append_region_inner(
         &mut self,
         descriptor: &RegionDescriptor,
         context: &mut AttemptContext<'_>,
-    ) -> Result<ObjectRef, IndexError> {
+    ) -> Result<(ObjectRef, RegionSealMetadata), IndexError> {
         validate_directory(self)?;
         if u64::from(self.region_count) >= MAX_REGIONS {
             return Err(IndexError::ResourceLimited);
@@ -754,15 +871,33 @@ impl AnnDirectory {
             .next_region
             .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?;
-        let graph = native_graph::load(context.objects, descriptor.fileset, context.budget)?;
-        let seal = graph.seal;
-        drop(graph);
+        let seal = match self.backend()? {
+            AnnBackend::Graph => {
+                // Preserve the format-four full graph authentication at append.
+                let graph =
+                    native_graph::load(context.objects, descriptor.fileset, context.budget)?;
+                let seal = graph.seal;
+                drop(graph);
+                RegionSealMetadata {
+                    recipe: seal.recipe,
+                    generation: seal.generation,
+                    dimension: seal.dimension,
+                    rows: seal.rows,
+                    index_kind: quanta_index_core::DiagnosticAnnIndexKindV1::Hnsw,
+                    files: 1,
+                    chunks: 1,
+                }
+            }
+            AnnBackend::LanceDb => {
+                self.inspect_region_seal(descriptor.fileset, context.objects, context.budget)?
+            }
+        };
         validate_descriptor(descriptor, seal.dimension)?;
         if seal.recipe != self.recipe
             || seal.rows != descriptor.rows
             || seal.generation != generation
         {
-            return Err(corrupt("Native ANN region graph seal mismatch"));
+            return Err(corrupt("Native ANN region seal mismatch"));
         }
         if self.delta_owners != 0
             && descriptor.members == self.delta
@@ -803,7 +938,7 @@ impl AnnDirectory {
         }
         validate_directory(&next)?;
         *self = next;
-        Ok(reference)
+        Ok((reference, seal))
     }
 
     pub(super) fn retire_obsolete(
@@ -908,7 +1043,7 @@ impl AnnDirectory {
             .maps
             .lookup_object(self.regions, &ordinal.to_be_bytes(), read.budget)?
             .ok_or_else(|| corrupt("Native ANN region descriptor is missing"))?;
-        self.load_region_reference(reference, read)
+        Self::load_region_reference(reference, read)
     }
 
     /// A region page already supplied this reference under the validated key.
@@ -923,7 +1058,7 @@ impl AnnDirectory {
         if ordinal >= self.next_region {
             return Err(invalid("Native ANN region ordinal is outside directory"));
         }
-        self.load_region_reference(reference, read)
+        Self::load_region_reference(reference, read)
     }
 
     /// Repeat the selected descriptor read through the original object port.
@@ -946,7 +1081,6 @@ impl AnnDirectory {
     }
 
     fn load_region_reference(
-        &self,
         reference: ObjectRef,
         read: &mut ReadContext<'_>,
     ) -> Result<LoadedRegionDescriptor, IndexError> {

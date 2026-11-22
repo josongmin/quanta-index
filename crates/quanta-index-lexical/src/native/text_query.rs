@@ -1,23 +1,35 @@
 //! Page-bounded Content Boolean and positional phrase execution of the planner IR.
 
 use super::text::{
-    BoundTextMember, NativeTextIndex, Root, TextPostingCursor, TextReadContext, TextStatistics,
-    ValidatedPostingHit, admitted_query_tokens,
+    BoundTextMember, NativeTextIndex, SelectedTextRoot, TextPostingCursor, TextReadContext,
+    TextStatistics, ValidatedPostingHit, admitted_query_tokens,
 };
-use super::text_memory::PreparedKey;
+use super::text_memory::{
+    MAX_TERM_KEY_BYTES, PreparedKey, append_canonical_case_key, prepare_indexed_token_cursor,
+};
+use super::text_overlay::MAX_TEXT_OVERLAY_DOCUMENT_BYTES;
 use super::text_overlay::TextOverlayCorpus;
+use super::text_path::PathTermCursor;
+use super::text_path_group::PathGroupAccumulator;
+use super::text_preflight::MAX_FILE_CONTAINS_LEAVES;
 use super::text_regex::{MAX_NATIVE_CONTENT_REGEX, NativeRegexProgram};
+use super::text_repo_predicate::RepoPredicateProgram;
 use super::text_universe::TextOwnerCursor;
 use crate::{
     filters::FilterPlan,
     phrase::PhrasePolicy,
-    plan::{LexicalPlan, PlanLeaf, PlanNode},
+    plan::{
+        LexicalPlan, PlanLeaf, PlanNode, RepoFileConstraint, file_contains_raw_literal_supported,
+    },
+    symbol::ResultSurface,
 };
+pub(super) use preview_projection::{PreviewSelection, PreviewSource, PreviewVisitor};
+use preview_truth::ClauseTruth;
 use quanta_index_contract::native_protocol::MAX_NATIVE_TEXT_TOP_K;
-use quanta_index_contract::{LqCountBound, LqFilter};
+use quanta_index_contract::{LqCountBound, LqFilter, LqSelect, RepoId};
 use quanta_index_core::index::{
     FiniteScore, IndexError, MAX_SOURCE_PATH_BYTES, MemberBinding, MemoryLease, MemoryLifetime,
-    ObjectRef, OwnerKey, ViewRef, WorkBudget, WorkUsage,
+    ObjectRef, OwnerKey, SourceRecordOwner, ViewRef, WorkBudget, WorkUsage, owner_map_key,
 };
 use quanta_index_core::{
     DiagnosticContextV1, DiagnosticCounterV1, DiagnosticHealthCodeV1, DiagnosticSpanGuardV1,
@@ -32,6 +44,101 @@ enum MemberScope<'a> {
     Bound(&'a BoundTextMember),
 }
 
+#[derive(Clone, Copy)]
+struct ContentQuery<'a> {
+    plan: &'a LexicalPlan,
+    constraints: &'a quanta_index_contract::QueryConstraintSetV1,
+    path_rank_after: PathRankAfter<'a>,
+}
+
+type PathRankAfter<'a> = Option<(FiniteScore, &'a RepoId, &'a str)>;
+type PathGroupPayload = (NativeTextRankedHit, Option<ClauseTruth>, bool);
+
+struct PathHit {
+    owner: OwnerKey,
+    source: ObjectRef,
+    record: SourceRecordOwner,
+}
+
+fn next_path_hit(
+    cursor: &mut PathTermCursor,
+    index: &NativeTextIndex,
+    context: &mut TextReadContext<'_>,
+) -> Result<Option<PathHit>, IndexError> {
+    let Some((owner, source)) = cursor.next(context.maps, context.budget)? else {
+        return Ok(None);
+    };
+    let record =
+        super::text::authenticated_text_source(index, owner, Some(source), true, context)?;
+    Ok(Some(PathHit {
+        owner,
+        source,
+        record,
+    }))
+}
+
+/// Recheck a path posting against its exact pinned field, including adjacency
+/// across skipped long runs. The first indexed term is the posting anchor.
+fn path_phrase_stats(
+    path: &str,
+    phrase: &[usize],
+    cursors: &[TextPostingCursor],
+    case: quanta_index_lq_text_normalizer::CaseMode,
+    budget: &mut WorkBudget,
+) -> Result<(u64, u64), IndexError> {
+    let ord = phrase
+        .len()
+        .checked_sub(1)
+        .and_then(|ordinal| u32::try_from(ordinal).ok())
+        .ok_or(IndexError::ResourceLimited)?;
+    let last = 1u64.checked_shl(ord).ok_or(IndexError::ResourceLimited)?;
+    let _memory = budget.reserve_memory(MAX_TERM_KEY_BYTES, MemoryLifetime::Temporary)?;
+    let capacity =
+        usize::try_from(MAX_TERM_KEY_BYTES).map_err(|_error| IndexError::ResourceLimited)?;
+    let mut key = Vec::new();
+    key.try_reserve_exact(capacity)
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    let mut cursor = prepare_indexed_token_cursor(path, budget)?;
+    let mut state = 0u64;
+    let mut tokens = 0u64;
+    let mut hits = 0u64;
+    let mut anchored = false;
+    while let Some(run) = cursor.next_run() {
+        budget.checkpoint()?;
+        if !run.is_indexable() {
+            state = 0;
+            continue;
+        }
+        key.clear();
+        append_canonical_case_key(&mut key, run.text, case, capacity)?;
+        let mut same = 0u64;
+        for (ordinal, slot) in phrase.iter().enumerate() {
+            let term = cursors.get(*slot).ok_or(IndexError::ResourceLimited)?.key();
+            budget.charge(WorkUsage {
+                bytes: u64::try_from(term.len().min(key.len()))
+                    .map_err(|_error| IndexError::ResourceLimited)?,
+                ..WorkUsage::default()
+            })?;
+            if key.as_slice() == term {
+                let shift = u32::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?;
+                same |= 1u64.checked_shl(shift).ok_or(IndexError::ResourceLimited)?;
+            }
+        }
+        anchored |= same & 1 != 0;
+        state = ((state << 1) | 1) & same;
+        tokens = tokens.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        if state & last != 0 {
+            hits = hits.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        }
+    }
+    if !anchored {
+        return Err(IndexError::CorruptObject(
+            "native path posting term is absent from its selected source path".into(),
+        ));
+    }
+    Ok((tokens, hits))
+}
+
 impl MemberScope<'_> {
     fn member(&self) -> &MemberBinding {
         match self {
@@ -44,7 +151,7 @@ impl MemberScope<'_> {
         &self,
         index: &NativeTextIndex,
         context: &mut TextReadContext<'_>,
-    ) -> Result<Root, IndexError> {
+    ) -> Result<SelectedTextRoot, IndexError> {
         match self {
             Self::Direct(member) => index.pinned_root(member, context),
             Self::Bound(bound) => bound.root(index, context),
@@ -190,6 +297,8 @@ const MAX_QUERY_DEPTH: usize = 32;
 enum Clause {
     Term(usize),
     Regex(usize),
+    Contains(usize),
+    Repo(usize),
     All(usize),
     Any(usize),
     Not,
@@ -211,9 +320,15 @@ struct Complexity {
     nodes: usize,
     terms: usize,
     regexes: usize,
+    contains: usize,
+    repositories: usize,
 }
 
-fn compile_clauses<'a>(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The private compiler passes independent term, phrase, regex, contains and repository resolvers"
+)]
+fn compile_clauses_with_repo<'a>(
     node: &'a PlanNode,
     depth: usize,
     complexity: &mut Complexity,
@@ -221,6 +336,8 @@ fn compile_clauses<'a>(
     term: &mut impl FnMut(&'a str) -> Result<usize, IndexError>,
     phrase: &mut impl FnMut(&str, &crate::phrase::PhrasePlan) -> Result<(), IndexError>,
     regex: &mut impl FnMut(&'a str) -> Result<usize, IndexError>,
+    contains: &mut impl FnMut(&'a str) -> Result<usize, IndexError>,
+    repo: &mut impl FnMut(&'a RepoFileConstraint) -> Result<usize, IndexError>,
 ) -> Result<bool, IndexError> {
     complexity.nodes = complexity
         .nodes
@@ -268,6 +385,39 @@ fn compile_clauses<'a>(
             Ok(false)
         }
         PlanNode::Leaf {
+            leaf: PlanLeaf::FileContains { needle },
+            cap: None,
+        } => {
+            if !file_contains_raw_literal_supported(needle) {
+                return Err(IndexError::InvalidInput(
+                    "native file.contains requires a bounded literal raw substring".into(),
+                ));
+            }
+            complexity.contains = complexity
+                .contains
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
+            if complexity.contains > MAX_FILE_CONTAINS_LEAVES {
+                return Err(IndexError::ResourceLimited);
+            }
+            program.push(Clause::Contains(contains(needle)?));
+            Ok(false)
+        }
+        PlanNode::Leaf {
+            leaf: PlanLeaf::RepoHasFile { constraint },
+            cap: None,
+        } => {
+            complexity.repositories = complexity
+                .repositories
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
+            if complexity.repositories > 4 {
+                return Err(IndexError::ResourceLimited);
+            }
+            program.push(Clause::Repo(repo(constraint)?));
+            Ok(false)
+        }
+        PlanNode::Leaf {
             leaf: PlanLeaf::Phrase { phrase: raw, plan },
             cap,
         } => {
@@ -310,7 +460,7 @@ fn compile_clauses<'a>(
             let all = matches!(node, PlanNode::All(_));
             let mut anchored = !all;
             for child in children {
-                let child_anchored = compile_clauses(
+                let child_anchored = compile_clauses_with_repo(
                     child,
                     depth.checked_add(1).ok_or(IndexError::ResourceLimited)?,
                     complexity,
@@ -318,6 +468,8 @@ fn compile_clauses<'a>(
                     term,
                     phrase,
                     regex,
+                    contains,
+                    repo,
                 )?;
                 anchored = if all {
                     anchored || child_anchored
@@ -333,7 +485,7 @@ fn compile_clauses<'a>(
             Ok(anchored)
         }
         PlanNode::Not(child) => {
-            let _child_anchored = compile_clauses(
+            let _child_anchored = compile_clauses_with_repo(
                 child,
                 depth.checked_add(1).ok_or(IndexError::ResourceLimited)?,
                 complexity,
@@ -341,6 +493,8 @@ fn compile_clauses<'a>(
                 term,
                 phrase,
                 regex,
+                contains,
+                repo,
             )?;
             program.push(Clause::Not);
             // A complement does not supply a candidate universe. Even double
@@ -355,13 +509,44 @@ fn compile_clauses<'a>(
     }
 }
 
+#[cfg(test)]
+fn compile_clauses<'a>(
+    node: &'a PlanNode,
+    depth: usize,
+    complexity: &mut Complexity,
+    program: &mut Vec<Clause>,
+    term: &mut impl FnMut(&'a str) -> Result<usize, IndexError>,
+    phrase: &mut impl FnMut(&str, &crate::phrase::PhrasePlan) -> Result<(), IndexError>,
+    regex: &mut impl FnMut(&'a str) -> Result<usize, IndexError>,
+    contains: &mut impl FnMut(&'a str) -> Result<usize, IndexError>,
+) -> Result<bool, IndexError> {
+    compile_clauses_with_repo(
+        node,
+        depth,
+        complexity,
+        program,
+        term,
+        phrase,
+        regex,
+        contains,
+        &mut |_constraint| {
+            Err(IndexError::InvalidInput(
+                "repo predicate requires native witness preparation".into(),
+            ))
+        },
+    )
+}
+
 // A NOT branch changes truth but contributes no ranking terms. Failed AND
 // branches contribute no terms through an enclosing OR. Truth and score mask
 // must remain distinct: an unanchored match may correctly have zero score.
-fn evaluate_boolean(
+fn evaluate_boolean_with_repo(
     program: &[Clause],
     present: u64,
     regex_present: u8,
+    contains_present: u8,
+    repo_present: u8,
+    mut observe_truth: impl FnMut(usize, bool) -> Result<(), IndexError>,
     mut phrase: impl FnMut(usize, usize, usize, u32) -> Result<MatchState, IndexError>,
 ) -> Result<MatchState, IndexError> {
     let mut stack = [MatchState::default(); MAX_QUERY_NODES];
@@ -388,6 +573,28 @@ fn evaluate_boolean(
                     .ok_or(IndexError::ResourceLimited)?;
                 MatchState {
                     matched: regex_present & bit != 0,
+                    positive_terms: 0,
+                }
+            }
+            Clause::Contains(index) => {
+                let bit = 1u8
+                    .checked_shl(
+                        u32::try_from(index).map_err(|_error| IndexError::ResourceLimited)?,
+                    )
+                    .ok_or(IndexError::ResourceLimited)?;
+                MatchState {
+                    matched: contains_present & bit != 0,
+                    positive_terms: 0,
+                }
+            }
+            Clause::Repo(index) => {
+                let bit = 1u8
+                    .checked_shl(
+                        u32::try_from(index).map_err(|_width| IndexError::ResourceLimited)?,
+                    )
+                    .ok_or(IndexError::ResourceLimited)?;
+                MatchState {
+                    matched: repo_present & bit != 0,
                     positive_terms: 0,
                 }
             }
@@ -433,6 +640,7 @@ fn evaluate_boolean(
                 }
             }
         };
+        observe_truth(ordinal, state.matched)?;
         *stack.get_mut(end).ok_or_else(|| {
             IndexError::BackendViolation("boolean evaluation stack overflow".into())
         })? = state;
@@ -448,6 +656,162 @@ fn evaluate_boolean(
         .copied()
         .ok_or_else(|| IndexError::BackendViolation("boolean result stack is empty".into()))?;
     Ok(result)
+}
+
+#[cfg(test)]
+fn evaluate_boolean(
+    program: &[Clause],
+    present: u64,
+    regex_present: u8,
+    contains_present: u8,
+    phrase: impl FnMut(usize, usize, usize, u32) -> Result<MatchState, IndexError>,
+) -> Result<MatchState, IndexError> {
+    evaluate_boolean_with_repo(
+        program,
+        present,
+        regex_present,
+        contains_present,
+        0,
+        |_ordinal, _matched| Ok(()),
+        phrase,
+    )
+}
+
+pub(super) fn file_contains_mask(
+    source_text: &str,
+    needles: &[&str],
+    case: super::text::CaseMode,
+    budget: &mut WorkBudget,
+) -> Result<u8, IndexError> {
+    if needles.len() > MAX_FILE_CONTAINS_LEAVES
+        || needles
+            .iter()
+            .any(|needle| !file_contains_raw_literal_supported(needle))
+    {
+        return Err(IndexError::InvalidInput(
+            "native file.contains requires bounded literal raw substrings".into(),
+        ));
+    }
+    let text_bytes =
+        u64::try_from(source_text.len()).map_err(|_width| IndexError::ResourceLimited)?;
+    let needle_bytes = needles.iter().try_fold(0u64, |sum, needle| {
+        let len = u64::try_from(needle.len()).map_err(|_width| IndexError::ResourceLimited)?;
+        sum.checked_add(len).ok_or(IndexError::ResourceLimited)
+    })?;
+    let backing = text_bytes
+        .checked_add(needle_bytes)
+        .and_then(|bytes| bytes.checked_mul(16))
+        .ok_or(IndexError::ResourceLimited)?;
+    let _memory = budget.reserve_memory(backing, MemoryLifetime::Temporary)?;
+    budget.charge(WorkUsage {
+        bytes: text_bytes,
+        ..WorkUsage::default()
+    })?;
+    budget.checkpoint()?;
+    let normalized = crate::normalize::nfc(source_text);
+    let folded = crate::normalize::apply_case(normalized.as_ref(), case);
+    let normalized_bytes =
+        u64::try_from(normalized.len()).map_err(|_width| IndexError::ResourceLimited)?;
+    let folded_bytes = u64::try_from(folded.len()).map_err(|_width| IndexError::ResourceLimited)?;
+    let source_prepare_bytes = normalized_bytes
+        .checked_add(folded_bytes)
+        .ok_or(IndexError::ResourceLimited)?;
+    budget.charge(WorkUsage {
+        bytes: source_prepare_bytes,
+        ..WorkUsage::default()
+    })?;
+    let mut mask = 0u8;
+    for (ordinal, needle) in needles.iter().enumerate() {
+        budget.checkpoint()?;
+        let needle_len =
+            u64::try_from(needle.len()).map_err(|_width| IndexError::ResourceLimited)?;
+        let scan_bytes = folded_bytes
+            .checked_add(needle_len)
+            .ok_or(IndexError::ResourceLimited)?;
+        budget.charge(WorkUsage {
+            bytes: scan_bytes,
+            ..WorkUsage::default()
+        })?;
+        let normalized_needle = crate::normalize::nfc(needle);
+        let folded_needle = crate::normalize::apply_case(normalized_needle.as_ref(), case);
+        let normalized_needle_bytes =
+            u64::try_from(normalized_needle.len()).map_err(|_width| IndexError::ResourceLimited)?;
+        let folded_needle_bytes =
+            u64::try_from(folded_needle.len()).map_err(|_width| IndexError::ResourceLimited)?;
+        let literal_prepare_bytes = normalized_needle_bytes
+            .checked_add(folded_needle_bytes)
+            .ok_or(IndexError::ResourceLimited)?;
+        budget.charge(WorkUsage {
+            bytes: literal_prepare_bytes,
+            ..WorkUsage::default()
+        })?;
+        if folded.contains(folded_needle.as_ref()) {
+            mask |= 1u8
+                .checked_shl(u32::try_from(ordinal).map_err(|_width| IndexError::ResourceLimited)?)
+                .ok_or(IndexError::ResourceLimited)?;
+        }
+    }
+    budget.checkpoint()?;
+    Ok(mask)
+}
+
+fn file_contains_durable(
+    index: &NativeTextIndex,
+    owner: OwnerKey,
+    source: ObjectRef,
+    needles: &[&str],
+    case: super::text::CaseMode,
+    allow_excluded_path: bool,
+    context: &mut TextReadContext<'_>,
+) -> Result<u8, IndexError> {
+    context.budget.checkpoint()?;
+    if context.maps.lookup_object(
+        context.ticket.view.source.owners,
+        &owner_map_key(owner),
+        context.budget,
+    )? != Some(source)
+    {
+        return Err(IndexError::CorruptObject(
+            "native file.contains source owner differs from selected view".into(),
+        ));
+    }
+    let stored = context.objects.get(source, context.budget)?;
+    let record =
+        SourceRecordOwner::decode_json(&stored.payload, context.budget, MemoryLifetime::Temporary)?;
+    let admitted = index.validate_selected_source(&record)?;
+    if stored.registration.reference != source
+        || stored.registration.children.as_slice() != [record.bytes]
+        || (!admitted && !allow_excluded_path)
+        || record.path.is_empty()
+        || record.path.len() > MAX_SOURCE_PATH_BYTES
+        || record.path.starts_with('/')
+        || record.path.contains('\0')
+        || record
+            .path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(IndexError::CorruptObject(
+            "native file.contains source record differs from admitted selection".into(),
+        ));
+    }
+    if !admitted {
+        return Ok(0);
+    }
+    let body = context.objects.get(record.bytes, context.budget)?;
+    if body.registration.reference != record.bytes
+        || !body.registration.children.is_empty()
+        || u64::try_from(body.payload.len()).map_err(|_width| IndexError::ResourceLimited)?
+            != record.byte_len
+    {
+        return Err(IndexError::CorruptObject(
+            "native file.contains source bytes differ from admitted leaf".into(),
+        ));
+    }
+    let text = std::str::from_utf8(&body.payload).map_err(|_utf8| {
+        IndexError::CorruptObject("native file.contains admitted source is not UTF-8".into())
+    })?;
+    file_contains_mask(text, needles, case, context.budget)
 }
 
 /// Explicit ranking parameters; invalid or nonfinite parameters are refused.
@@ -554,18 +918,22 @@ struct QueryWorkspace {
     program: Vec<Clause>,
     score_order: Vec<usize>,
     heads: Vec<Option<ValidatedPostingHit>>,
-    heap: BinaryHeap<HeapHit>,
+    heap: TextHeap,
     _memory: Option<MemoryLease>,
 }
 
 impl QueryWorkspace {
-    fn new(top_k: usize, budget: &mut WorkBudget) -> Result<Self, IndexError> {
+    fn new(top_k: usize, with_preview: bool, budget: &mut WorkBudget) -> Result<Self, IndexError> {
         let bytes = [
             capacity_bytes::<TextPostingCursor>(MAX_CONTENT_LEAVES)?,
             capacity_bytes::<Clause>(MAX_QUERY_NODES)?,
             capacity_bytes::<usize>(MAX_CONTENT_LEAVES)?,
             capacity_bytes::<Option<ValidatedPostingHit>>(MAX_CONTENT_LEAVES)?,
-            capacity_bytes::<HeapHit>(top_k)?,
+            if with_preview {
+                capacity_bytes::<HeapHit<ClauseTruth>>(top_k)?
+            } else {
+                capacity_bytes::<HeapHit<()>>(top_k)?
+            },
         ]
         .into_iter()
         .try_fold(0u64, |sum, bytes| {
@@ -581,7 +949,7 @@ impl QueryWorkspace {
             program: Vec::new(),
             score_order: Vec::new(),
             heads: Vec::new(),
-            heap: BinaryHeap::new(),
+            heap: TextHeap::new(top_k, with_preview)?,
             _memory: memory,
         };
         work.cursors
@@ -596,14 +964,68 @@ impl QueryWorkspace {
         work.heads
             .try_reserve_exact(MAX_CONTENT_LEAVES)
             .map_err(|_error| IndexError::ResourceLimited)?;
-        work.heap
-            .try_reserve_exact(top_k)
-            .map_err(|_error| IndexError::ResourceLimited)?;
         Ok(work)
     }
 }
 
-struct HeapHit(NativeTextRankedHit);
+enum TextHeap {
+    Ranked(BinaryHeap<HeapHit<()>>),
+    Preview(BinaryHeap<HeapHit<ClauseTruth>>),
+}
+
+impl TextHeap {
+    fn new(capacity: usize, with_preview: bool) -> Result<Self, IndexError> {
+        fn heap<T>(capacity: usize) -> Result<BinaryHeap<HeapHit<T>>, IndexError> {
+            let mut heap = BinaryHeap::new();
+            heap.try_reserve_exact(capacity)
+                .map_err(|_error| IndexError::ResourceLimited)?;
+            Ok(heap)
+        }
+        if with_preview {
+            Ok(Self::Preview(heap(capacity)?))
+        } else {
+            Ok(Self::Ranked(heap(capacity)?))
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Ranked(heap) => heap.len(),
+            Self::Preview(heap) => heap.len(),
+        }
+    }
+
+    fn consider(
+        &mut self,
+        capacity: usize,
+        hit: NativeTextRankedHit,
+        truth: Option<ClauseTruth>,
+    ) -> Result<(), IndexError> {
+        match (self, truth) {
+            (Self::Ranked(heap), None) => retain_hit(heap, capacity, HeapHit(hit, (), false)),
+            (Self::Preview(heap), Some(truth)) => {
+                retain_hit(heap, capacity, HeapHit(hit, truth, false));
+            }
+            _ => return Err(preview_mode_error()),
+        }
+        Ok(())
+    }
+}
+
+fn preview_mode_error() -> IndexError {
+    IndexError::BackendViolation("native preview heap mode differs from query".into())
+}
+
+struct HeapHit<T>(NativeTextRankedHit, T, bool);
+
+fn retain_hit<T>(heap: &mut BinaryHeap<HeapHit<T>>, capacity: usize, candidate: HeapHit<T>) {
+    if heap.len() < capacity {
+        heap.push(candidate);
+    } else if heap.peek().is_some_and(|worst| candidate < *worst) {
+        let _discarded = heap.pop();
+        heap.push(candidate);
+    }
+}
 
 // Ordering in the result: best first, including the complete source identity.
 // A maximum heap with this order retains its worst hit at the root.
@@ -611,18 +1033,18 @@ fn compare_rank(score: f64, owner: OwnerKey, other_score: f64, other_owner: Owne
     other_score.total_cmp(&score).then(owner.cmp(&other_owner))
 }
 
-impl PartialEq for HeapHit {
+impl<T> PartialEq for HeapHit<T> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
-impl Eq for HeapHit {}
-impl PartialOrd for HeapHit {
+impl<T> Eq for HeapHit<T> {}
+impl<T> PartialOrd for HeapHit<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
-impl Ord for HeapHit {
+impl<T> Ord for HeapHit<T> {
     fn cmp(&self, other: &Self) -> Ordering {
         // The worst retained hit is the heap maximum.
         compare_rank(self.0.score, self.0.owner, other.0.score, other.0.owner)
@@ -760,11 +1182,15 @@ impl NativeTextIndex {
         context: TextReadContext<'_>,
     ) -> Result<NativeTextRanking, IndexError> {
         self.search_content_with_scope(
-            MemberScope::Direct(member),
-            plan,
-            constraints,
+            &MemberScope::Direct(member),
+            ContentQuery {
+                plan,
+                constraints,
+                path_rank_after: None,
+            },
             execution,
             overlay,
+            None,
             context,
         )
     }
@@ -775,26 +1201,32 @@ impl NativeTextIndex {
         plan: &LexicalPlan,
         constraints: &quanta_index_contract::QueryConstraintSetV1,
         execution: TextContentExecution,
+        path_rank_after: PathRankAfter<'_>,
         overlay: Option<(&TextOverlayCorpus, &[TextOverlaySource<'_>])>,
+        preview: Option<&mut PreviewVisitor<'_>>,
         context: TextReadContext<'_>,
     ) -> Result<NativeTextRanking, IndexError> {
         self.search_content_with_scope(
-            MemberScope::Bound(bound),
-            plan,
-            constraints,
+            &MemberScope::Bound(bound),
+            ContentQuery {
+                plan,
+                constraints,
+                path_rank_after,
+            },
             execution,
             overlay,
+            preview,
             context,
         )
     }
 
     fn search_content_with_scope(
         &self,
-        member_scope: MemberScope<'_>,
-        plan: &LexicalPlan,
-        constraints: &quanta_index_contract::QueryConstraintSetV1,
+        member_scope: &MemberScope<'_>,
+        query: ContentQuery<'_>,
         execution: TextContentExecution,
         overlay: Option<(&TextOverlayCorpus, &[TextOverlaySource<'_>])>,
+        preview: Option<&mut PreviewVisitor<'_>>,
         context: TextReadContext<'_>,
     ) -> Result<NativeTextRanking, IndexError> {
         let TextReadContext {
@@ -807,10 +1239,10 @@ impl NativeTextIndex {
         let mut scoped_budget = budget.scoped_diagnostic_context(observation.child_context());
         let result = self.search_content_with_overlay_inner(
             member_scope,
-            plan,
-            constraints,
+            query,
             execution,
             overlay,
+            preview,
             TextReadContext {
                 ticket,
                 objects,
@@ -830,20 +1262,33 @@ impl NativeTextIndex {
 
     fn search_content_with_overlay_inner(
         &self,
-        member_scope: MemberScope<'_>,
-        plan: &LexicalPlan,
-        constraints: &quanta_index_contract::QueryConstraintSetV1,
+        member_scope: &MemberScope<'_>,
+        query: ContentQuery<'_>,
         execution: TextContentExecution,
         overlay: Option<(&TextOverlayCorpus, &[TextOverlaySource<'_>])>,
+        preview: Option<&mut PreviewVisitor<'_>>,
         mut context: TextReadContext<'_>,
         observation: &mut QueryLexicalObservation,
     ) -> Result<NativeTextRanking, IndexError> {
         let member = member_scope.member();
+        let ContentQuery {
+            plan,
+            constraints,
+            path_rank_after,
+        } = query;
         let TextContentExecution {
             top_k,
             policy,
             rank_after,
         } = execution;
+        let path_mode = plan.filters.surface == ResultSurface::Path;
+        if (path_mode && (overlay.is_some() || rank_after.is_some()))
+            || (path_rank_after.is_some() && (!path_mode || plan.options.count.is_some()))
+        {
+            return Err(IndexError::InvalidInput(
+                "native path groups require a durable path projection and a path anchor".into(),
+            ));
+        }
         if rank_after.is_some_and(|(score, _owner)| score.get() < 0.0)
             || (rank_after.is_some() && plan.options.count.is_some())
         {
@@ -862,6 +1307,22 @@ impl NativeTextIndex {
             ));
         }
         let empty_filters = FilterPlan::empty(&plan.options);
+        let path_selects = plan
+            .raw_filters
+            .iter()
+            .filter(|raw| {
+                matches!(
+                    raw,
+                    LqFilter::Select {
+                        dim: LqSelect::Path
+                    }
+                )
+            })
+            .count();
+        let file_filters = plan
+            .raw_filters
+            .iter()
+            .filter(|raw| matches!(raw, LqFilter::File { .. }));
         if !matches!(
             plan.options.pattern_type,
             quanta_index_contract::LqPatternType::Standard
@@ -870,18 +1331,16 @@ impl NativeTextIndex {
             || plan.filters.langs != empty_filters.langs
             || plan.filters.case != empty_filters.case
             || plan.filters.count != empty_filters.count
-            || plan.filters.surface != empty_filters.surface
+            || (!path_mode && plan.filters.surface != empty_filters.surface)
+            || path_selects != usize::from(path_mode)
             || plan.filters.typed_unavailable != empty_filters.typed_unavailable
-            || plan.raw_filters.len() != plan.filters.paths.len()
-            || plan
-                .raw_filters
-                .iter()
-                .zip(&plan.filters.paths)
-                .any(|(raw, planned)| {
-                    !matches!(raw, LqFilter::File { pattern, scope }
+            || plan.raw_filters.len() != plan.filters.paths.len().saturating_add(path_selects)
+            || file_filters.clone().count() != plan.filters.paths.len()
+            || file_filters.zip(&plan.filters.paths).any(|(raw, planned)| {
+                !matches!(raw, LqFilter::File { pattern, scope }
                     if pattern == &planned.pattern
                         && crate::filters::FilePathScope::from_lq(*scope) == planned.scope)
-                })
+            })
             || !plan.directives.is_empty()
             || plan.plan_cap.is_some()
             || plan.options.timeout_ms.is_some()
@@ -921,7 +1380,9 @@ impl NativeTextIndex {
                 return Err(IndexError::Conflict);
             }
         }
-        let mut workspace = QueryWorkspace::new(capacity, context.budget)?;
+        let with_preview = preview.is_some();
+        let owner_capacity = if path_mode { 0 } else { capacity };
+        let mut workspace = QueryWorkspace::new(owner_capacity, with_preview, context.budget)?;
         let QueryWorkspace {
             cursors,
             program,
@@ -937,7 +1398,11 @@ impl NativeTextIndex {
         let mut source_term_count = 0usize;
         let mut source_regexes = [None; MAX_NATIVE_CONTENT_REGEX];
         let mut source_regex_count = 0usize;
-        let anchored = compile_clauses(
+        let mut source_contains = [None; MAX_FILE_CONTAINS_LEAVES];
+        let mut source_contains_count = 0usize;
+        let mut source_repositories: [Option<&RepoFileConstraint>; 4] = [None; 4];
+        let mut source_repository_count = 0usize;
+        let anchored = compile_clauses_with_repo(
             &plan.root,
             0,
             &mut Complexity::default(),
@@ -977,24 +1442,67 @@ impl NativeTextIndex {
                     .ok_or(IndexError::ResourceLimited)?;
                 Ok(ordinal)
             },
+            &mut |needle| {
+                let ordinal = source_contains_count;
+                *source_contains
+                    .get_mut(ordinal)
+                    .ok_or(IndexError::ResourceLimited)? = Some(needle);
+                source_contains_count = source_contains_count
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                Ok(ordinal)
+            },
+            &mut |constraint| {
+                let ordinal = source_repository_count;
+                *source_repositories
+                    .get_mut(ordinal)
+                    .ok_or(IndexError::ResourceLimited)? = Some(constraint);
+                source_repository_count = source_repository_count
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                Ok(ordinal)
+            },
         )?;
-        let selection = super::text_filter::resolve(self, constraints, &mut context)?;
+        if source_repository_count != 0 && overlay.is_some() {
+            return Err(IndexError::InvalidInput(
+                "native repo.has.file requires authenticated overlay repository identity".into(),
+            ));
+        }
+        let repository_constraints = source_repositories
+            .get(..source_repository_count)
+            .ok_or(IndexError::ResourceLimited)?;
+        let selection =
+            super::text_filter::resolve_for_surface(self, constraints, path_mode, &mut context)?;
         let root = member_scope.root(self, &mut context)?;
-        if (source_regex_count != 0 || !anchored)
+        let path_field = path_mode.then(|| root.path_field()).transpose()?;
+        let mut path_groups = path_field
+            .map(|(_, stats, _)| {
+                PathGroupAccumulator::new(stats.docs, |(hit, _, _): &PathGroupPayload| {
+                    (hit.owner, hit.score)
+                })
+            })
+            .transpose()?;
+        if (source_regex_count != 0 || source_contains_count != 0 || !anchored)
             && overlay.is_some_and(|(corpus, _)| {
                 corpus.statistics().docs > super::text_universe::MAX_UNANCHORED_DOCS
             })
         {
             return Err(IndexError::ResourceLimited);
         }
-        if source_regex_count != 0 {
+        if source_regex_count != 0 || source_contains_count != 0 {
             // The finite member census is checked before regex engine birth,
             // posting pages, or source bytes are visited.
-            let _finite = TextOwnerCursor::new(root, self.recipe())?;
+            TextOwnerCursor::check_statistics(root.statistics())?;
         }
         let mut universe = (!anchored)
             .then(|| TextOwnerCursor::new(root, self.recipe()))
             .transpose()?;
+        let repository_program = RepoPredicateProgram::prepare(
+            repository_constraints,
+            plan.options.case_mode(),
+            self,
+            &mut context,
+        )?;
         let mut regex_sources = [""; MAX_NATIVE_CONTENT_REGEX];
         for (destination, source) in regex_sources
             .iter_mut()
@@ -1013,6 +1521,16 @@ impl NativeTextIndex {
             plan.options.case_mode(),
             context.budget,
         )?;
+        let mut contains_needles = [""; MAX_FILE_CONTAINS_LEAVES];
+        for (destination, source) in contains_needles
+            .iter_mut()
+            .zip(source_contains.iter())
+            .take(source_contains_count)
+        {
+            *destination = source.ok_or_else(|| {
+                IndexError::BackendViolation("native file.contains source missing".into())
+            })?;
+        }
         // A Content keyword can contain several canonical token runs. Keep
         // the original plan's source ordinals until every term has been
         // admitted, then lower multi-run keywords to the existing positional
@@ -1125,7 +1643,12 @@ impl NativeTextIndex {
                     }
                     *first = ranges.first().ok_or(IndexError::ResourceLimited)?.0;
                 }
-                Clause::Regex(_) | Clause::All(_) | Clause::Any(_) | Clause::Not => {}
+                Clause::Regex(_)
+                | Clause::Contains(_)
+                | Clause::Repo(_)
+                | Clause::All(_)
+                | Clause::Any(_)
+                | Clause::Not => {}
             }
         }
         for key in prepared_keys
@@ -1167,7 +1690,10 @@ impl NativeTextIndex {
         }
         terms.sort_unstable_by_key(|(key, _index)| *key);
         score_order.extend(terms.iter().map(|(_key, index)| *index));
-        let (_owner_root, docs, indexed_tokens) = root.owner_universe();
+        let TextStatistics {
+            docs,
+            indexed_tokens,
+        } = root.statistics();
         let stats = cursors.first().map(TextPostingCursor::statistics);
         if stats.is_some_and(|stats| {
             cursors.iter().any(|cursor| {
@@ -1203,6 +1729,49 @@ impl NativeTextIndex {
                 };
         }
         let view = context.ticket.view.identity;
+        let keyword_path = path_field.is_some()
+            && matches!(
+                &plan.root,
+                PlanNode::Leaf {
+                    leaf: PlanLeaf::Content { .. },
+                    ..
+                }
+            );
+        let path_phrase = if keyword_path {
+            term_remap
+                .get(..prepared_count)
+                .ok_or(IndexError::ResourceLimited)?
+        } else {
+            &[]
+        };
+        let mut path_cursor = if keyword_path {
+            let first = path_phrase.first().ok_or(IndexError::ResourceLimited)?;
+            let key = cursors
+                .get(*first)
+                .ok_or(IndexError::ResourceLimited)?
+                .key();
+            let (postings, _, value) = path_field.ok_or(IndexError::ResourceLimited)?;
+            Some(PathTermCursor::new(postings, key, value, context.budget)?)
+        } else {
+            None
+        };
+        let path_df = path_cursor
+            .as_ref()
+            .map(|cursor| cursor.df(context.maps, context.budget))
+            .transpose()?
+            .unwrap_or_default();
+        if path_field.is_some_and(|(_, stats, _)| path_df > stats.docs) {
+            return Err(IndexError::CorruptObject(
+                "native path DF exceeds documents".into(),
+            ));
+        }
+        let mut path_basis = None;
+        let mut path_visited = 0u64;
+        let mut path_head = path_cursor
+            .as_mut()
+            .map(|cursor| next_path_hit(cursor, self, &mut context))
+            .transpose()?
+            .flatten();
         for cursor in cursors.iter_mut() {
             heads.push(observation.posting(cursor, &mut occurrences, &mut context)?);
         }
@@ -1236,11 +1805,21 @@ impl NativeTextIndex {
             let overlay_candidate = overlay_documents
                 .as_mut()
                 .and_then(|documents| documents.peek().map(|document| document.owner));
-            let candidate = durable_candidate.into_iter().chain(overlay_candidate).min();
+            let path_owner = path_head.as_ref().map(|hit| hit.owner);
+            let candidate = durable_candidate
+                .into_iter()
+                .chain(path_owner)
+                .chain(overlay_candidate)
+                .min();
             let Some(owner) = candidate else {
                 break;
             };
             let overlay_document = overlay.and_then(|(corpus, _)| corpus.document(owner));
+            let path_hit = if path_owner == Some(owner) {
+                path_head.take()
+            } else {
+                None
+            };
             let masked = overlay.is_some_and(|(corpus, _)| corpus.masks(owner));
             if !masked || overlay_document.is_some() {
                 let overlay_source = if let Some(document) = overlay_document {
@@ -1269,6 +1848,11 @@ impl NativeTextIndex {
                             .as_ref()
                             .filter(|row| row.owner == owner)
                             .map(|row| NativeTextHitSource::Durable(row.source_record))
+                    })
+                    .or_else(|| {
+                        path_hit
+                            .as_ref()
+                            .map(|hit| NativeTextHitSource::Durable(hit.source))
                     });
                 let mut document_tokens = overlay_document
                     .map(|document| document.indexed_tokens)
@@ -1342,7 +1926,13 @@ impl NativeTextIndex {
                     if regex_program.has_content() || !plan.filters.paths.is_empty() {
                         match source {
                             NativeTextHitSource::Durable(source_ref) => {
-                                regex_program.evaluate(self, owner, source_ref, &mut context)?
+                                regex_program.evaluate(
+                                    self,
+                                    owner,
+                                    source_ref,
+                                    path_mode,
+                                    &mut context,
+                                )?
                             }
                             NativeTextHitSource::Overlay { .. } => {
                                 let overlay_source = overlay_source.ok_or(IndexError::Conflict)?;
@@ -1356,11 +1946,71 @@ impl NativeTextIndex {
                     } else {
                         (0, true)
                     };
-                let matching = evaluate_boolean(
-                    program,
-                    present,
-                    regex_present,
-                    |ordinal, first, count, cap| {
+                let selected = match source {
+                    NativeTextHitSource::Durable(reference) => {
+                        selection.matches(owner, reference)?
+                    }
+                    NativeTextHitSource::Overlay { .. } => {
+                        let overlay_source = overlay_source.ok_or(IndexError::Conflict)?;
+                        constraints
+                            .repo_relative_path_exact
+                            .as_ref()
+                            .is_none_or(|path| path.as_str() == overlay_source.path)
+                    }
+                };
+                let contains_present = if source_contains_count == 0 || !selected || !path_match {
+                    0
+                } else {
+                    let needles = contains_needles
+                        .get(..source_contains_count)
+                        .ok_or(IndexError::ResourceLimited)?;
+                    match source {
+                        NativeTextHitSource::Durable(source_ref) => file_contains_durable(
+                            self,
+                            owner,
+                            source_ref,
+                            needles,
+                            plan.options.case_mode(),
+                            path_mode,
+                            &mut context,
+                        )?,
+                        NativeTextHitSource::Overlay { .. } => {
+                            let overlay_source = overlay_source.ok_or(IndexError::Conflict)?;
+                            if overlay_source.path.is_empty()
+                                || overlay_source.path.len() > MAX_SOURCE_PATH_BYTES
+                                || overlay_source.path.starts_with('/')
+                                || overlay_source.path.contains('\0')
+                                || overlay_source
+                                    .path
+                                    .split('/')
+                                    .any(|part| part.is_empty() || part == "." || part == "..")
+                                || overlay_source.body.len() > MAX_TEXT_OVERLAY_DOCUMENT_BYTES
+                            {
+                                return Err(IndexError::InvalidInput(
+                                    "native file.contains overlay source exceeds admitted shape"
+                                        .into(),
+                                ));
+                            }
+                            file_contains_mask(
+                                overlay_source.body,
+                                needles,
+                                plan.options.case_mode(),
+                                context.budget,
+                            )?
+                        }
+                    }
+                };
+                let repo_present = if source_repository_count == 0 || !selected || !path_match {
+                    0
+                } else {
+                    match source {
+                        NativeTextHitSource::Durable(reference) => repository_program.mask(self, owner, reference, &mut context)?,
+                        NativeTextHitSource::Overlay { .. } => return Err(IndexError::InvalidInput(
+                            "native repo.has.file requires authenticated overlay repository identity".into(),
+                        )),
+                    }
+                };
+                let evaluate_phrase = |ordinal: usize, first: usize, count: usize, cap: u32| {
                         let end = first
                             .checked_add(count)
                             .ok_or(IndexError::ResourceLimited)?;
@@ -1428,8 +2078,29 @@ impl NativeTextIndex {
                             matched,
                             positive_terms: if matched { mask } else { 0 },
                         })
-                    },
-                )?;
+                };
+                let mut truth = with_preview.then(ClauseTruth::default);
+                let matching = if let Some(trace) = truth.as_mut() {
+                    evaluate_boolean_with_repo(
+                        program,
+                        present,
+                        regex_present,
+                        contains_present,
+                        repo_present,
+                        |ordinal, matched| trace.record(ordinal, matched),
+                        evaluate_phrase,
+                    )?
+                } else {
+                    evaluate_boolean_with_repo(
+                        program,
+                        present,
+                        regex_present,
+                        contains_present,
+                        repo_present,
+                        |_ordinal, _matched| Ok(()),
+                        evaluate_phrase,
+                    )?
+                };
                 let mut value = 0.0;
                 for index in score_order.iter() {
                     if matching.positive_terms & (1u64 << index) != 0 {
@@ -1443,38 +2114,83 @@ impl NativeTextIndex {
                         "nonfinite native BM25 boolean score".into(),
                     ));
                 }
-                let selected = match source {
-                    NativeTextHitSource::Durable(reference) => {
-                        selection.matches(owner, reference)?
+                let mut matched_path = false;
+                if let Some(hit) = path_hit.as_ref() {
+                    if source != NativeTextHitSource::Durable(hit.source) {
+                        return Err(IndexError::CorruptObject(
+                            "native path and body candidates differ from the selected source"
+                                .into(),
+                        ));
                     }
-                    NativeTextHitSource::Overlay { .. } => {
-                        let overlay_source = overlay_source.ok_or(IndexError::Conflict)?;
-                        constraints
-                            .repo_relative_path_exact
-                            .as_ref()
-                            .is_none_or(|path| path.as_str() == overlay_source.path)
+                    let (_, path_stats, _) = path_field.ok_or(IndexError::ResourceLimited)?;
+                    let (length, tf) = path_phrase_stats(
+                        &hit.record.path,
+                        path_phrase,
+                        cursors,
+                        plan.options.case_mode(),
+                        context.budget,
+                    )?;
+                    if tf != 0 {
+                        value += score_with_basis(
+                            policy,
+                            path_stats,
+                            path_df,
+                            tf,
+                            length,
+                            &mut path_basis,
+                        )?;
+                        matched_path = true;
                     }
-                };
-                if matching.matched && path_match && selected {
-                    matched = matched.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-                    let after_order = rank_after.map(|(score, anchor_owner)| {
-                        compare_rank(value, owner, score.get(), anchor_owner)
-                    });
-                    anchor_found |= after_order == Some(Ordering::Equal);
-                    if after_order.is_none_or(|order| order == Ordering::Greater) {
-                        remaining = remaining
-                            .checked_add(1)
-                            .ok_or(IndexError::ResourceLimited)?;
-                        let ranked = HeapHit(NativeTextRankedHit {
-                            owner,
-                            source,
-                            score: value,
+                }
+                if (matching.matched || matched_path) && path_match && selected {
+                    if !value.is_finite() {
+                        return Err(IndexError::CorruptObject(
+                            "nonfinite native grouped score".into(),
+                        ));
+                    }
+                    let hit = NativeTextRankedHit {
+                        owner,
+                        source,
+                        score: value,
+                    };
+                    if let Some(groups) = path_groups.as_mut() {
+                        let NativeTextHitSource::Durable(source) = source else {
+                            return Err(IndexError::Conflict);
+                        };
+                        let record = if let Some(path_hit) = path_hit {
+                            path_hit.record
+                        } else {
+                            super::text::authenticated_text_source(
+                                self,
+                                owner,
+                                Some(source),
+                                false,
+                                &mut context,
+                            )?
+                        };
+                        let (mut record, memory) = record.into_retained_parts(context.budget)?;
+                        let repository = record
+                            .source_repo_id
+                            .take()
+                            .ok_or(IndexError::SnapshotUnavailable)?;
+                        groups.consider(
+                            (hit, truth, matched_path && !matching.matched),
+                            repository,
+                            record.path,
+                            memory,
+                            context.budget,
+                        )?;
+                    } else {
+                        matched = matched.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                        let after_order = rank_after.map(|(score, anchor_owner)| {
+                            compare_rank(value, owner, score.get(), anchor_owner)
                         });
-                        if heap.len() < capacity {
-                            heap.push(ranked);
-                        } else if heap.peek().is_some_and(|worst| ranked < *worst) {
-                            let _discarded = heap.pop();
-                            heap.push(ranked);
+                        anchor_found |= after_order == Some(Ordering::Equal);
+                        if after_order.is_none_or(|order| order == Ordering::Greater) {
+                            remaining = remaining
+                                .checked_add(1)
+                                .ok_or(IndexError::ResourceLimited)?;
+                            heap.consider(capacity, hit, truth)?;
                         }
                     }
                 }
@@ -1485,6 +2201,16 @@ impl NativeTextIndex {
                 if head.as_ref().is_some_and(|hit| hit.owner == owner) {
                     *head = observation.posting(cursor, &mut occurrences, &mut context)?;
                 }
+            }
+            if path_owner == Some(owner) {
+                path_visited = path_visited
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                path_head = next_path_hit(
+                    path_cursor.as_mut().ok_or(IndexError::ResourceLimited)?,
+                    self,
+                    &mut context,
+                )?;
             }
             if admitted.as_ref().is_some_and(|row| row.owner == owner) {
                 admitted = None;
@@ -1501,6 +2227,76 @@ impl NativeTextIndex {
             return Err(IndexError::CorruptObject(
                 "native text posting extends beyond admitted universe".into(),
             ));
+        }
+        if let Some(groups) = path_groups {
+            if path_visited != path_df {
+                return Err(IndexError::CorruptObject(
+                    "native path posting cardinality changed during traversal".into(),
+                ));
+            }
+            let groups = groups.finish(capacity, path_rank_after, context.budget)?;
+            let hit_bytes = capacity_bytes::<NativeTextRankedHit>(groups.rows.len())?;
+            context.budget.charge(WorkUsage {
+                bytes: hit_bytes,
+                ..WorkUsage::default()
+            })?;
+            let hit_memory = if hit_bytes == 0 {
+                None
+            } else {
+                context
+                    .budget
+                    .reserve_memory(hit_bytes, MemoryLifetime::Retained)?
+            };
+            let mut hits = Vec::new();
+            hits.try_reserve_exact(groups.rows.len())
+                .map_err(|_error| IndexError::ResourceLimited)?;
+            hits.extend(groups.rows.iter().map(|row| row.payload.0));
+            if let Some(visitor) = preview {
+                let preview_bytes = capacity_bytes::<HeapHit<ClauseTruth>>(groups.rows.len())?;
+                let _memory = if preview_bytes == 0 {
+                    None
+                } else {
+                    context
+                        .budget
+                        .reserve_memory(preview_bytes, MemoryLifetime::Temporary)?
+                };
+                context.budget.charge(WorkUsage {
+                    bytes: preview_bytes,
+                    ..WorkUsage::default()
+                })?;
+                let mut preview_hits = Vec::new();
+                preview_hits
+                    .try_reserve_exact(groups.rows.len())
+                    .map_err(|_error| IndexError::ResourceLimited)?;
+                for row in &groups.rows {
+                    let (hit, truth, path_only) = row.payload;
+                    preview_hits.push(HeapHit(
+                        hit,
+                        truth.ok_or_else(preview_mode_error)?,
+                        path_only,
+                    ));
+                }
+                visitor(
+                    &PreviewSelection {
+                        hits: &preview_hits,
+                        program,
+                        term_remap: &term_remap,
+                        cursors,
+                        regex: &regex_program,
+                        case: plan.options.case_mode(),
+                    },
+                    &mut context,
+                )?;
+            }
+            context.budget.checkpoint()?;
+            return Ok(NativeTextRanking {
+                view,
+                artifact: member.artifact,
+                matched: groups.matched,
+                remaining: groups.remaining,
+                hits,
+                _hit_memory: hit_memory,
+            });
         }
         // A positional cursor must name an actual eligible row, including its
         // exact score. Finish validation first so an unknown cursor cannot hide
@@ -1534,14 +2330,35 @@ impl NativeTextIndex {
             .hits
             .try_reserve_exact(heap.len())
             .map_err(|_error| IndexError::ResourceLimited)?;
-        ranked.hits.extend(heap.drain().map(|hit| hit.0));
-        ranked
-            .hits
-            .sort_unstable_by(|a, b| compare_rank(a.score, a.owner, b.score, b.owner));
+        match (heap, preview) {
+            (TextHeap::Ranked(heap), None) => {
+                ranked.hits.extend(heap.drain().map(|hit| hit.0));
+                ranked.hits.sort_unstable_by(|a, b| compare_rank(a.score, a.owner, b.score, b.owner));
+            }
+            (TextHeap::Preview(heap), Some(visitor)) => {
+                let sorted = std::mem::take(heap).into_sorted_vec();
+                visitor(
+                    &PreviewSelection {
+                        hits: &sorted,
+                        program,
+                        term_remap: &term_remap,
+                        cursors,
+                        regex: &regex_program,
+                        case: plan.options.case_mode(),
+                    },
+                    &mut context,
+                )?;
+                ranked.hits.extend(sorted.into_iter().map(|row| row.0));
+            }
+            _ => return Err(preview_mode_error()),
+        }
         context.budget.checkpoint()?;
         Ok(ranked)
     }
 }
+
+mod preview_truth;
+mod preview_projection;
 
 #[cfg(test)]
 #[path = "text_query/count_tests.rs"]
@@ -1576,7 +2393,7 @@ mod tests {
     use super::*;
 
     fn matched_terms(program: &[Clause], present: u64) -> Result<u64, IndexError> {
-        evaluate_boolean(program, present, 0, |_ordinal, _first, _count, _cap| {
+        evaluate_boolean(program, present, 0, 0, |_ordinal, _first, _count, _cap| {
             Err(IndexError::BackendViolation(
                 "unexpected phrase in term-only gold".into(),
             ))
@@ -1666,15 +2483,42 @@ mod tests {
                 "unexpected phrase in regex gold".into(),
             ))
         };
-        let regex_only = evaluate_boolean(&program, 0, 1, no_phrase)?;
+        let regex_only = evaluate_boolean(&program, 0, 1, 0, no_phrase)?;
         check!(regex_only.matched);
         check_eq!(regex_only.positive_terms, 0);
-        let both = evaluate_boolean(&program, 1, 1, no_phrase)?;
+        let both = evaluate_boolean(&program, 1, 1, 0, no_phrase)?;
         check!(both.matched);
         check_eq!(both.positive_terms, 1);
-        let neither = evaluate_boolean(&program, 0, 0, no_phrase)?;
+        let neither = evaluate_boolean(&program, 0, 0, 0, no_phrase)?;
         check!(!neither.matched);
         check_eq!(neither.positive_terms, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn direct_file_contains_plan_cannot_reinterpret_slash_regex_as_literal()
+    -> Result<(), IndexError> {
+        let mut program = Vec::new();
+        let slash_regex = PlanNode::Leaf {
+            leaf: PlanLeaf::FileContains {
+                needle: "/foo.*/".into(),
+            },
+            cap: None,
+        };
+        check!(matches!(
+            compile_clauses(
+                &slash_regex,
+                0,
+                &mut Complexity::default(),
+                &mut program,
+                &mut |_term| Ok(0),
+                &mut |_raw, _phrase| Ok(()),
+                &mut |_source| Ok(0),
+                &mut |_needle| Ok(0),
+            ),
+            Err(IndexError::InvalidInput(_))
+        ));
+        check!(program.is_empty());
         Ok(())
     }
 
@@ -1696,6 +2540,7 @@ mod tests {
                 &mut |_term| Ok(0),
                 &mut |_raw, _phrase| Ok(()),
                 &mut |_source| Ok(0),
+                &mut |_needle| Ok(0),
             )
         };
         check!(!compile(&negative())?);
@@ -1727,6 +2572,7 @@ mod tests {
                 &mut |_term| Ok(0),
                 &mut |_raw, _phrase| Ok(()),
                 &mut |_source| Ok(0),
+                &mut |_needle| Ok(0),
             )
         };
         let mut nested = leaf();

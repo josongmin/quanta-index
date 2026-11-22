@@ -58,6 +58,7 @@ try:
         SourceSnapshot,
         canonical,
         digest,
+        distinct_review_identities,
         evaluate,
         evaluate_complete_scored_file_evidence,
         evaluate_paired_file_diagnostic,
@@ -97,6 +98,7 @@ except ImportError:  # direct script invocation: import the sibling module
         SourceSnapshot,
         canonical,
         digest,
+        distinct_review_identities,
         evaluate,
         evaluate_complete_scored_file_evidence,
         evaluate_paired_file_diagnostic,
@@ -2889,17 +2891,17 @@ def validate_admission_manifest(payload: object) -> dict:
             {"annotator_id", "receipt_sha256"},
             f"qualification admission annotators[{index}]",
         )
-        if not isinstance(annotator["annotator_id"], str) or not annotator["annotator_id"]:
+        if not isinstance(annotator["annotator_id"], str) or not annotator["annotator_id"].strip():
             raise RunError("qualification annotator id must be nonempty")
         if not _is_hex(annotator["receipt_sha256"], 64):
             raise RunError("qualification annotation receipt digest is malformed")
         identities.append(annotator["annotator_id"])
         receipt_digests.append(annotator["receipt_sha256"])
-    if len(set(identities)) != 2 or len(set(receipt_digests)) != 2:
+    if not distinct_review_identities(*identities) or len(set(receipt_digests)) != 2:
         raise RunError("qualification annotation authorities and receipts must be distinct")
-    if not isinstance(gold["adjudicator_id"], str) or not gold["adjudicator_id"]:
+    if not isinstance(gold["adjudicator_id"], str) or not gold["adjudicator_id"].strip():
         raise RunError("qualification adjudicator id must be nonempty")
-    if gold["adjudicator_id"] in identities:
+    if not distinct_review_identities(*identities, gold["adjudicator_id"]):
         raise RunError("qualification adjudicator must be distinct from annotators")
     if not _is_hex(gold["adjudication_receipt_sha256"], 64):
         raise RunError("qualification adjudication receipt digest is malformed")

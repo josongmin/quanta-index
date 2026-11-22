@@ -1,5 +1,5 @@
 //! QI-BB-011 — one text normalizer for the whole DSL pipeline, through the
-//! daemon.
+//! pinned Legacy daemon.
 //!
 //! The lexical adapter's golden table (`unicode_normalization_goldens`)
 //! builds `LqQuery` values directly and so never sees the query DSL. This
@@ -20,12 +20,18 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::error::Error;
+use std::{error::Error, time::Duration};
 
-use quanta_index_contract::TextQuerySyntax;
-use quanta_index_searchd_harness as e2e_harness;
+use quanta_index_contract::{
+    GenerationPin, ManifestGeneration, RepoId, RevisionId, TextQueryResponse, TextQuerySyntax,
+};
+use quanta_index_sdk::{QuantaIndex, SdkError};
+use quanta_index_searchd_harness::{
+    legacy_reference::{LegacySearchdBinary, publish_legacy_source},
+    private_tempdir,
+};
 
-use e2e_harness::{E2eQueryResult, E2eRuntime};
+use crate::fail_closed_wait::{RealTicker, wait_for};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -244,27 +250,63 @@ const GOLDENS: &[Golden] = &[
     ),
 ];
 
-/// Ingest the corpus and return `path -> label`.
-fn ingest_corpus(rt: &mut E2eRuntime) -> Result<BTreeMap<String, &'static str>, Box<dyn Error>> {
-    let mut labels = BTreeMap::new();
-    for (label, path, text) in CORPUS {
-        rt.ingest_text("repo", path, text)?;
-        let _previous = labels.insert((*path).to_string(), *label);
+fn with_corpus(check: impl FnOnce(&QuantaIndex, &GenerationPin) -> TestResult) -> TestResult {
+    let parent = private_tempdir()?;
+    let state = parent.path().join("state");
+    let binary = LegacySearchdBinary::from_environment()?;
+    let process = binary.start(&state, 8)?;
+    let result = (|| -> TestResult {
+        let client = process.connect()?;
+        let repo = RepoId::new("repo-e2e")?;
+        let revision = RevisionId::new("rev-e2e")?;
+        let files = CORPUS
+            .iter()
+            .zip(1_u64..)
+            .map(|(&(_, path, text), owner)| (path, text, owner))
+            .collect::<Vec<_>>();
+        let (_head, _receipt) =
+            publish_legacy_source(&client, &repo, &revision, 1, None, &files, None)?;
+        let _ready = wait_for(
+            &RealTicker::new(),
+            Duration::from_secs(20),
+            Duration::from_millis(50),
+            "pinned old-Q Unicode query backend ready",
+            || client.observability().process_readiness(),
+            |report| report.ready,
+            |_| true,
+        )?;
+        check(
+            &client,
+            &GenerationPin::new(repo, revision, ManifestGeneration::new(1)),
+        )
+    })();
+    let stopped = process.stop();
+    result.and(stopped)?;
+    binary.verify()
+}
+
+fn query_text(
+    client: &QuantaIndex,
+    pin: &GenerationPin,
+    syntax: TextQuerySyntax,
+    query: &str,
+) -> Result<TextQueryResponse, SdkError> {
+    match syntax {
+        TextQuerySyntax::Native => client.lexical().query().native(query),
+        TextQuerySyntax::Sourcegraph => client.lexical().query().sourcegraph(query),
+        TextQuerySyntax::CodeSearch => client.lexical().query().code_search(query),
     }
-    let _sealed = rt.seal()?;
-    rt.activate_last_sealed_generation()?;
-    Ok(labels)
+    .pinned(pin.clone())
+    .top_k(TOP_K)
+    .execute()
 }
 
 fn observed_labels(
-    result: &E2eQueryResult,
-    labels: &BTreeMap<String, &'static str>,
+    result: TextQueryResponse,
+    labels: &BTreeMap<&str, &'static str>,
 ) -> Result<BTreeSet<&'static str>, Box<dyn Error>> {
-    if let Some(error) = &result.typed_error {
-        return Err(format!("refused: {error}").into());
-    }
     result
-        .candidates
+        .results
         .iter()
         .map(|candidate| {
             labels
@@ -297,36 +339,42 @@ fn variants(golden: &Golden) -> Vec<(TextQuerySyntax, String)> {
 
 #[test]
 fn every_syntax_case_spelling_and_route_answers_the_golden_set() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let labels = ingest_corpus(&mut rt)?;
-    let mut failures: Vec<String> = Vec::new();
-    for golden in GOLDENS {
-        let expected: BTreeSet<&'static str> = golden.expected.iter().copied().collect();
-        for (syntax, query) in variants(golden) {
-            let result = rt.query_text(syntax, &query, TOP_K);
-            match observed_labels(&result, &labels) {
-                Ok(observed) if observed == expected => {}
-                Ok(observed) => failures.push(format!(
-                    "{syntax:?} {query:?}: expected {expected:?}, got {observed:?} ({})",
-                    golden.label
-                )),
-                Err(err) => failures.push(format!(
-                    "{syntax:?} {query:?}: expected {expected:?}, got {err} ({})",
-                    golden.label
-                )),
+    with_corpus(|client, pin| {
+        let labels = CORPUS
+            .iter()
+            .map(|&(label, path, _)| (path, label))
+            .collect();
+        let mut failures: Vec<String> = Vec::new();
+        for golden in GOLDENS {
+            let expected: BTreeSet<&'static str> = golden.expected.iter().copied().collect();
+            for (syntax, query) in variants(golden) {
+                let observed = query_text(client, pin, syntax, &query)
+                    .map_err(Box::<dyn Error>::from)
+                    .and_then(|result| observed_labels(result, &labels));
+                match observed {
+                    Ok(observed) if observed == expected => {}
+                    Ok(observed) => failures.push(format!(
+                        "{syntax:?} {query:?}: expected {expected:?}, got {observed:?} ({})",
+                        golden.label
+                    )),
+                    Err(err) => failures.push(format!(
+                        "{syntax:?} {query:?}: expected {expected:?}, got {err} ({})",
+                        golden.label
+                    )),
+                }
             }
         }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{} golden spellings failed:\n{}",
-            failures.len(),
-            failures.join("\n")
-        )
-        .into())
-    }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} golden spellings failed:\n{}",
+                failures.len(),
+                failures.join("\n")
+            )
+            .into())
+        }
+    })
 }
 
 /// `case:yes` and a regex's `(?i)` contradict each other: the Native DSL
@@ -337,19 +385,19 @@ fn every_syntax_case_spelling_and_route_answers_the_golden_set() -> TestResult {
 /// inline flag typed), so it is not exercised here.
 #[test]
 fn a_regex_case_flag_beside_case_yes_is_refused_typed() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let _labels = ingest_corpus(&mut rt)?;
-    let result = rt.query_text(TextQuerySyntax::Native, "ΟΔΟΣ /(?i)δ/ case:yes", TOP_K);
-    match result.typed_error {
-        Some(error)
-            if error.code.as_str() == "PARSE_FAIL" && error.message.contains("contradicts") =>
-        {
-            Ok(())
+    with_corpus(|client, pin| {
+        match query_text(
+            client,
+            pin,
+            TextQuerySyntax::Native,
+            "ΟΔΟΣ /(?i)δ/ case:yes",
+        ) {
+            Err(SdkError::Remote { code, message, .. })
+                if code.as_wire_str() == "PARSE_FAIL" && message.contains("contradicts") =>
+            {
+                Ok(())
+            }
+            other => Err(format!("expected the typed contradiction refusal, got {other:?}").into()),
         }
-        other => Err(format!(
-            "expected the typed contradiction refusal, got {other:?} / {:?}",
-            result.candidate_ids
-        )
-        .into()),
-    }
+    })
 }

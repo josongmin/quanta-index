@@ -355,22 +355,7 @@ impl QuarantineService {
                     ),
                 });
             }
-            return match std::fs::symlink_metadata(&entry.path) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Ok(QuarantineDiscardOutcomeV1::Absent)
-                }
-                Ok(_) => Err(CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
-                    message: format!(
-                        "quarantine discard: {} was not quarantined at the service boundary; list it again before deletion",
-                        entry.path.display()
-                    ),
-                }),
-                Err(error) => Err(CoreError::Storage(format!(
-                    "quarantine discard: inspect {}: {error}",
-                    entry.path.display()
-                ))),
-            };
+            return discard_unlisted_generation(&entry.path);
         }
         let authority = self.lifecycle.authority_store();
         let keys = authority.with_record_keys_during_quarantine(|durable_keys| {
@@ -490,10 +475,8 @@ impl QuarantineService {
     /// defers the discard, typed), then reclaim through the port that
     /// re-proves the sealed identity before deleting.
     ///
-    /// A path the adapter's inventory no longer names at all is gone and
-    /// answers `Absent`; a path it names as something other than an orphan
-    /// now — retained again, or set aside by the adapter itself — is
-    /// refused typed, never removed.
+    /// An unlisted path answers `Absent` only after a namespace probe.
+    /// A path still present or listed under another status is refused.
     fn discard_orphan(
         &self,
         entry: &QuarantinedGenerationV1,
@@ -522,7 +505,7 @@ impl QuarantineService {
                     ),
                 });
             }
-            return Ok(QuarantineDiscardOutcomeV1::Absent);
+            return discard_unlisted_generation(&entry.path);
         };
         let identity = &orphan.entry.identity;
         // A seal retry can publish a durable record before it reconciles the
@@ -625,6 +608,25 @@ impl QuarantineService {
             ));
         }
         Ok(outcome)
+    }
+}
+
+fn discard_unlisted_generation(path: &Path) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(QuarantineDiscardOutcomeV1::Absent)
+        }
+        Ok(_) => Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
+            message: format!(
+                "quarantine discard: {} was not quarantined at the service boundary; list it again before deletion",
+                path.display()
+            ),
+        }),
+        Err(error) => Err(CoreError::Storage(format!(
+            "quarantine discard: inspect {}: {error}",
+            path.display()
+        ))),
     }
 }
 
@@ -1391,6 +1393,13 @@ pub(crate) mod tests {
     /// directory is never listed and never removable through this path.
     #[test]
     fn an_orphan_is_listed_reclaimed_and_then_gone() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let orphan_path = root.path().join("g2");
+        let retained_path = root.path().join("g5");
+        let mut orphaned = sealed(SearchPlaneTrackKind::Lexical, 2);
+        orphaned.path = orphan_path.clone();
+        let mut retained = sealed(SearchPlaneTrackKind::Lexical, 5);
+        retained.path = retained_path.clone();
         let ledger = Arc::new(RwLock::new(Ledger::new()));
         ledger
             .write()
@@ -1403,10 +1412,7 @@ pub(crate) mod tests {
             );
         let doubles = service(
             Vec::new(),
-            vec![
-                sealed(SearchPlaneTrackKind::Lexical, 2),
-                sealed(SearchPlaneTrackKind::Lexical, 5),
-            ],
+            vec![orphaned, retained],
             Vec::new(),
             Vec::new(),
             ledger,
@@ -1416,7 +1422,7 @@ pub(crate) mod tests {
             return Err(format!("expected exactly the orphan listed: {inventory:?}").into());
         };
         assert_eq!(orphan.reason, "GENERATION_QUARANTINE_ORPHANED");
-        assert_eq!(orphan.path, "/root/lexical/pair/g2");
+        assert_eq!(Path::new(&orphan.path), orphan_path.as_path());
         assert!(orphan.detail.contains("generation 2"), "{}", orphan.detail);
 
         let ack = doubles
@@ -1445,7 +1451,7 @@ pub(crate) mod tests {
         // The retained generation cannot be removed by naming it an orphan.
         let forged = QuarantinedGenerationEntryV1 {
             track: SearchPlaneTrackKind::Lexical,
-            path: "/root/lexical/pair/g5".to_string(),
+            path: retained_path.to_str().ok_or("retained path")?.to_string(),
             reason: "GENERATION_QUARANTINE_ORPHANED".to_string(),
             detail: String::new(),
         };
@@ -1461,6 +1467,68 @@ pub(crate) mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_stale_orphan_target_requires_actual_namespace_absence() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let pair = root.path().join("pair");
+        let generation = pair.join("g2");
+        std::fs::create_dir_all(&generation)?;
+        let mut listed = sealed(SearchPlaneTrackKind::Lexical, 2);
+        listed.path = generation.clone();
+        let doubles = service(
+            Vec::new(),
+            vec![listed],
+            Vec::new(),
+            Vec::new(),
+            Arc::new(RwLock::new(Ledger::new())),
+        );
+        let orphan = doubles
+            .service
+            .inventory()?
+            .lexical
+            .into_iter()
+            .next()
+            .ok_or("expected orphan in the original inventory")?;
+        let target = QuarantineTargetV1::Generation(orphan);
+        // An unsealed replacement is omitted from the scanner but remains on disk.
+        doubles
+            .lexical_scanner
+            .sealed
+            .lock()
+            .map_err(|error| error.to_string())?
+            .clear();
+        match doubles.service.discard(&target) {
+            Err(CoreError::Typed { code, .. })
+                if code == QUARANTINE_TARGET_NOT_QUARANTINED_CODE => {}
+            other => {
+                return Err(
+                    format!("present unlisted generation must be refused: {other:?}").into(),
+                );
+            }
+        }
+        assert!(generation.is_dir());
+
+        std::fs::remove_dir(&generation)?;
+        let gone = doubles.service.discard(&target)?;
+        assert_eq!(gone.outcome, QuarantineDiscardOutcomeDtoV1::Absent);
+
+        std::fs::remove_dir(&pair)?;
+        std::fs::write(&pair, b"not a directory")?;
+        match doubles.service.discard(&target) {
+            Err(CoreError::Storage(_)) => {}
+            other => return Err(format!("file ancestor must be a storage error: {other:?}").into()),
+        }
+        assert!(
+            doubles
+                .lexical_reclaim
+                .reclaimed
+                .lock()
+                .map_err(|error| error.to_string())?
+                .is_empty()
+        );
         Ok(())
     }
 

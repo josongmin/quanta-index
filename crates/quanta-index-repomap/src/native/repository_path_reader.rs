@@ -462,3 +462,343 @@ fn visit_path(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use quanta_index_contract::{
+        RepoId,
+        index::{Digest, OwnerKey, ProducerId, SourceRecord, SourceTextAdmission, StableOwnerId},
+    };
+    use quanta_index_core::index::{
+        CatalogView, CollectionId, GroupActivation, IndexInstanceId, IndexKind, InputDomain,
+        InstanceSpec, MapBatchRequest, MapBatchWrite, MapEdit, MapPage, MapWrite, ObjectBatchInput,
+        ObjectRef, PublicationGroupId, ReadSessionRef, ReadTicketLease, RegisteredObject, SchemaId,
+        SlotId, StorageFormatId, StoredObject, TenantId, TicketId, TicketRecord, ViewRef,
+        WorkLimits, WorkspaceKey, WorktreeId,
+        ports::{ImmutableObjectPort, MapEditCursor, ObjectWriteSink, PersistentMapPort},
+    };
+
+    use super::*;
+
+    fn reference(byte: u8) -> ObjectRef {
+        ObjectRef(Digest([byte; 32]))
+    }
+
+    fn owner() -> OwnerKey {
+        OwnerKey {
+            producer: ProducerId([1; 16]),
+            stable_id: StableOwnerId([2; 16]),
+        }
+    }
+
+    fn selected() -> Result<(TicketRecord, InstanceSpec), IndexError> {
+        let workspace = WorkspaceKey {
+            tenant: TenantId([1; 16]),
+            collection: CollectionId([2; 16]),
+            worktree: WorktreeId([3; 16]),
+            slot: SlotId([4; 16]),
+        };
+        let mut view = CatalogView {
+            identity: ViewRef {
+                workspace,
+                epoch: 1,
+                sequence: 1,
+                digest: Digest([0; 32]),
+            },
+            profile: reference(5),
+            source: SourceCut {
+                owners: MapRoot(Some(reference(6))),
+                paths: MapRoot(Some(reference(7))),
+                frontiers: MapRoot(None),
+            },
+            projections: MapRoot(None),
+            members: MapRoot(None),
+            coverage: MapRoot(None),
+        };
+        view.identity.digest = view
+            .identity_digest()
+            .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+        let ticket = TicketRecord {
+            lease: ReadTicketLease {
+                id: TicketId([8; 16]),
+                session: ReadSessionRef { id: 1, fence: 1 },
+                fence: 1,
+                expires_at_ms: 10_000,
+            },
+            view,
+        };
+        let instance = InstanceSpec {
+            instance: IndexInstanceId([9; 16]),
+            kind: IndexKind([10; 16]),
+            group: PublicationGroupId([11; 16]),
+            activation: GroupActivation::CoreRequired,
+            input_domain: InputDomain::SourceLocal,
+            schema: SchemaId([12; 16]),
+            policy: Digest([13; 32]),
+            format: StorageFormatId([14; 16]),
+        };
+        Ok((ticket, instance))
+    }
+
+    fn budget(bytes: u64) -> Result<WorkBudget, IndexError> {
+        Ok(WorkBudget::new(
+            WorkLimits {
+                reads: 100,
+                writes: 0,
+                bytes,
+                mutations: 0,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(5))
+                .ok_or(IndexError::ResourceLimited)?,
+        ))
+    }
+
+    struct SourcePorts {
+        reference: ObjectRef,
+        stored: StoredObject,
+    }
+
+    impl SourcePorts {
+        fn new(repository: Option<RepoId>, valid_edge: bool) -> Result<Self, IndexError> {
+            let bytes = reference(16);
+            let reference = reference(15);
+            let record = SourceRecord {
+                path: "src/lib.rs".into(),
+                bytes,
+                byte_len: 0,
+                text: SourceTextAdmission::Excluded,
+                source_repo_id: repository,
+                language: None,
+            };
+            let payload = serde_json::to_vec(&record)
+                .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+            let stored = StoredObject::new(
+                RegisteredObject::unscoped(
+                    reference,
+                    u64::try_from(payload.len()).map_err(|_error| IndexError::ResourceLimited)?,
+                    if valid_edge { vec![bytes] } else { vec![] },
+                ),
+                payload,
+                None,
+            );
+            Ok(Self { reference, stored })
+        }
+    }
+
+    impl ImmutableObjectPort for SourcePorts {
+        fn identify(
+            &self,
+            _: &[u8],
+            _: &[ObjectRef],
+            _: &mut WorkBudget,
+        ) -> Result<RegisteredObject, IndexError> {
+            Err(IndexError::BackendViolation("unexpected identify".into()))
+        }
+        fn put(
+            &self,
+            _: &[u8],
+            _: &[ObjectRef],
+            _: &mut WorkBudget,
+        ) -> Result<RegisteredObject, IndexError> {
+            Err(IndexError::BackendViolation("unexpected put".into()))
+        }
+        fn install(
+            &self,
+            _: &[u8],
+            _: &[ObjectRef],
+            _: &dyn ObjectWriteSink,
+            _: &mut WorkBudget,
+        ) -> Result<RegisteredObject, IndexError> {
+            Err(IndexError::BackendViolation("unexpected install".into()))
+        }
+        fn install_batch(
+            &self,
+            _: &[ObjectBatchInput],
+            _: &dyn ObjectWriteSink,
+            _: &mut WorkBudget,
+        ) -> Result<quanta_index_core::index::RegisteredObjectBatch, IndexError> {
+            Err(IndexError::BackendViolation(
+                "unexpected batch install".into(),
+            ))
+        }
+        fn get(
+            &self,
+            reference: ObjectRef,
+            _: &mut WorkBudget,
+        ) -> Result<StoredObject, IndexError> {
+            if reference != self.reference {
+                return Err(IndexError::BackendViolation(
+                    "unexpected object read".into(),
+                ));
+            }
+            Ok(self.stored.clone())
+        }
+    }
+
+    impl PersistentMapPort for SourcePorts {
+        fn lookup(
+            &self,
+            _: MapRoot,
+            key: &[u8],
+            _: &mut WorkBudget,
+        ) -> Result<Option<MapValue>, IndexError> {
+            Ok((key == owner_map_key(owner()).as_slice())
+                .then_some(MapValue::Object(self.reference)))
+        }
+        fn scan(
+            &self,
+            _: MapRoot,
+            _: Option<&[u8]>,
+            _: u32,
+            _: &mut WorkBudget,
+        ) -> Result<MapPage, IndexError> {
+            Err(IndexError::BackendViolation("unexpected scan".into()))
+        }
+        fn apply(
+            &self,
+            _: MapRoot,
+            _: &[MapEdit],
+            _: &dyn ObjectWriteSink,
+            _: &mut WorkBudget,
+        ) -> Result<MapWrite, IndexError> {
+            Err(IndexError::BackendViolation("unexpected apply".into()))
+        }
+        fn apply_batch(
+            &self,
+            _: &[MapBatchRequest],
+            _: &dyn ObjectWriteSink,
+            _: &mut WorkBudget,
+        ) -> Result<MapBatchWrite, IndexError> {
+            Err(IndexError::BackendViolation(
+                "unexpected batch apply".into(),
+            ))
+        }
+        fn apply_stream(
+            &self,
+            _: &[MapRoot],
+            _: &mut dyn MapEditCursor,
+            _: &dyn ObjectWriteSink,
+            _: &mut WorkBudget,
+        ) -> Result<quanta_index_core::index::StagedMapRoots, IndexError> {
+            Err(IndexError::BackendViolation(
+                "unexpected stream apply".into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn scalar_path_rejects_repository_record_and_corrupt_cursor_edge()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (ticket, instance) = selected()?;
+        let marker = SourcePathOwners::LegacyOwner(owner()).encode()?;
+        let source = ticket.view.source;
+        let scoped = SourcePorts::new(Some(RepoId::new("repo-a")?), true)?;
+        let mut work = budget(100_000)?;
+        let mut context = QueryReadContext {
+            ticket: &ticket,
+            instance: &instance,
+            objects: &scoped,
+            maps: &scoped,
+            budget: &mut work,
+        };
+        let mut page = RepositoryFilePathPage::new(ticket.view.identity, 1, context.budget)?;
+        if !matches!(
+            visit_path(
+                &mut page,
+                marker,
+                "src/lib.rs",
+                None,
+                source,
+                &mut context,
+                1
+            ),
+            Err(IndexError::CorruptObject(_))
+        ) {
+            return Err("scalar path accepted a repository record".into());
+        }
+        let corrupt = SourcePorts::new(None, false)?;
+        let mut context = QueryReadContext {
+            ticket: &ticket,
+            instance: &instance,
+            objects: &corrupt,
+            maps: &corrupt,
+            budget: &mut work,
+        };
+        let cursor = NativeRepositoryPathCursor {
+            view: ticket.view.identity,
+            instance: instance.instance,
+            prefix: "src/".into(),
+            path: "src/lib.rs".into(),
+            repository: None,
+        };
+        let mut page = RepositoryFilePathPage::new(ticket.view.identity, 1, context.budget)?;
+        if !matches!(
+            visit_path(
+                &mut page,
+                marker,
+                "src/lib.rs",
+                Some(&cursor),
+                source,
+                &mut context,
+                1,
+            ),
+            Err(IndexError::CorruptObject(_))
+        ) {
+            return Err("corrupt cursor source edge was not reported as corruption".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cursor_request_bytes_are_charged_before_storage() -> Result<(), Box<dyn std::error::Error>> {
+        let (ticket, instance) = selected()?;
+        let ports = SourcePorts::new(None, true)?;
+        let prefix = "a".repeat(quanta_index_core::index::MAX_SOURCE_PATH_BYTES);
+        let repository = RepoId::new("repo-a")?;
+        let expected_bytes = b"path\0"
+            .len()
+            .checked_add(prefix.len())
+            .and_then(|bytes| bytes.checked_add(prefix.len()))
+            .and_then(|bytes| bytes.checked_add(repository.as_str().len()))
+            .ok_or("cursor charge overflow")?;
+        let mut work = budget(
+            u64::try_from(expected_bytes)?
+                .checked_sub(1)
+                .ok_or("empty cursor charge")?,
+        )?;
+        let request = RepositoryPathReadRequest {
+            prefix: prefix.clone(),
+            after: Some(NativeRepositoryPathCursor {
+                view: ticket.view.identity,
+                instance: instance.instance,
+                prefix: prefix.clone(),
+                path: prefix,
+                repository: Some(repository),
+            }),
+            limit: 1,
+        };
+        let reader = NativeRepositoryPathReader::new(ResourceNeed {
+            cpu_units: 1,
+            io_bytes: 4096,
+            memory_bytes: 4096,
+            provider_units: 0,
+        })?;
+        let result = reader.query(
+            &request,
+            &mut QueryReadContext {
+                ticket: &ticket,
+                instance: &instance,
+                objects: &ports,
+                maps: &ports,
+                budget: &mut work,
+            },
+        );
+        if !matches!(result, Err(IndexError::ResourceLimited)) {
+            return Err("cursor bytes escaped work limit".into());
+        }
+        Ok(())
+    }
+}

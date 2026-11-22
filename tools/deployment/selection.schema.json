@@ -161,6 +161,9 @@
         "QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS": {
           "$ref": "#/$defs/environmentValue"
         },
+        "QUANTA_INDEX_PROVIDER_OPENAI_MAX_REQUEST_COST_MICROS": {
+          "$ref": "#/$defs/environmentValue"
+        },
         "QUANTA_INDEX_PROVIDER_PROFILE": {
           "$ref": "#/$defs/environmentValue"
         },

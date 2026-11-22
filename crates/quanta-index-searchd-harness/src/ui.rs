@@ -33,7 +33,11 @@
 use std::path::Path;
 
 use anyhow::Result as AnyResult;
-use quanta_index_contract::{CandidatePresenceV1, EarlyStopReason, HighlightSpan, TextQuerySyntax};
+use quanta_index_contract::{
+    CandidatePresenceV1, EarlyStopReason, HighlightSpan, LexicalCandidate, QueryConstraintSetV1,
+    TextQueryRequest, TextQuerySyntax,
+};
+use quanta_index_sdk::{GenerationPin, QuantaIndex, RepoId, RevisionId, SdkError};
 use serde_json::{Value, json};
 
 use crate::artifact::{
@@ -41,7 +45,8 @@ use crate::artifact::{
     PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest, corpus_digest,
     saturating_u64,
 };
-use crate::harness::E2eRuntime;
+use crate::legacy_reference::{LegacySearchdBinary, publish_legacy_source, request_when_ready};
+use crate::private_tempdir;
 
 /// Repo id the UI fixtures are ingested under.
 pub const UI_REPO: &str = "repo-ui";
@@ -183,41 +188,51 @@ pub struct UiReport {
     pub scores: Vec<UiScore>,
     pub explanation: ExplanationSectionsCapture,
     pub passed: bool,
+    daemon_sha256: String,
 }
 
-/// Boot one runtime, seed the UI fixtures, seal + activate.
-pub fn prepare_ui_runtime() -> AnyResult<E2eRuntime> {
-    let mut rt = E2eRuntime::boot()?;
-    for probe in UI_PROBES {
-        rt.ingest_text(UI_REPO, probe.path, probe.content)?;
+fn query_candidates(
+    client: &QuantaIndex,
+    pin: &GenerationPin,
+    query: &str,
+) -> Result<Vec<LexicalCandidate>, SdkError> {
+    let response = request_when_ready(|| {
+        client
+            .lexical()
+            .query()
+            .native(query)
+            .pinned(pin.clone())
+            .top_k(TOP_K)
+            .execute()
+    })?;
+    if response.generation != *pin {
+        return Err(SdkError::Protocol(
+            "UI response selected another generation".into(),
+        ));
     }
-    let _generation = rt.seal()?;
-    rt.activate_last_sealed_generation()?;
-    Ok(rt)
+    Ok(response.results)
 }
 
 /// Score one UI probe end to end against the live ranker.
-fn score_probe(rt: &mut E2eRuntime, probe: &UiProbe) -> UiScore {
+fn score_probe(client: &QuantaIndex, pin: &GenerationPin, probe: &UiProbe) -> UiScore {
     let mut failures = Vec::new();
-    let result = rt.query_text(TextQuerySyntax::Native, probe.query, TOP_K);
-    if let Some(error) = result.typed_error {
-        failures.push(format!(
-            "{}: query returned typed error {}: {}",
-            probe.id, error.code, error.message
-        ));
-        return UiScore {
-            id: probe.id,
-            query: probe.query,
-            needle: probe.needle,
-            path: probe.path,
-            snippet: None,
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
-            failures,
-        };
-    }
-    let Some(candidate) = result
-        .candidates
+    let results = match query_candidates(client, pin, probe.query) {
+        Ok(results) => results,
+        Err(error) => {
+            failures.push(format!("{}: query failed: {error}", probe.id));
+            return UiScore {
+                id: probe.id,
+                query: probe.query,
+                needle: probe.needle,
+                path: probe.path,
+                snippet: None,
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+                failures,
+            };
+        }
+    };
+    let Some(candidate) = results
         .iter()
         .find(|candidate| candidate.repo_relative_path.as_str() == probe.path)
     else {
@@ -314,15 +329,22 @@ fn score_probe(rt: &mut E2eRuntime, probe: &UiProbe) -> UiScore {
 /// contribution rows summing to the candidate's carried score, and emit a
 /// non-empty summary. Anything missing is a fail-closed rail failure.
 fn capture_explanation_sections(
-    rt: &mut E2eRuntime,
+    client: &QuantaIndex,
+    pin: &GenerationPin,
     probe: &UiProbe,
 ) -> ExplanationSectionsCapture {
-    let result = rt.query_text(TextQuerySyntax::Native, probe.query, TOP_K);
-    let candidate = result
-        .candidates
-        .iter()
-        .find(|candidate| candidate.repo_relative_path.as_str() == probe.path)
-        .cloned();
+    let results = match query_candidates(client, pin, probe.query) {
+        Ok(results) => results,
+        Err(error) => {
+            return ExplanationSectionsCapture::failed(
+                probe.path,
+                vec![format!("explanation: ranking query failed: {error}")],
+            );
+        }
+    };
+    let candidate = results
+        .into_iter()
+        .find(|candidate| candidate.repo_relative_path.as_str() == probe.path);
     let Some(candidate) = candidate else {
         return ExplanationSectionsCapture::failed(
             probe.path,
@@ -333,22 +355,29 @@ fn capture_explanation_sections(
         );
     };
     let carried_score = candidate.score;
-    let explain = rt.explain_candidate_under_query(candidate, TextQuerySyntax::Native, probe.query);
-    if let Some(error) = explain.typed_error {
-        return ExplanationSectionsCapture::failed(
-            probe.path,
-            vec![format!(
-                "explanation: explain route returned typed error {}: {}",
-                error.code, error.message
-            )],
-        );
-    }
-    let Some(explanation) = explain.explanation else {
-        return ExplanationSectionsCapture::failed(
-            probe.path,
-            vec!["explanation: explain route produced no explanation".to_string()],
-        );
+    let query = TextQueryRequest {
+        syntax: TextQuerySyntax::Native,
+        query_text: probe.query.to_owned(),
+        constraints: QueryConstraintSetV1::unconstrained(),
+        generation: None,
+        generation_selector: None,
+        top_k: 1,
+        cursor: None,
     };
+    let explain = match request_when_ready(|| {
+        client
+            .search()
+            .explain_under_query(pin.clone(), candidate.clone(), query.clone())
+    }) {
+        Ok(explain) => explain,
+        Err(error) => {
+            return ExplanationSectionsCapture::failed(
+                probe.path,
+                vec![format!("explanation: explain route failed: {error}")],
+            );
+        }
+    };
+    let explanation = explain.explanation;
     let planner_stages: Vec<&'static str> = explanation
         .planner_trace
         .iter()
@@ -391,7 +420,7 @@ fn capture_explanation_sections(
             "explanation: explain route strategy section must be `lexical_score_trace` (got `{strategy}`)"
         ));
     }
-    if explain.presence != Some(CandidatePresenceV1::Indexed) {
+    if explain.presence != CandidatePresenceV1::Indexed {
         failures.push(format!(
             "explanation: a served candidate must explain as indexed (got {:?})",
             explain.presence
@@ -419,12 +448,29 @@ fn capture_explanation_sections(
     }
 }
 
-/// Run the full UI-contract rail against a freshly seeded runtime.
+/// Run the Legacy UI diagnostics against an approved executable.
 pub fn run_ui_report() -> AnyResult<UiReport> {
-    let mut rt = prepare_ui_runtime()?;
+    let root = private_tempdir()?;
+    let binary = LegacySearchdBinary::from_environment()
+        .map_err(|error| anyhow::anyhow!("old-Q UI input: {error}"))?;
+    let process = binary
+        .start(root.path(), 8)
+        .map_err(|error| anyhow::anyhow!("start old-Q UI process: {error}"))?;
+    let client = process
+        .connect()
+        .map_err(|error| anyhow::anyhow!("connect old-Q UI process: {error}"))?;
+    let repo = RepoId::new(UI_REPO)?;
+    let revision = RevisionId::new("ui-reference")?;
+    let files = UI_PROBES
+        .iter()
+        .map(|probe| (probe.path, probe.content, 1))
+        .collect::<Vec<_>>();
+    let (head, _receipt) = publish_legacy_source(&client, &repo, &revision, 1, None, &files, None)
+        .map_err(|error| anyhow::anyhow!("publish old-Q UI fixtures: {error}"))?;
+    let pin = GenerationPin::new(repo, revision, head.generation.lexical.manifest_generation);
     let mut scores = Vec::with_capacity(UI_PROBES.len());
     for probe in UI_PROBES {
-        scores.push(score_probe(&mut rt, probe));
+        scores.push(score_probe(&client, &pin, probe));
     }
     // Explanation sections: prove the typed sectioned provenance is consumer-
     // renderable. Use the first (deterministic short-symbol) probe's candidate.
@@ -435,13 +481,21 @@ pub fn run_ui_report() -> AnyResult<UiReport> {
                 vec!["explanation: UI_PROBES is empty".to_string()],
             )
         },
-        |probe| capture_explanation_sections(&mut rt, probe),
+        |probe| capture_explanation_sections(&client, &pin, probe),
     );
     let passed = scores.iter().all(UiScore::passed) && explanation.passed();
+    drop(client);
+    process
+        .stop()
+        .map_err(|error| anyhow::anyhow!("stop old-Q UI process: {error}"))?;
+    binary
+        .verify()
+        .map_err(|error| anyhow::anyhow!("verify old-Q UI input: {error}"))?;
     Ok(UiReport {
         scores,
         explanation,
         passed,
+        daemon_sha256: binary.sha256().to_owned(),
     })
 }
 
@@ -489,6 +543,8 @@ fn contract_snapshots_supplement_json(report: &UiReport, git_head: &GitHeadV1) -
         "supplement_schema_version": 1,
         "dimension": "ui",
         "git_head": git_head.as_str(),
+        "backend": "legacy-reference",
+        "daemon_sha256": report.daemon_sha256,
         "fields_under_test": ["snippet", "snippet_hit_offset", "highlights", "explanation_sections"],
         "snapshot_note": "snippet_hit_offset + highlights are the typed UI anchors (J7Q-07); a consumer slices snippet at offset/spans to land on hits, with no regex parsing of raw text. explanation_sections exposes the typed planner stages / engines / strategy a consumer renders as sections without parsing the summary string",
         "snapshots": report.scores.iter().map(score_json).collect::<Vec<_>>(),
@@ -496,7 +552,7 @@ fn contract_snapshots_supplement_json(report: &UiReport, git_head: &GitHeadV1) -
     })
 }
 
-/// The current-source authority envelope for consumer-facing UI contracts.
+/// Produce a Legacy diagnostics envelope bound to its daemon and fixture.
 pub fn artifact(
     report: &UiReport,
     git_head: GitHeadV1,
@@ -558,6 +614,8 @@ pub fn artifact(
                 &[
                     ("probes", UI_PROBES.len().to_string()),
                     ("top_k", TOP_K.to_string()),
+                    ("backend", "legacy-reference".to_owned()),
+                    ("daemon_sha256", report.daemon_sha256.clone()),
                 ],
             ),
             model_revision: None,
@@ -569,6 +627,9 @@ pub fn artifact(
         rows,
         detail: json!({
             "passed": report.passed,
+            "backend": "legacy-reference",
+            "daemon_sha256": report.daemon_sha256,
+            "resource_scope": "ui_matrix process; daemon resources not sampled",
             "blocking_signal": "every served candidate must carry a typed snippet_hit_offset that points exactly at the matched needle, and explain must surface route-specific typed sections",
             "scores": report.scores.iter().map(score_json).collect::<Vec<_>>(),
             "explanation_sections": explanation_sections_json(&report.explanation),
@@ -634,6 +695,7 @@ mod tests {
                 failures: Vec::new(),
             },
             passed: true,
+            daemon_sha256: "1".repeat(64),
         };
         assert!(report.passed);
         let head = GitHeadV1::parse(&"a".repeat(40)).expect("head");
@@ -657,6 +719,11 @@ mod tests {
             "lexical"
         );
         assert_eq!(snaps["explanation_sections"]["passed"], true);
+        assert_eq!(snaps["backend"], "legacy-reference");
+        assert_eq!(
+            snaps["daemon_sha256"].as_str(),
+            Some(report.daemon_sha256.as_str())
+        );
         let artifact = artifact(
             &report,
             GitHeadV1::parse(&"a".repeat(40)).expect("head"),
@@ -667,6 +734,11 @@ mod tests {
         .expect("json");
         assert_eq!(artifact["schema_version"], 2);
         assert_eq!(artifact["detail"]["passed"], true);
+        assert_eq!(artifact["detail"]["backend"], "legacy-reference");
+        assert_eq!(
+            artifact["detail"]["daemon_sha256"].as_str(),
+            Some(report.daemon_sha256.as_str())
+        );
         assert_eq!(artifact["rows"].as_array().map(Vec::len), Some(2));
     }
 

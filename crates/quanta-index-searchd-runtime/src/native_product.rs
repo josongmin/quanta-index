@@ -5,6 +5,7 @@ use std::{
     collections::BTreeSet,
     fs::{self, File},
     io::Read as _,
+    num::NonZeroU64,
     os::unix::fs::DirBuilderExt as _,
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
@@ -18,7 +19,7 @@ use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::index::{
     Digest, IndexKind, ProducerId, ProjectionId, SchemaId, StorageFormatId, TenantId,
 };
-use quanta_index_contract::native_protocol::NativeRepoMapQuery;
+use quanta_index_contract::native_protocol::{NativeRepoMapGraphDescriptorV1, NativeRepoMapQuery};
 use quanta_index_core::index::{
     AttemptContext, CoverageBinding, IndexError, IndexQueryPort, InstanceSpec, MapRoot, ObjectRef,
     OwnedWorkPolicy, OwnerInputBinding, OwnerKey, OwnerMemberBinding, QueryOutcome,
@@ -30,8 +31,9 @@ use quanta_index_core::index::{
     validate_read_ticket_lease,
 };
 use quanta_index_core::{
-    CoreError, L2UnitEmbeddingProvider, RequestBudgetV1, SemanticAdmissionEngine,
-    SemanticEgressGrantV1, SemanticEgressPolicyV1, SemanticInputClass, TextEmbeddingProvider,
+    CoreError, L2UnitEmbeddingProvider, ProviderBudgetLedger, ProviderWorkBudgetV1,
+    RequestBudgetV1, SemanticAdmissionEngine, SemanticEgressGrantV1, SemanticEgressPolicyV1,
+    SemanticInputClass, TextEmbeddingProvider,
 };
 use quanta_index_embed::{
     LOCAL_CODE_DIMENSION, LOCAL_CODE_MODEL_ID, LOCAL_CODE_MODEL_REVISION, LocalCodeBindingV1,
@@ -208,6 +210,8 @@ struct ResourcesConfig {
     scratch_reserved_bytes: u64,
     read_ticket_lease_ms: u64,
     catalog_writer_cache_kib: u32,
+    #[serde(default)]
+    process_rss_ceiling_bytes: Option<u64>,
     execution: ExecutionConfig,
 }
 
@@ -216,6 +220,9 @@ impl ResourcesConfig {
         self.physical.validate()?;
         if self.scratch_reserved_bytes == 0 {
             bail!("native scratch reservation must be positive");
+        }
+        if self.process_rss_ceiling_bytes == Some(0) {
+            bail!("native process RSS ceiling must be positive when configured");
         }
         let read_ticket_lease = Duration::from_millis(self.read_ticket_lease_ms);
         let _lease_millis = validate_read_ticket_lease(read_ticket_lease)?;
@@ -265,8 +272,19 @@ struct Bm25Config {
 struct TextConfig {
     descriptor: DescriptorConfig,
     admission_policy: [u8; 32],
+    #[serde(default)]
+    layout: TextLayoutConfig,
     bm25: Bm25Config,
     read_need: NeedConfig,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TextLayoutConfig {
+    #[default]
+    TreeV1,
+    SegmentedFullV1,
+    SegmentedLayeredV2,
 }
 
 #[derive(Deserialize)]
@@ -520,6 +538,7 @@ enum SemanticProviderConfig {
         max_response_bytes: u64,
         concurrency: usize,
         egress: SemanticEgressConfig,
+        work_budget: Option<OpenAiWorkBudgetConfig>,
     },
     LocalCode {
         origin: String,
@@ -542,6 +561,32 @@ struct SemanticEgressConfig {
     retention: String,
     profile: String,
     source_content_consent: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenAiWorkBudgetConfig {
+    inflight_requests_cap: u64,
+    inflight_bytes_cap: u64,
+    total_cost_micros_ceiling: u64,
+    retry_attempts_cap: u32,
+    openai_max_request_cost_micros: NonZeroU64,
+}
+
+impl OpenAiWorkBudgetConfig {
+    fn limits(&self) -> Result<ProviderWorkBudgetV1> {
+        let limits = ProviderWorkBudgetV1 {
+            inflight_requests_cap: self.inflight_requests_cap,
+            inflight_bytes_cap: self.inflight_bytes_cap,
+            total_cost_micros_ceiling: self.total_cost_micros_ceiling,
+            retry_attempts_cap: self.retry_attempts_cap,
+        };
+        limits.validate()?;
+        if self.openai_max_request_cost_micros.get() > limits.total_cost_micros_ceiling {
+            bail!("native OpenAI cost ceiling must fund one HTTP attempt");
+        }
+        Ok(limits)
+    }
 }
 
 #[derive(Deserialize)]
@@ -773,6 +818,7 @@ impl SemanticConfig {
                 max_response_bytes,
                 concurrency,
                 egress,
+                work_budget,
                 ..
             } => {
                 if scopes
@@ -885,6 +931,11 @@ impl SemanticConfig {
                     SemanticAdmissionEngine::admit(SemanticInputClass::QueryText, &policy)?;
                 let _source =
                     SemanticAdmissionEngine::admit(SemanticInputClass::SourceContent, &policy)?;
+                if let Some(budget) = work_budget {
+                    let _validated_limits = budget.limits()?;
+                } else if parsed_url.scheme() == "https" {
+                    bail!("native OpenAI HTTPS egress requires an explicit provider work budget");
+                }
                 // NativeSemantic builds one owner vector per call and freezes
                 // one provider unit as its declared adapter demand. A higher
                 // per-call fanout cannot be funded by that execution grant.
@@ -1179,6 +1230,7 @@ struct ValidatedConfig {
     socket_access: quanta_index_ipc::SocketAccessPolicy,
     limits: WorkLimits,
     resources: NativeServiceResources,
+    process_rss_ceiling_bytes: Option<u64>,
     literal: AdapterDescriptor,
     file_map: AdapterDescriptor,
     text: AdapterDescriptor,
@@ -1223,6 +1275,7 @@ impl NativeServeConfigV1 {
             None => quanta_index_ipc::SocketAccessPolicy::Private,
         };
         let limits = self.work_limits.validate()?;
+        let process_rss_ceiling_bytes = self.resources.process_rss_ceiling_bytes;
         let resources = self.resources.validate()?;
         let owned_work = self.owned_work.map(OwnedWorkConfig::validate).transpose()?;
         let effort = self.effort.map(EffortConfig::validate).transpose()?;
@@ -1303,7 +1356,22 @@ impl NativeServeConfigV1 {
         if unique.len() != expected_kinds {
             bail!("native adapter kinds must be distinct");
         }
-        let text_recipe = TextRecipe::new(Digest(self.text.admission_policy));
+        let admission_policy = Digest(self.text.admission_policy);
+        let text_recipe = match self.text.layout {
+            TextLayoutConfig::TreeV1 => TextRecipe::new(admission_policy),
+            TextLayoutConfig::SegmentedFullV1 => {
+                if text.format != StorageFormatId([76; 16]) {
+                    bail!("native segmented-full-v1 Text format must be [76; 16]");
+                }
+                TextRecipe::segmented_full(admission_policy)
+            }
+            TextLayoutConfig::SegmentedLayeredV2 => {
+                if text.format != StorageFormatId([77; 16]) {
+                    bail!("native segmented-layered-v2 Text format must be [77; 16]");
+                }
+                TextRecipe::segmented_layered(admission_policy)
+            }
+        };
         let bm25 = Bm25Policy {
             k1: self.text.bm25.k1,
             b: self.text.bm25.b,
@@ -1325,6 +1393,7 @@ impl NativeServeConfigV1 {
             socket_access,
             limits,
             resources,
+            process_rss_ceiling_bytes,
             literal,
             file_map,
             text,
@@ -1350,6 +1419,13 @@ fn read_config(path: &Path) -> Result<ValidatedConfig> {
 }
 
 fn read_config_checked(path: &Path, expected: Option<Digest>) -> Result<ValidatedConfig> {
+    read_config_observed(path, expected).map(|(config, _)| config)
+}
+
+fn read_config_observed(
+    path: &Path,
+    expected: Option<Digest>,
+) -> Result<(ValidatedConfig, Digest)> {
     if !path.is_absolute() {
         bail!("native config path must be absolute");
     }
@@ -1374,14 +1450,13 @@ fn read_config_checked(path: &Path, expected: Option<Digest>) -> Result<Validate
     {
         bail!("native config exceeds {MAX_CONFIG_BYTES} bytes");
     }
-    if let Some(expected) = expected
-        && Digest(Sha256::digest(&bytes).into()) != expected
-    {
+    let observed = Digest(Sha256::digest(&bytes).into());
+    if expected.is_some_and(|expected| observed != expected) {
         return Err(IndexError::DigestConflict.into());
     }
     let config: NativeServeConfigV1 = serde_json::from_slice(&bytes)
         .with_context(|| format!("decode native config {}", path.display()))?;
-    config.validate()
+    Ok((config.validate()?, observed))
 }
 
 /// Admit native Semantic text at each provider call.
@@ -1592,10 +1667,18 @@ fn register_semantic_provider<P: TextEmbeddingProvider + 'static>(
     {
         bail!("native Semantic owner and reader recipes differ");
     }
+    let ann_runtime = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(2)
+            .enable_all()
+            .build()
+            .context("native Semantic ANN runtime")?,
+    );
     builders.register_owner(
         config.descriptor,
         ScopedSemanticOwner {
-            inner: NativeSemantic::new(owner_bridge, recipe.clone())?.with_ann(),
+            inner: NativeSemantic::new(owner_bridge, recipe.clone())?.with_lancedb_ann(),
             scopes: Arc::clone(&config.scopes),
         },
     )?;
@@ -1603,7 +1686,8 @@ fn register_semantic_provider<P: TextEmbeddingProvider + 'static>(
         config.descriptor,
         config.read.need,
         ScopedSemanticReader {
-            inner: NativeSemanticReader::new(reader_bridge, recipe, config.read)?.with_ann(),
+            inner: NativeSemanticReader::new(reader_bridge, recipe, config.read)?
+                .with_lancedb_ann(ann_runtime),
             scopes: Arc::clone(&config.scopes),
         },
     )?;
@@ -1616,7 +1700,7 @@ fn register_semantic(
     config: &ValidatedSemanticConfig,
     service_provider_units: u64,
 ) -> Result<Arc<ProviderAttemptPool>> {
-    let provider_config = match &config.provider {
+    let (provider_config, work_budget) = match &config.provider {
         SemanticProviderConfig::OpenAi {
             model,
             model_revision,
@@ -1629,19 +1713,28 @@ fn register_semantic(
             timeout_ms,
             max_response_bytes,
             concurrency,
+            work_budget,
             ..
         } => {
             let api_key = std::env::var(api_key_env).map_err(|_missing| {
                 anyhow!("native OpenAI API key environment variable is missing")
             })?;
-            OpenAiProviderConfig::new(api_key, model.clone(), model_revision.clone(), *dimension)
+            (
+                OpenAiProviderConfig::new(
+                    api_key,
+                    model.clone(),
+                    model_revision.clone(),
+                    *dimension,
+                )
                 .with_base_url(base_url.clone())
                 .with_max_batch(*max_batch)
                 .with_max_estimated_tokens_per_request(*max_estimated_tokens_per_request)
                 .with_max_retries(*max_retries)
                 .with_timeout(Duration::from_millis(*timeout_ms))
                 .with_max_response_bytes(*max_response_bytes)
-                .with_concurrency(*concurrency)
+                .with_concurrency(*concurrency),
+                work_budget.as_ref(),
+            )
         }
         SemanticProviderConfig::LocalCode {
             origin,
@@ -1659,11 +1752,14 @@ fn register_semantic(
                 manifest_sha256.clone(),
             )?;
             binding.verify_health(Duration::from_millis(*timeout_ms))?;
-            OpenAiProviderConfig::new_local_code(&binding)
-                .with_max_estimated_tokens_per_request(*max_estimated_tokens_per_request)
-                .with_max_retries(*max_retries)
-                .with_timeout(Duration::from_millis(*timeout_ms))
-                .with_max_response_bytes(*max_response_bytes)
+            (
+                OpenAiProviderConfig::new_local_code(&binding)
+                    .with_max_estimated_tokens_per_request(*max_estimated_tokens_per_request)
+                    .with_max_retries(*max_retries)
+                    .with_timeout(Duration::from_millis(*timeout_ms))
+                    .with_max_response_bytes(*max_response_bytes),
+                None,
+            )
         }
     };
     // Owner and query calls share this physical-attempt registry. Its bound
@@ -1671,7 +1767,23 @@ fn register_semantic(
     let attempt_capacity = usize::try_from(service_provider_units)
         .context("native provider capacity exceeds the platform size limit")?;
     let attempts = Arc::new(ProviderAttemptPool::new(attempt_capacity)?);
-    let provider = OpenAiEmbeddingProvider::with_reqwest(provider_config)?
+    let provider = if let Some(budget) = work_budget {
+        let SemanticEgressPolicyV1::External(grant) = &config.egress_policy else {
+            bail!("native OpenAI work budget requires an admitted egress grant");
+        };
+        let ledger = Arc::new(ProviderBudgetLedger::new(budget.limits()?)?);
+        let (provider, _budget_metrics) = OpenAiEmbeddingProvider::new_approved(
+            provider_config,
+            grant,
+            ledger,
+            budget.openai_max_request_cost_micros,
+            None,
+        )?;
+        provider
+    } else {
+        OpenAiEmbeddingProvider::with_reqwest(provider_config)?
+    };
+    let provider = provider
         .with_attempt_pool(Arc::clone(&attempts))
         .with_required_execution_custody();
     register_semantic_provider(
@@ -1879,6 +1991,7 @@ fn compose(config: &ValidatedConfig) -> Result<NativeComposition> {
 
 fn bind(
     config: &ValidatedConfig,
+    config_sha256: Digest,
     composition: NativeComposition,
     authority: Option<crate::native::NativeBootAuthority>,
     request: &RequestBudgetV1,
@@ -1908,7 +2021,7 @@ fn bind(
         )?,
     };
     if candidate {
-        boot::require_unselected_candidate(&authority, config, request)?;
+        boot::require_candidate_start_v1(&authority, config, &capabilities.builders, request)?;
     }
     // BOOT authenticates immutable requests and profiles across the candidate
     // publication chain. Automatic retention could retire those objects before
@@ -1929,6 +2042,16 @@ fn bind(
         &config.resources,
         config.maintenance,
         retention,
+        config
+            .process_rss_ceiling_bytes
+            .map(|ceiling| {
+                crate::native::NativeProcessMemoryAdmission::new(
+                    Arc::new(quanta_index_searchd::app::KernelResidentMemoryProbe),
+                    ceiling,
+                )
+                .map(Arc::new)
+            })
+            .transpose()?,
     )?;
     if let Some(read_sessions) = config.read_sessions {
         service.configure_read_sessions(read_sessions)?;
@@ -1938,6 +2061,19 @@ fn bind(
     }
     if let Some(readers) = repomap {
         service.configure_repomap(readers)?;
+    }
+    if let Some(graph) = &config.graph {
+        service.configure_repomap_prior_files(graph.descriptor, graph.read_need)?;
+    }
+    service.record_installation_config_sha256(config_sha256)?;
+    if let Some(graph) = &config.graph
+        && config.read_sessions.is_some()
+    {
+        service.record_repomap_graph_installation(NativeRepoMapGraphDescriptorV1 {
+            kind: graph.descriptor.kind,
+            schema: graph.descriptor.schema,
+            format: graph.descriptor.format,
+        })?;
     }
     service.configure_imported_repomap_graph(imported_repomap_graph)?;
     let recorder = if config.overlay.is_some()
@@ -2075,13 +2211,7 @@ impl NativeRecoveryContextV1<'_> {
                 "published recovery differs from the exact selected Native configuration"
             );
         }
-        boot::with_verified_settlement_root_v1(
-            locked,
-            &self.config,
-            witness,
-            budget,
-            settle,
-        )
+        boot::with_verified_settlement_root_v1(locked, &self.config, witness, budget, settle)
     }
 
     pub(crate) fn publish_restore_forward_v1(
@@ -2194,7 +2324,8 @@ fn run_command_inner(
     let context = capture.and_then(diagnostic::NativeCapture::context);
     let boot = diagnostic::begin(context, quanta_index_core::DiagnosticStageV1::RuntimeBoot);
     command.validate()?;
-    let config = read_config_checked(&command.config_path, command.config_digest)?;
+    let (config, config_sha256) =
+        read_config_observed(&command.config_path, command.config_digest)?;
     let candidate = command.mode == NativeCommandModeV1::ServeCandidate;
     if candidate && config.socket_access != quanta_index_ipc::SocketAccessPolicy::Private {
         bail!("Native candidate service requires a private socket");
@@ -2253,7 +2384,14 @@ fn run_command_inner(
     } else {
         None
     };
-    let service = bind(&config, composition, authority, &request, candidate)?;
+    let service = bind(
+        &config,
+        config_sha256,
+        composition,
+        authority,
+        &request,
+        candidate,
+    )?;
     let service = match context {
         Some(context) => service.with_diagnostic_context(context),
         None => service,

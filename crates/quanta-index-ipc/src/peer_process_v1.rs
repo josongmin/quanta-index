@@ -1,7 +1,7 @@
 //! Same-socket process and executable observations, never PID-derived authority.
 use crate::{
-    IpcError, KernelPeerCredentials, MemoryLease, MemoryScope, PeerCredentials,
-    PeerCredentialsSource,
+    IpcError, KernelPeerCredentials, MemoryLease, MemoryScope, PeerBindingRefusalV1,
+    PeerCredentials, PeerCredentialsSource,
 };
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsFd, OwnedFd};
@@ -9,49 +9,6 @@ use std::{
     os::{fd::BorrowedFd, unix::net::UnixStream},
     sync::Arc,
 };
-
-/// A local process/image-binding refusal observed before request bytes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PeerBindingRefusalV1 {
-    Unsupported,
-    UnsupportedRoute,
-    ProcessExited,
-    ForeignProcess,
-    InvalidKernelCredentials,
-    Kernel {
-        operation: &'static str,
-        errno: i32,
-    },
-    #[cfg(target_os = "linux")]
-    Image(quanta_explicit_fd_process::ExplicitFdProcessErrorV1),
-}
-impl std::fmt::Display for PeerBindingRefusalV1 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unsupported => f.write_str("connected peer process capture is unsupported"),
-            Self::UnsupportedRoute => f.write_str("request is unsupported by this peer binding mode"),
-            Self::ProcessExited => f.write_str("admitted peer process has exited"),
-            Self::ForeignProcess => f.write_str("connected peer differs from the admitted process"),
-            Self::InvalidKernelCredentials => {
-                f.write_str("kernel peer process credentials are invalid")
-            }
-            Self::Kernel { operation, errno } => {
-                write!(f, "peer process {operation} failed with errno {errno}")
-            }
-            #[cfg(target_os = "linux")]
-            Self::Image(cause) => std::fmt::Display::fmt(cause, f),
-        }
-    }
-}
-impl std::error::Error for PeerBindingRefusalV1 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            #[cfg(target_os = "linux")]
-            Self::Image(cause) => Some(cause),
-            _ => None,
-        }
-    }
-}
 
 /// Only the actual connected transport constructs this owner. Its observations
 /// grant no installed-image, root, Source, EX or publication permission.
@@ -260,12 +217,12 @@ impl KernelConnectedPeerProcessV1 {
         let layout_v1 = MemoryLease::shared_allocation_backing_layout(std::alloc::Layout::new::<
             KernelPeerProcessDataV1,
         >())
-        .map_err(|cause| crate::codec::classify_client_memory_error(0, cause))?;
+        .map_err(|cause| IpcError::from_client_memory_error(0, cause))?;
         let bytes_v1 = u64::try_from(layout_v1.size()).map_err(|_| unsupported_v1())?;
         // Admit the complete enlarged Arc before any captured FD or Arc birth.
         let grant_v1 = memory_v1
             .reserve(bytes_v1, MemoryLifetime::Retained)
-            .map_err(|cause| crate::codec::classify_client_memory_error(bytes_v1, cause))?;
+            .map_err(|cause| IpcError::from_client_memory_error(bytes_v1, cause))?;
         let process_v1 =
             nix::sys::socket::getsockopt(stream_v1, nix::sys::socket::sockopt::PeerPidfd).map_err(
                 |cause| {

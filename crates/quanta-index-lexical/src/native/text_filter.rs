@@ -83,8 +83,8 @@ impl RepositoryOwners {
                 .ok_or(IndexError::ResourceLimited)?;
             let bytes = capacity
                 .checked_mul(std::mem::size_of::<(OwnerKey, ObjectRef)>())
-                .and_then(|bytes| u64::try_from(bytes).ok())
                 .ok_or(IndexError::ResourceLimited)?;
+            let bytes = u64::try_from(bytes).map_err(|_width| IndexError::ResourceLimited)?;
             let memory = budget.reserve_memory(bytes, MemoryLifetime::Retained)?;
             let mut rows = Vec::new();
             rows.try_reserve_exact(capacity)
@@ -122,9 +122,19 @@ impl RepositoryOwners {
 ///
 /// Prove its forward owner/source binding. A missing path is an
 /// ordinary empty result; a dangling or inconsistent binding is corruption.
+#[cfg(test)]
 pub(super) fn resolve(
     index: &NativeTextIndex,
     constraints: &QueryConstraintSetV1,
+    context: &mut TextReadContext<'_>,
+) -> Result<OwnerSelection, IndexError> {
+    resolve_for_surface(index, constraints, false, context)
+}
+
+pub(super) fn resolve_for_surface(
+    index: &NativeTextIndex,
+    constraints: &QueryConstraintSetV1,
+    allow_excluded_path: bool,
     context: &mut TextReadContext<'_>,
 ) -> Result<OwnerSelection, IndexError> {
     context.budget.checkpoint()?;
@@ -183,7 +193,7 @@ pub(super) fn resolve(
                 context.objects,
                 context.budget,
                 &mut |owner, source, record, budget| {
-                    if index.validate_selected_source(&record)? {
+                    if index.validate_selected_source(&record)? || allow_excluded_path {
                         selected.push(owner, source, budget)?;
                     }
                     Ok(())
@@ -222,7 +232,7 @@ pub(super) fn resolve(
         ));
     }
     context.budget.checkpoint()?;
-    if !index.validate_selected_source(&record)? {
+    if !index.validate_selected_source(&record)? && !allow_excluded_path {
         return Ok(OwnerSelection::Absent);
     }
     Ok(OwnerSelection::Exact { owner, source })

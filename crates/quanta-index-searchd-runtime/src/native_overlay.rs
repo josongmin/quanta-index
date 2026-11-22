@@ -501,7 +501,7 @@ impl NativeOverlay {
                 "Native overlay revision must advance".into(),
             ));
         }
-        if path.is_some_and(|value| !crate::native::valid_native_source_path(value))
+        if path.is_some_and(|value| !crate::native_source_path::valid_native_source_path(value))
             || (text.is_none() && path.is_some())
         {
             return Err(IndexError::InvalidInput(

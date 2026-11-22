@@ -88,12 +88,61 @@ fn file_spec() -> InstanceSpec {
     }
 }
 
+#[derive(Clone, Copy)]
+enum LargeTextLayout {
+    TreeV1,
+    SegmentedFullV1,
+    SegmentedLayeredV2,
+}
+
+fn large_text_layout() -> TestResult<LargeTextLayout> {
+    match std::env::var("QIDX_NATIVE_LARGE_TEXT_LAYOUT") {
+        Ok(layout) if layout == "segmented-full-v1" => Ok(LargeTextLayout::SegmentedFullV1),
+        Ok(layout) if layout == "segmented-layered-v2" => Ok(LargeTextLayout::SegmentedLayeredV2),
+        Err(std::env::VarError::NotPresent) => Ok(LargeTextLayout::TreeV1),
+        _ => {
+            Err("Native Large Text layout must be segmented-full-v1 or segmented-layered-v2".into())
+        }
+    }
+}
+
+fn large_text_spec(layout: LargeTextLayout) -> InstanceSpec {
+    let mut spec = text_spec();
+    match layout {
+        LargeTextLayout::TreeV1 => {}
+        LargeTextLayout::SegmentedFullV1 => {
+            spec.policy = TextRecipe::segmented_full(Digest([31; 32])).output_policy();
+            spec.format = StorageFormatId([76; 16]);
+        }
+        LargeTextLayout::SegmentedLayeredV2 => {
+            spec.policy = TextRecipe::segmented_layered(Digest([31; 32])).output_policy();
+            spec.format = StorageFormatId([77; 16]);
+        }
+    }
+    spec
+}
+
 fn large_budget() -> RequestBudgetV1 {
     RequestBudgetV1::for_duration(Duration::from_secs(300))
 }
 
-fn large_config(root: &Path, socket: &Path) -> TestResult<serde_json::Value> {
+fn large_config(
+    root: &Path,
+    socket: &Path,
+    layout: LargeTextLayout,
+) -> TestResult<serde_json::Value> {
     let mut value = config_with_reclaim(root, socket)?;
+    match layout {
+        LargeTextLayout::TreeV1 => {}
+        LargeTextLayout::SegmentedFullV1 => {
+            value["text"]["layout"] = serde_json::json!("segmented-full-v1");
+            value["text"]["descriptor"]["format"] = serde_json::json!(StorageFormatId([76; 16]).0);
+        }
+        LargeTextLayout::SegmentedLayeredV2 => {
+            value["text"]["layout"] = serde_json::json!("segmented-layered-v2");
+            value["text"]["descriptor"]["format"] = serde_json::json!(StorageFormatId([77; 16]).0);
+        }
+    }
     value["read_sessions"] = serde_json::json!({
         "global_limit": 2, "per_uid_limit": 2,
         "terminal_ttl_millis": 300_000_u64, "sweep_limit": 2,
@@ -122,12 +171,12 @@ fn publish_sources(
     client: &NativeUdsClient,
     daemon: &Daemon,
     request: UpdateRequest,
-) -> TestResult<quanta_index_contract::index::ViewRef> {
+) -> TestResult<(quanta_index_contract::index::ViewRef, Duration)> {
     let operation = request.operation;
     let started = Instant::now();
     let submitted: TestResult<_> = client.submit(request, &large_budget()).map_err(Into::into);
     match submitted.and_then(|outcome| published(&outcome)) {
-        Ok(view) => Ok(view),
+        Ok(view) => Ok((view, started.elapsed())),
         Err(error) => {
             let status = client.status(
                 operation,
@@ -301,13 +350,26 @@ impl ObjectReadIoPort for TestReadIo {
     }
 }
 
+pub(super) fn open_test_object_reader(
+    state_root: &Path,
+    work: &mut WorkBudget,
+) -> TestResult<FileObjectReader> {
+    let object_root = state_root.join("native-objects");
+    let io: Arc<dyn ObjectReadIoPort> = Arc::new(TestReadIo);
+    let lock = io.open(&object_root.join(".object-namespace.lease"), work)?;
+    Ok(FileObjectReader::open_existing(
+        &object_root,
+        lock,
+        io,
+        work,
+    )?)
+}
+
 fn verify_source_bodies(
     state_root: &Path,
     observed: &Observation,
     expected: &BTreeMap<String, [u8; 32]>,
 ) -> TestResult {
-    let object_root = state_root.join("native-objects");
-    let io: Arc<dyn ObjectReadIoPort> = Arc::new(TestReadIo);
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(300))
         .ok_or("large read deadline overflow")?;
@@ -320,8 +382,7 @@ fn verify_source_bodies(
         },
         deadline,
     );
-    let lock = io.open(&object_root.join(".object-namespace.lease"), &mut work)?;
-    let reader = FileObjectReader::open_existing(&object_root, lock, io, &mut work)?;
+    let reader = open_test_object_reader(state_root, &mut work)?;
     for (path, entry) in &observed.paths {
         let body = reader.get(entry.bytes, &mut work)?;
         require(
@@ -384,6 +445,7 @@ fn native_large_release_digest_verifies_bytes_and_detects_replacement() -> TestR
 #[test]
 fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ranks() -> TestResult {
     let release = LargeDaemonBinary::from_environment()?;
+    let text_layout = large_text_layout()?;
     if let Some(binary) = &release {
         binary.verify()?;
     }
@@ -396,7 +458,7 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
     let config_path = temp.path().join("native-config.json");
     fs::write(
         &config_path,
-        serde_json::to_vec(&large_config(&state_root, &socket)?)?,
+        serde_json::to_vec(&large_config(&state_root, &socket, text_layout)?)?,
     )?;
     let start = || match &release {
         Some(binary) => binary.start(&config_path, &socket),
@@ -442,7 +504,7 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
     let profile = client.stage_profile(
         profile_ingress,
         IndexProfile {
-            instances: vec![file_spec(), text_spec()],
+            instances: vec![file_spec(), large_text_spec(text_layout)],
         },
         &large_budget(),
     )?;
@@ -516,7 +578,7 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
         sequence: 1,
         payload: transition.owner_digest()?,
     });
-    let view = publish_sources(
+    let (view, submit_to_published) = publish_sources(
         &client,
         &preparation,
         UpdateRequest {
@@ -587,5 +649,26 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
         &second_observed.global_ranked,
         &first_observed.global_ranked,
         "global ranked pages across two restarts",
-    )
+    )?;
+    if let Some(receipt_path) = std::env::var_os("QIDX_NATIVE_LARGE_ACK_RECEIPT") {
+        let receipt_path = PathBuf::from(receipt_path);
+        require(
+            receipt_path.is_absolute(),
+            "Native Large ACK receipt path must be absolute",
+        )?;
+        let mut receipt = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(receipt_path)?;
+        serde_json::to_writer(
+            &mut receipt,
+            &serde_json::json!({
+                "kind": "quanta-index-native-large-full-ack-v1",
+                "source_count": LARGE_SOURCE_COUNT,
+                "submit_to_published_ms": submit_to_published.as_secs_f64() * 1000.0,
+            }),
+        )?;
+        receipt.sync_all()?;
+    }
+    Ok(())
 }

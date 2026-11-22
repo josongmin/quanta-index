@@ -332,11 +332,11 @@ def _split_entry(entry: object) -> dict:
         )
         or not isinstance(entry["code_only_universe_digest"], str)
         or not isinstance(entry["query_family_ids"], list)
-        or entry["query_family_ids"] != sorted(set(entry["query_family_ids"]))
         or any(
             not isinstance(family, str) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", family) is None
             for family in entry["query_family_ids"]
         )
+        or entry["query_family_ids"] != sorted(set(entry["query_family_ids"]))
     ):
         raise EvidenceError("split manifest repository entry is malformed")
     return entry

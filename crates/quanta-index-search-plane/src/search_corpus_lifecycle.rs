@@ -827,14 +827,12 @@ mod tests {
     impl LexicalIndexOpenPort for EchoLexicalOpener {
         fn preflight_query_primitives(
             &self,
-            plan: &quanta_index_core::ValidatedLexicalPlan,
-            budget: &quanta_index_core::RequestBudgetV1,
+            _plan: &quanta_index_core::ValidatedLexicalPlan,
+            _budget: &quanta_index_core::RequestBudgetV1,
         ) -> Result<(), CoreError> {
-            quanta_index_lexical::planner::LexicalPlanner::validate_query_primitives(
-                plan,
-                &quanta_index_lexical::regex::RegexPolicy::defaults(),
-                budget,
-            )
+            Err(CoreError::NotImplemented(
+                "lifecycle activation fixture cannot preflight lexical queries".into(),
+            ))
         }
 
         fn open(

@@ -900,9 +900,7 @@ crate quanta_index_contract
 │   ├── struct NativeCutoverEvidenceSdkBindingV1: pub
 │   ├── struct NativeCutoverEvidenceSelectedSourceV1: pub
 │   ├── enum NativeCutoverEvidenceSourceFactV1: pub
-│   ├── struct NativeCutoverEvidenceSourcePublicationBindingV1: pub
 │   ├── enum NativeCutoverEvidenceSyntaxErrorV1: pub
-│   ├── struct NativeCutoverEvidenceTargetV1: pub
 │   ├── struct NativeCutoverEvidenceV1: pub
 │   ├── struct NativeCutoverEvidenceV5ArtifactV1: pub
 │   ├── enum NativeCutoverHostCustodyModeV1: pub
@@ -912,16 +910,22 @@ crate quanta_index_contract
 │   ├── enum NativeCutoverReplayPhaseV1: pub
 │   ├── enum NativeCutoverReservationEvidenceV1: pub
 │   ├── struct SyntaxReaderV1: pub(self)
-│   └── mod before_selection_v1: pub(self)
-│       ├── struct BootSeedV1: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── struct BootVisitorV1: pub(self)
-│       │   └── type Value: pub(self)
-│       └── struct SelectionVisitorV1: pub(self)
-│           └── type Value: pub(self)
+│   ├── mod before_selection_v1: pub(self)
+│   │   ├── struct BootSeedV1: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct BootVisitorV1: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   └── struct SelectionVisitorV1: pub(self)
+│   │       └── type Value: pub(self)
+│   └── mod source_binding: pub(crate)
+│       ├── struct NativeCutoverEvidenceSourcePublicationBindingV1: pub
+│       └── struct NativeCutoverEvidenceTargetV1: pub
 ├── mod native_cutover_source_join_v1: pub
 │   ├── enum LegacyCurrentSelectionV1: pub(self)
 │   ├── struct NativeCutoverJoinedSourceFactsV1: pub
+│   ├── struct NativeCutoverPublicationFactsV1: pub
+│   ├── struct NativeCutoverSourceEventMatchV1: pub
+│   ├── struct NativeCutoverSourceEventMatchesV1: pub
 │   ├── enum NativeCutoverSourceJoinErrorV1: pub
 │   └── struct NativeCutoverSourceLineageV1: pub(self)
 ├── mod native_protocol: pub
@@ -949,6 +953,7 @@ crate quanta_index_contract
 │   ├── struct NativeProjectionOwnerRows: pub
 │   ├── struct NativeProjectionRead: pub
 │   ├── struct NativeProtectedRepoMapResolutionV1: pub
+│   ├── struct NativeReadSessionId: pub
 │   ├── struct NativeRepositoryPathCursor: pub
 │   ├── struct NativeRepositoryPathEntry: pub
 │   ├── struct NativeRepositoryPathPage: pub
@@ -964,6 +969,19 @@ crate quanta_index_contract
 │   ├── struct NativeTextHit: pub
 │   ├── struct NativeTextResult: pub
 │   ├── trait SourceOwnerItem: pub(self)
+│   ├── mod dsl: pub(self)
+│   │   ├── struct NativeDslCorpusV1: pub
+│   │   ├── struct NativeDslCursorV1: pub
+│   │   ├── struct NativeDslFileV1: pub
+│   │   ├── enum NativeDslKindV1: pub
+│   │   ├── struct NativeDslMatchRangeV1: pub
+│   │   ├── struct NativeDslPageV1: pub
+│   │   ├── struct NativeDslQueryV1: pub
+│   │   ├── enum NativeDslRowsV1: pub
+│   │   ├── struct NativeDslRuntimeCatalogV1: pub
+│   │   ├── struct NativeDslRuntimeHitV1: pub
+│   │   ├── struct NativeDslScopeV1: pub
+│   │   └── struct NativeDslStructuralHitV1: pub
 │   ├── mod graph: pub(self)
 │   │   ├── struct GraphEdge: pub
 │   │   ├── struct GraphNode: pub
@@ -975,6 +993,9 @@ crate quanta_index_contract
 │   │   ├── struct NativeGraphQuery: pub
 │   │   ├── struct NativeGraphResult: pub
 │   │   ├── struct NativeGraphRow: pub
+│   │   ├── mod producer: pub(self)
+│   │   │   ├── enum NativeRepoMapOwnerError: pub
+│   │   │   └── struct NativeRepoMapOwnerProjection: pub
 │   │   └── mod ranking: pub(self)
 │   │       ├── struct GraphProjectionRow: pub
 │   │       ├── struct LimitedFocusSubject: pub(self)
@@ -1025,7 +1046,6 @@ crate quanta_index_contract
 │   │   ├── struct NativeHybridFileResult: pub
 │   │   ├── struct NativeReadSessionHistoryCutV1: pub
 │   │   ├── struct NativeReadSessionHistoryGenerationV1: pub
-│   │   ├── struct NativeReadSessionId: pub
 │   │   ├── struct NativeReadSessionProfile: pub
 │   │   ├── enum NativeReadSessionReply: pub
 │   │   ├── enum NativeReadSessionRequest: pub
@@ -1036,6 +1056,7 @@ crate quanta_index_contract
 │   │   ├── struct NativeSemanticFileHit: pub
 │   │   ├── struct NativeTextCursor: pub
 │   │   ├── struct NativeTextPage: pub
+│   │   ├── struct NativeTextPathCursorV1: pub
 │   │   ├── mod history: pub(self)
 │   │   │   ├── struct NativeHistoryCursor: pub
 │   │   │   ├── struct NativeHistoryPage: pub
@@ -1076,7 +1097,18 @@ crate quanta_index_contract
 │   │   ├── struct NativeStubCertificateIter: pub
 │   │   ├── struct Reader: pub(self)
 │   │   └── type Result: pub(self)
-│   └── mod stub_schema: pub(self)
+│   ├── mod stub_schema: pub(self)
+│   ├── mod text_path: pub(self)
+│   │   ├── struct NativeTextPathPageV1: pub
+│   │   ├── struct NativeTextPathRankingV1: pub
+│   │   └── struct NativeTextPathResultV1: pub
+│   └── mod text_preview: pub(self)
+│       ├── struct NativeTextExcerpt: pub
+│       ├── struct NativeTextExcerptWire: pub(self)
+│       ├── struct NativeTextPreview: pub
+│       ├── enum NativeTextPreviewEvidence: pub
+│       ├── struct NativeTextPreviewResult: pub
+│       └── struct NativeTextPreviewResultWire: pub(self)
 ├── mod native_score: pub(crate)
 │   ├── struct FiniteScore: pub
 │   └── struct FiniteScoreError: pub
@@ -1234,51 +1266,9 @@ crate quanta_index_contract
 │   ├── struct RepoMapSymbolNodeVisitor: pub(self)
 │   │   └── type Value: pub(self)
 │   ├── mod admitted_v3: pub(self)
-│   │   ├── struct AdmittedMutationAckPolicyV3: pub(self)
 │   │   ├── struct ExpectedActiveSeed: pub(self)
 │   │   │   └── type Value: pub(self)
-│   │   ├── struct KnownKeySeed: pub(super)
-│   │   │   ├── type Value: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RepoMapDecodeLimitsV3: pub
-│   │   ├── struct ScalarSeed: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   └── struct Seed: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
-│   │       ├── type Value: pub(self)
+│   │   └── struct ScalarSeed: pub(self)
 │   │       └── type Value: pub(self)
 │   ├── mod canonical_v3: pub(self)
 │   │   ├── struct ArtifactContentDigestV1: pub
@@ -1314,6 +1304,56 @@ crate quanta_index_contract
 │   │   │   └── type Value: pub(self)
 │   │   ├── struct RepoMapResourceReceiptV1: pub
 │   │   └── struct RepoMapResourceReceiptVisitor: pub(self)
+│   │       └── type Value: pub(self)
+│   ├── mod compiler: pub
+│   │   ├── type ChunkStatsTables: pub(self)
+│   │   ├── struct ChunkStatsV1: pub(self)
+│   │   ├── struct CompileCborWriter: pub(self)
+│   │   ├── struct FileEntryInput: pub(self)
+│   │   ├── struct RepoMapGraphCompiler: pub
+│   │   └── struct SymbolEntryInput: pub(self)
+│   ├── mod decode: pub(self)
+│   │   ├── struct AdmittedMutationAckPolicyV3: pub(self)
+│   │   ├── struct KnownKeySeed: pub(super)
+│   │   │   ├── type Value: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct RepoMapDecodeLimitsV3: pub
+│   │   └── struct Seed: pub(super)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
 │   │       └── type Value: pub(self)
 │   └── mod terminal_receipt_v2: pub(self)
 │       ├── struct AdmittedReceiptPolicy: pub(self)

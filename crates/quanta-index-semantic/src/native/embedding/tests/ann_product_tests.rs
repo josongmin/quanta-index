@@ -1,7 +1,7 @@
 //! Actual `NativeSemantic` -> managed file graph -> selected ANN query roundtrip.
 //!
 //! The map/object fixtures only stand in for persistent ports; product
-//! materialization, descriptor validation and Lance query stay in the path.
+//! materialization, descriptor validation and selected query stay in the path.
 
 #[path = "ann_product_tests/ann4k_tests.rs"]
 mod ann4k_tests;
@@ -10,6 +10,7 @@ mod ann4k_tests;
 mod consolidation;
 #[path = "ann_product_tests/maintenance.rs"]
 mod maintenance;
+pub(super) use maintenance::RecordingMap;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -384,6 +385,89 @@ fn check_query_memory_released(memory: &QueryMemory) -> Result<(), Box<dyn std::
     Ok(())
 }
 
+fn check_ann_scratch_before_overlay(
+    query: SearchQuery<'_>,
+    overlay_owner: OwnerKey,
+    context: &mut ReadContext<'_>,
+    search: impl FnOnce(&SearchQuery<'_>, &mut ReadContext<'_>) -> Result<SearchResult, IndexError>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    struct ScratchMeasurement {
+        temporary: QueryMemoryScope,
+        retained: QueryMemoryScope,
+    }
+
+    impl MemoryScopePort for ScratchMeasurement {
+        fn reserve(&self, bytes: u64, lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+            match lifetime {
+                MemoryLifetime::Temporary => self.temporary.reserve(bytes, lifetime),
+                MemoryLifetime::Retained => self.retained.reserve(bytes, lifetime),
+            }
+        }
+    }
+
+    const OVERLAY_REACHED: &str = "ANN scratch check reached overlay embedding";
+
+    struct OverlayScratchCheck<'a> {
+        temporary: &'a QueryMemory,
+        rank_bytes: u64,
+    }
+
+    impl overlay::OverlayEmbeddingPort for OverlayScratchCheck<'_> {
+        fn embed_overlay(
+            &self,
+            _text: &str,
+            _recipe: &EmbeddingRecipe,
+            _budget: &mut WorkBudget,
+        ) -> Result<overlay::OverlayVectors, IndexError> {
+            let live = self.temporary.live.load(AtomicOrdering::SeqCst);
+            if live != self.rank_bytes {
+                return Err(IndexError::BackendViolation(format!(
+                    "overlay saw {live} temporary bytes with {} expected for rank backing",
+                    self.rank_bytes
+                )));
+            }
+            // Stop before the embedding provider acquires its own memory.
+            Err(IndexError::BackendViolation(OVERLAY_REACHED.into()))
+        }
+    }
+
+    let temporary = Arc::new(QueryMemory::default());
+    let retained = Arc::new(QueryMemory::default());
+    let measurement = ScratchMeasurement {
+        temporary: QueryMemoryScope(Arc::clone(&temporary)),
+        retained: QueryMemoryScope(Arc::clone(&retained)),
+    };
+    context
+        .budget
+        .bind_memory_scope(Some(MemoryScope::new(Arc::new(measurement))));
+    let documents = [SemanticOverlayDocument {
+        owner: overlay_owner,
+        revision: 1,
+        path: None,
+        text: Some(Arc::from("editor change")),
+    }];
+    let bridge = OverlayScratchCheck {
+        temporary: &temporary,
+        rank_bytes: u64::from(query.top_k) * u64::try_from(std::mem::size_of::<SearchHit>())?,
+    };
+    let result = search(
+        &SearchQuery {
+            overlay: Some(overlay::OverlaySearch {
+                documents: &documents,
+                bridge: &bridge,
+            }),
+            ..query
+        },
+        context,
+    );
+    check_eq!(
+        result.err(),
+        Some(IndexError::BackendViolation(OVERLAY_REACHED.into()))
+    );
+    check_query_memory_released(&temporary)?;
+    check_query_memory_released(&retained)
+}
+
 fn graph_reaches(
     store: &MemoryStore,
     root: ObjectRef,
@@ -433,7 +517,6 @@ fn selected_search(
         &SearchQuery {
             source_files: false,
             lexical_eligibility: None,
-            lexical_owners: None,
             exact_path: None,
             coverage,
             projection: None,
@@ -459,6 +542,8 @@ pub(super) struct ReadOnceDescriptor<'a> {
     store: &'a MemoryStore,
     reference: ObjectRef,
     reads: AtomicU64,
+    allow_reopen: bool,
+    read_signal: Option<Arc<AtomicBool>>,
     retained_reads: AtomicU64,
     memory: Option<&'a QueryMemory>,
     descriptor_allowances_at_retained_read: AtomicU64,
@@ -471,6 +556,8 @@ impl<'a> ReadOnceDescriptor<'a> {
             store,
             reference,
             reads: AtomicU64::new(0),
+            allow_reopen: false,
+            read_signal: None,
             retained_reads: AtomicU64::new(0),
             memory: None,
             descriptor_allowances_at_retained_read: AtomicU64::new(0),
@@ -480,6 +567,16 @@ impl<'a> ReadOnceDescriptor<'a> {
 
     pub(super) fn reads(&self) -> u64 {
         self.reads.load(AtomicOrdering::SeqCst)
+    }
+
+    pub(super) fn allow_reopen(mut self) -> Self {
+        self.allow_reopen = true;
+        self
+    }
+
+    pub(super) fn with_read_signal(mut self, read_signal: Arc<AtomicBool>) -> Self {
+        self.read_signal = Some(read_signal);
+        self
     }
 }
 
@@ -527,8 +624,11 @@ impl ImmutableObjectPort for ReadOnceDescriptor<'_> {
         budget: &mut WorkBudget,
     ) -> Result<StoredObject, IndexError> {
         if reference == self.reference {
+            if let Some(signal) = &self.read_signal {
+                signal.store(true, AtomicOrdering::SeqCst);
+            }
             let previous = self.reads.fetch_add(1, AtomicOrdering::SeqCst);
-            if previous != 0 {
+            if previous != 0 && !self.allow_reopen {
                 return Err(IndexError::BackendViolation(
                     "selected ANN object was physically reopened".into(),
                 ));
@@ -923,11 +1023,46 @@ fn native_ann_selected_region_survives_replacement_and_deletion()
     let first_chunk = region.descriptor.fileset;
     check!(graph_reaches(&store, old_directory_ref, first_chunk)?);
 
+    let lance_writer = NativeSemantic::new(
+        SourceVectorProvider {
+            recipe: recipe.clone(),
+            empty: false,
+        },
+        recipe.clone(),
+    )?
+    .with_lancedb_ann();
+    let before_upgrade = read_work.usage();
+    check!(matches!(
+        crate::run_blocking(
+            &runtime,
+            lance_writer.prepare_searchable(
+                &spec,
+                Some(&old),
+                old.owners,
+                None,
+                None,
+                &mut AttemptContext {
+                    attempt: attempt(),
+                    objects: &store,
+                    maps: &maps,
+                    custody: &custody,
+                    scratch: &NoScratch,
+                    budget: &mut read_work,
+                },
+            ),
+        ),
+        Err(IndexError::RebuildRequired)
+    ));
+    check_eq!(read_work.usage().writes, before_upgrade.writes);
+    check_eq!(read_work.usage().mutations, before_upgrade.mutations);
+
     let measured = consolidation::RegionLookupMap::new(&maps);
     let selected_descriptor = ReadOnceDescriptor {
         store: &store,
         reference: region.reference(),
         reads: AtomicU64::new(0),
+        allow_reopen: false,
+        read_signal: None,
         retained_reads: AtomicU64::new(0),
         memory: None,
         descriptor_allowances_at_retained_read: AtomicU64::new(0),
@@ -964,6 +1099,8 @@ fn native_ann_selected_region_survives_replacement_and_deletion()
         store: &store,
         reference: region.reference(),
         reads: AtomicU64::new(0),
+        allow_reopen: false,
+        read_signal: None,
         retained_reads: AtomicU64::new(0),
         memory: Some(refused_memory.as_ref()),
         descriptor_allowances_at_retained_read: AtomicU64::new(u64::MAX),
@@ -977,7 +1114,6 @@ fn native_ann_selected_region_survives_replacement_and_deletion()
         &SearchQuery {
             source_files: false,
             lexical_eligibility: None,
-            lexical_owners: None,
             exact_path: None,
             coverage: &old,
             projection: None,
@@ -1464,7 +1600,6 @@ fn overlay_filling_owner_limit_needs_no_durable_owner_allocation()
         &SearchQuery {
             source_files: false,
             lexical_eligibility: None,
-            lexical_owners: None,
             exact_path: None,
             coverage: &coverage,
             projection: None,

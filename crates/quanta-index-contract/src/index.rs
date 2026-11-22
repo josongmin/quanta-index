@@ -1024,6 +1024,12 @@ pub enum UpdateKind {
     Reconfigure {
         profile: ObjectRef,
     },
+    /// Repack one owner range of an exact published SourceLocal member.
+    CompactSourceLocal {
+        instance: IndexInstanceId,
+        expected_artifact: ObjectRef,
+        owner: OwnerKey,
+    },
     /// Completion can rebase over unrelated source/view advances. The owner's
     /// exact desired input and live claim fence remain mandatory.
     Materialize {
@@ -1052,6 +1058,7 @@ impl UpdateKind {
             | Self::HistoryAdvance(_)
             | Self::HistoryAppend(_)
             | Self::Reconfigure { .. }
+            | Self::CompactSourceLocal { .. }
             | Self::Materialize { .. } => SourceOperationMode::Unchanged,
         }
     }
@@ -1098,6 +1105,23 @@ pub struct ImmutableOperation {
     pub request: ObjectRef,
     pub source_mode: SourceOperationMode,
 }
+
+/// The small immutable projection descriptor retained with an operation after
+/// the physical request and its staging objects have been released.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectionReplayStamp {
+    pub expected_view: ViewRef,
+    pub projection: ProjectionId,
+    pub source: SourceCut,
+    pub context: Digest,
+}
+
+quanta_index_contract_base::native_serde_struct!(ProjectionReplayStamp {
+    expected_view: ViewRef,
+    projection: ProjectionId,
+    source: SourceCut,
+    context: Digest,
+});
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Refusal {
@@ -1341,7 +1365,7 @@ quanta_index_contract_base::native_serde_struct!(CatalogView {
     coverage: MapRoot
 });
 quanta_index_contract_base::native_serde_enum!(SourceOperationMode { units { Unchanged = 0, Advance = 1 } newtypes { } records { Resync = 2 { prior_epoch: u64 } } });
-quanta_index_contract_base::native_serde_enum!(UpdateKind { units {  } newtypes { SourceAdvance = 0 => SourceTransition, ProjectionAdvance = 1 => Box<ProjectionTransition>, HistoryAdvance = 5 => HistoryTransition, HistoryAppend = 6 => HistoryAppendV1, SourceHistoryAdvance = 7 => Box<SourceHistoryTransitionV1> } records { Reconfigure = 2 { profile: ObjectRef }, Materialize = 3 { claim: WorkClaim }, SourceResync = 4 { prior_epoch: u64, transition: SourceTransition } } });
+quanta_index_contract_base::native_serde_enum!(UpdateKind { units {  } newtypes { SourceAdvance = 0 => SourceTransition, ProjectionAdvance = 1 => Box<ProjectionTransition>, HistoryAdvance = 5 => HistoryTransition, HistoryAppend = 6 => HistoryAppendV1, SourceHistoryAdvance = 7 => Box<SourceHistoryTransitionV1> } records { Reconfigure = 2 { profile: ObjectRef }, Materialize = 3 { claim: WorkClaim }, SourceResync = 4 { prior_epoch: u64, transition: SourceTransition }, CompactSourceLocal = 8 { instance: IndexInstanceId, expected_artifact: ObjectRef, owner: OwnerKey } } });
 quanta_index_contract_base::native_serde_struct!(UpdateRequest {
     operation: OperationKey,
     expected_view: ViewRef,

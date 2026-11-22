@@ -23,14 +23,14 @@
 - `apply_bundle_delta(...)` mutates the target generation staging surface only; never patch the active query indexes in place
 - producer is the sole authority for source bytes, git history, parse trees, semantic-source records, and provenance; search-plane code must not read repo source, shell out to `git`, run `tree-sitter`, or fabricate semantic source as fallback
 - search-plane is the sole authority for embedding execution, model-contract validation, and embedding cache/storage over validated producer semantic-source records; producers must not emit authoritative vectors or duplicate search-plane embedding policy
-- `BundleChannelPublisher::publish` is the only producer -> search ingress path; do not add side-band apply/legacy socket ingress
+- Native producers submit typed update requests through the Native SDK. `BundleChannelPublisher::publish` owns the historical bundle-channel contract used by pinned compatibility runs. Do not add a side-band publication path.
 
 ### Code shape discipline (write-time SOLID, no god code)
 
 These checks apply **while you write**, not as a cleanup pass. Every diff should already satisfy them; if a nearby existing violation is visible, propose the fix in the same PR or flag it explicitly as a named follow-up — never silently leave it.
 
 - **Single Responsibility** — one struct / one fn does one job. If you're tempted to put parsing + I/O + policy validation + response formatting in one function, split it before merging. Heuristic: a fn over ~80 lines, or a struct with > 6 fields of unrelated concerns, is a red flag.
-- **Dependency Inversion at every composition seam** — when a struct holds a collaborator, that field's type MUST be a trait object (`Arc<dyn …Port>`) or a generic parameter, NOT a concrete adapter type. The only file allowed to name concrete adapters is the composition root (`searchd::app::runtime`). If you see `field: Arc<TantivyLexicalAdapter>` in dispatcher / query / hybrid code, that is a DIP violation — propose `Arc<dyn LexicalIndexOpenPort + Send + Sync>` immediately.
+- **Dependency Inversion at every composition seam** — use a trait object (`Arc<dyn …Port>`) or a generic parameter for injected collaborators. Construct concrete Native adapters at the Runtime composition boundary. Dispatch, query and Hybrid code consume the corresponding domain ports.
 - **Open/Closed at variant edges** — adding a new IPC variant, channel op, or domain port must not force a sprawling edit across encode + decode + match + factory + test all at once. If you're editing four or more places to add one variant, the surface is closed wrong; lift the dispatch into a trait or registry.
 - **Interface Segregation** — a trait with `dispatch(BigEnum) -> BigEnum` for 4+ unrelated payload kinds is fat. Split it into narrow traits (`LexicalQueryPort`, `SemanticQueryPort`, …) and have one composition wrapper implement them all. Composition root does the routing, not the trait.
 - **No mirror methods** — `lexical_seal` / `semantic_seal`, `drain_lex` / `drain_sem`, `apply_lex` / `apply_sem` are copy-paste smells. Lift the shape into one generic helper, one delegated type, or one enum-driven dispatch. Acceptable only when the two paths genuinely diverge at the type level (e.g. event types differ irrecoverably); say so in a comment and prove the divergence.

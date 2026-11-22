@@ -91,12 +91,6 @@ impl SourceHead {
         Ok(())
     }
 
-    #[cfg(feature = "legacy-tantivy")]
-    pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
-        self.validate()?;
-        encode_bounded(self, MAX_RECORD_BYTES, "source head")
-    }
-
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, CoreError> {
         let head: Self = decode_bounded(bytes, MAX_RECORD_BYTES, "source head")?;
         head.validate()
@@ -112,19 +106,6 @@ pub(crate) fn source_key_digest(key: &SourceFileKey) -> Result<[u8; 32], CoreErr
     hasher.update(b"quanta-file-source-key-v17\0");
     hasher.update(encoded);
     Ok(hasher.finalize().into())
-}
-
-#[cfg(feature = "legacy-tantivy")]
-fn encode_bounded<T: Serialize>(
-    value: &T,
-    ceiling: usize,
-    name: &str,
-) -> Result<Vec<u8>, CoreError> {
-    let bytes = encode_cbor(value, name)?;
-    if bytes.len() > ceiling {
-        return Err(invalid(&format!("{name} exceeds byte admission")));
-    }
-    Ok(bytes)
 }
 
 fn decode_bounded<T: for<'de> Deserialize<'de> + Serialize>(

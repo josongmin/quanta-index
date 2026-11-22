@@ -10,8 +10,7 @@ use quanta_index_core::index::{
 
 use super::{
     AnnDirectory, EmbeddingRecipe, MAX_DELTA_OWNERS, MAX_REGIONS, ReadContext, load_member,
-    load_query_owner_artifact, native_graph, require_changed_map_root, scan_ordered_page,
-    validate_delta_counts,
+    load_query_owner_artifact, require_changed_map_root, scan_ordered_page, validate_delta_counts,
 };
 
 const REGION_SCAN_PAGE: u32 = 64;
@@ -175,8 +174,9 @@ fn fully_obsolete(
     }
     let descriptor = &loaded.descriptor;
     // Retirement needs the authenticated descriptor and seal, but must not
-    // decode every graph vector/adjacency table merely to unlink a dead root.
-    let fileset = native_graph::load_seal(context.objects, descriptor.fileset, context.budget)?;
+    // load every graph vector or Lance file chunk merely to unlink a dead root.
+    let fileset =
+        directory.inspect_region_metadata(descriptor.fileset, context.objects, context.budget)?;
     if fileset.recipe != directory.recipe
         || fileset.generation != id.checked_add(1).ok_or(IndexError::ResourceLimited)?
         || fileset.rows != descriptor.rows

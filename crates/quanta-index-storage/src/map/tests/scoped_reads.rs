@@ -122,7 +122,10 @@ fn scoped_batch_keeps_path_and_data_reuse_across_pages() -> TestResult {
     let mut scalar_work = budget()?;
     let scalar = super::super::scoped_reads::ScopedReads::new(&store, &scalar_work)?;
     for key in &keys {
-        check_eq!(scalar.lookup(root, key, &mut scalar_work)?, Some(first.into()));
+        check_eq!(
+            scalar.lookup(root, key, &mut scalar_work)?,
+            Some(first.into())
+        );
     }
     let scalar_gets = scalar.physical_gets();
     check!(scalar_gets > 0);
@@ -159,7 +162,12 @@ fn scoped_batch_keeps_path_and_data_reuse_across_pages() -> TestResult {
         )?
         .root;
     let mut replaced = [None];
-    batch.lookup_batch(changed, &[b"\x07".as_slice()], &mut replaced, &mut batch_work)?;
+    batch.lookup_batch(
+        changed,
+        &[b"\x07".as_slice()],
+        &mut replaced,
+        &mut batch_work,
+    )?;
     check_eq!(replaced, [Some(second.into())]);
     batch.lookup_batch(root, &[b"\x07".as_slice()], &mut replaced, &mut batch_work)?;
     check_eq!(replaced, [Some(first.into())]);

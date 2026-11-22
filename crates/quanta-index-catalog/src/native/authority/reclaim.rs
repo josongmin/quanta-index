@@ -877,7 +877,7 @@ pub(super) fn reference_exists(
             return Ok(true);
         }
     }
-    super::boot_manifest::refuse_selected_orphan(connection, object, budget)?;
+    super::boot_record::refuse_selected_orphan(connection, object, budget)?;
     Ok(false)
 }
 
@@ -1126,7 +1126,9 @@ pub(super) fn bound_namespace(
         .ok_or_else(|| IndexError::BackendViolation("managed namespace is unbound".into()))
 }
 
-fn namespace_binding(connection: &Connection) -> Result<Option<ObjectNamespaceBinding>, IndexError> {
+fn namespace_binding(
+    connection: &Connection,
+) -> Result<Option<ObjectNamespaceBinding>, IndexError> {
     // At most two rows are needed to detect catalog damage. Borrow the
     // bounded payload and checksum from the same snapshot as the row count.
     let mut statement = connection
@@ -1148,7 +1150,9 @@ fn namespace_binding(connection: &Connection) -> Result<Option<ObjectNamespaceBi
     binding.map(Some)
 }
 
-fn decode_namespace_binding(record: &rusqlite::Row<'_>) -> Result<ObjectNamespaceBinding, IndexError> {
+fn decode_namespace_binding(
+    record: &rusqlite::Row<'_>,
+) -> Result<ObjectNamespaceBinding, IndexError> {
     use rusqlite::types::ValueRef;
 
     let singleton: i64 = record.get(4).map_err(|error| sql(&error))?;

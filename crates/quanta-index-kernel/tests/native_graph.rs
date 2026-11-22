@@ -230,6 +230,7 @@ fn node(path: &str) -> RepoMapNodeRef {
 fn output() -> GraphOwnerOutput {
     GraphOwnerOutput {
         projection: Vec::new(),
+        facts: None,
         nodes: vec![
             GraphNode {
                 identity: node("src/a.rs"),
@@ -761,6 +762,7 @@ fn distinct_edges_each_admit_their_own_supporter_bound() -> TestResult {
         .create_workspace(workspace(), 1, &mut budget())?;
     let graph = GraphOwnerOutput {
         projection: Vec::new(),
+        facts: None,
         nodes: vec![
             GraphNode {
                 identity: node("src/a.rs"),
@@ -957,6 +959,7 @@ fn over_bound_affected_fanout_refuses_without_publishing_a_prefix() -> TestResul
     let prior = projection_binding(&fixture, current(&fixture)?.projections)?;
     let large = GraphOwnerOutput {
         projection: Vec::new(),
+        facts: None,
         nodes: (0..4096)
             .map(|index| GraphNode {
                 identity: node(&format!("src/large{index:04}.rs")),

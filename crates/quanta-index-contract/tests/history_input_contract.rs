@@ -109,13 +109,25 @@ fn history_append_has_distinct_closed_wire_without_next_or_ack() {
     assert_eq!(decoded, kind);
     for field in ["instance", "expected", "input", "profile"] {
         let mut missing = append.clone();
-        missing["HistoryAppend"].as_object_mut().expect("append record").remove(field);
-        assert!(serde_json::from_value::<UpdateKind>(missing).is_err(), "missing {field}");
+        assert!(
+            missing["HistoryAppend"]
+                .as_object_mut()
+                .expect("append record")
+                .remove(field)
+                .is_some()
+        );
+        assert!(
+            serde_json::from_value::<UpdateKind>(missing).is_err(),
+            "missing {field}"
+        );
     }
     for forbidden in ["next", "ack"] {
         let mut extra = append.clone();
         extra["HistoryAppend"][forbidden] = serde_json::json!(null);
-        assert!(serde_json::from_value::<UpdateKind>(extra).is_err(), "foreign {forbidden}");
+        assert!(
+            serde_json::from_value::<UpdateKind>(extra).is_err(),
+            "foreign {forbidden}"
+        );
     }
 }
 

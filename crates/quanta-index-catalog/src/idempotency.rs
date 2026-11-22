@@ -46,6 +46,7 @@ use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params, 
 use sha2::{Digest, Sha256};
 
 use crate::connection::{SqliteCatalog, blob32, engine_error, generation_i64};
+use crate::integrity_error::IntegrityCheckError;
 use crate::sequence::{
     FixedDigest32, SequenceEventKindV1, append_operation_invalidation, append_sequence_event,
     is_invalidated_for_floor, verify_event_reference,
@@ -1020,7 +1021,7 @@ pub(crate) fn verify_terminal_event_pair(
     path: &Path,
     sequence: i64,
     mut budget: Option<&mut quanta_index_core::index::WorkBudget>,
-) -> Result<Option<i64>, crate::integrity::IntegrityCheckError> {
+) -> Result<Option<i64>, IntegrityCheckError> {
     let mut statement = connection
         .prepare(
             "SELECT kind, repo_id, revision_id, generation, batch_digest
@@ -1271,7 +1272,7 @@ pub(crate) enum AdmittedJournalError {
     Journal(CoreError),
 }
 
-impl From<AdmittedJournalError> for crate::integrity::IntegrityCheckError {
+impl From<AdmittedJournalError> for IntegrityCheckError {
     fn from(error: AdmittedJournalError) -> Self {
         match error {
             AdmittedJournalError::Admission(error) => Self::Admission(error),
@@ -3152,6 +3153,133 @@ mod tests {
                 code: SearchPlaneErrorCodeV2::OperationReplayFloor,
                 ..
             })),
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn complete_quiescent_journal_lends_two_repositories_and_refuses_pending()
+    -> Result<(), Box<dyn Error>> {
+        use quanta_index_core::index::{
+            IndexError, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope,
+            MemoryScopePort, WorkBudget, WorkLimits,
+        };
+        use std::{sync::Arc, time::Instant};
+
+        struct TestMemory;
+        impl MemoryLeaseOwner for TestMemory {
+            fn release(&self, _bytes: u64) {}
+        }
+        impl MemoryScopePort for TestMemory {
+            fn reserve(
+                &self,
+                bytes: u64,
+                _lifetime: MemoryLifetime,
+            ) -> Result<MemoryLease, IndexError> {
+                Ok(MemoryLease::new(bytes, Arc::new(TestMemory)))
+            }
+        }
+        let mut budget = WorkBudget::new(
+            WorkLimits {
+                reads: 100_000,
+                writes: 0,
+                bytes: 32 * 1024 * 1024,
+                mutations: 0,
+            },
+            Instant::now() + Duration::from_secs(30),
+        );
+        budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(TestMemory))));
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::ZERO)?;
+        let body = [0x39; 32];
+        let mut expected = Vec::new();
+        for repo in ["repo-a", "repo-b"] {
+            let key = IdempotencyKeyV1 {
+                kind: IngestOperationKindV1::SearchCorpus,
+                repo_id: RepoId::new(repo)?,
+                revision_id: RevisionId::new("revision")?,
+                generation: ManifestGeneration::new(1),
+                batch_digest: format!("{repo}-batch"),
+            };
+            let claim = match catalog.claim_prepared(
+                &key,
+                &body,
+                "owner",
+                i64::MAX.unsigned_abs(),
+                &body,
+            )? {
+                ClaimOutcomeV1::Claimed(claim) => claim,
+                _ => return Err("fresh multi-repository fixture replayed".into()),
+            };
+            catalog.mark_applying(&claim)?;
+            let mut receipt = BatchPublishReceipt::empty_for(
+                key.generation,
+                Some("manifest".into()),
+                key.batch_digest.clone(),
+            );
+            receipt.accept_replace_scope();
+            let sequence = catalog.commit(&claim, &receipt)?;
+            expected.push((key.repo_id.clone(), sequence));
+        }
+        let connection = catalog.lock()?;
+        let mut seen = 0_usize;
+        let (count, fence) = super::visit_admitted_quiescent_journal_v1(
+            &connection,
+            catalog.path(),
+            &mut budget,
+            &mut |key, inspected, _| {
+                let quanta_index_core::OperationInspectV1::Committed {
+                    durable_sequence, ..
+                } = inspected
+                else {
+                    return Err(super::AdmittedJournalError::Admission(
+                        IndexError::DigestConflict,
+                    ));
+                };
+                if expected.get(seen).is_none_or(|(repo, sequence)| {
+                    &key.repo_id != repo || durable_sequence != sequence
+                }) {
+                    return Err(super::AdmittedJournalError::Admission(
+                        IndexError::DigestConflict,
+                    ));
+                }
+                seen += 1;
+                Ok(())
+            },
+        )
+        .map_err(|_| "complete multi-repository journal refused")?;
+        assert_eq!(count, 2);
+        assert!(fence > 0);
+        assert_eq!(seen, expected.len());
+        assert!(matches!(
+            super::verify_admitted_quiescent_journal(
+                &connection,
+                catalog.path(),
+                &expected[0].0,
+                &mut budget,
+            ),
+            Err(super::AdmittedJournalError::Admission(IndexError::Conflict))
+        ));
+        drop(connection);
+
+        let pending = IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::SearchCorpus,
+            repo_id: RepoId::new("repo-b")?,
+            revision_id: RevisionId::new("revision")?,
+            generation: ManifestGeneration::new(2),
+            batch_digest: "pending".into(),
+        };
+        let _claim =
+            catalog.claim_prepared(&pending, &body, "owner", i64::MAX.unsigned_abs(), &body)?;
+        let connection = catalog.lock()?;
+        assert!(matches!(
+            super::visit_admitted_quiescent_journal_v1(
+                &connection,
+                catalog.path(),
+                &mut budget,
+                &mut |_, _, _| Ok(()),
+            ),
+            Err(super::AdmittedJournalError::Admission(IndexError::Conflict))
         ));
         Ok(())
     }

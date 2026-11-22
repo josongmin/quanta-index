@@ -1,0 +1,295 @@
+version = 1
+source_commit = "df090e56a72f45bcd676686c9c1d8437f54d83db"
+
+# The pre-retirement source remains an ancestor of every accepted candidate.
+# Pending rows are not retirement approvals. They preserve the exact body and
+# independent oracle until a current registered selector proves equivalence.
+
+[[targets]]
+path = "crates/quanta-index-searchd-runtime/tests/e2e_perf_chaos.rs"
+source_sha256 = "df665bd12b3d92b17028f852402035ae6bc6f36e2aa6ea763fd7212e96a70c1e"
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "current pinned-Legacy public-route body with the same test ID"
+tests = [
+  "hybrid_count_cap_surfaces_truthful_early_stop_reason",
+  "hybrid_large_tied_result_set_keeps_order_stable",
+  "oversized_raw_substring_query_fails_parse_and_does_not_poison_next_query",
+  "raw_substring_trigram_plan_limit_is_typed_and_does_not_poison_next_query",
+  "regex_false_positive_candidate_is_rejected_by_exact_verify",
+  "regex_timeout_is_typed_and_does_not_poison_next_query",
+  "regex_typed_rejection_does_not_poison_next_query",
+  "structural_mixed_lexical_and_not_executes_and_does_not_poison_next_query",
+  "structural_mixed_lexical_or_executes_and_does_not_poison_next_query",
+  "structural_typed_hole_kind_rejects_typed_and_does_not_poison_next_query",
+  "trigram_plan_limit_query_fails_typed_and_does_not_poison_next_query",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "preserved original route result, bounded diagnostic tail, exact dimensions, closed metric names, error tail, and query non-disclosure oracle"
+tests = [
+  "history_after_until_and_diff_filters_execute_and_do_not_poison_next_query",
+  "history_before_executes_and_metrics_are_bounded",
+  "history_before_invalid_timeref_rejects_typed_and_does_not_poison_next_query",
+  "history_commit_file_filter_rejects_typed_and_does_not_poison_next_query",
+  "history_missing_ref_shard_uses_closed_unavailable_metric",
+  "history_missing_tag_shard_uses_closed_unavailable_metric",
+  "history_missing_type_rejects_typed_and_does_not_poison_next_query",
+  "history_predicate_leaf_rejects_typed_and_does_not_poison_next_query",
+  "history_runtime_metrics_use_closed_labels_without_query_leakage",
+  "history_since_time_and_commit_execute_and_unknown_commit_fails_closed",
+  "hybrid_runtime_metrics_use_closed_labels_without_query_leakage",
+  "lexical_timeout_runtime_metrics_use_plan_limit_bucket_without_query_leakage",
+  "predicate_file_contains_executes_and_miss_does_not_poison_next_query",
+  "predicate_repo_has_file_executes_and_miss_does_not_poison_next_query",
+  "runtime_catalog_affected_executes_and_does_not_poison_next_query",
+  "runtime_catalog_changed_executes_and_metrics_are_bounded",
+  "runtime_catalog_dirty_no_executes_and_does_not_poison_next_query",
+  "runtime_catalog_dirty_only_executes_and_does_not_poison_next_query",
+  "runtime_catalog_invalidated_by_executes_and_does_not_poison_next_query",
+  "runtime_catalog_meta_facets_execute_and_do_not_poison_next_query",
+  "runtime_catalog_snapshot_executes_and_metrics_are_bounded",
+  "runtime_catalog_snapshot_unknown_rejects_typed_and_does_not_poison_next_query",
+  "runtime_catalog_stale_executes_and_metrics_are_bounded",
+  "runtime_catalog_stale_miss_does_not_poison_next_query",
+  "runtime_catalog_without_authority_fails_typed_and_metrics_are_bounded",
+  "runtime_metadata_metrics_use_closed_labels_without_query_leakage",
+  "runtime_metadata_predicate_leaf_rejects_typed_and_does_not_poison_next_query",
+  "structural_missing_parse_tree_fails_typed_generation_not_ready",
+  "structural_mixed_lexical_boolean_executes_and_does_not_poison_next_query",
+  "structural_orphan_chunk_authority_is_refused_before_readiness",
+  "structural_pure_negative_boolean_executes_and_does_not_poison_next_query",
+  "structural_runtime_metrics_use_closed_labels_without_query_leakage",
+]
+
+# Every frozen public-route test is mapped to body-bearing current tests. A
+# group can compose route truth and closed-metric truth from separate tests,
+# but every named candidate must exist in the current source tree.
+
+[[current_proofs]]
+proof = "NOT_RUN"
+source_tests = [
+  "hybrid_count_cap_surfaces_truthful_early_stop_reason",
+  "hybrid_large_tied_result_set_keeps_order_stable",
+  "oversized_raw_substring_query_fails_parse_and_does_not_poison_next_query",
+  "raw_substring_trigram_plan_limit_is_typed_and_does_not_poison_next_query",
+  "regex_false_positive_candidate_is_rejected_by_exact_verify",
+  "regex_timeout_is_typed_and_does_not_poison_next_query",
+  "regex_typed_rejection_does_not_poison_next_query",
+  "structural_mixed_lexical_and_not_executes_and_does_not_poison_next_query",
+  "structural_mixed_lexical_or_executes_and_does_not_poison_next_query",
+  "structural_typed_hole_kind_rejects_typed_and_does_not_poison_next_query",
+  "trigram_plan_limit_query_fails_typed_and_does_not_poison_next_query",
+]
+candidates = [
+  { path = "crates/quanta-index-searchd-runtime/tests/legacy_perf_chaos_routes.rs", tests = [
+    "hybrid_count_cap_surfaces_truthful_early_stop_reason",
+    "hybrid_large_tied_result_set_keeps_order_stable",
+    "oversized_raw_substring_query_fails_parse_and_does_not_poison_next_query",
+    "raw_substring_trigram_plan_limit_is_typed_and_does_not_poison_next_query",
+    "regex_false_positive_candidate_is_rejected_by_exact_verify",
+    "regex_timeout_is_typed_and_does_not_poison_next_query",
+    "regex_typed_rejection_does_not_poison_next_query",
+    "structural_mixed_lexical_and_not_executes_and_does_not_poison_next_query",
+    "structural_mixed_lexical_or_executes_and_does_not_poison_next_query",
+    "structural_typed_hole_kind_rejects_typed_and_does_not_poison_next_query",
+    "trigram_plan_limit_query_fails_typed_and_does_not_poison_next_query",
+  ] },
+]
+
+[[current_proofs]]
+proof = "NOT_RUN"
+source_tests = [
+  "history_before_executes_and_metrics_are_bounded",
+  "history_before_invalid_timeref_rejects_typed_and_does_not_poison_next_query",
+  "history_missing_ref_shard_uses_closed_unavailable_metric",
+  "history_missing_tag_shard_uses_closed_unavailable_metric",
+]
+candidates = [
+  { path = "crates/quanta-index-searchd-runtime/tests/legacy_perf_chaos_routes.rs", tests = [
+    "history_before_executes_on_the_pinned_generation",
+    "history_before_invalid_timeref_refuses_typed_and_does_not_poison_next_query",
+    "history_missing_ref_shard_refuses_typed_and_does_not_poison_next_query",
+    "history_missing_tag_shard_refuses_typed_and_does_not_poison_next_query",
+  ] },
+  { path = "crates/quanta-index-search-plane/src/query_dispatcher/tests/history.rs", tests = [
+    "history_dispatch_success_emits_closed_obs_metrics",
+    "history_dispatch_unavailable_emits_closed_obs_metric",
+  ] },
+]
+
+[[current_proofs]]
+proof = "NOT_RUN"
+source_tests = [
+  "history_commit_file_filter_rejects_typed_and_does_not_poison_next_query",
+  "history_missing_type_rejects_typed_and_does_not_poison_next_query",
+  "history_predicate_leaf_rejects_typed_and_does_not_poison_next_query",
+  "history_runtime_metrics_use_closed_labels_without_query_leakage",
+]
+candidates = [
+  { path = "crates/quanta-index-search-plane/src/query_dispatcher/tests/history.rs", tests = [
+    "history_dispatch_rejects_commit_file_filter_with_invalid_request",
+    "history_dispatch_rejects_missing_type_with_invalid_request",
+    "history_dispatch_rejects_predicate_leaf_with_not_implemented",
+    "history_dispatch_success_emits_closed_obs_metrics",
+  ] },
+]
+
+[[current_proofs]]
+proof = "NOT_RUN"
+source_tests = [
+  "history_after_until_and_diff_filters_execute_and_do_not_poison_next_query",
+  "history_since_time_and_commit_execute_and_unknown_commit_fails_closed",
+  "predicate_file_contains_executes_and_miss_does_not_poison_next_query",
+  "predicate_repo_has_file_executes_and_miss_does_not_poison_next_query",
+  "runtime_catalog_snapshot_unknown_rejects_typed_and_does_not_poison_next_query",
+]
+candidates = [
+  { path = "crates/quanta-index-searchd-runtime/tests/sdk_frontdoor/matrix_tests.rs", tests = [
+    "sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth",
+  ] },
+]
+
+[[current_proofs]]
+proof = "NOT_RUN"
+source_tests = [
+  "runtime_catalog_affected_executes_and_does_not_poison_next_query",
+  "runtime_catalog_changed_executes_and_metrics_are_bounded",
+  "runtime_catalog_dirty_no_executes_and_does_not_poison_next_query",
+  "runtime_catalog_dirty_only_executes_and_does_not_poison_next_query",
+  "runtime_catalog_invalidated_by_executes_and_does_not_poison_next_query",
+  "runtime_catalog_meta_facets_execute_and_do_not_poison_next_query",
+  "runtime_catalog_snapshot_executes_and_metrics_are_bounded",
+  "runtime_catalog_stale_executes_and_metrics_are_bounded",
+  "runtime_catalog_stale_miss_does_not_poison_next_query",
+]
+candidates = [
+  { path = "crates/quanta-index-searchd-runtime/tests/legacy_dirty_only_route.rs", tests = [
+    "reopen_preserves_runtime_catalog_affected_query",
+    "reopen_preserves_runtime_catalog_changed_query",
+    "reopen_preserves_runtime_catalog_invalidated_by_query",
+    "reopen_preserves_runtime_catalog_meta_layer_query",
+    "reopen_preserves_runtime_catalog_meta_owner_query",
+    "reopen_preserves_runtime_catalog_meta_service_query",
+    "reopen_preserves_runtime_catalog_meta_surface_query",
+    "reopen_preserves_runtime_catalog_snapshot_query",
+    "reopen_preserves_runtime_catalog_stale_miss_and_follow_up",
+    "reopen_preserves_runtime_catalog_stale_query",
+    "reopen_preserves_runtime_dirty_no_clean_complement",
+    "sourcegraph_dirty_only_does_not_poison_follow_up_native_dirty_query",
+  ] },
+  { path = "crates/quanta-index-search-plane/src/query_dispatcher/tests/runtime_metadata.rs", tests = [
+    "runtime_metadata_dispatch_success_emits_closed_obs_metrics",
+  ] },
+]
+
+[[current_proofs]]
+proof = "NOT_RUN"
+source_tests = [
+  "runtime_catalog_without_authority_fails_typed_and_metrics_are_bounded",
+  "runtime_metadata_metrics_use_closed_labels_without_query_leakage",
+  "runtime_metadata_predicate_leaf_rejects_typed_and_does_not_poison_next_query",
+]
+candidates = [
+  { path = "crates/quanta-index-search-plane/src/query_dispatcher/tests/runtime_metadata.rs", tests = [
+    "runtime_metadata_dispatch_not_ready_emits_closed_obs_metric",
+    "runtime_metadata_dispatch_rejects_predicate_leaf_typed_error",
+    "runtime_metadata_dispatch_success_emits_closed_obs_metrics",
+  ] },
+]
+
+[[current_proofs]]
+proof = "NOT_RUN"
+source_tests = [
+  "hybrid_runtime_metrics_use_closed_labels_without_query_leakage",
+  "lexical_timeout_runtime_metrics_use_plan_limit_bucket_without_query_leakage",
+]
+candidates = [
+  { path = "crates/quanta-index-search-plane/src/query_dispatcher/tests/hybrid.rs", tests = [
+    "hybrid_dispatch_emits_closed_obs_metrics",
+  ] },
+  { path = "crates/quanta-index-searchd-runtime/tests/e2e_legacy_reference_metrics.rs", tests = [
+    "route_socket_registry_and_diagnostic_tallies_move_by_exactly_the_traffic_sent",
+  ] },
+  { path = "crates/quanta-index-searchd-runtime/tests/legacy_perf_chaos_routes.rs", tests = [
+    "regex_timeout_is_typed_and_does_not_poison_next_query",
+  ] },
+]
+
+[[current_proofs]]
+proof = "NOT_RUN"
+source_tests = [
+  "structural_missing_parse_tree_fails_typed_generation_not_ready",
+  "structural_mixed_lexical_boolean_executes_and_does_not_poison_next_query",
+  "structural_pure_negative_boolean_executes_and_does_not_poison_next_query",
+  "structural_runtime_metrics_use_closed_labels_without_query_leakage",
+]
+candidates = [
+  { path = "crates/quanta-index-search-plane/src/query_dispatcher/tests/structural.rs", tests = [
+    "structural_dispatch_executes_mixed_lexical_and_structural_and",
+    "structural_dispatch_executes_pure_negative_root_from_pinned_universe",
+    "structural_dispatch_maps_generation_not_ready",
+    "structural_dispatch_success_emits_closed_obs_metrics",
+  ] },
+]
+
+[[current_proofs]]
+proof = "NOT_RUN"
+source_tests = [
+  "structural_orphan_chunk_authority_is_refused_before_readiness",
+]
+candidates = [
+  { path = "crates/quanta-index-searchd-runtime/tests/end_to_end.rs", tests = [
+    "orphan_structural_tree_is_refused_before_query_readiness",
+  ] },
+]
+
+[[exact_oracles]]
+test = "held_code_search_reader_defers_generation_reclaim"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_snapshot_registry.rs"
+source_sha256 = "60d04b76b506ee03b67a27fade66a1c6bef3e11fa9f1c7221485c590afe0917b"
+proof = "NOT_RUN"
+candidates = [
+  { path = "crates/quanta-index-search-plane/src/snapshot_registry.rs", tests = ["eviction_and_retire_do_not_invalidate_handles_in_flight"] },
+  { path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/physical_mixed_pressure/wal_reclaim.rs", tests = ["held_sqlite_reader_does_not_preempt_gc_and_wal_reclaims_after_release"] },
+]
+gap = "Native SQLite WAL retention does not prove the Legacy StillReferenced holders count and generation-directory removal oracle"
+
+[[exact_oracles]]
+test = "a_new_writer_is_refused_typed_above_the_rss_ceiling_and_admitted_below_it"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_process_envelope.rs"
+source_sha256 = "20dfc9d0325e4f1d4c014bf91050461b38d443acf19964583929182ff00f4125"
+proof = "NOT_RUN"
+candidates = [
+  { path = "crates/quanta-index-catalog/src/native/authority.rs", tests = ["ingress_resume_if_present_never_creates_and_rotates_existing_fence"] },
+  { path = "crates/quanta-index-core/src/domains/observability.rs", tests = ["the_resident_memory_gate_refuses_typed_above_the_ceiling_and_counts_it"] },
+  { path = "crates/quanta-index-sdk/src/native_uds/admitted_reply_v1.rs", tests = ["bounded_publication_decodes_canonical_cbor_without_wire_twin"] },
+  { path = "crates/quanta-index-searchd-runtime/tests/native_index_uds.rs", tests = ["native_publication_rss_gate_refuses_typed_without_input_and_retries_the_same_operation"] },
+  { path = "crates/quanta-index-searchd-runtime/tests/native_product_process.rs", tests = ["product_native_process_rss_ceiling_refuses_before_input_creation", "product_native_process_rss_ceiling_refuses_zero_before_state_creation"] },
+]
+gap = "the Native typed refusal, zero-input, exact-operation retry, product config, and counter oracle has not run in the Root execution lane"
+
+[[exact_oracles]]
+test = "a_deadline_inside_the_dense_lane_is_answered_from_the_lane_counted_and_survived"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_semantic_budget_interruption.rs"
+source_sha256 = "74fc2be60d66226cebc6b12c92c1b342c4e177665f1c6465c3f91cb22f9452b8"
+proof = "NOT_RUN"
+candidates = [
+  { path = "crates/quanta-index-semantic/tests/cancellation_inside_search.rs", tests = ["a_deadline_while_the_exact_lane_is_pending_is_counted_and_the_handle_serves_again"] },
+  { path = "crates/quanta-index-search-plane/src/query_dispatcher/tests/budget.rs", tests = ["the_request_budget_reaches_the_dense_lane_on_every_dense_route"] },
+]
+gap = "current bodies are static-mapped but have not run together in the Root execution lane"
+
+[[exact_oracles]]
+test = "shared_socket_namespace_survives_same_process_reopen"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_socket_access.rs"
+source_sha256 = "0953685f45f0a55d88dada5c50a84406f9c9b839beef31b703057fd5d114a28f"
+proof = "NOT_RUN"
+candidates = [
+  { path = "crates/quanta-index-searchd-runtime/tests/native_index_uds.rs", tests = ["native_uds_source_lifecycle_status_old_view_and_reopen"] },
+]
+gap = "the current in-process removal, recreation, persisted read, and final cleanup oracle has not run in the Root execution lane"

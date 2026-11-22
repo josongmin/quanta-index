@@ -62,7 +62,10 @@ impl ExistingSourceReader<'_> {
         reference: &ObjectRef,
         budget: &mut WorkBudget,
     ) -> Result<PhysicalObject, Failure> {
-        if reference.bytes > object_binary::MAX_OBJECT_BYTES as u64 {
+        if reference.bytes
+            > u64::try_from(object_binary::MAX_OBJECT_BYTES)
+                .map_err(|_error| IndexError::ResourceLimited)?
+        {
             return Err(IndexError::DigestConflict.into());
         }
         let hex = object_binary::hex_digest(&reference.sha256);
@@ -158,8 +161,17 @@ impl ExistingSourceReader<'_> {
                 }
                 for (child, length) in children {
                     let before = output.len();
-                    self.blob_node(&child, None, depth + 1, output, maximum, budget)?;
-                    if u64::try_from(output.len().saturating_sub(before)).ok() != Some(length) {
+                    self.blob_node(
+                        &child,
+                        None,
+                        depth.checked_add(1).ok_or(IndexError::DigestConflict)?,
+                        output,
+                        maximum,
+                        budget,
+                    )?;
+                    if !u64::try_from(output.len().saturating_sub(before))
+                        .is_ok_and(|observed| observed == length)
+                    {
                         return Err(IndexError::DigestConflict.into());
                     }
                 }
@@ -191,7 +203,8 @@ impl ExistingSourceReader<'_> {
         maximum: usize,
         budget: &mut WorkBudget,
     ) -> Result<(Vec<u8>, MemoryLease), Failure> {
-        let length = usize::try_from(reference.bytes).map_err(|_| IndexError::ResourceLimited)?;
+        let length =
+            usize::try_from(reference.bytes).map_err(|_error| IndexError::ResourceLimited)?;
         if length > maximum || !reference.root.kind.is_payload() {
             return Err(IndexError::DigestConflict.into());
         }
@@ -206,7 +219,7 @@ impl ExistingSourceReader<'_> {
         let mut output = Vec::new();
         output
             .try_reserve_exact(length)
-            .map_err(|_| IndexError::ResourceLimited)?;
+            .map_err(|_error| IndexError::ResourceLimited)?;
         self.blob_node(
             &reference.root,
             Some((reference.bytes, &reference.sha256)),
@@ -221,6 +234,10 @@ impl ExistingSourceReader<'_> {
         Ok((output, memory))
     }
 
+    #[expect(
+        clippy::type_complexity,
+        reason = "The visitor carries source identity, admission, bytes, and the original budget"
+    )]
     fn visit_page<E>(
         &self,
         reference: &PageRef,
@@ -262,7 +279,8 @@ impl ExistingSourceReader<'_> {
                     let (body, _body_memory) = self
                         .blob(&head.body, super::source_head::MAX_FILE_BYTES, budget)
                         .map_err(SourceVisitFailureV1::Physical)?;
-                    if u64::try_from(body.len()).ok() != Some(head.source_bytes)
+                    if !u64::try_from(body.len())
+                        .is_ok_and(|observed| observed == head.source_bytes)
                         || <[u8; 32]>::from(Sha256::digest(&body))
                             != head.coverage.source.source_sha256
                     {
@@ -295,7 +313,13 @@ impl ExistingSourceReader<'_> {
 
 /// Lend every original Source file from one sealed generation through the same
 /// held physical I/O port used by the canonical complete-generation verifier.
+///
 /// Header and file callbacks are provisional until this function returns Ok.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    reason = "Explicit physical authorities and callbacks retain their independent lifetimes"
+)]
 pub fn visit_existing_complete_source_files_v1<E>(
     lexical_track_root: &Path,
     expected: &GenerationSnapshot,
@@ -330,12 +354,13 @@ pub fn visit_existing_complete_source_files_v1<E>(
     let manifest_input = read_existing_file_v1(
         &manifest_path,
         owner,
-        super::manifest::MAX_SEALED_MANIFEST_BYTES as u64,
+        u64::try_from(super::manifest::MAX_SEALED_MANIFEST_BYTES)
+            .map_err(|_error| SourceVisitFailureV1::Physical(IndexError::ResourceLimited.into()))?,
         io,
         budget,
     )
     .map_err(SourceVisitFailureV1::Physical)?;
-    let _manifest_decode = super::existing::decoder_memory(manifest_input.bytes_v1().len(), budget)
+    let manifest_decode = super::existing::decoder_memory(manifest_input.bytes_v1().len(), budget)
         .map_err(SourceVisitFailureV1::Physical)?;
     let manifest = LexicalSealedManifest::decode(manifest_input.bytes_v1(), &manifest_path)
         .map_err(|cause| SourceVisitFailureV1::Physical(cause.into()))?;
@@ -354,7 +379,7 @@ pub fn visit_existing_complete_source_files_v1<E>(
         .clone()
         .ok_or_else(|| SourceVisitFailureV1::Physical(IndexError::DigestConflict.into()))?;
     drop(manifest);
-    drop(_manifest_decode);
+    drop(manifest_decode);
     drop(manifest_input);
     let file = read_existing_committed_file_v1(&generation, &file_artifact, owner, io, budget)
         .map_err(SourceVisitFailureV1::Physical)?;
@@ -412,5 +437,34 @@ pub fn visit_existing_complete_source_files_v1<E>(
             IndexError::DigestConflict.into(),
         ));
     }
+    // Do not overlap the export-side control decodes with the second complete
+    // verification. Per-row record/body loans are already released by
+    // `visit_page`; release the retained roots, coverage and decoder grants too.
+    drop((
+        previous,
+        reader,
+        pages,
+        event,
+        _heap_charge,
+        coverage,
+        _coverage_decode,
+        root,
+        file,
+        _file_root_decode,
+    ));
+    // The callbacks run after the initial complete-generation verification and
+    // may execute arbitrary caller code. Re-prove the same generation before
+    // promoting their provisional observations so a committed control-file
+    // mutation cannot be hidden by otherwise intact Source bodies.
+    super::existing::verify_existing_lexical_generation_read_only(
+        lexical_track_root,
+        expected,
+        owner,
+        maximum_objects,
+        metadata,
+        io,
+        budget,
+    )
+    .map_err(SourceVisitFailureV1::Physical)?;
     Ok(count)
 }

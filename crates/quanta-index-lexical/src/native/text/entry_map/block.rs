@@ -10,9 +10,9 @@ use crate::native::text_occurrence::block::CheckedBlock;
 
 const MAGIC: &[u8; 8] = b"QITXEM02";
 const HEADER_BYTES: usize = 12;
-const MAX_ROWS: usize = 512;
-const MAX_PAYLOAD_BYTES: usize = 16_384;
-const MAX_KEY_BYTES: usize = 1_024;
+pub(in crate::native::text) const MAX_ROWS: usize = 512;
+pub(in crate::native::text) const MAX_PAYLOAD_BYTES: usize = 16_384;
+pub(in crate::native::text) const MAX_KEY_BYTES: usize = 1_024;
 const INLINE_ROWS: usize = 8;
 const INLINE_KEY_BYTES: usize = 32;
 
@@ -274,10 +274,10 @@ pub(super) fn scan(
     ))
 }
 
-/// One fully authenticated Block retained across the file-local 64-row pages.
+/// One fully authenticated Block retained across file-local 64-row pages.
 ///
-/// Each continuation goes through the port's same-attempt retained-read policy;
-/// this snapshot is not fresh namespace authentication or publication authority.
+/// Page continuations cross the port's retained-read boundary. The borrowed
+/// row visitor keeps the same checked DATA for its whole cursor lifetime.
 pub(in crate::native::text) struct BlockCursor<'a> {
     objects: &'a dyn ImmutableObjectPort,
     reference: ObjectRef,
@@ -285,6 +285,9 @@ pub(in crate::native::text) struct BlockCursor<'a> {
     count: usize,
     ordinal: usize,
     offset: usize,
+    // The last visited row remains in the authenticated object. A bounded
+    // offset and slot lend its key without allocating another owned key.
+    current: Option<(u16, u16, u16)>,
 }
 
 impl<'a> BlockCursor<'a> {
@@ -303,6 +306,7 @@ impl<'a> BlockCursor<'a> {
             count,
             ordinal: 0,
             offset: HEADER_BYTES,
+            current: None,
         })
     }
 
@@ -377,6 +381,14 @@ impl<'a> BlockCursor<'a> {
             leases.extend(memory);
             ordinal = ordinal.checked_add(1).ok_or(IndexError::ResourceLimited)?;
         }
+        if self.current.is_some() {
+            budget.charge(WorkUsage {
+                bytes: u64::try_from(std::mem::size_of::<Option<(u16, u16, u16)>>())
+                    .map_err(|_error| IndexError::ResourceLimited)?,
+                ..WorkUsage::default()
+            })?;
+            self.current = None;
+        }
         self.offset = offset;
         self.ordinal = ordinal;
         Ok(MapPage::new(
@@ -385,6 +397,66 @@ impl<'a> BlockCursor<'a> {
             leases,
             allocation,
         ))
+    }
+
+    /// Visit one authenticated row without allocating a second map page.
+    /// This private borrowed stream uses the originally checked DATA through
+    /// EOF; the public page continuation keeps its own retained-read policy.
+    pub(in crate::native::text) fn visit_next<T>(
+        &mut self,
+        budget: &mut WorkBudget,
+        visit: impl FnOnce(&[u8], ObjectRef, &mut WorkBudget) -> Result<T, IndexError>,
+    ) -> Result<Option<T>, IndexError> {
+        budget.checkpoint()?;
+        if self.ordinal == self.count {
+            return Ok(None);
+        }
+        let mut offset = self.offset;
+        let (key, child_slot) = next_row(&self.object.payload, &mut offset)?;
+        let reference = child_at(&self.object, child_slot)?;
+        budget.charge(WorkUsage {
+            bytes: u64::try_from(key.len()).map_err(|_error| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        let value = visit(key, reference, budget)?;
+        let key_start = self
+            .offset
+            .checked_add(2)
+            .ok_or(IndexError::ResourceLimited)?;
+        let key_end = key_start
+            .checked_add(key.len())
+            .ok_or(IndexError::ResourceLimited)?;
+        let current = (
+            u16::try_from(key_start).map_err(|_error| IndexError::ResourceLimited)?,
+            u16::try_from(key_end).map_err(|_error| IndexError::ResourceLimited)?,
+            u16::try_from(child_slot).map_err(|_error| IndexError::ResourceLimited)?,
+        );
+        budget.charge(WorkUsage {
+            bytes: u64::try_from(std::mem::size_of::<Option<(u16, u16, u16)>>())
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        self.offset = offset;
+        self.ordinal = self
+            .ordinal
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        self.current = Some(current);
+        Ok(Some(value))
+    }
+
+    pub(in crate::native::text) fn current(
+        &self,
+    ) -> Result<Option<(&[u8], ObjectRef)>, IndexError> {
+        let Some((start, end, slot)) = self.current else {
+            return Ok(None);
+        };
+        let key = self
+            .object
+            .payload
+            .get(usize::from(start)..usize::from(end))
+            .ok_or_else(|| corrupt("visited block key offset differs"))?;
+        Ok(Some((key, child_at(&self.object, usize::from(slot))?)))
     }
 }
 

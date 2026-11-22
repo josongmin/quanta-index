@@ -105,7 +105,7 @@ impl SqliteCatalog {
                 ));
             }
         };
-        let writer_cache = {
+        let (writer_cache, pin_data_version, native_extensions) = {
             let connection = owner.initialization_connection()?;
             configure_connection(connection, &path, busy_timeout)?;
             let writer_cache: Option<CatalogWriterCacheObservation> = policy
@@ -167,7 +167,8 @@ impl SqliteCatalog {
                 .execute_batch(crate::candidate::SCHEMA)
                 .map_err(|error| engine_error("create repomap candidate schema", &path, &error))?;
             crate::candidate::verify_installed_schema(&initialization, &path)?;
-            crate::native::initialize(&initialization, &path, native_first_birth)?;
+            let native_extensions =
+                crate::native::initialize(&initialization, &path, native_first_birth)?;
             crate::idempotency::seed_fence_allocator(&initialization, &path, fresh_root)?;
             // A missing or recast GC floor must refuse before recovery mutates
             // journal rows or clears old mutation leases.
@@ -185,16 +186,23 @@ impl SqliteCatalog {
             let _leases =
                 crate::idempotency::release_stale_mutation_leases(&initialization, &path)?;
             crate::integrity::verify_integrity(&initialization, &path)?;
+            let pin_data_version = crate::native::certify_open_pin_rows(&initialization, &path)?;
             initialization
                 .commit()
                 .map_err(|error| engine_error("commit catalog initialization", &path, &error))?;
-            writer_cache
+            (writer_cache, pin_data_version, native_extensions)
         };
         Ok(Self {
             connection: owner,
             path,
             clock,
             writer_cache,
+            pin_data_version: std::sync::atomic::AtomicI64::new(pin_data_version),
+            native_quarantine_schema: std::sync::atomic::AtomicU8::new(native_extensions.0),
+            native_source_stage_schema: std::sync::atomic::AtomicBool::new(native_extensions.1),
+            transient_source_body_quarantines: std::sync::RwLock::new(
+                std::collections::BTreeMap::new(),
+            ),
         })
     }
 }

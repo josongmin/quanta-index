@@ -28,6 +28,12 @@ MAX_CAPTURE_BYTES = 128 * 1024 * 1024
 MAX_CONFIGURED_CAPTURE_BYTES = 1_073_741_824
 JS_SAFE_INTEGER = (1 << 53) - 1
 U64_MAX = (1 << 64) - 1
+MANAGED_INSTALL_CENSUS_KINDS = frozenset(
+    {"catalog_registration", "catalog_edge", "storage_cas_reuse"}
+)
+MANAGED_INSTALL_CUSTODY_STAGES = frozenset(
+    {"managed_object_confirm", "managed_object_advance"}
+)
 NATIVE_IO_SUMMARY_COUNTERS = frozenset({"sync_calls", "sync_failures", "sync_elapsed_ns"})
 TEXT_COLD_SHAPE_COUNTERS = frozenset(
     {
@@ -112,6 +118,9 @@ SQLITE_WRITE_COUNTERS = frozenset(
     }
 )
 THREAD_CPU_COUNTERS = frozenset({"thread_cpu_ns"})
+ANN_QUERY_STAGES = frozenset(
+    {"query_ann_file_set", "query_ann_hydrate", "query_ann_open", "query_ann_candidate"}
+)
 THREAD_CPU_STAGES = frozenset(
     {
         "native_source_apply",
@@ -467,6 +476,8 @@ def _schema_for_version(schema: dict[str, Any], version: int) -> dict[str, Any]:
         selected["$defs"][record_type]["properties"]["schema_version"]["const"] = version
     if version < 5:
         selected["$defs"]["event"] = selected["$defs"]["legacyEvent"]
+        for stage in ANN_QUERY_STAGES:
+            selected["$defs"]["spanBegin"]["properties"]["stage"]["enum"].remove(stage)
         selected["$defs"]["spanBegin"]["properties"]["stage"]["enum"].remove(
             "managed_object_install"
         )
@@ -631,6 +642,7 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
     ann_region_observations: list[dict[str, Any]] = []
     sqlite_sync_observations: list[dict[str, Any]] = []
     object_install_aggregates: list[dict[str, Any]] = []
+    managed_install_census_events: list[dict[str, Any]] = []
     sync_aggregates: list[dict[str, Any]] = []
     object_kind_aggregates: list[dict[str, Any]] = []
     adoption_group_aggregates: list[dict[str, Any]] = []
@@ -871,6 +883,8 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                     },
                 }
             )
+        elif event_type in {"managed_install_census_batch", "managed_install_census_entry"}:
+            managed_install_census_events.append({**kind, "ts_ns": event["ts_ns"]})
         elif event_type == "sync_aggregate":
             if any(
                 kind[key] > (1 << 64) - 1
@@ -1054,6 +1068,10 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
             raise ValueError(f"span clock regressed: {span_id}")
     for span_id, span in spans.items():
         parent = span["parent_span_id"]
+        if span["stage"] in ANN_QUERY_STAGES and (
+            parent is None or (parent in spans and spans[parent]["stage"] != "query_candidate")
+        ):
+            raise ValueError(f"ANN query stage lacks candidate parent: {span_id}")
         if parent is None:
             if span["root_kind"] is None:
                 raise ValueError(f"root span lacks root kind: {span_id}")
@@ -1105,6 +1123,7 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
         *ann_region_observations,
         *sqlite_sync_observations,
         *object_install_aggregates,
+        *managed_install_census_events,
         *sync_aggregates,
         *object_kind_aggregates,
         *adoption_group_aggregates,
@@ -1137,25 +1156,19 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
             *ann_region_observations,
             *sqlite_sync_observations,
             *object_install_aggregates,
+            *managed_install_census_events,
         )
     )
     observed_regions: dict[str, tuple[int, int, str, int, int]] = {}
+    observed_descriptors: dict[str, str] = {}
     seen_region_events: set[tuple[int, str, str, int]] = set()
     seen_region_spans: set[int] = set()
     for row in ann_region_observations:
-        owner = spans.get(row["span_id"])
-        if owner is None:
-            continue
-        required_stage = {
-            "installed": "semantic_seal",
-            "selected_query": "query_candidate",
-        }[row["phase"]]
-        if owner["stage"] != required_stage:
-            raise ValueError("ANN region observation targets wrong owner stage")
-        if owner["outcome"] not in (None, "ok"):
-            raise ValueError("ANN region observation targets failed owner")
-        if row["chunks"] < row["files"]:
-            raise ValueError("ANN region has fewer chunks than files")
+        descriptor_ref = row["descriptor_ref"]
+        if descriptor_ref is not None:
+            prior_fileset = observed_descriptors.setdefault(descriptor_ref, row["fileset_ref"])
+            if prior_fileset != row["fileset_ref"]:
+                raise ValueError("ANN descriptor fileset differs")
         identity = (row["span_id"], row["phase"], row["fileset_ref"], row["ordinal"])
         if identity in seen_region_events:
             raise ValueError("duplicate ANN region observation")
@@ -1167,6 +1180,17 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
         prior = observed_regions.setdefault(row["fileset_ref"], shape)
         if prior != shape:
             raise ValueError("ANN fileset observations disagree")
+        owner = spans.get(row["span_id"])
+        if owner is None:
+            continue
+        required_stage = {
+            "installed": "semantic_seal",
+            "selected_query": "query_candidate",
+        }[row["phase"]]
+        if owner["stage"] != required_stage:
+            raise ValueError("ANN region observation targets wrong owner stage")
+        if owner["outcome"] not in (None, "ok"):
+            raise ValueError("ANN region observation targets failed owner")
     seen_object_install_phases: set[tuple[int, str]] = set()
     object_install_wall_by_span: dict[int, int] = {}
     for row in object_install_aggregates:
@@ -1460,6 +1484,9 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
             or spans[link["source_span_id"]]["start_ns"] <= spans[link["target_span_id"]]["end_ns"]
         )
     ]
+    managed_install_census = _validate_managed_install_census(
+        spans, managed_install_census_events, complete
+    )
     return {
         "status": "complete" if complete else "partial",
         "schema_version": version,
@@ -1477,6 +1504,7 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
         "ann_region_observations": ann_region_observations,
         "sqlite_sync_observations": sqlite_sync_observations,
         "object_install_aggregates": object_install_aggregates,
+        "managed_install_census": managed_install_census,
         "sync_aggregates": sync_aggregates,
         "object_kind_aggregates": object_kind_aggregates,
         "adoption_group_aggregates": adoption_group_aggregates,
@@ -1490,6 +1518,61 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
         "last_observed_ns": last_ts,
         "truncated_tail": truncated_tail,
         "orphan_events": orphan_events,
+    }
+
+
+def _validate_managed_install_census(
+    spans: dict[int, dict[str, Any]],
+    events: list[dict[str, Any]],
+    complete: bool,
+) -> dict[int, dict[str, list[tuple[str, str | None]]]]:
+    if not complete:
+        return {}
+    sizes: dict[tuple[int, str], int] = {}
+    batches: dict[int, dict[str, list[tuple[str, str | None]]]] = {}
+    for row in events:
+        span_id, kind = row["span_id"], row["census_kind"]
+        owner = spans[span_id]
+        if owner["stage"] not in MANAGED_INSTALL_CUSTODY_STAGES or owner["outcome"] != "ok":
+            raise ValueError("managed install census targets unsuccessful custody")
+        key = (span_id, kind)
+        if row["type"] == "managed_install_census_batch":
+            if key in sizes:
+                raise ValueError("duplicate managed install census batch")
+            sizes[key] = row["entries"]
+            batches.setdefault(span_id, {})[kind] = []
+        else:
+            if key not in sizes:
+                raise ValueError("managed install census entry has no batch")
+            batches[span_id][kind].append((row["object_ref"], row["child_ref"]))
+    for (span_id, kind), size in sizes.items():
+        if len(batches[span_id][kind]) != size:
+            raise ValueError("managed install census batch size differs")
+    for batch in batches.values():
+        registered = {reference for reference, _ in batch.get("catalog_registration", [])}
+        if any(parent not in registered for parent, _ in batch.get("catalog_edge", [])):
+            raise ValueError("managed install census edge has no new registration")
+    return batches
+
+
+def managed_install_census(capture: dict[str, Any], confirmed: list[int]) -> dict[str, Any]:
+    """Count unique identities across the request's successful custody spans."""
+    observed = capture.get("managed_install_census", {})
+    if capture["status"] != "complete" or not confirmed or any(
+        observed.get(span_id, {}).keys() != MANAGED_INSTALL_CENSUS_KINDS
+        for span_id in confirmed
+    ):
+        return {"status": "unavailable"}
+    distinct = {
+        kind: {entry for span_id in confirmed for entry in observed[span_id][kind]}
+        for kind in MANAGED_INSTALL_CENSUS_KINDS
+    }
+    return {
+        "status": "complete",
+        "custody_spans": len(confirmed),
+        "registered_objects": len(distinct["catalog_registration"]),
+        "registered_edges": len(distinct["catalog_edge"]),
+        "cas_reused_objects": len(distinct["storage_cas_reuse"]),
     }
 
 

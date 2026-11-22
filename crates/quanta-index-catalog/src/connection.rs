@@ -2,18 +2,22 @@
 //!
 //! One file under `state_root/catalog/`, opened once per process, with the
 //! pragmas the G0-C gate requires read back rather than assumed: `WAL`,
-//! `synchronous=FULL`, `fullfsync=ON`. Every table's schema is created
-//! when the catalog opens (`open`), so a catalog is whole from its first
-//! open. One connection behind a
+//! `synchronous=FULL`, `fullfsync=ON`. Every base table's schema is created
+//! when the catalog opens (`open`). Optional native extensions are installed
+//! atomically on first use so an unused v20 root retains its original native
+//! namespace. One connection behind a
 //! mutex is deliberate: the ingest socket dispatches serially, so a second
 //! connection would only add lock contention.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, TryLockError};
 use std::time::Duration;
 
 use quanta_index_contract::ManifestGeneration;
-use quanta_index_core::index::{IndexError, WorkBudget, WorkUsage};
+use quanta_index_core::index::{
+    IndexError, MemoryLease, ObjectRef, ViewRef, WorkBudget, WorkUsage,
+};
 use quanta_index_core::{
     CoreError, DiagnosticHealthCodeV1, DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1,
     DiagnosticTraceErrorV1,
@@ -23,6 +27,7 @@ use rusqlite::{Connection, OpenFlags, params};
 use crate::io_admission::{
     CatalogConnectionGuard, CatalogConnectionOwner, catalog_lock_span, is_capacity_refusal,
 };
+pub(crate) use crate::io_admission::{engine_error, storage};
 use crate::writer_cache::CatalogWriterCacheObservation;
 
 mod diagnostic;
@@ -77,6 +82,17 @@ pub struct SqliteCatalog {
     pub(crate) path: PathBuf,
     pub(crate) clock: Arc<dyn CatalogClockPort>,
     pub(crate) writer_cache: Option<CatalogWriterCacheObservation>,
+    // Compared and updated only while holding this Catalog's connection.
+    pub(crate) pin_data_version: std::sync::atomic::AtomicI64,
+    // Optional v20 extensions are absent from ordinary roots so the pinned v20
+    // offline reader sees exactly its canonical native namespace.
+    pub(crate) native_quarantine_schema: std::sync::atomic::AtomicU8,
+    pub(crate) native_source_stage_schema: std::sync::atomic::AtomicBool,
+    // Process-local fail-closed fences retained when a durable Source-body
+    // receipt cannot be written. A committed seed is the restart authority;
+    // before it commits, these rows necessarily cover only this process.
+    pub(crate) transient_source_body_quarantines:
+        std::sync::RwLock<BTreeMap<(ViewRef, ObjectRef), Option<MemoryLease>>>,
 }
 
 impl std::fmt::Debug for SqliteCatalog {
@@ -313,38 +329,6 @@ impl SqliteCatalog {
     }
 }
 
-pub(crate) fn storage(action: &str, path: &Path, error: &dyn std::fmt::Display) -> CoreError {
-    CoreError::Storage(format!("catalog: {action} {}: {error}", path.display()))
-}
-
-/// Map an engine error to the typed codes the ports promise.
-pub(crate) fn engine_error(action: &str, path: &Path, error: &rusqlite::Error) -> CoreError {
-    if is_capacity_refusal(error) {
-        return CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
-            message: format!(
-                "catalog: {action} {} exceeded admitted file capacity: {error}",
-                path.display()
-            ),
-        };
-    }
-    if let rusqlite::Error::SqliteFailure(failure, _) = error
-        && matches!(
-            failure.code,
-            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-        )
-    {
-        return CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy,
-            message: format!(
-                "catalog: {action} {} met a held lock past the busy budget: {error}",
-                path.display()
-            ),
-        };
-    }
-    storage(action, path, error)
-}
-
 /// Require installed `SQLite` objects to match this build's canonical DDL.
 ///
 /// `CREATE IF NOT EXISTS` alone would silently accept an older or weakened
@@ -544,9 +528,10 @@ impl SqliteCatalog {
 
     /// Original-request bounded mutex acquisition for native work. The
     /// legacy catalog API retains its existing blocking lock contract.
-    pub(crate) fn lock_native_budget(
+    pub(crate) fn lock_native_budget_with_retry(
         &self,
         budget: &WorkBudget,
+        mut retry_sleep: impl FnMut(Duration),
     ) -> Result<CatalogConnectionGuard<'_>, IndexError> {
         let diagnostics = budget.request().diagnostic_context();
         let wait = catalog_lock_span(diagnostics, DiagnosticStageV1::CatalogLockWait);
@@ -569,7 +554,7 @@ impl SqliteCatalog {
                         )));
                     }
                     Err(TryLockError::WouldBlock) => {
-                        crate::ticket_diagnostics::retry_sleep(self, Duration::from_millis(1));
+                        retry_sleep(Duration::from_millis(1));
                     }
                 }
             }

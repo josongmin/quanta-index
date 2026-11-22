@@ -12,7 +12,7 @@ use sha2::{Digest as _, Sha256};
 use super::{
     COLUMN_INPUT, COLUMN_MEMBER, COLUMN_OWNER, COLUMN_PRODUCER, COLUMN_VECTOR, COLUMN_VECTOR_ID,
     MAX_REGION_CELLS, MAX_REGION_DIMENSION, MAX_REGION_ROWS, ROW_DOMAIN, RegionSeal, backend,
-    binary, corrupt, digest, id, interruptible, schema, vector_ids,
+    binary, corrupt, digest, id, schema, settle_query_batches, vector_ids,
 };
 
 /// The scan cap includes one surplus row so a forged count cannot be accepted.
@@ -56,11 +56,9 @@ pub(super) async fn attest(
         ..WorkUsage::default()
     })?;
     let _memory = budget.reserve_memory(admitted, MemoryLifetime::Temporary)?;
-    let actual_schema = interruptible(budget.request(), async {
-        table.schema().await.map_err(backend)
-    })
-    .await?;
-    if actual_schema.as_ref() != schema(dimension)?.as_ref() {
+    let actual_schema = table.schema().await.map_err(backend);
+    budget.checkpoint()?;
+    if actual_schema?.as_ref() != schema(dimension)?.as_ref() {
         return Err(corrupt("Native ANN attestation physical schema differs"));
     }
     let mut hash = Sha256::new();
@@ -68,7 +66,6 @@ pub(super) async fn attest(
     hash.update(seal.recipe.0);
     hash.update(seal.dimension.to_be_bytes());
     hash.update(seal.rows.to_be_bytes());
-    let request = budget.request().clone();
     // `build_region` inserted canonical rows. Do not ask Lance to sort a
     // potentially forged, overlarge table before the bounded scan limit.
     let query = table.query().limit(scan_cap).select(Select::columns(&[
@@ -79,20 +76,23 @@ pub(super) async fn attest(
         COLUMN_INPUT,
         COLUMN_VECTOR,
     ]));
-    let mut batches =
-        interruptible(&request, async { query.execute().await.map_err(backend) }).await?;
     let mut count = 0usize;
     let mut prior_key: Option<(OwnerKey, Digest)> = None;
     let mut prior_vector_id = Vec::new();
     prior_vector_id
         .try_reserve_exact(max_id)
         .map_err(|_error| IndexError::ResourceLimited)?;
-    while let Some(batch) = interruptible(&request, async {
-        batches.try_next().await.map_err(backend)
-    })
-    .await?
-    {
+    budget.checkpoint()?;
+    let batches = match query.execute().await.map_err(backend) {
+        Ok(batches) => batches,
+        Err(error) => {
+            budget.checkpoint()?;
+            return Err(error);
+        }
+    };
+    settle_query_batches(batches.map_err(backend), |batch| {
         budget.checkpoint()?;
+        let batch = batch?;
         if batch.num_rows() > scan_cap.saturating_sub(count) {
             return Err(corrupt("Native ANN physical rows exceed seal"));
         }
@@ -170,7 +170,9 @@ pub(super) async fn attest(
             prior_vector_id.clear();
             prior_vector_id.extend_from_slice(vector_id);
         }
-    }
+        Ok(())
+    })
+    .await?;
     if count != rows || Digest(hash.finalize().into()) != seal.rows_digest {
         return Err(corrupt(
             "Native ANN physical row count/digest differs from seal",

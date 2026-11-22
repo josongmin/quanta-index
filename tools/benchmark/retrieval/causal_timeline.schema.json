@@ -116,6 +116,8 @@
             { "$ref": "#/$defs/annRegionObservation" },
             { "$ref": "#/$defs/sqliteSyncObservation" },
             { "$ref": "#/$defs/objectInstallAggregate" },
+            { "$ref": "#/$defs/managedInstallCensusBatch" },
+            { "$ref": "#/$defs/managedInstallCensusEntry" },
             { "$ref": "#/$defs/syncAggregate" },
             { "$ref": "#/$defs/objectKindAggregate" },
             { "$ref": "#/$defs/adoptionGroupAggregate" },
@@ -236,7 +238,8 @@
             "lexical_proof", "compaction",
             "query_parse", "query_plan", "query_read_view",
             "query_overlay_snapshot", "query_fast", "query_deep", "query_lexical", "query_embedding", "query_overlay_embedding",
-            "query_candidate",
+            "query_candidate", "query_ann_file_set", "query_ann_hydrate",
+            "query_ann_open", "query_ann_candidate",
             "query_verify", "query_rank", "query_project", "harness_phase",
             "observer_setup", "observer_sample", "observer_teardown", "artifact_write", "runtime_boot",
             "boot_restore", "boot_reclaim", "boot_inventory", "boot_active_proof",
@@ -382,6 +385,35 @@
         "thread_cpu_ns": { "type": ["integer", "null"], "minimum": 0, "maximum": 18446744073709551615 },
         "failures": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
       }
+    },
+    "managedInstallCensusKind": {
+      "enum": ["catalog_registration", "catalog_edge", "storage_cas_reuse"]
+    },
+    "managedInstallCensusBatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "census_kind", "entries"],
+      "properties": {
+        "type": { "const": "managed_install_census_batch" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "census_kind": { "$ref": "#/$defs/managedInstallCensusKind" },
+        "entries": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
+      }
+    },
+    "managedInstallCensusEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "census_kind", "object_ref", "child_ref"],
+      "properties": {
+        "type": { "const": "managed_install_census_entry" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "census_kind": { "$ref": "#/$defs/managedInstallCensusKind" },
+        "object_ref": { "$ref": "#/$defs/id256" },
+        "child_ref": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/id256" }] }
+      },
+      "if": { "properties": { "census_kind": { "const": "catalog_edge" } } },
+      "then": { "properties": { "child_ref": { "$ref": "#/$defs/id256" } } },
+      "else": { "properties": { "child_ref": { "type": "null" } } }
     },
     "syncAggregate": {
       "type": "object",

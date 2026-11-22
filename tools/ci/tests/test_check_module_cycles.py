@@ -7,6 +7,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "ci" / "lint" / "check-module-cycles.py"
 
@@ -222,6 +224,44 @@ def test_path_alias_reparents_already_scanned_descendants(tmp_path: Path):
     assert keys(root) == ["demo: owner::boot::rows, peer"]
 
 
+def test_visible_path_declaration_uses_its_source_after_parent_alias(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\nmod peer;\n",
+            "owner.rs": (
+                '#[path = "boot.rs"]\nmod boot;\n#[path = "boot/rows.rs"]\npub(crate) mod rows;\n'
+            ),
+            "boot.rs": "",
+            "boot/rows.rs": "pub(crate) fn edge() { crate::peer::edge(); }\n",
+            "peer.rs": "pub(crate) fn edge() { crate::owner::rows::edge(); }\n",
+        },
+    )
+    assert keys(root) == ["demo: owner::rows, peer"]
+
+
+def test_second_path_owner_cannot_remove_first_modules_cycle(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\n",
+            "owner.rs": """
+                mod inline {
+                    #[path = "common.rs"]
+                    mod first;
+                    #[path = "common.rs"]
+                    mod second;
+                    mod peer;
+                }
+            """,
+            "owner/inline/common.rs": "pub fn edge() { super::peer::edge(); }\n",
+            "owner/inline/peer.rs": "pub fn edge() { super::first::edge(); }\n",
+        },
+    )
+    with pytest.raises(ValueError, match=r"source already owned.*first.*second"):
+        keys(root)
+
+
 def test_missing_inline_path_source_is_refused(tmp_path: Path):
     import pytest
 
@@ -310,6 +350,55 @@ def test_cfg_test_subtree_can_declare_fixture_outside_src(tmp_path: Path):
     )
     assert "owner::tests::fixture::helper" not in MODULE.load_crate(root).modules
     assert keys(root) == []
+
+
+def test_cfg_test_subtree_does_not_require_a_cross_crate_fixture_in_its_inventory(
+    tmp_path: Path,
+):
+    fixture_owner = crate(
+        tmp_path,
+        {"lib.rs": "", "../tests/common/profile.rs": "fn profile() {}\n"},
+        name="fixture_owner",
+    )
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\nmod peer;\n",
+            "owner.rs": (
+                '#[cfg(test)]\n#[path = "a_fixture.rs"]\nmod tests;\n'
+                "pub(crate) fn edge() { crate::peer::edge(); }\n"
+            ),
+            "a_fixture.rs": (
+                '#[path = "../../fixture_owner/tests/common/profile.rs"]\nmod profile;\n'
+            ),
+            "peer.rs": "pub(crate) fn edge() { crate::owner::edge(); }\n",
+        },
+    )
+    assert [cycle.key for cycle in MODULE.find_cycles([root, fixture_owner])] == [
+        "demo: owner, peer"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("test_only", "fixture_is_member", "fixture_exists"),
+    [(False, True, True), (True, False, True), (True, True, False)],
+    ids=["production import", "outside workspace", "missing fixture"],
+)
+def test_cross_crate_path_requires_existing_workspace_fixture_in_test_code(
+    tmp_path: Path, test_only: bool, fixture_is_member: bool, fixture_exists: bool
+):
+    files = {"lib.rs": ""}
+    if fixture_exists:
+        files["../tests/common/profile.rs"] = "fn profile() {}\n"
+    fixture_owner = crate(tmp_path, files, name="fixture_owner")
+    cfg = "#[cfg(test)]\n" if test_only else ""
+    root = crate(
+        tmp_path,
+        {"lib.rs": cfg + '#[path = "../../fixture_owner/tests/common/profile.rs"]\nmod profile;\n'},
+    )
+    crate_dirs = [root, fixture_owner] if fixture_is_member else [root]
+    with pytest.raises(ValueError, match="declared Rust path module has no source"):
+        MODULE.find_cycles(crate_dirs)
 
 
 def test_production_path_outside_src_keeps_its_dependency_edges(tmp_path: Path):

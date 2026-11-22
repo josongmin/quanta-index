@@ -1710,7 +1710,7 @@ impl IpcDispatcher<u64, u64> for CountingDispatcher {
     }
 }
 
-struct DeadlineConsistencyDispatcher;
+struct DeadlineConsistencyDispatcher(Option<Instant>);
 
 impl IpcDispatcher<u64, u64> for DeadlineConsistencyDispatcher {
     fn dispatch(
@@ -1719,7 +1719,11 @@ impl IpcDispatcher<u64, u64> for DeadlineConsistencyDispatcher {
         _request: u64,
         budget: &RequestBudgetV1,
     ) -> u64 {
-        u64::from(context.deadline == budget.deadline() && context.deadline > Instant::now())
+        u64::from(
+            context.deadline == budget.deadline()
+                && context.deadline > Instant::now()
+                && self.0.is_none_or(|client_deadline| budget.deadline() <= client_deadline),
+        )
     }
 }
 
@@ -1738,47 +1742,72 @@ fn dispatch_context_uses_the_admitted_budget_deadline() -> TestRes {
         default.io_timeout(),
     )
     .map_err(|error| error.to_string())?;
+    let deadline = Instant::now() + Duration::from_secs(3);
     let server = thread::spawn(move || -> TestRes {
-        let (stream, _address) = listener.accept().map_err(|error| error.to_string())?;
-        let reason = handle_connection::<
-            TestRequestEnvelope,
-            u64,
-            TestResponseEnvelope,
-            u64,
-            DeadlineConsistencyDispatcher,
-        >(
-            stream,
-            &DeadlineConsistencyDispatcher,
-            &DispatchSlots::for_policy(policy),
-            policy,
-            IpcPlane::Query,
-            PeerCredentials {
-                uid: 1000,
-                gid: 1000,
-                pid: None,
-            },
-            1000,
-            1,
-            &AtomicBool::new(false),
-            &test_counters(),
-        );
-        if !matches!(reason, ConnectionCloseReason::PeerClosed) {
-            return Err(format!("unexpected close reason: {reason:?}"));
+        for (client_deadline, expired) in [(None, false), (Some(deadline), false), (None, true)] {
+            let (stream, _address) = listener.accept().map_err(|error| error.to_string())?;
+            let reason = handle_connection::<
+                TestRequestEnvelope,
+                u64,
+                TestResponseEnvelope,
+                u64,
+                DeadlineConsistencyDispatcher,
+            >(
+                stream,
+                &DeadlineConsistencyDispatcher(client_deadline),
+                &DispatchSlots::for_policy(policy),
+                policy,
+                IpcPlane::Query,
+                PeerCredentials {
+                    uid: 1000,
+                    gid: 1000,
+                    pid: None,
+                },
+                1000,
+                1,
+                &AtomicBool::new(false),
+                &test_counters(),
+            );
+            match (expired, reason) {
+                (false, ConnectionCloseReason::PeerClosed)
+                | (
+                    true,
+                    ConnectionCloseReason::RequestDecodeFailed(IpcError::ClientIoDeadlineElapsed),
+                ) => {}
+                (_, reason) => return Err(format!("unexpected close reason: {reason:?}")),
+            }
         }
         Ok(())
     });
-    let response: TestResponseEnvelope = send_request(
-        &socket_path,
-        &test_request(23, 4),
-        ClientIoPolicy::default(),
-    )
-    .map_err(|error| error.to_string())?;
+    let request = test_request(23, 4);
+    let responses = [
+        send_request::<_, TestResponseEnvelope>(&socket_path, &request, ClientIoPolicy::default()),
+        super::send_request_with_commit_deadline_v1(
+            &socket_path, &request, &RequestBudgetV1::until(deadline),
+        ),
+    ];
+    for response in responses {
+        let response = response.map_err(|error| error.to_string())?;
+        if response.payload != 1 {
+            return Err(format!("dispatch deadlines disagreed: {response:?}"));
+        }
+    }
+    let io_error = |error: std::io::Error| error.to_string();
+    let mut client = UnixStream::connect(&socket_path).map_err(io_error)?;
+    client.set_read_timeout(Some(Duration::from_secs(3))).map_err(io_error)?;
+    client.write_all(&super::REQUEST_DEADLINE_PREFACE_V1).map_err(io_error)?;
+    let mut ack = [0; 4];
+    client.read_exact(&mut ack).map_err(io_error)?;
+    if ack != super::REQUEST_DEADLINE_ACK_V1 {
+        return Err(format!("unexpected deadline acknowledgement: {ack:?}"));
+    }
+    client.write_all(&0_u64.to_be_bytes()).map_err(io_error)?;
+    if client.read(&mut [0]).map_err(io_error)? != 0 {
+        return Err("expired publication received a response".into());
+    }
     server
         .join()
         .map_err(|_panic_payload| "server panicked".to_string())??;
-    if response.payload != 1 {
-        return Err(format!("dispatch deadlines disagreed: {response:?}"));
-    }
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-# NC-B · 자체 exact·ANN과 파일 신원
+# NC-B · Native exact·ANN과 파일 신원
 
 ## 소유 범위
 
@@ -8,18 +8,18 @@
 
 1. `route_regions`, `search`, materialization·seal, owner vector와 source contribution을 읽고 기존 exact·pin·게시 구현을 재사용한다.
 2. 독립 전수 oracle에서 빈/희소/상관 필터, 다중 region·centroid 상위 8개 밖 정답, 동일 파일 다중 벡터·동점·source-free projection을 먼저 확인한다. source/projection owner를 파일 owner로 임의 치환하지 않는다.
-3. 이미 구현된 bounded region HNSW와 원본 재채점을 재사용한다. 정렬 입력·seed·recipe, 방문·region·재채점 예산, exact/approximate·제한 도달을 실제 결과에 보존하고 최신 소스의 미완료 제품 수용만 원 oracle로 검증한다.
+3. 제품은 Native 관리 LanceDB 리전과 원본 재채점을 사용한다. 기존 HNSW는 format 4 뷰와 회귀 검증에 남긴다. 선택과 재채점의 예산 및 exact/approximate·제한 도달을 결과에 보존하고 최신 소스를 원 oracle로 검증한다.
 4. 완료된 Query 공급이 소비하는 projection→source-file 인증·파일별 최고 점수·동점·coverage 계약을 유지한다. dense-only 파일을 lexical 후보 교집합으로 축소하지 않는다.
-5. delete/DELTA·이전 pin·병합·재오픈·실패/취소에서 기존 Catalog 게시·보존을 사용한다. 런타임 Lance I/O와 manifest 제거 hunk는 F에 정확히 인계한다.
+5. delete/DELTA·이전 pin·병합·재오픈·실패/취소에서 기존 Catalog 게시·보존을 사용한다. 새 LanceDB 리전은 format 5로 게시하며, format 4 작업공간의 전환은 원본 재구축을 사용한다.
 
 ## 완료 조건
 
-[DOD](../DOD.md#자체-ann-검증)의 독립 exact·Recall·필터 구간·예산·재오픈이 실제 자체 ANN 경로에서 통과한다. 과거 Lance ANN4K 결과는 해당 기존 구현의 증거다. 관련 소스·recipe·생산 artifact와 실행 결과를 결속하고 C/F가 같은 계약을 소비한다.
+[DOD](../DOD.md#native-lancedb-ann-검증)의 독립 exact·Recall·필터 구간·예산·재오픈을 제품 LanceDB 경로에서 확인한다. 아래 결과는 각 실행 당시의 백엔드와 소스 범위에 해당한다. 관련 소스·recipe·생산 artifact와 실행 결과를 결속하고 C/F가 같은 계약을 소비한다.
 
 ## 상태
 
-- state — B130 verified Runtime last-pin physical reclaim, History source inventory, and bound invalid-config refusal3/3 after repairing three compile edges. B129 verified2/2 compaction REDs and15/15 GREEN after exact-CAS batching. The original admitted ANN4K passed1/1 at independent recall640/640 before that repair; whole4K failed at the 10s compaction deadline. Both post-repair 4K bodies remain queued under the original admission. Whole4K acceptance, engine retirement and installed Linux recovery remain open.
-- revision — `ade5fadc1a084fbb81eba831861e996081d80867`, shared dirty local `main`; index/commit/push untouched
+- state — Component implementation and source-scoped receipts are indexed below. B129 compaction and B134 Kernel carry have owning bodies. B143 records a repaired-cohort ANN4K pass and a product watchdog failure. Product acceptance, installed recovery and retirement remain in [Current remaining acceptance](#current-remaining-acceptance).
+- historical revision — `ade5fadc1a084fbb81eba831861e996081d80867` was the implementation-intake checkpoint. Each later body retains its own source and inputs below; this hash does not bind current Main or reserve a runner.
 - ownership_handoff — consumed F original 03:58:27 and F-HANDOFF-02 04:02:19 KST; recorded before SHA matched. B owns the granted exact/ANN/file hunk, private mounts and direct native seal call sites. B41/B42 completed serially through the existing lane under their recorded authorization. That historical handoff does not reserve a current runner or source freeze.
 - changed — native_graph binary HNSW and canonical build/seal/query; projection/source-file authentication, max-per-file/dedup-before-window, retained file metadata/parts; synchronous with_ann reader; dedicated file/graph/ANN4K/lifecycle oracles. Existing unrelated dirty hunk preserved.
 - source_ready — The Native graph/query/file/cache, pure recipe and Legacy outer verifier are mounted in current source and have the focused execution evidence recorded below. B45/B46's hashes and compile-pending statements describe their historical handoff, not the present code. No missing module mount or declaration-only implementation was found in B117's reviewed scope. Whole-product acceptance remains separate.
@@ -41,8 +41,9 @@ Observed path: `NativeSemanticReader::query` → `ann_query::search` or `search_
 
 The initial vector-only/Lance gap and five before-modification hashes are
 historical, retained in the [recovery entry](../../../ARCHIVE-INDEX.md#2026-11-16-query-supplier-ticket-retirement).
-Current Native materialization/query uses native_graph; authenticated source-file
-loading and file aggregation are existing code. Reuse the [implemented decision](../../../adr/NOV-12-001-native-query-and-semantic-engine.md#decision).
+Current Native product materialization and query use managed LanceDB regions.
+Source-file authentication and file aggregation use the existing selected-view
+contract. See the [implemented decision](../../../adr/NOV-12-001-native-query-and-semantic-engine.md#decision).
 B119 and the source-scoped proof below retain their own limits; whole-product,
 filtered/churn, installed and comparative acceptance are not closed here.
 
@@ -57,17 +58,23 @@ This ticket remains active for its original unclosed acceptance:
 
 | Boundary | Remaining proof / owner |
 | --- | --- |
-| B-PRODUCT-01 owning ANN4K | Original selector passed1/1 at independent recall640/640 before the compaction repair. [B132](#b-4k-execution-restored-after-host-reboot-132) restored the original serial verification after reboot. Repaired-cohort results remain pending. |
-| B43 whole SDK product | Last execution FAILED in initial materialization. `row-953` exhausted the original10s assignment deadline during Compaction with430.353s left in the product watchdog. The correction passed 15 focused tests and the existing carry CAS refusal passed 3/3 in [B133](#b-carry-final-cas-refusal-133). Acceptance requires the rerun to finish materialization, all quality sweeps, changed and overlay views, and the second restart. |
+| B-PRODUCT-01 owning ANN4K | Re-run the original selector with LanceDB under the existing admission. The [B143 graph cohort](#b143--4k-product-watchdog-attribution) passed 1/1 at independent recall 640/640. Compare common inputs with the LanceDB product run. |
+| B43 whole SDK product | Re-run the original product selector with LanceDB under the existing admission. The [B143 graph retry](#b143--4k-product-watchdog-attribution) exceeded its 1,200s watchdog at incremental ANN seed 38, before Overlay Close and the second restart. It recorded source drift. |
 | B lifecycle and physical reclaim | B134 passed the real Kernel/Catalog/FileObjectStore multi-region carry, prior-view pin and reopen regressions 3/3 after the supplied SourcePathOwners APIs and two compiler fixes. B130 passed the existing Runtime last-pin body for held files, release and physical reclaim through FileObjectStore/Catalog/Kernel on its recorded inputs. The fixed 4K product checks selected historical views with retention disabled. Operating reclaim timing remains in F. |
 | Query supply and product acceptance | Reuse the existing C Query/Hybrid/History supplier and public wiring. F owns bound-peer/caller acceptance, independent Hybrid holdout/latency, and paired product performance on the selected release inputs. |
 | Genuine Legacy/Source and installed recovery | The existing-only verifier and Runtime callback are mounted, with focused physical/CBOR bodies. [D](NC-D-boot.md) and [F](NC-F-integration.md) own the joined Source/ACK, production Linux custody and signed installed rollback/restore-forward acceptance. |
 | Engine/consumer retirement | [F](NC-F-integration.md) owns the coherent Runtime/Harness/Cargo/lock/vendor/test-authority change and actual caller and release-closure acceptance. The retired outside-only demount proposals remain historical. |
 
-The ANN4K success and whole SDK failure precede the B129 compaction repair.
-Use its [adopted exact-CAS contract](../../../adr/NOV-12-001-native-query-and-semantic-engine.md#semantic-mutation-and-admission)
-and keep the repaired-cohort 4K reruns under the original quiet-host
-admission and independent oracles.
+The earlier ANN4K pass and product failure share the captured inputs documented
+in [B143](#b143--4k-product-watchdog-attribution). Keep the original quiet-host
+admission and independent oracles for the retry.
+To close the combined 4K acceptance, check each terminal for the exact expected
+test body, one pass, exit 0 and empty source/resolver drift. Compare the two
+captured `source_before` digests across the common source roots, including
+added or removed files, and the captured resolver inputs. Each selector checks
+drift during its own execution, so a shared edit between selectors can
+invalidate the combined result. Revalidate affected
+selectors through the existing serial rail if their recorded inputs differ.
 
 ## dependency_requests
 
@@ -376,6 +383,8 @@ One controller was restored outside the checkout at `/Users/songmin/Library/Cach
 
 A mocked subprocess check verified the original two-rail order, independent preflights and terminal states, product dispatch after the ANN4K failure, and protection against reusing the same live state directory. No Rust body executed in that check. The sole restored controller is waiting for the unchanged host admission.
 
+On 2026-11-18 the Codex Desktop update interrupted monitoring and the controller was absent. Its durable state still showed ANN4K waiting, with no ANN4K/Product4K body logs or matching live selector process. At12:18 KST the same unmodified controller was restored in its existing directory, detached from the app process. The prior state is preserved as `state-before-app-update-20261118-121805.json`; the new PID is32142. Both bodies still require actual original-admission execution and terminal results.
+
 ### B-CARRY-FINAL-CAS-REFUSAL-133
 
 The existing multi-page Semantic carry fixture now puts the 65-row source at the earlier ordinal, so carry order differs from CAS order. With one write available, the final region CAS is reached after member staging and denied by the write limit. The test checks the actual typed refusal, both map applications, sorted original descriptor references, unmodified caller directory, prior fileset reachability and returned memory grants. A fresh work budget permits the same fixture to complete and validates the exact selected member map. No production inputs or 4K limits changed.
@@ -397,6 +406,340 @@ Nextest `3f64855d-d9ec-4231-926c-d1df16f8eae8` then executed3/3 PASS (150.960s,6
 ```sh
 CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-kernel --test native_query_session_real -E 'test(=ann_regions::managed_ann_multi_region_carry_unlinks_both_old_descriptors_across_reopen) | test(=ann_regions::managed_ann_second_seal_preserves_prior_selected_view_across_reopen) | test(=ann_regions::managed_ann_region_reopens_after_owner_replacement_with_old_view_pinned)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
 ```
+
+### B-STATIC-DEADLINE-AND-FACADE-AUDIT-135
+
+The static pass traced selected artifact cache identity and eviction, file provenance/ranking, compaction original-root CAS and failure atomicity, ExistingFileIdentityV1 wiring, and both original 4K test oracles. No additional confirmed P0/P1 or ANN production correctness defect was identified. The stale-heavy active-region hard cap and hypothetical allocator excess capacity were not promoted to defects without a supported contract violation.
+
+The product test's last exact-path request already checked completion against the original watchdog. The remaining P2 validation gap was the final restart startup and cleanup/provider tail, where a successful return could occur after the original absolute deadline. `with_original_quality_deadline` now checks successful phase completion too. After `stub.finish`, final completion checks that same deadline. A deterministic regression exercises one nanosecond before, exactly at and after the deadline. Failed phase results retain their original errors.
+
+Semantic Legacy DATA decoding moved from its facade to private `legacy/generation_data.rs`, retaining the public `legacy::with_decoded_generation_data` path. Lexical preview admission definitions moved from its facade to private `preview/budget.rs`, retaining the crate-visible reexports and feature gates. Both moved implementation bodies were checked byte-for-byte. No persisted or wire contract changed.
+
+The pass began on shared dirty `857aa3e7a` and ended on shared dirty `c36e45e46`. VERIFIED static checks included module discipline (52 facades), Hexagonal boundaries, scoped rustfmt, diff checks, and `CARGO_BUILD_JOBS=2 CARGO_NET_OFFLINE=true just rust-cargo-modules` (Contract/Core/Kernel trees unchanged,exit0). The whole module-cycle checker failed because its crate-local inventory rejects Runtime's existing `../../../quanta-index-kernel/tests/common/native_catalog_profile.rs` reference. The referenced file exists. A scoped Semantic/Lexical scan also observes five existing source cycles. The two Semantic cycles are already present in HEAD. Those observations do not qualify the global cycle gate.
+
+The focused deadline command below did not enter Cargo or any test body. Cooperative resource admission waited1800s and returned exit124. Its three selected tests are NOT_RUN. The five captured moved/helper inputs remained stable. Output is at `/Users/songmin/Library/Caches/quanta-index/ann4k-resume-20261117/STATIC-DEADLINE.log`. The original full4K controller remains the only quality runner, with repaired-cohort ANN4K and whole-product results still pending original quiet-host admission.
+
+```sh
+CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-searchd-runtime --test native_product_process -E 'test(=ann_quality::quality_completion_refuses_the_original_deadline_boundary) | test(=ann_quality::selected_change_phase_refuses_expired_original_deadline_before_work) | test(=ann_quality::selected_change_phase_preserves_live_original_deadline_and_result)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
+```
+
+On 2026-11-18 the same command acquired the original cooperative lock and ran 3/3 PASS (Nextest `fd37295b-95a1-4b65-bb13-499d42ebd4e9`,0.066s,56 skipped,exit0). Three captured test inputs retained their hashes. The shared dirty checkout ended at `40cd6dc5b`. Output is at `/Users/songmin/Library/Caches/quanta-index/ann4k-resume-20261117/STATIC-DEADLINE-retry.log`. This verifies the watchdog helpers. The full product and ANN4K selectors still await the original admission in the existing controller.
+
+### B-SEMANTIC-MODULE-CYCLES-136
+
+`native::recipe` now owns provider-independent recipe identity, limits and output-policy digests. Embedding and certified chunk decoding both consume that module. The public `native` recipe paths remain stable. The recipe fingerprint body is byte-identical to the prior implementation, and all hash domains and validation limits were retained.
+
+`native::embedding::lexical_eligibility` now owns the selected lexical set and its retained backing. Lexical scope and overlay both consume it. View and entry access is read-only. The constructor, duplicate refusal and overlay membership checks retain their prior bodies. Existing partial raw-vector exact-path behavior consumes the same owner cap in exact and approximate traversal, and cap truncation is visible. The file path continues to apply eligibility before the admitted owner window.
+
+The repository module-cycle checker on archived `a68062c26b3c1797d321e4ad3f8beca7508f5d99` Semantic source found both prior cycles. The same checker on current Semantic source found zero (exit0). Module discipline (52 facades), Hexagonal boundaries, `just rust-test-authority`, the guarded Contract/Core/Kernel module snapshots, scoped rustfmt and diff checks passed. The global cycle inventory failure recorded in B135 remains outside the Semantic ownership change.
+
+The focused proof uses the existing recipe goldens and lexical scope tests. The first attempt reached the compiler but exited101 because the Legacy test fixture still imported `generation_contract` and `manifest` through the old facade. The fixture now imports both from their defining modules. Before the first build reached Semantic, the shared checkout also supplied a missing `entries()` accessor at the durable owner count call site.
+
+The same selector then executed 5/5 PASS (Nextest `1c7a6c91-2e66-4c71-ad42-53f2106d2c3b`, 0.203s,325 skipped,exit0). The 11 recorded Semantic inputs retained their hashes between retry submission and terminal. The shared dirty checkout ended at `ea5137dd4`. The run proves the moved recipe fingerprints and limits, same-view overlay membership, duplicate rejection and forged eligibility refusal. Terminal output is at `/Users/songmin/Library/Caches/quanta-index/ann4k-resume-20261117/SEMANTIC-CYCLES-retry.log`.
+
+```sh
+CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-semantic --lib -E 'test(pure_text_recipe_) | test(lexical_scope_tests::)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
+```
+
+### B-CARRY-IMMUTABLE-MEMBER-REUSE-137
+
+The carry could reopen and decode the same artifact after authenticating it in
+delta and keeping it for the final region. An exact owner and immutable member
+reference in a later source now reuse that retained result within the same
+attempt. Each source still accounts for its declared rows and checks current
+selected coverage. Different references still authenticate before stale or
+conflict handling. The final map CAS uses the same original roots.
+
+The 192-owner multi-page carry fixture permits one physical read of the
+repeated artifact during carry. Its original final-map, prior-view and write
+refusal assertions also run. The unchanged code failed on the second physical
+read (Nextest `bd179f6d-5606-4b17-bf63-9a5eea2dbd73`, 1 body, exit100). The same
+selector passed 1/1 after repair (Nextest `43af013a-1f10-4791-9362-b9453f311dbe`,
+0.190s, exit0). The repaired implementation, test, three adjacent ANN source
+files and `Cargo.lock` kept their captured hashes through the run.
+
+```sh
+CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-semantic --lib -E 'test(=native::embedding::tests::ann_product_tests::maintenance::consolidation_multi_page_carry_installs_one_final_member_map)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
+```
+
+The other five consolidation bodies passed in one run (Nextest
+`c17dc3b6-ee24-421d-9476-c2761c41cce1`, 5/5, 12.366s, exit0). They cover sparse
+diff after member replacement and deletion, late failure atomicity, foreground
+row bounds, a wrong delta owner count, and region-capacity carry. The six
+captured inputs above remained stable on shared dirty `2cb1c117e`.
+
+```sh
+CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-semantic --lib -E 'test(native::embedding::tests::ann_product_tests::maintenance::consolidation_) & not test(=native::embedding::tests::ann_product_tests::maintenance::consolidation_multi_page_carry_installs_one_final_member_map)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
+```
+
+### B-MODULE-CYCLE-INVENTORY-138
+
+The workspace cycle checker stopped before building the Runtime production
+graph. Runtime's `#[cfg(test)]` dense install module imports a Catalog profile
+fixture from the Kernel workspace member. The checker now validates that a
+sibling member's fixture exists, then applies the declaring module's test-only
+scope after resolving aliases. Missing fixtures, paths outside the workspace
+and cross-crate production imports still fail. The checker never reads the
+sibling fixture into the importing crate's production graph.
+
+A second inventory failure exposed a `pub(crate)` path declaration whose source
+was already under a renamed parent. The path scanner now uses the same
+visibility pattern as ordinary module declarations and resolves the physical
+source through the recorded module aliases. The regression asserts the actual
+production cycle through the visible child.
+
+The cross-crate test fixture and the visible alias both reproduced the original
+inventory error. `.venv/bin/python -m pytest -q tools/ci/tests/test_check_module_cycles.py`
+then passed 40/40, including production escape and missing source refusals.
+Scoped Ruff lint, Ruff format and diff checks passed. The workspace check uses
+the repository's existing cycle baseline.
+
+`just rust-module-cycles` completed the workspace graph and returned exit 1
+with 16 unbaselined groups across Catalog, Contract, Core, IPC, Lexical, Search
+Plane, Runtime and Searchd. It reported no Semantic group. The Core group
+includes the existing read boundary: `existing_file` consumes `ObjectReadIoPort`
+and the metadata visitor in `ports` names `ExistingFileReadFailureV1` from
+`existing_file`. This is a source dependency finding. The ANN4K and SDK product
+selectors still own behavioral acceptance.
+
+### B-EXISTING-FILE-ERROR-OWNERSHIP-139
+
+The admitted file reader requires `ObjectReadIoPort`. The metadata visitor's
+callback and return signature previously reached back into that reader for
+`ExistingFileReadFailureV1`. The existing `index::error` module now owns the
+shared error, and the metadata port and tree reader import it from there. The
+public `index::existing_file::ExistingFileReadFailureV1` path re-exports the same
+type. The enum and its conversion, display and source implementations match
+their original bytes.
+
+The current repository cycle analyzer on Core reproduced both directions. The
+same graph assertion then passed with the admitted read port edge present and
+the metadata port's reverse edge absent. `index::existing_file` is outside
+every Core cycle. The original typed-error and file-identity paths are exercised
+by the existing `legacy_active_repomap_verifies_real_objects_without_reconciliation_writes`
+Runtime body.
+
+The whole-workspace cycle check completed with exit 1 for the remaining groups.
+The Core port group no longer contains the file reader. The guarded Core module
+snapshot records the relocated type. Its repeat reports drift only in the
+concurrent `protected_source_routes` tree. Module discipline and hexagonal
+checks passed. The workspace error-shape gate reports the missing Error
+implementation on Contract's `NativeCutoverSourceJoinErrorV1`.
+
+The first runtime test invocation exited 101 before any test ran. The Lexical
+dependency's cold posting tournament had attempted `checked_add` on a checked
+sum's `Option<usize>`. The current shared source chains the sums through
+`and_then`, so the same selector was submitted again through the existing lane.
+
+The retry executed 1/1 PASS (Nextest `67ad8fe3-d656-41b0-813c-23ae94417c77`,
+1.008s,632 skipped,exit0) on shared dirty `d7b1b24a6`. The four edited Core
+sources, RepoMap reader, Runtime test source and `Cargo.lock` retained their
+captured hashes. The body checks admitted identity revalidation, both typed
+error variants, oversize and corrupt input refusal, changed file and UUID
+refusal, no rematerialization of missing data, and read-owner retirement.
+
+```sh
+CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline --no-default-features -p quanta-index-searchd-runtime --lib -E 'test(=publication_sqlite_vfs::tests::read_only::legacy_active_repomap_verifies_real_objects_without_reconciliation_writes)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
+```
+
+### B-EXISTING-TREE-COMMITMENT-OWNERSHIP-140
+
+The generation module delegates layout reads to `index::existing_tree`. The
+reader depended back on the generation module for the sealed file commitment
+and mismatch types. The private `tree_commitment` module now owns both types.
+The crate root and `domains::generation` re-export those definitions. The
+definitions, display and error implementations match the original bytes. Both
+verifiers still execute their original code.
+
+The scoped Core graph assertion reproduced the reverse edge before the move
+and passed after it, with the generation-to-reader edge present. The canonical
+workspace graph dropped the entire `domains::generation, index::existing_tree`
+group and returned exit 1 for 15 remaining groups. The guarded Core snapshot
+was updated for the two moved definitions. Its repeat reports only the
+concurrent `protected_source_routes` tree drift. Scoped rustfmt, diff, module
+discipline and hexagonal boundary checks passed.
+
+The existing Core tree suite executed 10/10 PASS (Nextest
+`028c711b-5a15-48e2-8901-56e8fc163e67`,0.198s,366 skipped,exit0) on shared dirty
+`2f09e5579`. The four edited Rust files and `Cargo.lock` retained their captured
+hashes. The bodies cover the ordinary layout, digest and mismatch ordering,
+one-byte-overrun refusal, resumable scrub, reader release and inherited inode
+handling. The admitted Runtime FD fixtures are Linux-only and were not run here.
+
+```sh
+CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-core --lib -E 'test(/^domains::generation::tree_commitment_tests::/)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
+```
+
+### B-MODULE-ALIAS-OWNERSHIP-141
+
+The B138 alias resolver could transfer a source file from its first explicit
+module to a second owner. For two inline sibling declarations of the same
+file, the checker dropped the first module and accepted a real dependency
+cycle. The earlier checker refused the second declaration. The new ownership
+check keeps parent alias resolution and refuses a second distinct owner for
+that physical source, naming both logical modules.
+
+The regression failed before repair because the checker returned no cycles and
+raised no error. Removing the ownership check from the repaired implementation
+reproduced the empty result for the same fixture. The final
+`.venv/bin/python -m pytest -q tools/ci/tests/test_check_module_cycles.py`
+executed 41/41 PASS. Scoped Ruff lint, format and diff checks passed, as did
+`just rust-test-authority`. `just rust-module-cycles` completed the workspace
+graph and exited 1 on 16 unbaselined cycle groups, including the Harness
+snippet group now present in the shared worktree.
+
+### B-CARRY-SELECTED-ARTIFACT-BACKING-142
+
+The carry reserved space for every declared source row before it knew which
+members it would retain. A valid 64-member delta and sealed region with the
+same immutable members requested a second, 128-slot allocation even though
+the sealed source added no slots. The owning regression failed with
+`Some(Memory)` and `ResourceLimited` (Nextest
+`d843a0b6-f183-4539-869e-8e8300d6169f`, 1 body, exit 100).
+
+Consolidation now reserves backing when an authenticated, currently selected
+member adds a slot. Optional geometric growth stays within the source and
+region bounds. When the optional grant is refused, admission requests the
+exact required slot. The previous grant stays alive through reallocation.
+Source row counts, coverage checks, original map CAS and file retention use
+the existing authority paths.
+
+The repaired fixture checks the 64-member duplicate carry without requesting
+the refused allocation. With one stale member, it also checks that refusal
+of optional 64-slot backing still permits the 63 selected members and leaves
+`first_denial` empty. Both cases verify the final map and released leases.
+Nextest `bc796a3b-f3a6-4cd9-bceb-9cfecff29273` executed 10/10 PASS (15.596s,
+321 skipped, exit 0), including the new regression, multi-page CAS, capacity
+and nearest-neighbor carry. Both changed Rust files and `Cargo.lock` retained
+their captured hashes through execution. Scoped rustfmt, diff, module
+discipline and hexagonal checks passed.
+
+```sh
+CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-semantic --lib -E 'test(/^native::embedding::tests::ann_product_tests::maintenance::consolidation_/) | test(carry_trace_) | test(native_ann_small_runs_carry_and_retain_independent_nearest_neighbor)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
+```
+
+### B143 · 4K product watchdog attribution
+
+The original admission accepted both selectors. ANN4K Nextest
+`e1e78e47-7a03-4f89-b624-99d3fec2ea6f` passed 1/1 in 36.947s, with 640/640
+for each of the six nonempty eligibility strata and no hits for the empty
+stratum. Product Nextest `ab0014fa-2851-4e64-af77-cf14c98fd920` failed its
+sole body in 1,225.878s including startup and failure cleanup (exit 100).
+Both runs recorded empty source and resolver drift. All 1,054 common source
+entries and all 67 resolver inputs matched.
+
+The product published the initial 4,096 sources and observed all 4,096 work
+completions. Initial readiness took 814.467s, including 43.921s of direct
+WorkStatus RPC wall time across 6,719 calls. Initial and cold-reopen quality,
+and selected delta queries, passed before the original absolute deadline
+expired during an unsaved-overlay effort stream. The final request delivered
+Fast and timed out before Deep. These observations locate the expiry and show
+the largest measured phase. They do not attribute the underlying latency to
+the provider, HNSW, Catalog, or storage.
+
+The product fixture now records elapsed wall time and remaining watchdog for
+each phase, including shutdown and restart, and identifies the failing query
+seed during the unsaved-overlay sweep. The selected views, workload, oracle,
+request budgets, and absolute deadline are unchanged. The continuation retains
+the recorded ANN4K pass and retries only the product selector through the
+original execution function and admission.
+Formatting, test authority, module discipline and hexagonal checks passed.
+The focused deadline and result-oracle invocation timed out waiting for the
+shared build lock (exit 124, zero bodies). The product retry is waiting for
+the original timing admission.
+
+Daemon restart and graceful shutdown now use the remaining product watchdog
+alongside their original local limits. The HTTP fixture applies one absolute
+deadline across each exchange and interrupts its active socket during shutdown.
+Nextest `203f1db3-9bfc-4d52-9a77-c9f4f1061a8e` executed 5/5 PASS (21.707s,
+60 skipped, exit 0). The selection covered two daemon deadline regressions,
+two HTTP exchange and shutdown regressions, and the actual daemon Semantic
+materialization, query and reopen body. Whole-product 4K remains pending.
+
+The follow-up audit found that a late fixture shutdown could classify an
+already-expired exchange as intentional cancellation. The stub records the
+first shutdown instant and compares it to the original exchange deadline.
+Two regressions cover both event orders and the actual socket timeout during
+a stalled read. Formatting, test authority and architecture checks passed.
+The focused invocation for this follow-up ended at the shared build lock
+with exit 124 and zero test bodies.
+
+The product oracle now checks the full durable `Latest` identity before and
+after overlay close and after the second restart. The overlay Deep and exact
+path results must carry exactly the replacement and tombstone revisions.
+The second restart also replays the query whose independent exact result ranks
+the replacement first. HTTP fixture completion drains accepted exchanges under
+their existing deadlines and propagates their errors. Forced cleanup interrupts
+the active socket.
+
+Formatting, test authority, module discipline and hexagonal checks passed for
+this change. The focused nine-body selection ended at the shared build lock
+after 1,800 seconds (exit 124, zero bodies). The prior ANN4K pass is retained.
+
+The final restart provider oracle now seals the input inventory after the HTTP
+fixture drains accepted exchanges. Its focused test supplies the request body
+after finish begins and checks that the returned inventory includes that input.
+Nextest `63fdf0d3-ff12-4d69-b641-50737c56bc6a` ran 9/9 PASS (14.453s,
+60 skipped, exit 0) in `native_product_process`. Both `embedding_exchange_resolves_shutdown_and_timeout_in_event_order`
+and `embedding_exchange_caps_the_socket_timeout_during_stalled_read` passed. The run also covered fixture
+shutdown, both query oracles, and actual daemon Semantic materialization, query and reopen.
+
+The product-only retry passed original host and build admission. Nextest
+`6747f847-21c9-4c86-be68-50a2bcd88a3e` ran 1 body and failed in 1,227.596s
+of Nextest wall time (exit 100). Initial materialization completed all 4,096
+owners in 915.319s, including 48.088s of direct WorkStatus RPC wall time. Initial
+and reopened ANN sweeps took 91.954s and 86.295s. The incremental sweep had
+53.003s left and exhausted the original watchdog at seed 38. Overlay and the
+second restart were not reached. The measured phases establish where the time
+was spent. Worker-stage attribution remains open.
+
+The provider oracle repair preceded compilation of `native_product_process`.
+The controller observed 36 source edits during the run, including the two test
+files for this repair, and zero resolver drift. Comparing the captured starts
+to the earlier ANN4K run found differences on 5 of 1,054 shared source paths
+and 2 of 67 resolver inputs. The retry is a concrete failed product body
+without same-input qualification.
+
+The readiness log separates direct public WorkStatus RPC wall time, actual
+observer pauses, the first complete receipt observation, and time after that
+observation, which includes the product's Latest and coverage checks.
+Observer pauses overlap worker execution.
+The durable ANN sweep logs search SDK wall time separately from independent
+local result validation, including the failing request and its seed. Neither
+log aligns the harness clock with the daemon clock.
+
+For the existing 4K prefix Record diagnostic, use the trace path logged by the
+fixture. Pass the fixture's 256 MiB cap explicitly to offline replay:
+
+```sh
+python3 -m tools.benchmark.retrieval.causal_cost_diagnostic build \
+  --input "$trace_path" --max-capture-bytes 268435456 --out "$index_path"
+python3 -m tools.benchmark.retrieval.causal_cost_diagnostic query \
+  --index "$index_path" --stage native_coverage_save
+```
+
+If the daemon terminates without a healthy trace footer, use `closed-workers`
+with the same input and cap and a new output path. Its results cover only
+observed closed worker scopes. Exact public receipts come from the harness
+log. The prefix scope covers 128 observed completions.
+
+The offline diagnostic and ingest reader suites passed 80/80. Formatting,
+test authority, module discipline, and hexagonal checks passed. The focused
+three-test Rust selection ended at the shared build lock after 1,800 seconds
+(exit 124, zero bodies).
+
+The product overlay stream now checks the Fast lexical result on the original
+requests. For `row-0`, the unscoped and replacement-path requests must return
+the one unsaved hit with its path, owner and overlay revision. The tombstoned
+and deleted paths must return empty Fast pages. The focused oracle exercises
+an empty matching page, a durable hit in place of the overlay hit, and a hit
+outside the selected path.
+
+Nextest `c29d5946-cd11-4083-a07f-db471035a464` subsequently passed all four
+focused bodies (exit 0, 70 skipped). The selection covered the readiness
+window, failed SDK call timing, prefix completion receipts and the Fast
+overlay oracle. The private Cargo target compiled the workspace's patched
+SQLite dependency. [LanceDB audit and build RCA](../../../bugbash/nov-20/findings.md#이번-확인-결과)
 
 ## Retired section links
 

@@ -733,6 +733,10 @@ def validate(evidence: object) -> dict[str, Any]:
     _string(command["cwd"], "command.cwd")
     command_status = _string(command["status"], "command.status")
     exit_code = command["exit_code"]
+    if exit_code is not None and (
+        type(exit_code) is not int or not -(1 << 31) <= exit_code < (1 << 31)
+    ):
+        _fail("command.exit_code must be a signed 32-bit integer or null")
     if command_status == "completed":
         if exit_code != 0:
             _fail(f"completed with exit_code {exit_code!r} is not admissible evidence")
@@ -915,9 +919,25 @@ def _consume_regular_file(path: Path, consume: Callable[[BinaryIO], _Consumed]) 
         raise EvidenceError(f"unsafe benchmark evidence {path}: {error}") from error
 
 
-def _read_regular_file(path: Path) -> bytes:
+def _read_regular_file(
+    path: Path, *, expected_bytes: tuple[str, int] | None = None,
+) -> bytes:
     """Materialize raw bytes; large-payload callers must migrate to streaming."""
-    return _consume_regular_file(path, lambda handle: handle.read())
+    if expected_bytes is None:
+        return _consume_regular_file(path, lambda handle: handle.read())
+    checksum, size = expected_bytes
+    if not is_digest(checksum) or type(size) is not int or size < 0:
+        raise EvidenceError("raw byte commitment is malformed")
+
+    def read(handle: BinaryIO) -> bytes:
+        if os.fstat(handle.fileno()).st_size != size:
+            raise EvidenceError("raw byte count differs from the prepared file commitment")
+        raw = handle.read(size)
+        if (digest_bytes(raw), len(raw)) != expected_bytes:
+            raise EvidenceError("raw bytes differ from the prepared file commitment")
+        return raw
+
+    return _consume_regular_file(path, read)
 
 
 def _read_control_file(path: Path, *, max_bytes: int | None = None) -> bytes:
@@ -1348,7 +1368,7 @@ class RunStore:
         _write_atomic(self.latest_path, json.dumps(pointer, sort_keys=True).encode("utf-8"))
         return {"run_id": staged.run_id, "run_dir": target, "digest": digest}
 
-    def load(self, run_id: str) -> dict[str, Any]:
+    def load(self, run_id: str, *, expected_digest: str | None = None) -> dict[str, Any]:
         run_dir = self.run_dir(run_id)
         if not run_dir.is_dir():
             raise EvidenceError(f"missing run directory: runs/{run_id}")
@@ -1356,6 +1376,10 @@ class RunStore:
         if evidence["run_id"] != run_id:
             raise EvidenceError(
                 f"run id mismatch: expected {run_id!r}, found {evidence['run_id']!r}"
+            )
+        if expected_digest is not None and evidence["digest"] != expected_digest:
+            raise EvidenceError(
+                f"run {run_id!r} digest differs from its expected capture reference"
             )
         self._verify_raw(run_dir, evidence)
         return evidence

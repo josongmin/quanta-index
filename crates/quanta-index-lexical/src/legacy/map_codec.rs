@@ -23,47 +23,11 @@ pub(crate) const BRANCH_FANOUT: usize = 64;
 pub(crate) use crate::legacy::names::MAX_MAP_HEIGHT;
 
 type PageExtent = (Vec<u8>, Vec<u8>, u64, u8, Vec<ObjectRef>);
-#[cfg(feature = "legacy-tantivy")]
-type EncodedPage = (Vec<u8>, Vec<ObjectRef>, Vec<u8>, Vec<u8>, u64, u8);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Page {
     Leaf(Vec<(Vec<u8>, BlobRef)>),
     Branch(Vec<PageRef>),
-}
-
-#[cfg(feature = "legacy-tantivy")]
-pub(crate) fn check_key(key: &[u8]) -> Result<(), CoreError> {
-    if key.len() > MAX_KEY_BYTES {
-        return Err(invalid("map key exceeds physical page bound"));
-    }
-    Ok(())
-}
-
-#[cfg(feature = "legacy-tantivy")]
-fn u16_len(len: usize) -> Result<u16, CoreError> {
-    u16::try_from(len).map_err(|_conversion_error| invalid("page field length exceeds u16"))
-}
-
-#[cfg(feature = "legacy-tantivy")]
-pub(crate) fn add_key(buffer: &mut Vec<u8>, key: &[u8]) -> Result<(), CoreError> {
-    check_key(key)?;
-    buffer.extend_from_slice(&u16_len(key.len())?.to_be_bytes());
-    buffer.extend_from_slice(key);
-    Ok(())
-}
-
-#[cfg(feature = "legacy-tantivy")]
-fn add_object_ref(buffer: &mut Vec<u8>, reference: &ObjectRef) {
-    buffer.push(reference.kind.code());
-    buffer.extend_from_slice(&reference.bytes.to_be_bytes());
-    buffer.extend_from_slice(&reference.sha256);
-}
-
-#[cfg(feature = "legacy-tantivy")]
-pub(crate) fn add_blob_ref(buffer: &mut Vec<u8>, value: &BlobRef) {
-    add_object_ref(buffer, &value.root);
-    buffer.extend_from_slice(&value.bytes.to_be_bytes());
-    buffer.extend_from_slice(&value.sha256);
 }
 
 pub(crate) fn distinct_leaf_values(rows: &[(Vec<u8>, BlobRef)]) -> Result<Vec<BlobRef>, CoreError> {
@@ -173,81 +137,6 @@ pub(crate) fn page_map_encoded_bytes(page: &Page, own_bytes: u64) -> Result<u64,
                 .ok_or_else(|| corrupt("map encoded subtree width overflows"))
         }),
     }
-}
-
-#[cfg(feature = "legacy-tantivy")]
-pub(crate) fn encode_page(page: &Page) -> Result<EncodedPage, CoreError> {
-    let (first, last, entries, height, dependencies) = page_extent(page)?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(48 * 1024)
-        .map_err(|error| storage("reserve map page", error))?;
-    bytes.extend_from_slice(PAGE_MAGIC);
-    bytes.push(height);
-    let count = match page {
-        Page::Leaf(rows) => rows.len(),
-        Page::Branch(children) => children.len(),
-    };
-    bytes.extend_from_slice(&u16_len(count)?.to_be_bytes());
-    bytes.extend_from_slice(&entries.to_be_bytes());
-    add_key(&mut bytes, &first)?;
-    add_key(&mut bytes, &last)?;
-    match page {
-        Page::Leaf(rows) => {
-            let dictionary = distinct_leaf_values(rows)?;
-            if rows.len() > LEAF_FANOUT && !dictionary_is_smaller(rows.len(), dictionary.len()) {
-                return Err(invalid(
-                    "wide gram leaf dictionary does not reduce wire size",
-                ));
-            }
-            if rows.len() > LEAF_FANOUT && dictionary.len() > LEAF_DEPENDENCIES {
-                return Err(invalid("wide gram leaf dictionary exceeds 128 values"));
-            }
-            if dictionary_is_smaller(rows.len(), dictionary.len()) {
-                bytes.push(if rows.len() > LEAF_FANOUT {
-                    LEAF_WIDE_GRAM_DICTIONARY
-                } else {
-                    LEAF_DICTIONARY
-                });
-                bytes.extend_from_slice(&u16_len(dictionary.len())?.to_be_bytes());
-                for value in &dictionary {
-                    add_blob_ref(&mut bytes, value);
-                }
-                for (key, value) in rows {
-                    add_key(&mut bytes, key)?;
-                    let index = dictionary
-                        .binary_search(value)
-                        .map_err(|_index| invalid("leaf dictionary omits a value"))?;
-                    bytes.extend_from_slice(&u16_len(index)?.to_be_bytes());
-                }
-            } else {
-                bytes.push(LEAF_INLINE);
-                for (key, value) in rows {
-                    add_key(&mut bytes, key)?;
-                    add_blob_ref(&mut bytes, value);
-                }
-            }
-        }
-        Page::Branch(children) => {
-            for child in children {
-                add_object_ref(&mut bytes, &child.object);
-                bytes.extend_from_slice(&child.entries.to_be_bytes());
-                bytes.push(child.height);
-                bytes.extend_from_slice(&child.map_encoded_bytes.to_be_bytes());
-                add_key(&mut bytes, &child.first)?;
-                add_key(&mut bytes, &child.last)?;
-            }
-        }
-    }
-    if matches!(page, Page::Leaf(rows) if rows.len() > LEAF_FANOUT)
-        && bytes.len() > LEAF_INLINE_BYTES
-    {
-        return Err(invalid("wide gram leaf exceeds 32 KiB payload"));
-    }
-    if bytes.len() > 64 * 1024 {
-        return Err(invalid("encoded map page exceeds physical bound"));
-    }
-    Ok((bytes, dependencies, first, last, entries, height))
 }
 
 struct Cursor<'a> {

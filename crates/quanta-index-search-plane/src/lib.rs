@@ -22,6 +22,7 @@ mod door_findings_test_support;
 mod history_text;
 mod ingest_dispatcher;
 mod lowering;
+pub mod native_dsl;
 pub mod native_history;
 mod observability;
 mod post_durable;

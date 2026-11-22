@@ -1,7 +1,10 @@
 use core::fmt;
 use core::marker::PhantomData;
 
-use serde::de::{self, Deserialize, Deserializer, SeqAccess, Visitor};
+use serde::{
+    Serialize, Serializer,
+    de::{self, Deserialize, Deserializer, SeqAccess, Visitor},
+};
 
 use quanta_index_contract_base::{AdmittedSequenceSeedV1, DecodeBackingAdmissionV1};
 
@@ -12,6 +15,12 @@ pub(crate) struct BoundedVecV1<T, const MAXIMUM: usize>(Vec<T>);
 impl<T, const MAXIMUM: usize> BoundedVecV1<T, MAXIMUM> {
     pub(crate) fn into_inner(self) -> Vec<T> {
         self.0
+    }
+}
+
+impl<T: Serialize, const MAXIMUM: usize> Serialize for BoundedVecV1<T, MAXIMUM> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
     }
 }
 

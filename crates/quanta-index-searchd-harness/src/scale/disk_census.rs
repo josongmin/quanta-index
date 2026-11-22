@@ -25,15 +25,6 @@ impl DiskObservationMode {
     }
 }
 
-#[cfg(all(unix, feature = "legacy-bench"))]
-pub(crate) fn allocated_root_bytes_with_cancel(
-    root: &Path,
-    cancelled: impl FnMut() -> bool,
-) -> Result<u64> {
-    let [total, _, _] = allocated_root_scopes(root, cancelled, |_path, _metadata| Ok(0))?;
-    Ok(total)
-}
-
 #[cfg(unix)]
 fn allocated_root_scopes(
     root: &Path,
@@ -101,4 +92,53 @@ pub(crate) fn allocated_native_fixture_with_cancel(
     })?;
     anyhow::ensure!(state_seen, "native state root absent from fixture census");
     Ok(totals)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::MetadataExt as _;
+    use std::path::Path;
+
+    use anyhow::{Context as _, Result};
+
+    use super::allocated_native_fixture_with_cancel;
+
+    #[test]
+    fn native_fixture_counts_hard_links_in_each_subset_once() -> Result<()> {
+        let fixture = tempfile::tempdir()?;
+        let state = fixture.path().join("state");
+        let scratch = state.join("native-scratch-v1");
+        fs::create_dir_all(&scratch)?;
+        let outside = fixture.path().join("capture.jsonl");
+        fs::write(&outside, vec![1_u8; 65_536])?;
+        fs::hard_link(&outside, scratch.join("linked-object"))?;
+        fs::hard_link(&outside, state.join("second-link"))?;
+
+        let [all, observed_state, observed_scratch] =
+            allocated_native_fixture_with_cancel(&state, || false)?;
+        // Independent expected allocation: three directory inodes and one shared file inode.
+        let allocated = |path: &Path| -> Result<u64> {
+            fs::symlink_metadata(path)?
+                .blocks()
+                .checked_mul(512)
+                .context("fixture allocated-block overflow")
+        };
+        let file_bytes = allocated(&outside)?;
+        let scratch_bytes = allocated(&scratch)? + file_bytes;
+        let state_bytes = allocated(&state)? + scratch_bytes;
+        anyhow::ensure!(all == allocated(fixture.path())? + state_bytes);
+        anyhow::ensure!(observed_state == state_bytes);
+        anyhow::ensure!(observed_scratch == scratch_bytes);
+        anyhow::ensure!(
+            allocated_native_fixture_with_cancel(&fixture.path().join("absent-state"), || false)
+                .is_err(),
+            "missing state root must not become a successful zero allocation"
+        );
+        anyhow::ensure!(
+            allocated_native_fixture_with_cancel(&state, || true).is_err(),
+            "cancelled census must not report zero bytes"
+        );
+        Ok(())
+    }
 }

@@ -51,10 +51,13 @@ enum ClientTransports {
 }
 
 impl ClientTransports {
-    fn query(&self, payload: &SearchPlaneQueryIpcRequest) -> Result<&dyn QueryTransport, SdkError> {
+    fn query(
+        &self,
+        capability: impl FnOnce() -> crate::LegacyQueryCapabilityV1,
+    ) -> Result<&dyn QueryTransport, SdkError> {
         match self {
             Self::Native { .. } => Err(SdkError::UnsupportedNativeQuery {
-                capability: crate::LegacyQueryCapabilityV1::from_request(payload),
+                capability: capability(),
             }),
             Self::Uds { query, .. } => Ok(query),
             #[cfg(test)]
@@ -192,42 +195,6 @@ impl QuantaIndex {
         Ok(Self::from_resolved(
             options.resolve_legacy_profile(ClientProfile::QueryOnly)?,
         ))
-    }
-
-    pub fn connect_legacy_with_diagnostic_attempts(
-        options: ConnectOptions,
-        source: Arc<dyn DiagnosticAttemptSourceV1>,
-    ) -> Result<Self, SdkError> {
-        if options.native_selection.is_some() {
-            return Err(SdkError::Usage(
-                "Legacy connect cannot accept Native selection".into(),
-            ));
-        }
-        let resolved = options.resolve_legacy_profile(ClientProfile::Full)?;
-        Ok(Self {
-            inner: Arc::new(
-                QuantaIndexClientPayloadV1::from_resolved(resolved)
-                    .with_diagnostic_attempt_source(source),
-            ),
-        })
-    }
-
-    pub fn connect_legacy_query_only_with_diagnostic_attempts(
-        options: ConnectOptions,
-        source: Arc<dyn DiagnosticAttemptSourceV1>,
-    ) -> Result<Self, SdkError> {
-        if options.native_selection.is_some() {
-            return Err(SdkError::Usage(
-                "Legacy connect cannot accept Native selection".into(),
-            ));
-        }
-        let resolved = options.resolve_legacy_profile(ClientProfile::QueryOnly)?;
-        Ok(Self {
-            inner: Arc::new(
-                QuantaIndexClientPayloadV1::from_resolved(resolved)
-                    .with_diagnostic_attempt_source(source),
-            ),
-        })
     }
 
     pub fn connect(options: ConnectOptions) -> Result<Self, SdkError> {
@@ -485,6 +452,14 @@ impl QuantaIndexClientPayloadV1 {
         crate::namespace::NamespaceHandle::new(self)
     }
 
+    /// Check the query contract before an SDK builder validates Legacy-specific inputs.
+    pub(super) fn admit_legacy_query_v1(
+        &self,
+        capability: crate::LegacyQueryCapabilityV1,
+    ) -> Result<(), SdkError> {
+        self.transports.query(|| capability).map(|_| ())
+    }
+
     pub(super) fn dispatch_query(
         &self,
         payload: SearchPlaneQueryIpcRequest,
@@ -506,7 +481,9 @@ impl QuantaIndexClientPayloadV1 {
         mut observation: Option<&mut Vec<ClientQueryRpcObservationV1>>,
     ) -> Result<SearchPlaneQueryIpcResponse, SdkError> {
         // Refuse by canonical request kind before Legacy selector resolution or I/O.
-        let _transport = self.transports.query(&payload)?;
+        let _transport = self
+            .transports
+            .query(|| crate::LegacyQueryCapabilityV1::from_request(&payload))?;
         Self::validate_query_selection(&payload)?;
         let mut binding = QueryCallBinding::from_request(&payload);
         if let Some(pin) =
@@ -528,7 +505,9 @@ impl QuantaIndexClientPayloadV1 {
             .as_ref()
             .map(|_| ClientQueryRpcKindV1::from_request(&payload))
             .transpose()?;
-        let transport = self.transports.query(&payload)?;
+        let transport = self
+            .transports
+            .query(|| crate::LegacyQueryCapabilityV1::from_request(&payload))?;
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
             payload,
@@ -1253,6 +1232,13 @@ impl<'a> ProducerClient<'a> {
         batch: &crate::DirtyBatch,
     ) -> Result<crate::BatchReceipt, SdkError> {
         self.client.runtime().publish_dirty(batch)
+    }
+
+    pub fn publish_runtime_catalog(
+        &self,
+        batch: quanta_index_contract::RuntimeCatalogIngestBatch,
+    ) -> Result<crate::BatchReceipt, SdkError> {
+        self.client.runtime().publish_catalog(batch)
     }
 
     pub fn publish_structural<const SEALED: bool>(

@@ -8,8 +8,8 @@
 //!   for the structural route", reviewable by eye against the emitted
 //!   `route_budgets.json`. There is deliberately NO single global threshold;
 //!   each route family carries its own (per the ticket No-Go);
-//! - a **measured warm tail** — [`measure_route_tails`] boots one warm
-//!   [`E2eRuntime`] (every fixture, one sealed+active generation), then for each
+//! - a **measured warm tail** — [`run_tail_report`] boots one pinned Legacy
+//!   SDK fixture (one sealed and active generation), then for each
 //!   route family runs its representative scenario [`TAIL_SAMPLES`] times,
 //!   collecting per-query wall-times into a sorted sample and reading p50/p95/p99
 //!   off it. Each row carries route-local diagnostic metadata (sample count,
@@ -31,7 +31,8 @@
 
 use std::time::Instant;
 
-use anyhow::Result as AnyResult;
+use anyhow::{Context as _, Result as AnyResult};
+use quanta_index_searchd::app::SemanticEmbedderProfile;
 use serde_json::{Value, json};
 
 use crate::artifact::{
@@ -40,19 +41,19 @@ use crate::artifact::{
     model_revision_of,
 };
 use crate::bench_support::{
-    QueryOutcome, ScenarioTruthMode, bench_row, prepare_warm_runtime, run_scenario_query,
-    validate_scenario_outcome, warm_fixture_corpus_files,
+    QueryOutcome, ScenarioTruthMode, bench_row, pinned_process, validate_scenario_outcome,
+    warm_fixture_corpus_files,
 };
-use crate::harness::E2eRuntime;
-use crate::scenarios::{DslBenchScenario, SCENARIOS};
+use crate::legacy_reference::LegacySearchdBinary;
+use crate::scenarios::{DslBenchScenario, FixtureKind, SCENARIOS};
 
 /// The artifact dimension this rail writes.
 pub const DIMENSION: &str = "tail";
 
 /// Per-query wall-time samples collected per route for percentile estimation.
 ///
-/// Sized so p95/p99 land on distinct ranks (a 64-sample slice puts p99 at rank
-/// 62) while the whole sweep stays sub-second on the tiny warm fixtures.
+/// Sized so p95/p99 land on distinct nearest ranks (61 and 64) while keeping
+/// the warm fixture sweep small.
 pub const TAIL_SAMPLES: usize = 64;
 
 /// A route family's declared tail budget, in milliseconds.
@@ -162,14 +163,16 @@ pub struct RouteTailMeasurement {
     pub row: BenchRowV1,
 }
 
-/// First scenario carrying the given route family.
+/// First scenario exercising the given route family under the warm fixture.
 ///
-/// Returns `None` when no scenario declares this route — surfaced upstream as a
-/// rail error rather than silently dropping a budgeted route.
+/// The DSL table groups mixed boolean probes under Structural for parity, but
+/// their lexical fixture dispatches to Text. Only a tree probe measures the
+/// Structural executor. A missing representative fails the rail.
 fn representative_scenario(route: RouteFamily) -> Option<&'static DslBenchScenario> {
-    SCENARIOS
-        .iter()
-        .find(|scenario| scenario.route_family == route)
+    SCENARIOS.iter().find(|scenario| {
+        scenario.route_family == route
+            && (route != RouteFamily::Structural || scenario.fixture == FixtureKind::StructuralTree)
+    })
 }
 
 /// Measure only responses that satisfy the scenario's independent golden truth.
@@ -178,17 +181,20 @@ fn collect_timed_samples(
     scenario: &DslBenchScenario,
     route: RouteFamily,
     sample_count: usize,
-    mut query: impl FnMut() -> QueryOutcome,
+    mut query: impl FnMut() -> AnyResult<QueryOutcome>,
 ) -> AnyResult<Vec<f64>> {
     let mut samples_ms = Vec::with_capacity(sample_count);
     for sample_index in 0..sample_count {
         let started = Instant::now();
         let outcome = query();
         let latency_ms = elapsed_ms(started);
-        validate_scenario_outcome(scenario, ScenarioTruthMode::SharedWarmFixture, &outcome)
-            .map_err(|err| {
-                anyhow::anyhow!(
-                    "tail: route `{}` scenario `{}` measured sample {}/{} failed golden validation: {err}",
+        outcome
+            .and_then(|outcome| {
+                validate_scenario_outcome(scenario, ScenarioTruthMode::SharedWarmFixture, &outcome)
+            })
+            .with_context(|| {
+                format!(
+                    "tail: route `{}` scenario `{}` measured sample {}/{} failed",
                     route.as_str(),
                     scenario.id,
                     sample_index.saturating_add(1),
@@ -200,11 +206,13 @@ fn collect_timed_samples(
     Ok(samples_ms)
 }
 
-/// Boot one warm runtime and measure each budgeted route's tail.
+/// Measure each budgeted route against the same prepared fixture.
 ///
 /// Fail-closed: a route with no representative scenario, or whose representative
 /// query does not golden-validate under the shared warm fixture, is a rail error.
-pub fn measure_route_tails(rt: &mut E2eRuntime) -> AnyResult<Vec<RouteTailMeasurement>> {
+fn measure_route_tails(
+    mut query: impl FnMut(&DslBenchScenario) -> AnyResult<QueryOutcome>,
+) -> AnyResult<Vec<RouteTailMeasurement>> {
     let mut out: Vec<RouteTailMeasurement> = Vec::with_capacity(ROUTE_TAIL_BUDGETS.len());
     for budget in ROUTE_TAIL_BUDGETS {
         let Some(scenario) = representative_scenario(budget.route) else {
@@ -215,7 +223,8 @@ pub fn measure_route_tails(rt: &mut E2eRuntime) -> AnyResult<Vec<RouteTailMeasur
         };
         // Correctness is the blocking gate: validate the route serves the right
         // golden result BEFORE timing, so a fast-but-wrong route cannot pass.
-        let truth: QueryOutcome = run_scenario_query(rt, scenario);
+        let truth = query(scenario)
+            .with_context(|| format!("tail: scenario `{}` failed before timing", scenario.id))?;
         validate_scenario_outcome(scenario, ScenarioTruthMode::SharedWarmFixture, &truth).map_err(
             |err| {
                 anyhow::anyhow!(
@@ -225,9 +234,8 @@ pub fn measure_route_tails(rt: &mut E2eRuntime) -> AnyResult<Vec<RouteTailMeasur
                 )
             },
         )?;
-        let samples_ms = collect_timed_samples(scenario, budget.route, TAIL_SAMPLES, || {
-            run_scenario_query(rt, scenario)
-        })?;
+        let samples_ms =
+            collect_timed_samples(scenario, budget.route, TAIL_SAMPLES, || query(scenario))?;
         let latency = LatencySummary::from_samples_ms(&samples_ms).ok_or_else(|| {
             anyhow::anyhow!(
                 "tail: route `{}` collected no samples",
@@ -268,18 +276,29 @@ pub struct TailReport {
     pub passed: bool,
     /// The embedder the warm fixture was built under, for the provenance.
     pub model_revision: Option<String>,
+    pub peak_daemon_rss_bytes: u64,
+    pub legacy_daemon_sha256: String,
 }
 
 /// Run the full tail rail against a freshly booted warm runtime.
 pub fn run_tail_report() -> AnyResult<TailReport> {
-    let mut rt = prepare_warm_runtime()?;
-    let model_revision = model_revision_of(rt.embedder_profile());
-    let measurements = measure_route_tails(&mut rt)?;
+    let binary = LegacySearchdBinary::from_environment()
+        .map_err(|error| anyhow::anyhow!("tail pinned daemon: {error}"))?;
+    let (measurements, peak_daemon_rss_bytes) =
+        pinned_process::with_fixture(&binary, None, |client, pin, process| {
+            let measurements = measure_route_tails(|scenario| {
+                pinned_process::run_scenario_query(client, pin, scenario)
+            })?;
+            Ok((measurements, process.observe_peak_rss(client)?))
+        })?;
+    let legacy_daemon_sha256 = binary.sha256().to_owned();
     let passed = measurements.len() == ROUTE_TAIL_BUDGETS.len();
     Ok(TailReport {
         measurements,
         passed,
-        model_revision,
+        model_revision: model_revision_of(&SemanticEmbedderProfile::hash_dev()),
+        peak_daemon_rss_bytes,
+        legacy_daemon_sha256,
     })
 }
 
@@ -350,6 +369,8 @@ pub fn detail_json(report: &TailReport) -> AnyResult<Value> {
         .map(measurement_json)
         .collect::<AnyResult<Vec<_>>>()?;
     Ok(json!({
+        "backend": "legacy-reference",
+        "legacy_daemon_sha256": report.legacy_daemon_sha256,
         "passed": report.passed,
         "blocking_signal": "route correctness (golden-validated before timing); latency budgets are advisory on this host this increment",
         "routes": routes,
@@ -364,6 +385,18 @@ pub fn artifact(
     git_head: GitHeadV1,
     host: HostV1,
 ) -> AnyResult<BenchArtifactV1> {
+    let mut settings = vec![
+        ("samples", TAIL_SAMPLES.to_string()),
+        ("route_count", ROUTE_TAIL_BUDGETS.len().to_string()),
+        ("backend", "legacy-reference".to_owned()),
+        ("legacy_daemon_sha256", report.legacy_daemon_sha256.clone()),
+    ];
+    settings.extend(report.measurements.iter().map(|measurement| {
+        (
+            measurement.route.as_str(),
+            measurement.scenario_id.to_owned(),
+        )
+    }));
     Ok(BenchArtifactV1 {
         dimension: DIMENSION.to_string(),
         mode: BenchMode::Warm,
@@ -371,17 +404,13 @@ pub fn artifact(
         provenance: BenchProvenanceV1 {
             git_head,
             corpus_digest: corpus_digest(DIMENSION, &warm_fixture_corpus_files()),
-            config_digest: config_digest(
-                DIMENSION,
-                &[
-                    ("samples", TAIL_SAMPLES.to_string()),
-                    ("route_count", ROUTE_TAIL_BUDGETS.len().to_string()),
-                ],
-            ),
+            config_digest: config_digest(DIMENSION, &settings),
             model_revision: report.model_revision.clone(),
         },
         host,
-        resources: ResourceUsageV1::observe_self()?,
+        resources: ResourceUsageV1 {
+            peak_rss_bytes: report.peak_daemon_rss_bytes,
+        },
         phases: PhaseDurationsV1::default(),
         disk_amplification: None,
         rows: report
@@ -425,12 +454,14 @@ mod tests {
     fn measured_sample_failure_cannot_be_aggregated_as_latency() {
         let scenario = &SCENARIOS[0];
         assert_eq!(scenario.id, "lexical.keyword.native");
-        let valid = || QueryOutcome {
-            result_shape: crate::artifact::ResultShape::Candidates,
-            result_count: Some(4),
-            typed_error_code: None,
-            engine_touched: vec!["Lexical".to_string()],
-            early_stop_reason: None,
+        let valid = || {
+            Ok(QueryOutcome {
+                result_shape: crate::artifact::ResultShape::Candidates,
+                result_count: Some(4),
+                typed_error_code: None,
+                engine_touched: vec!["Lexical".to_string()],
+                early_stop_reason: None,
+            })
         };
         let passed = collect_timed_samples(scenario, RouteFamily::Lexical, 2, valid)
             .expect("two source-golden responses");
@@ -440,13 +471,13 @@ mod tests {
         let error = collect_timed_samples(scenario, RouteFamily::Lexical, 3, || {
             calls += 1;
             if calls == 2 {
-                QueryOutcome {
+                Ok(QueryOutcome {
                     result_shape: crate::artifact::ResultShape::Empty,
                     result_count: Some(0),
                     typed_error_code: None,
                     engine_touched: vec!["Lexical".to_string()],
                     early_stop_reason: None,
-                }
+                })
             } else {
                 valid()
             }
@@ -464,28 +495,30 @@ mod tests {
         let scenario = representative_scenario(RouteFamily::Adversarial)
             .expect("the adversarial budget has a scenario");
         assert_eq!(scenario.id, "adversarial.unterminated_phrase.native");
-        let parse_fail = crate::harness::E2eErrorCode::from_code_str("PARSE_FAIL")
+        let parse_fail = crate::E2eErrorCode::from_code_str("PARSE_FAIL")
             .expect("the daemon's expected typed parse refusal");
-        let samples =
-            collect_timed_samples(scenario, RouteFamily::Adversarial, 2, || QueryOutcome {
+        let samples = collect_timed_samples(scenario, RouteFamily::Adversarial, 2, || {
+            Ok(QueryOutcome {
                 result_shape: crate::artifact::ResultShape::TypedError,
                 result_count: None,
                 typed_error_code: Some(parse_fail),
                 engine_touched: vec![],
                 early_stop_reason: None,
             })
-            .expect("the source scenario expects this typed refusal");
+        })
+        .expect("the source scenario expects this typed refusal");
         assert_eq!(samples.len(), 2);
 
-        let wrong_refusal =
-            collect_timed_samples(scenario, RouteFamily::Adversarial, 1, || QueryOutcome {
+        let wrong_refusal = collect_timed_samples(scenario, RouteFamily::Adversarial, 1, || {
+            Ok(QueryOutcome {
                 result_shape: crate::artifact::ResultShape::TypedError,
                 result_count: None,
-                typed_error_code: Some(crate::harness::E2eErrorCode::IpcTransport),
+                typed_error_code: Some(crate::E2eErrorCode::IpcTransport),
                 engine_touched: vec![],
                 early_stop_reason: None,
             })
-            .expect_err("transport failure is not the expected parser refusal");
+        })
+        .expect_err("transport failure is not the expected parser refusal");
         assert!(wrong_refusal.to_string().contains("sample 1/1"));
     }
 
@@ -511,6 +544,35 @@ mod tests {
         assert!(budget_for(RouteFamily::Hybrid).is_none());
         assert!(budget_for(RouteFamily::Symbol).is_none());
         assert!(budget_for(RouteFamily::RepoMap).is_none());
+    }
+
+    #[test]
+    fn structural_tail_selects_a_tree_query() {
+        let scenario = representative_scenario(RouteFamily::Structural)
+            .expect("Structural tail has a tree representative");
+        assert_eq!(scenario.id, "structural.tree_match.native");
+        assert_eq!(scenario.fixture, FixtureKind::StructuralTree);
+        assert_eq!(scenario.expected_warm_count, Some(1));
+    }
+
+    #[test]
+    #[ignore = "requires a SHA-pinned Legacy daemon executable"]
+    fn pinned_old_q_tail_golden_routes() -> AnyResult<()> {
+        let report = run_tail_report()?;
+        anyhow::ensure!(report.passed && report.peak_daemon_rss_bytes > 0);
+        anyhow::ensure!(report.legacy_daemon_sha256.len() == 64);
+        for (measurement, budget) in report.measurements.iter().zip(ROUTE_TAIL_BUDGETS) {
+            let scenario =
+                representative_scenario(budget.route).context("missing measured representative")?;
+            anyhow::ensure!(measurement.route == budget.route);
+            anyhow::ensure!(measurement.scenario_id == scenario.id);
+            anyhow::ensure!(measurement.sample_count == TAIL_SAMPLES);
+            anyhow::ensure!(measurement.row.result_count == scenario.expected_warm_count);
+            anyhow::ensure!(
+                measurement.row.typed_error_code.as_deref() == scenario.expected_typed_error_code
+            );
+        }
+        Ok(())
     }
 
     #[test]
@@ -567,6 +629,8 @@ mod tests {
             }],
             passed: true,
             model_revision: Some("model@rev:d16".to_string()),
+            peak_daemon_rss_bytes: 1024,
+            legacy_daemon_sha256: "7".repeat(64),
         }
     }
 
@@ -604,5 +668,7 @@ mod tests {
         assert_eq!(value["rows"].as_array().map(Vec::len), Some(1));
         assert_eq!(value["rows"][0]["scenario_id"], "test.lexical");
         assert_eq!(value["detail"]["routes"][0]["route"], "lexical");
+        assert_eq!(value["detail"]["backend"], "legacy-reference");
+        assert_eq!(value["resources"]["peak_rss_bytes"], 1024);
     }
 }

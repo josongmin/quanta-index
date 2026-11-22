@@ -94,12 +94,15 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
     ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
         admitted_budget_checkpoint(budget)?;
         if expected.state != NativeReadSessionState::Active {
-            return Err(NativeUdsError::Protocol("History session is not active".into()));
+            return Err(NativeUdsError::Protocol(
+                "History session is not active".into(),
+            ));
         }
-        let request = NativeIndexRequest::ReadSession(NativeReadSessionRequest::ReadHistoryGeneration {
-            session: expected.session,
-            instance,
-        });
+        let request =
+            NativeIndexRequest::ReadSession(NativeReadSessionRequest::ReadHistoryGeneration {
+                session: expected.session,
+                instance,
+            });
         let reply = self.request_publication_admitted_ref(&request, budget, memory)?;
         match reply.response() {
             NativeIndexResponse::HistoryGeneration(value)
@@ -110,7 +113,11 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                     && value.source_input == source_input
                     && source_input.0 != Digest([0; 32]) => {}
             NativeIndexResponse::Error(_) => {}
-            _ => return Err(NativeUdsError::Protocol("History generation reply differs from the expected publication".into())),
+            _ => {
+                return Err(NativeUdsError::Protocol(
+                    "History generation reply differs from the expected publication".into(),
+                ));
+            }
         }
         admitted_budget_checkpoint(budget)?;
         Ok(reply)

@@ -44,9 +44,20 @@ def build_fixture(tmp_path, monkeypatch):
         state["calls"].append(argv)
         if "rev-parse" in argv:
             return subprocess.CompletedProcess(argv, 0, (state["head"] + "\n").encode(), b"")
-        if "metadata" in argv:
-            return subprocess.CompletedProcess(argv, 0, b'{"packages":[]}', b"")
         native = state["backend"] == "index-native"
+        if "metadata" in argv:
+            assert argv == [
+                str(wrapper),
+                "--lane",
+                "bench-lane" if native else "release-lane",
+                "metadata",
+                "--format-version",
+                "1",
+                "--no-default-features" if native else "--all-features",
+                "--locked",
+                "--offline",
+            ]
+            return subprocess.CompletedProcess(argv, 0, b'{"packages":[]}', b"")
         assert argv[1:] == list(build.NATIVE_BUILD_ARGS if native else build.BUILD_ARGS)
         assert kwargs["env"]["CARGO_TARGET_DIR"] == str(out / "target")
         assert kwargs["env"]["CARGO_BUILD_JOBS"] == "1"

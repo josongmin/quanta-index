@@ -36,12 +36,17 @@ pub use source_upload::{
 };
 pub mod request_budget;
 pub mod timeref;
+mod tree_commitment;
+
+/// The checkpoint named when an embedding attempt is interrupted.
+pub const EMBED_CHECKPOINT: &str = "semantic:embed";
 
 pub use diagnostic_trace::{
     DiagnosticAdoptionFlushReasonV1, DiagnosticAnnIndexKindV1, DiagnosticAnnRegionObservationV1,
     DiagnosticAnnRegionPhaseV1, DiagnosticAttemptGuardCoreV1, DiagnosticCaptureIdV1,
     DiagnosticClockV1, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticEmitV1,
     DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
+    DiagnosticManagedInstallCensusKindV1,
     DiagnosticObjectInstallPhaseV1, DiagnosticObjectKindV1, DiagnosticOccupancyBucketV1,
     DiagnosticOwnedRenewalRefusalReasonV1, DiagnosticOwnedRenewalRefusalV1, DiagnosticPhaseV1,
     DiagnosticPlaneV1, DiagnosticRootKindV1, DiagnosticSpanGuardV1, DiagnosticSpanIdV1,
@@ -76,14 +81,14 @@ pub use domains::generation::{
     GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
     IncompleteGenerationDiscardPort, InventoriedSealedGenerationV1, PinnedGenerationReadinessV1,
     QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
-    QuarantinedGenerationDiscardPort, QuarantinedGenerationV1, SealedArtifactCommitmentV1,
-    SealedGenerationBytesV1, SealedGenerationIdentityProbePort, SealedGenerationInventoryV1,
+    QuarantinedGenerationDiscardPort, QuarantinedGenerationV1, SealedGenerationBytesV1,
+    SealedGenerationIdentityProbePort, SealedGenerationInventoryV1,
     SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
-    TreeCommitmentMismatchV1, TreeCommitmentV1, TreeScrubStepV1, TreeScrubVerdictV1,
-    UNKNOWN_GENERATION_CODE, commit_tree_inheriting_v1, commit_tree_v1,
-    hash_committed_step_opened_v1, hash_committed_step_v1, scrub_tree_commitment_v1,
-    sha256_of_file, unique_inode_tree_bytes, unknown_generation_error,
-    validate_pinned_generation_v1, verify_tree_commitment_v1, verify_tree_layout_v1,
+    TreeCommitmentV1, TreeScrubStepV1, TreeScrubVerdictV1, UNKNOWN_GENERATION_CODE,
+    commit_tree_inheriting_v1, commit_tree_v1, hash_committed_step_opened_v1,
+    hash_committed_step_v1, scrub_tree_commitment_v1, sha256_of_file, unique_inode_tree_bytes,
+    unknown_generation_error, validate_pinned_generation_v1, verify_tree_commitment_v1,
+    verify_tree_layout_v1,
 };
 pub use domains::hybrid::{
     DenseAdmissionOutcomeV1, DenseLaneFilterClassV1, ExplainQueryPort, FileLaneWitnessV1,
@@ -154,7 +159,7 @@ pub use domains::repomap::{
 pub use domains::semantic::{
     AdmittedSemanticInputV1, DenseIndexBuildV1, DenseIndexEffortV1, DenseIndexSegmentBuildV1,
     DenseIndexTrainingV1, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,
-    EMBED_CHECKPOINT, EmbeddingOutcomeV1, L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider,
+    EmbeddingOutcomeV1, L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider,
     PROVIDER_AUDIT_RING_CAP, PROVIDER_BUDGET_EXHAUSTED_CODE, PROVIDER_EGRESS_DENIED_CODE,
     PROVIDER_WORK_CANCELLED_CODE, ProviderAuditEventV1, ProviderBudgetLedger,
     ProviderBudgetSnapshotV1, ProviderReservationTicketV1, ProviderSettlementKindV1,
@@ -184,6 +189,7 @@ pub use domains::structural::{
     StructuralProducerPort, StructuralQueryRequest, StructuralQueryResponse, StructuralReadiness,
     StructuralService,
 };
+pub use tree_commitment::{SealedArtifactCommitmentV1, TreeCommitmentMismatchV1};
 
 pub use index::existing_tree::{ReadOnlyTreeLayoutV1, verify_tree_layout_admitted_v1};
 pub use index::ports::{ExistingTreeEntryKindV1, ExistingTreeMetadataIoPortV1};

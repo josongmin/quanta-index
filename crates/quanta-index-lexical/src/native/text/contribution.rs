@@ -8,7 +8,7 @@ use super::{
 use quanta_index_core::index::{MAX_MAP_INLINE_BYTES, MAX_MAP_INLINE_CHILDREN, MapValue};
 
 /// Persisted inline contribution layout. Small keeps its original count byte;
-/// these tags are outside its valid 0..=INLINE_ENTRIES range.
+/// these tags are outside its valid `0..=INLINE_ENTRIES` range.
 pub(super) const LAYOUT_POLICY: &[u8] =
     b"contribution:inline-small-v1;inline-block-tree-occurrence-inventory-directory-v1\0";
 const BLOCK_TAG: u8 = 0x80;
@@ -36,7 +36,7 @@ pub(super) fn inline(
     };
     if let Some((tag, reference)) = rooted {
         let children = contribution_children(value)?;
-        if children.as_slice() != &[value.record, reference] {
+        if children.as_slice() != [value.record, reference] {
             return Err(IndexError::CorruptObject(
                 "contribution root children differ".into(),
             ));
@@ -130,13 +130,12 @@ pub(super) fn read(
                         "contribution root inline children differ".into(),
                     ));
                 };
-                let tokens = u64::from_be_bytes(
-                    data.get(1..)
-                        .and_then(|bytes| bytes.try_into().ok())
-                        .ok_or_else(|| {
-                            IndexError::CorruptObject("contribution root inline width".into())
-                        })?,
-                );
+                let token_bytes = data.get(1..).ok_or_else(|| {
+                    IndexError::CorruptObject("contribution root inline width".into())
+                })?;
+                let tokens = u64::from_be_bytes(token_bytes.try_into().map_err(|_width| {
+                    IndexError::CorruptObject("contribution root inline width".into())
+                })?);
                 Contribution {
                     record: *record,
                     inventory: match tag {

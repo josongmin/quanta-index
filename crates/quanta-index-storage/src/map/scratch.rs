@@ -69,10 +69,7 @@ impl EditCursor<'_> {
                 "SELECT key,expected,next FROM edit WHERE root=?1 ORDER BY key LIMIT 64"
             };
             let root = i64::from(self.root);
-            let after = self
-                .after
-                .as_ref()
-                .map(|position| position.key());
+            let after = self.after.as_ref().map(|position| position.key());
             let first: [&dyn rusqlite::ToSql; 1] = [&root];
             let next: [&dyn rusqlite::ToSql; 2] = [&root, &after];
             let parameters: &[&dyn rusqlite::ToSql] = if after.is_some() { &next } else { &first };
@@ -898,7 +895,8 @@ mod tests {
             )?,
             &mut work,
         )?;
-        let bytes = OrdinalMapEdit::allocation_bytes(key.len(), Some(expected.into()), Some(next.into()))?;
+        let bytes =
+            OrdinalMapEdit::allocation_bytes(key.len(), Some(expected.into()), Some(next.into()))?;
         let page_bytes = u64::try_from(
             64_usize
                 .checked_mul(std::mem::size_of::<OrdinalMapEdit>())

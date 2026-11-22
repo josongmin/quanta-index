@@ -25,6 +25,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::RequestBudgetV1;
 use quanta_index_embed::{LOCAL_CODE_DIMENSION, LOCAL_CODE_MODEL_ID, LOCAL_CODE_MODEL_REVISION};
+use quanta_index_lexical::native::TextRecipe;
 use quanta_index_sdk::native_uds::{
     BorrowedSourceInput, MAX_NATIVE_STAGE_SOURCES_INPUTS, MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES,
     NativeUdsClient, NativeUdsError,
@@ -309,6 +310,39 @@ impl NativeSemanticCorpusInput<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeCorpusTextLayout {
+    TreeV1,
+    SegmentedFullV1,
+    SegmentedLayeredV2,
+}
+
+impl NativeCorpusTextLayout {
+    fn config_name(self) -> &'static str {
+        match self {
+            Self::TreeV1 => "tree-v1",
+            Self::SegmentedFullV1 => "segmented-full-v1",
+            Self::SegmentedLayeredV2 => "segmented-layered-v2",
+        }
+    }
+
+    fn text_instance(self) -> InstanceSpec {
+        let mut instance = text_spec();
+        match self {
+            Self::TreeV1 => {}
+            Self::SegmentedFullV1 => {
+                instance.policy = TextRecipe::segmented_full(Digest([31; 32])).output_policy();
+                instance.format = StorageFormatId([76; 16]);
+            }
+            Self::SegmentedLayeredV2 => {
+                instance.policy = TextRecipe::segmented_layered(Digest([31; 32])).output_policy();
+                instance.format = StorageFormatId([77; 16]);
+            }
+        }
+        instance
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct NativeCorpusInput<'a> {
     pub source_root: &'a Path,
@@ -321,6 +355,8 @@ pub struct NativeCorpusInput<'a> {
     pub output_root: &'a Path,
     /// None keeps the original Off rail; Some enables bounded daemon Record capture.
     pub trace_max_output_bytes: Option<u64>,
+    /// Select the Text layout for the original SDK corpus run.
+    pub text_layout: NativeCorpusTextLayout,
 }
 
 #[derive(Deserialize)]
@@ -811,6 +847,11 @@ fn measure_native_corpus_inner(
     input: &NativeCorpusInput<'_>,
     semantic: Option<&NativeSemanticCorpusInput<'_>>,
 ) -> Result<Value> {
+    anyhow::ensure!(
+        input.text_layout == NativeCorpusTextLayout::TreeV1 || semantic.is_none(),
+        "the Text segment FULL candidate requires an isolated Core profile"
+    );
+    let text_instance = input.text_layout.text_instance();
     // A missing or altered operator config refuses before output/state creation.
     let semantic = semantic
         .map(NativeSemanticCorpusInput::preflight)
@@ -873,6 +914,10 @@ fn measure_native_corpus_inner(
             mode: NativeWorkloadMode::Fixed,
         };
         let mut configured = native_config(&root, &socket, workload);
+        if input.text_layout != NativeCorpusTextLayout::TreeV1 {
+            configured["text"]["layout"] = json!(input.text_layout.config_name());
+            configured["text"]["descriptor"]["format"] = json!(text_instance.format.0);
+        }
         *configured
             .pointer_mut("/resources/physical/inventory/max_files")
             .context("Native config inventory file limit absent")? = json!(30_000);
@@ -915,7 +960,8 @@ fn measure_native_corpus_inner(
         anyhow::bail!("Native workspace create returned {created:?}")
     };
     let ingress = client.begin_input(operation(1), &RequestBudgetV1::for_duration(SDK_TIMEOUT))?;
-    let mut instances = vec![literal_spec(), file_spec(), text_spec()];
+    let (text_policy, text_format) = (text_instance.policy, text_instance.format);
+    let mut instances = vec![literal_spec(), file_spec(), text_instance];
     if let Some(semantic) = &semantic {
         instances.push(semantic.instance.clone());
     }
@@ -1294,6 +1340,11 @@ fn measure_native_corpus_inner(
         "semantic_hybrid_status":"NOT_RUN",
         "record_trace":record_trace,
     });
+    if input.text_layout != NativeCorpusTextLayout::TreeV1 {
+        result["text_layout"] = json!(input.text_layout.config_name());
+        result["text_policy"] = json!(text_policy);
+        result["text_format"] = json!(text_format);
+    }
     if let Some(semantic) = &semantic {
         let (covered_view, first_semantic) =
             covered.context("Native Semantic coverage result absent")?;
@@ -1333,6 +1384,23 @@ fn measure_native_corpus_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_layout_selectors_bind_distinct_policy_and_format() {
+        let tree = NativeCorpusTextLayout::TreeV1.text_instance();
+        let full = NativeCorpusTextLayout::SegmentedFullV1.text_instance();
+        let layered = NativeCorpusTextLayout::SegmentedLayeredV2.text_instance();
+        assert_eq!(tree.format, StorageFormatId([75; 16]));
+        assert_eq!(full.format, StorageFormatId([76; 16]));
+        assert_eq!(layered.format, StorageFormatId([77; 16]));
+        assert_ne!(tree.policy, full.policy);
+        assert_ne!(tree.policy, layered.policy);
+        assert_ne!(full.policy, layered.policy);
+        assert_eq!(
+            NativeCorpusTextLayout::SegmentedLayeredV2.config_name(),
+            "segmented-layered-v2"
+        );
+    }
 
     #[test]
     fn native_corpus_file_witness_rejects_wrong_owner_ref_or_body() -> Result<()> {
@@ -1567,6 +1635,7 @@ mod tests {
             daemon_bin: Path::new("/not-used"),
             output_root: Path::new("/not-used"),
             trace_max_output_bytes: None,
+            text_layout: NativeCorpusTextLayout::TreeV1,
         };
         anyhow::ensure!(
             bound_corpus(&input)?.0.len() == 1,

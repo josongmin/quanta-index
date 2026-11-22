@@ -144,6 +144,43 @@ fn compression_changes_match_ordered_map_oracle_and_exact_paging() -> TestResult
 }
 
 #[test]
+fn last_entry_reads_only_the_rightmost_path_and_honors_the_budget() -> TestResult {
+    let directory = TestDir::new();
+    let store = FileObjectStore::open(&directory.0)?;
+    let mut build = budget()?;
+    let value = MapValue::inline(b"value", [])?;
+    let mut model: BTreeMap<_, _> = (0..4096_u16)
+        .map(|key| (key.to_be_bytes().to_vec(), value))
+        .collect();
+    // A prefix and its extension are both real keys at the right edge.
+    check!(model.insert(vec![0xff], value).is_none());
+    let last = (vec![0xff, 0], MapValue::inline(b"last", [])?);
+    check!(model.insert(last.0.clone(), last.1).is_none());
+    let root = root_from_model(&store, &model, &mut build)?;
+    drop(store);
+    let store = FileObjectStore::open(&directory.0)?;
+    let mut plain = budget()?;
+    let empty = store.last_entry(MapRoot(None), &mut plain)?;
+    check!(empty.entries.is_empty() && !empty.has_more);
+    let page = store.last_entry(root, &mut plain)?;
+    check_eq!(page.entries.as_slice(), std::slice::from_ref(&last));
+    check!(!page.has_more);
+    check!(plain.usage().reads > 0 && plain.usage().reads <= 32);
+    check_eq!(plain.usage().writes, 0);
+
+    let mut scoped_work = budget()?;
+    let _tracker = array_scope(MemoryLifetime::Retained, Some(0), &mut scoped_work);
+    let scoped = super::super::scoped_reads::ScopedReads::new(&store, &scoped_work)?;
+    check_eq!(scoped.last_entry(root, &mut scoped_work)?, page);
+    scoped_work.request().cancel_handle().cancel();
+    check_eq!(
+        scoped.last_entry(root, &mut scoped_work),
+        Err(IndexError::Cancelled)
+    );
+    Ok(())
+}
+
+#[test]
 fn one_delta_skips_shared_subtrees_and_never_writes() -> TestResult {
     let directory = TestDir::new();
     let store = FileObjectStore::open(&directory.0)?;

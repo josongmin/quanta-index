@@ -1,9 +1,5 @@
-//! QI-BB-023 — history pages are ordered by recency, not by sha, and a
-//! cursor walks every match exactly once, before and after a restart.
-//!
-//! The fixture makes the two orders disagree on purpose: shas ascend while
-//! committer times descend, so a sha-ordered top-k would return the
-//! oldest commits. The oracle is the fixture's own time order.
+//! QI-BB-023 — pinned Legacy SDK History pages follow recency, not SHA,
+//! and a cursor walks every match exactly once across a real process restart.
 
 #![forbid(unsafe_code)]
 
@@ -11,68 +7,108 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use quanta_index_contract::{
-    CandidateCountV1, ContinuationTokenV2, HistoryOrderV1, TextQuerySyntax,
+    CandidateCountV1, ContinuationTokenV2, GenerationPin, HistoryOrderV1, ManifestGeneration,
+    RepoId, RevisionId,
 };
-use quanta_index_searchd_harness as e2e_harness;
-
-use e2e_harness::{E2eHistoryFixtureSpec, E2eRuntime};
+use quanta_index_ipc::stamp_batch_digest_v1;
+use quanta_index_sdk::QuantaIndex;
+use quanta_index_searchd_harness::{
+    history_fixture::HistoryFixtureSpec,
+    legacy_reference::{LegacySearchdBinary, publish_legacy_source},
+    private_tempdir as private_root,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
 const COMMITS: u64 = 5;
 const QUERY: &str = "type:commit order";
+// In ingestion/time order: SHA IDs 3, 1, 5, 2, 4. Sorting SHA IDs cannot
+// produce the newest-first order 4, 2, 5, 1, 3.
+const SHA_IDS_BY_TIME: [u64; 5] = [3, 1, 5, 2, 4];
 
-/// The sha of commit `index`.
-///
-/// Shas ascend with the index and so do committer times, so the newest
-/// commit has the *largest* sha: a sha-ordered top-k would pick the
-/// oldest commits, a recency-ordered one the newest.
-fn sha_of(index: u64) -> String {
-    format!("{index:0>40}")
+fn sha_of(id: u64) -> String {
+    format!("{id:0>40}")
 }
 
-fn ingest_commits(rt: &mut E2eRuntime) -> TestResult {
-    for index in 1..=COMMITS {
-        // Both the sha and the time ascend with the index.
+fn ingest_commits(client: &QuantaIndex, generation: &GenerationPin) -> TestResult {
+    let mut files = Vec::new();
+    for (offset, sha_id) in SHA_IDS_BY_TIME.into_iter().enumerate() {
+        let index = u64::try_from(offset + 1)?;
         let path = format!("src/order_{index}.rs");
-        rt.ingest_text("repo", &path, &format!("fn order_{index}() {{}}"))?;
-        rt.ingest_history_fixture_spec(&E2eHistoryFixtureSpec {
-            commit_sha: &sha_of(index),
+        let text = format!("fn order_{index}() {{}}");
+        let sha = sha_of(sha_id);
+        let message = format!("order commit {index}");
+        let ref_name = format!("refs/heads/order-{index}");
+        let tag_name = format!("order-{index}");
+        let mut batch = HistoryFixtureSpec {
+            commit_sha: &sha,
             file_path: &path,
             author: "alice",
             committer: "alice",
-            message: &format!("order commit {index}"),
+            message: &message,
             author_time_ms: 1_000_u64.saturating_add(index),
             committer_time_ms: 1_000_u64.saturating_add(index),
             applied_at_ms: 13,
-            ref_name: &format!("refs/heads/order-{index}"),
-            tag_name: &format!("order-{index}"),
+            ref_name: &ref_name,
+            tag_name: &tag_name,
             added_text: "added",
             removed_text: "",
             touched_text: "touched",
-        })?;
+        }
+        .build_batch(
+            generation.repo_id.clone(),
+            generation.revision_id.clone(),
+            generation.manifest_generation,
+        )?;
+        stamp_batch_digest_v1(&mut batch)?;
+        let receipt = client.history().publish_history_borrowed_v1(&batch)?;
+        if !receipt.applied || receipt.durable_sequence == 0 {
+            return Err(format!("History commit {index} was not durably published").into());
+        }
+        // The original harness consumes one request ID for the chunk and
+        // one for the following History publish.
+        files.push((path, text, index.saturating_mul(2).saturating_sub(1)));
     }
-    let _sealed = rt.seal()?;
-    rt.activate_last_sealed_generation()?;
+    let scopes = files
+        .iter()
+        .map(|(path, text, index)| (path.as_str(), text.as_str(), *index))
+        .collect::<Vec<_>>();
+    let _published = publish_legacy_source(
+        client,
+        &generation.repo_id,
+        &generation.revision_id,
+        generation.manifest_generation.get(),
+        None,
+        &scopes,
+        None,
+    )?;
     Ok(())
 }
 
 /// Walk every page and return the commit ids in page order.
-fn walk_pages(rt: &mut E2eRuntime, page_size: u32) -> Result<Vec<String>, Box<dyn Error>> {
+fn walk_pages(
+    client: &QuantaIndex,
+    generation: &GenerationPin,
+    page_size: u32,
+) -> Result<Vec<String>, Box<dyn Error>> {
     let mut cursor: Option<ContinuationTokenV2> = None;
     let mut seen = Vec::new();
     for _page in 0..16 {
-        let page = rt.query_history_page(
-            TextQuerySyntax::Sourcegraph,
-            QUERY,
-            page_size,
-            HistoryOrderV1::Recency,
-            cursor,
-        );
-        if let Some(error) = page.typed_error {
-            return Err(format!("history page refused: {error}").into());
+        let mut query = client
+            .history()
+            .query()
+            .sourcegraph(QUERY)
+            .pinned(generation.clone())
+            .top_k(page_size)
+            .order(HistoryOrderV1::Recency);
+        if let Some(next) = cursor.take() {
+            query = query.after(next);
         }
-        let window = page.window.ok_or("a served page carries a window")?;
+        let page = query.execute()?;
+        if page.generation != *generation {
+            return Err("History page returned another generation".into());
+        }
+        let window = page.window;
         if window.candidate_count()
             != CandidateCountV1::Exact(COMMITS.saturating_sub(u64::try_from(seen.len())?))
         {
@@ -82,7 +118,7 @@ fn walk_pages(rt: &mut E2eRuntime, page_size: u32) -> Result<Vec<String>, Box<dy
             )
             .into());
         }
-        seen.extend(page.commit_ids);
+        seen.extend(page.commits.into_iter().map(|commit| commit.sha.to_hex()));
         match (window.has_more(), page.next_cursor) {
             (Some(true), Some(next)) => cursor = Some(next),
             (Some(false), None) => return Ok(seen),
@@ -96,43 +132,68 @@ fn walk_pages(rt: &mut E2eRuntime, page_size: u32) -> Result<Vec<String>, Box<dy
 
 #[test]
 fn top_k_returns_the_newest_commits_and_pages_walk_every_match_once() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    ingest_commits(&mut rt)?;
-    // Newest first: the largest index has the largest committer time, and
-    // the largest sha — the opposite of sha order.
-    let expected: Vec<String> = (1..=COMMITS).rev().map(sha_of).collect();
+    let parent = private_root()?;
+    let state_root = parent.path().join("state");
+    let binary = LegacySearchdBinary::from_environment()?;
+    let expected_top_two = [4, 2].map(sha_of);
+    let expected: Vec<String> = [4, 2, 5, 1, 3].map(sha_of).into();
+    let generation = GenerationPin::new(
+        RepoId::new("repo-e2e")?,
+        RevisionId::new("rev-e2e")?,
+        ManifestGeneration::new(1),
+    );
 
-    let top_two = rt.query_history(TextQuerySyntax::Sourcegraph, QUERY, 2);
-    if let Some(error) = top_two.typed_error {
-        return Err(format!("history must serve: {error}").into());
-    }
-    if top_two.commit_ids != expected.get(..2).ok_or("two expected")? {
-        return Err(format!(
-            "top-2 must be the two newest commits {:?}, got {:?}",
-            expected.get(..2),
-            top_two.commit_ids
-        )
-        .into());
-    }
-    if top_two.examined < COMMITS {
-        return Err(format!("every commit is examined, saw {}", top_two.examined).into());
-    }
+    let first = binary.start(&state_root, 8)?;
+    let first_result = (|| -> TestResult {
+        let client = first.connect()?;
+        ingest_commits(&client, &generation)?;
+        let top_two = client
+            .history()
+            .query()
+            .sourcegraph(QUERY)
+            .pinned(generation.clone())
+            .top_k(2)
+            .order(HistoryOrderV1::Recency)
+            .execute()?;
+        let observed_top_two = top_two
+            .commits
+            .iter()
+            .map(|commit| commit.sha.to_hex())
+            .collect::<Vec<_>>();
+        if observed_top_two.as_slice() != expected_top_two.as_slice() {
+            return Err(format!(
+                "top-2 must be the two newest commits {expected_top_two:?}, got {observed_top_two:?}"
+            )
+            .into());
+        }
+        if top_two.examined < COMMITS {
+            return Err(format!("every commit is examined, saw {}", top_two.examined).into());
+        }
 
-    let walked = walk_pages(&mut rt, 2)?;
-    if walked != expected {
-        return Err(format!("pages must walk every match once in order: {walked:?}").into());
-    }
-    let distinct: BTreeSet<&String> = walked.iter().collect();
-    if distinct.len() != walked.len() {
-        return Err("a commit appeared on two pages".into());
-    }
+        let walked = walk_pages(&client, &generation, 2)?;
+        if walked != expected {
+            return Err(format!("pages must walk every match once in order: {walked:?}").into());
+        }
+        let distinct: BTreeSet<&String> = walked.iter().collect();
+        if distinct.len() != walked.len() {
+            return Err("a commit appeared on two pages".into());
+        }
+        Ok(())
+    })();
+    let stopped = first.stop();
+    first_result.and(stopped)?;
+    binary.verify()?;
 
-    // The order is a function of the records, not of ingest order or
-    // process lifetime: a restart serves the same pages.
-    let mut rt = rt.reopen();
-    let after_restart = walk_pages(&mut rt, 2)?;
-    if after_restart != expected {
-        return Err(format!("pages after a restart drifted: {after_restart:?}").into());
-    }
-    Ok(())
+    let second = binary.start(&state_root, 8)?;
+    let restarted = (|| -> TestResult {
+        let client = second.connect()?;
+        let after_restart = walk_pages(&client, &generation, 2)?;
+        if after_restart != expected {
+            return Err(format!("pages after a restart drifted: {after_restart:?}").into());
+        }
+        Ok(())
+    })();
+    let stopped = second.stop();
+    restarted.and(stopped)?;
+    binary.verify()
 }

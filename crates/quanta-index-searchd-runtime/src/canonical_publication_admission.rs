@@ -205,6 +205,3 @@ impl PublicationResourceAdmissionPort for CanonicalPublicationAdmission {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(all(test, feature = "legacy-tantivy"))]
-mod lexical_tests;

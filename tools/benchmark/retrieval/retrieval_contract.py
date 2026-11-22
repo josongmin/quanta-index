@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import struct
 import subprocess
@@ -193,6 +194,7 @@ def _git(repo: Path, *args: str) -> str:
 def verify_repo(repo: Path, commit: str) -> Path:
     if not repo.is_dir():
         raise ValueError(f"repository checkout missing: {repo}")
+    initial_checkout = repo.stat()
     root_text, separator, head = _git(repo, "rev-parse", "--show-toplevel", "HEAD").rpartition("\n")
     if not separator or not root_text or not head:
         raise ValueError("repository Git evidence unavailable")
@@ -203,4 +205,12 @@ def verify_repo(repo: Path, commit: str) -> Path:
         raise ValueError("checkout HEAD differs from frozen commit")
     if _git(root, "status", "--porcelain", "--untracked-files=all"):
         raise ValueError("checkout has tracked or untracked changes")
+    if _git(root, "rev-parse", "HEAD") != commit:
+        raise ValueError("checkout HEAD differs from frozen commit")
+    try:
+        same_checkout = os.path.samestat(initial_checkout, repo.stat())
+    except (FileNotFoundError, NotADirectoryError):
+        same_checkout = False
+    if not same_checkout:
+        raise ValueError("checkout directory changed during verification")
     return root

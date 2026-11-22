@@ -1,4 +1,4 @@
-//! Failure artifact authority shared by Legacy and Native scale rails.
+//! Failure artifact authority shared by Native scale and source fixtures.
 
 use std::path::Path;
 
@@ -165,4 +165,71 @@ pub fn write_refusal_artifact_with_context(
         &dir.join("refusal.json"),
         &refusal_json_with_context(binding, git_head, host, error, dimension, execution),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{refusal_json, refusal_json_with_context};
+    use crate::artifact::{GitHeadV1, HostV1};
+    use crate::scale_failure::{ScaleStageError, stage_or_preserve};
+    use crate::scale_provenance::{
+        source_binding_for_failure, source_binding_for_failure_in_dimension,
+    };
+    use crate::source_fixture::{MAX_SCALE_SOURCE_BYTES, ScaleTier, check_admission_counts};
+
+    #[test]
+    fn refusal_record_binds_source_and_only_names_typed_limits() -> anyhow::Result<()> {
+        let binding = source_binding_for_failure(ScaleTier::Medium, 13)?;
+        assert_eq!(binding.source_repo_count, 4);
+        assert_eq!(binding.file_count, 256);
+        assert_eq!(binding.source_bytes, binding.corpus_bytes + 256);
+        let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567")?;
+        let host = HostV1 {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            cpu_count: 4,
+            mem_bytes: 1 << 30,
+            hostname_hash: "sha256:host".to_string(),
+        };
+        let capacity = check_admission_counts(1, MAX_SCALE_SOURCE_BYTES + 1, 1)
+            .expect_err("source bytes exceed the fixed bound");
+        let typed = anyhow::Error::new(ScaleStageError::source_admission(&anyhow::Error::new(
+            capacity,
+        )));
+        let refused = refusal_json(&binding, &head, &host, &typed);
+        assert_eq!(refused["status"], "refused");
+        assert_eq!(refused["failure"]["stage"], "source_preflight");
+        assert_eq!(
+            refused["failure"]["limit"],
+            "lexical_total_source_bytes_128m"
+        );
+        assert_eq!(refused["failure"]["observed"], MAX_SCALE_SOURCE_BYTES + 1);
+        assert_eq!(refused["source"]["corpus_digest"], binding.corpus_digest);
+        assert!(refused.get("latency").is_none());
+
+        let other = source_binding_for_failure_in_dimension("open-loop", ScaleTier::Medium, 13)?;
+        assert_ne!(other.corpus_digest, binding.corpus_digest);
+        let execution = json!({"arrival_model": "seeded_poisson", "rates_qps": [25, 50]});
+        let open_loop =
+            refusal_json_with_context(&other, &head, &host, &typed, "open-loop", Some(&execution));
+        assert_eq!(open_loop["kind"], "quanta-index-open-loop-failure");
+        assert_eq!(open_loop["execution"], execution);
+        assert_eq!(open_loop["failure"]["limit"], refused["failure"]["limit"]);
+
+        let unknown = refusal_json(&binding, &head, &host, &anyhow::anyhow!("runtime failure"));
+        assert_eq!(unknown["status"], "failed");
+        assert_eq!(unknown["failure"]["stage"], "execution_unclassified");
+        assert!(unknown["failure"]["limit"].is_null());
+        let ingest = refusal_json(
+            &binding,
+            &head,
+            &host,
+            &stage_or_preserve("build_ingest", anyhow::anyhow!("fixed ingest failure")),
+        );
+        assert_eq!(ingest["failure"]["stage"], "build_ingest");
+        assert!(ingest["failure"]["limit"].is_null());
+        Ok(())
+    }
 }

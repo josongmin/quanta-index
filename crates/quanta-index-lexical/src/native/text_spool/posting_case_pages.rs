@@ -94,6 +94,10 @@ impl PostingCasePages {
         }
     }
 
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "Exclusive access keeps one posting cursor alive per admitted page-cache working set"
+    )]
     pub(in crate::native) fn posting_cursor<'a>(
         &'a mut self,
         spool: &'a TextSpool,

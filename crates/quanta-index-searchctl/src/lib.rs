@@ -478,9 +478,12 @@ Native subcommands (default; optional `native` prefix):
   read-view        --socket PATH --workspace HEX --epoch N [--output pretty|json]
   search-text      --socket PATH --workspace HEX --epoch N --instance HEX --query-text TEXT --top-k N [--syntax native|sourcegraph] [--output pretty|json]
   query-repository-paths --socket PATH --workspace HEX --epoch N --instance HEX --prefix PATH --limit 1..128 [--after-json JSON] [--output json]
-  read-session-open|renew|status|profile|release|settlement
-  search-text-page|search-hybrid-file
+  read-session-open|read-session-renew|read-session-status|read-session-profile
+  read-session-release|read-session-settlement
+  search-text-page|search-text-path-page|search-hybrid-file
   history          --socket PATH --session-json JSON --instance HEX --query-text TEXT --top-k N --order recency|relevance [--syntax native|sourcegraph] [--after-json JSON] [--output json]
+  structural|runtime-metadata --socket PATH --session-json JSON --repo ID --revision ID --query-text TEXT --top-k N [--syntax native|sourcegraph] [--after-json JSON] [--output json]
+  publish-dsl      --socket PATH --input JSON [--output json]
   Retained commands require explicit caller session/key inputs and --output json.
 
 Legacy comparison/test rail: legacy <subcommand> [flags]
@@ -499,7 +502,9 @@ Legacy comparison/test subcommands:
   explain          --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|- [--syntax native|sourcegraph --query-text TEXT]
   explain          --repo-id ID --revision-id REV --manifest-generation N --hybrid-candidate-json PATH|- --syntax native|sourcegraph --query-text TEXT --semantic-query-text TEXT --top-k N
   repomap          --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
-    history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N --order recency|relevance, history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-], runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N, runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-], structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N, structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-],
+  history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N --order recency|relevance [--cursor-json PATH|-]
+  runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
+  structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
   readiness
   events           --plane query|control|ingest --limit 1..1024
   generation-status --repo-id ID --revision-id REV
@@ -551,7 +556,7 @@ HTTP port, so a Prometheus server does not scrape it directly. Run this
 command from the daemon's user on a schedule and write its output where the
 node_exporter textfile collector reads it, e.g.
 
-  quanta-index-searchctl --state-root /var/lib/quanta-index metrics \
+  quanta-index-searchctl legacy --state-root /var/lib/quanta-index metrics \
     --output prometheus > /var/lib/node_exporter/textfile/quanta_index.prom.tmp \
     && mv /var/lib/node_exporter/textfile/quanta_index.prom.tmp \
           /var/lib/node_exporter/textfile/quanta_index.prom

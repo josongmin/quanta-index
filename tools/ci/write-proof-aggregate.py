@@ -137,6 +137,7 @@ def build_aggregate(
     registry_path: Path,
     checker: ModuleType,
     paired_checkout: Path,
+    required_installation: tuple[str, str, str] | None = None,
 ) -> tuple[dict[str, Any], Path]:
     aggregate = registry["aggregate"]
     proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
@@ -171,6 +172,7 @@ def build_aggregate(
     dependency_receipts: list[dict[str, Any]] = []
     dependency_statuses: dict[str, str] = {}
     payload_by_id: dict[str, dict[str, Any]] = {}
+    selected_digests: dict[str, str] = {}
     for proof_id in dependency_ids:
         proof = proof_by_id[proof_id]
         status, digest, manifest = _manifest_status(
@@ -193,9 +195,21 @@ def build_aggregate(
         )
         if manifest is not None:
             payload_by_id[proof_id] = manifest
+            selected_digests[proof_id] = digest
+
+    if required_installation is not None:
+        from tools.ci.proof_operational_result import operational_installation_identity
+
+        try:
+            observed_installation = operational_installation_identity(payload_by_id)
+        except ValueError as error:
+            raise AggregateRefused(f"cannot bind signed installation target: {error}") from error
+        if observed_installation != required_installation:
+            raise AggregateRefused("operational proofs differ from the signed installation target")
 
     consistency_findings = checker.check_aggregate(
         payload_by_id,
+        selected_digests=selected_digests,
         proof_by_id=proof_by_id,
         path=registry_path,
     )
@@ -232,12 +246,16 @@ def build_aggregate(
         verdict_findings = checker.verdict_consistency_findings(
             required_proofs,
             payload_by_id=payload_by_id,
+            selected_digests=selected_digests,
             proof_by_id=proof_by_id,
             path=registry_path,
         )
         verdicts[verdict] = {
             "status": _derived_verdict(
-                [dependency_statuses.get(proof_id, "FAILED") for proof_id in required_proofs],
+                [
+                    dependency_statuses.get(proof_id, "FAILED")
+                    for proof_id in checker.verdict_proof_ids(required_proofs, proof_by_id)
+                ],
                 consistency_failed=bool(verdict_findings),
             ),
             "required_proofs": required_proofs,
@@ -298,6 +316,8 @@ def _publish_aggregate_locked(
     root: Path,
     registry_path: Path,
     paired_checkout: Path,
+    required_release_identity: tuple[str, str, str] | None = None,
+    required_installation: tuple[str, str, str] | None = None,
 ) -> tuple[Path, str, bool]:
     root = root.resolve()
     registry_path = registry_path if registry_path.is_absolute() else Path.cwd() / registry_path
@@ -331,9 +351,20 @@ def _publish_aggregate_locked(
             registry_path=registry_path,
             checker=checker,
             paired_checkout=paired_checkout.resolve(),
+            required_installation=required_installation,
         )
         if observed_output_path != output_path:
             raise AggregateRefused("registered aggregate output identity changed")
+        if required_release_identity is not None:
+            daemon = payload.get("daemon_binary")
+            source_pair = payload.get("source_pair")
+            observed_identity = (
+                daemon.get("sha256") if isinstance(daemon, dict) else None,
+                source_pair.get("source", {}).get("head") if isinstance(source_pair, dict) else None,
+                payload.get("source", {}).get("head"),
+            )
+            if payload.get("production_ready") is not True or observed_identity != required_release_identity:
+                raise AggregateRefused("aggregate is not ready for the required Q/S release identity")
         try:
             schema = checker._payload_json(
                 root, registry["aggregate"]["schema"], label="aggregate schema"
@@ -419,6 +450,8 @@ def publish_aggregate(
     root: Path,
     registry_path: Path,
     paired_checkout: Path,
+    required_release_identity: tuple[str, str, str] | None = None,
+    required_installation: tuple[str, str, str] | None = None,
 ) -> tuple[Path, str, bool]:
     root = root.resolve()
     lock_path = _proof_lock_path(root)
@@ -429,6 +462,8 @@ def publish_aggregate(
             root=root,
             registry_path=registry_path,
             paired_checkout=paired_checkout,
+            required_release_identity=required_release_identity,
+            required_installation=required_installation,
         )
 
 

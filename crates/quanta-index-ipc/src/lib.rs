@@ -58,12 +58,12 @@ pub use counters::{
     IpcServerCounters, IpcServerCountersSnapshot, RequestEventSinkV1, RequestEventStageV1,
     RequestEventV1, RequestEventWindowV1, SequencedRequestEventV1,
 };
-pub use error::{IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES};
+pub use error::{IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES, PeerBindingRefusalV1};
 pub use payload_admission::{
     CborPayloadAdmissionErrorV1, encode_cbor_payload_admitted_v1, encode_cbor_payload_into_slots_v1,
 };
 pub use peer_credentials::{KernelPeerCredentials, PeerCredentialsSource};
-pub use peer_process_v1::{KernelConnectedPeerProcessV1, KernelConnectedPeerProcessLeaseV1, PeerBindingRefusalV1};
+pub use peer_process_v1::{KernelConnectedPeerProcessLeaseV1, KernelConnectedPeerProcessV1};
 pub use plane::IpcPlane;
 pub use quanta_index_core::index::{
     IndexError, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort,
@@ -81,10 +81,11 @@ pub use server::{
     send_request_body_negotiated_with_budget_admitted_with_work_v1,
     send_request_body_with_budget_admitted, send_request_body_with_budget_admitted_peer_v1,
     send_request_body_with_budget_admitted_bound_peer_v1,
+    send_request_body_with_budget_admitted_deadline_v1,
     send_request_body_with_budget_admitted_multiframe_bound_peer_v1,
     send_request_body_with_budget_admitted_with_work_v1, send_request_negotiated,
     send_request_observed, send_request_observed_negotiated, send_request_with_budget,
-    send_request_with_budget_bound_peer_v1,
+    send_request_with_budget_bound_peer_v1, send_request_with_commit_deadline_v1,
     send_stream_request,
 };
 #[doc(hidden)]

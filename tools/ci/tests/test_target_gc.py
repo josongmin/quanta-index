@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
+import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -330,6 +333,141 @@ def test_stale_incremental_dirs_pruned(tree: dict[str, Path], dry_run: bool) -> 
         assert path.is_dir()
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_incremental_only_scopes_actions_and_preserves_other_artifacts(
+    tree: dict[str, Path], dry_run: bool
+) -> None:
+    lane = _make_lane(tree["live"], "test-workspace-lane", hours=1)
+    other = _make_lane(tree["live"], "shared", hours=1)
+    orphan = _make_lane(tree["orphan"], "orphan-lane", hours=72)
+    old = _incremental(lane, "quanta_index_kernel-0qtpo1ziige7r", hours=72)
+    newest = _incremental(lane, "quanta_index_kernel-1liawxxxlurlf", hours=1)
+    other_old = _incremental(other, "quanta_index_kernel-0qtpo1ziige7r", hours=72)
+    _incremental(other, "quanta_index_kernel-1liawxxxlurlf", hours=1)
+    old_exe = _exe(lane / "debug" / "deps", "core_tests-aaaaaaaaaaaaaaaa", hours=72)
+    _exe(lane / "debug" / "deps", "core_tests-bbbbbbbbbbbbbbbb", hours=1)
+    report = _gc(
+        tree, dry_run=dry_run, incremental_only_lane="test-workspace-lane",
+        artifact_seconds=6 * HOUR,
+    )
+    assert _kinds(report) == {"stale-incremental": [str(old)]}
+    assert old.exists() == dry_run
+    assert newest.exists() and other_old.exists() and orphan.exists()
+    assert old_exe.exists() and (lane / "debug" / "deps" / "libfoo-0123456789abcdef.rlib").exists()
+
+
+def _deny_trash_removal(monkeypatch: pytest.MonkeyPatch, name_prefix: str) -> None:
+    remove = shutil.rmtree
+
+    def deny_selected(path: Path, *, ignore_errors: bool = False) -> None:
+        if Path(path).name.startswith(name_prefix):
+            if not ignore_errors:
+                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), "obj.o")
+            return
+        remove(path, ignore_errors=ignore_errors)
+
+    monkeypatch.setattr(shutil, "rmtree", deny_selected)
+
+
+def test_incremental_only_reports_and_retries_failed_trash_deletion(
+    tree: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lane = _make_lane(tree["live"], "test-workspace-lane", hours=1)
+    other = _make_lane(tree["live"], "shared", hours=1)
+    old = _incremental(lane, "quanta_index_kernel-0qtpo1ziige7r", hours=72)
+    newest = _incremental(lane, "quanta_index_kernel-1liawxxxlurlf", hours=1)
+    prefix = f"{target_gc.TRASH_PREFIX}{old.name}-"
+    outside = other / "debug" / "incremental" / f"{prefix}1-2"
+    outside.mkdir()
+    with monkeypatch.context() as blocked:
+        _deny_trash_removal(blocked, prefix)
+        failed = _gc(tree, incremental_only_lane="test-workspace-lane")
+    [trash] = old.parent.glob(f"{prefix}*")
+    assert not old.exists()
+    assert (trash / "s-session" / "obj.o").is_file()
+    assert not failed.actions
+    assert len(failed.errors) == 1 and str(trash) in failed.errors[0]
+
+    recovered = _gc(tree, incremental_only_lane="test-workspace-lane")
+    assert not recovered.errors
+    assert _kinds(recovered) == {"trash": [str(trash)]}
+    assert not trash.exists()
+    assert newest.exists() and outside.exists()
+
+
+def test_sweep_reports_failed_trash_deletion_without_claiming_bytes(
+    tree: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trash = tree["live"] / f"{target_gc.TRASH_PREFIX}retired-lane-1-2"
+    trash.mkdir()
+    (trash / "obj.o").write_bytes(b"x" * 4096)
+    _deny_trash_removal(monkeypatch, trash.name)
+
+    report = _gc(tree)
+
+    assert trash.is_dir()
+    assert not report.actions
+    assert len(report.errors) == 1 and str(trash) in report.errors[0]
+
+
+@pytest.mark.parametrize("redirect", ["incremental", "checkout"])
+def test_incremental_only_does_not_follow_symlinked_cache_directories(
+    tree: dict[str, Path], tmp_path: Path, redirect: str,
+) -> None:
+    name = "test-workspace-lane"
+    outside = _make_lane(tmp_path / "outside", name, hours=1)
+    old = _incremental(outside, "core-0qtpo1ziige7r", hours=72)
+    _incremental(outside, "core-1liawxxxlurlf", hours=1)
+    trash = old.with_name(f"{target_gc.TRASH_PREFIX}{old.name}-1-2")
+    trash.mkdir()
+    if redirect == "checkout":
+        tree["live"].rmdir()
+        tree["live"].symlink_to(outside.parent, target_is_directory=True)
+    else:
+        lane = _make_lane(tree["live"], name, hours=1)
+        incremental = lane / "debug" / "incremental"
+        incremental.rmdir()
+        incremental.symlink_to(old.parent, target_is_directory=True)
+
+    report = _gc(tree, incremental_only_lane=name)
+
+    assert not report.actions
+    assert old.is_dir() and trash.is_dir()
+
+
+def test_artifact_pruning_does_not_follow_symlinked_deps(
+    tree: dict[str, Path], tmp_path: Path,
+) -> None:
+    lane = _make_lane(tree["live"], "shared", hours=1)
+    outside = tmp_path / "outside-deps"
+    outside.mkdir()
+    old = _exe(outside, "test-aaaaaaaaaaaaaaaa", hours=72)
+    _exe(outside, "test-bbbbbbbbbbbbbbbb", hours=1)
+    deps = lane / "debug" / "deps"
+    shutil.rmtree(deps)
+    deps.symlink_to(outside, target_is_directory=True)
+
+    report = _gc(tree)
+
+    assert not report.actions
+    assert old.is_file()
+
+
+@pytest.mark.parametrize("guard", ["cargo-lock", "process"])
+def test_incremental_only_skips_active_cargo_lane(tree: dict[str, Path], guard: str) -> None:
+    lane = _make_lane(tree["live"], "test-workspace-lane", hours=1)
+    old = _incremental(lane, "quanta_index_kernel-0qtpo1ziige7r", hours=72)
+    _incremental(lane, "quanta_index_kernel-1liawxxxlurlf", hours=1)
+    census = _census(f"rustc -C incremental={old}") if guard == "process" else _census()
+    with open(lane / "debug" / ".cargo-lock") as handle:
+        if guard == "cargo-lock":
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        report = _gc(tree, incremental_only_lane="test-workspace-lane", census=census)
+    assert not report.actions
+    assert old.exists()
+    assert report.kept
+
+
 @pytest.mark.parametrize("guard", ["cargo-lock", "process", "unavailable", "new-process"])
 def test_incremental_pruning_preserves_busy_or_unknown_lane(
     tree: dict[str, Path], guard: str
@@ -402,6 +540,21 @@ def test_auto_mode_is_rate_limited_and_never_fails(tmp_path: Path) -> None:
     _age(lane.parent, 48)
     assert target_gc.main(["--auto", "--cache-root", str(cache), "--repo-root", str(ROOT)]) == 0
     assert lane.is_dir()  # stamp is fresh: no run
+
+
+def test_just_target_gc_preserves_a_cache_root_with_spaces(tmp_path: Path) -> None:
+    cache = tmp_path / "external build cache"
+    result = subprocess.run(
+        ["just", "target-gc", "--cache-root", str(cache), "--dry-run", "--json"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    report = json.loads(result.stdout)
+    assert report["cache_root"] == str(cache)
+    assert report["dry_run"] is True
 
 
 def _cargow_env(tmp_path: Path, **extra: str) -> dict[str, str]:

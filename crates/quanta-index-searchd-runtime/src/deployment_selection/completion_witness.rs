@@ -115,12 +115,22 @@ fn with_checked_sidecar<T>(
 ) -> Result<T> {
     let name = sidecar_name(selection_name, attribute.slot)?;
     charge(budget, 5, 0, 0, 0)?;
-    let mut file = File::from(rustix::fs::openat(
-        directory,
-        name.as_str(),
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?);
+    let mut file = File::from(
+        rustix::fs::openat(
+            directory,
+            name.as_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| {
+            if error == rustix::io::Errno::NOENT {
+                anyhow::Error::from(error)
+                    .context(format!("selected recovery witness sidecar is absent: {error}"))
+            } else {
+                error.into()
+            }
+        })?,
+    );
     let before = file.metadata()?;
     control_metadata(&before)?;
     ensure!(
@@ -184,7 +194,7 @@ pub(super) fn with_read<T>(
     selection_name: &OsStr,
     selection: &File,
     budget: &mut WorkBudget,
-    read: impl FnOnce(&[u8], &mut WorkBudget) -> Result<T>,
+    read: impl FnOnce(&[u8], Digest, &mut WorkBudget) -> Result<T>,
 ) -> Result<Option<T>> {
     charge(budget, 3, 0, 0, 0)?;
     require_named_control_file(directory, Path::new(selection_name), selection)?;
@@ -199,7 +209,7 @@ pub(super) fn with_read<T>(
         selection,
         attribute,
         budget,
-        read,
+        |bytes, budget| read(bytes, attribute.digest, budget),
     )?;
     charge(budget, 2, 0, 0, 0)?;
     require_named_control_file(directory, Path::new(selection_name), selection)?;

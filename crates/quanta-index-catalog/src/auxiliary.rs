@@ -17,6 +17,7 @@
 use std::path::Path;
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
+use quanta_index_core::index::existing_file::ExistingFileReadFailureV1;
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, AuxiliaryDomainV1, AuxiliaryGenerationKeyV1,
     AuxiliaryMutationBatchV1, AuxiliaryMutationReceiptV1, AuxiliaryRowFamilyV1, AuxiliaryRowKeyV1,
@@ -357,19 +358,23 @@ fn scan_history_rows(
     address: impl Params,
     path: &Path,
     budget: &mut WorkBudget,
-    visit: &mut dyn FnMut(AuxiliaryRowV1, &mut WorkBudget) -> Result<(), CoreError>,
-) -> Result<bool, CoreError> {
+    visit: &mut dyn FnMut(AuxiliaryRowV1, &mut WorkBudget) -> Result<(), ExistingFileReadFailureV1>,
+) -> Result<bool, ExistingFileReadFailureV1> {
     let mut rows = statement
         .query(address)
         .map_err(|error| engine_error("scan Catalog History rows", path, &error))?;
     let mut seen = false;
     loop {
-        budget.request().checkpoint("Catalog History row read")?;
-        let Some(row) = rows
-            .next()
-            .map_err(|error| engine_error("read Catalog History row", path, &error))?
-        else {
-            return Ok(seen);
+        budget.checkpoint()?;
+        let row = match rows.next() {
+            Ok(Some(row)) => row,
+            Ok(None) => return Ok(seen),
+            Err(error) => {
+                if error.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted) {
+                    budget.checkpoint()?;
+                }
+                return Err(engine_error("read Catalog History row", path, &error).into());
+            }
         };
         // Charge stored bytes before copying SQLite's borrowed row buffers.
         let bytes = (0..8).try_fold(0_u64, |total, column| {
@@ -387,16 +392,12 @@ fn scan_history_rows(
                 .checked_add(bytes)
                 .ok_or_else(|| corrupt("Catalog History row size overflow".into()))
         })?;
-        budget
-            .charge(WorkUsage {
-                reads: 1,
-                bytes,
-                ..WorkUsage::default()
-            })
-            .map_err(|error| history_work_error(budget, error))?;
-        let _row_backing = budget
-            .reserve_memory(bytes, MemoryLifetime::Temporary)
-            .map_err(|error| history_work_error(budget, error))?;
+        budget.charge(WorkUsage {
+            reads: 1,
+            bytes,
+            ..WorkUsage::default()
+        })?;
+        let _row_backing = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
         let raw = raw_row(row)
             .map_err(|error| engine_error("decode Catalog History row", path, &error))?;
         visit(verified_row(raw)?, budget)?;
@@ -412,8 +413,8 @@ pub(crate) fn scan_history_generation_v1(
     path: &Path,
     generation: &AuxiliaryGenerationKeyV1,
     budget: &mut WorkBudget,
-    visit: &mut dyn FnMut(AuxiliaryRowV1, &mut WorkBudget) -> Result<(), CoreError>,
-) -> Result<(), CoreError> {
+    visit: &mut dyn FnMut(AuxiliaryRowV1, &mut WorkBudget) -> Result<(), ExistingFileReadFailureV1>,
+) -> Result<(), ExistingFileReadFailureV1> {
     let address = params![
         generation.repo_id.as_str(),
         generation.revision_id.as_str(),
@@ -431,9 +432,9 @@ pub(crate) fn scan_history_generation_v1(
         if !scan_history_rows(&mut epoch, address, path, budget, visit)? {
             return Err(CoreError::Typed {
                 code: quanta_index_core::AUX_EPOCH_UNKNOWN_CODE,
-                message: "Catalog History has no durable epoch for the requested generation"
-                    .into(),
-            });
+                message: "Catalog History has no durable epoch for the requested generation".into(),
+            }
+            .into());
         }
     }
     {
@@ -577,7 +578,17 @@ impl AuxiliaryAuthorityCatalogPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Deferred)
             .map_err(|error| engine_error("begin Catalog History snapshot", &self.path, &error))?;
-        scan_history_generation_v1(&transaction, &self.path, generation, budget, visit)?;
+        scan_history_generation_v1(
+            &transaction,
+            &self.path,
+            generation,
+            budget,
+            &mut |row, budget| visit(row, budget).map_err(Into::into),
+        )
+        .map_err(|error| match error {
+            ExistingFileReadFailureV1::AdmissionOrIo(cause) => history_work_error(budget, cause),
+            ExistingFileReadFailureV1::Canonical(cause) => cause,
+        })?;
         transaction
             .commit()
             .map_err(|error| engine_error("close Catalog History snapshot", &self.path, &error))

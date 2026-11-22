@@ -27,6 +27,9 @@ use quanta_index_core::index::ports::ImmutableObjectPort as _;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[path = "tests/source_files.rs"]
+mod source_files;
+
 fn require(value: bool) -> Result<(), IndexError> {
     if value {
         Ok(())
@@ -268,9 +271,74 @@ fn closure_reads_all_roots_shared_children_and_nonempty_leaf_bytes() -> TestResu
     let reader = reader(root.path(), Arc::clone(&reads))?;
     let mut verify = budget(100)?;
     reader.verify_closure(&[parent, independent], 3, &mut verify)?;
-    // Parent, two branches, shared leaf twice, and the independent root.
-    require(verify.usage().reads == 6 && verify.usage().writes == 0)?;
-    require(reads.0.lock().map_err(|_error| IndexError::Conflict)?.len() == 7)?;
+    // Parent, two branches, one shared leaf, and the independent root.
+    require(verify.usage().reads == 5 && verify.usage().writes == 0)?;
+    require(reads.0.lock().map_err(|_error| IndexError::Conflict)?.len() == 6)?;
+    Ok(())
+}
+
+#[test]
+fn closure_visits_native_route_snapshot_ancestry_once() -> TestResult {
+    let root = private_root()?;
+    let store = FileObjectStore::open(root.path())?;
+    let mut build = budget(100)?;
+    let base = store.put(b"original route", &[], &mut build)?.reference;
+    let mut previous = base;
+    for depth in 1_u8..=12 {
+        let snapshot = store
+            .put(&[b's', depth], &[previous], &mut build)?
+            .reference;
+        let mut children = vec![previous, snapshot];
+        children.sort_unstable();
+        previous = store.put(&[b'r', depth], &children, &mut build)?.reference;
+    }
+    drop(store);
+
+    let reads = Arc::new(Reads::default());
+    let reader = reader(root.path(), Arc::clone(&reads))?;
+    let mut verify = budget(25)?;
+    let live = Arc::new(ReadMemory::default());
+    verify.bind_memory_scope(Some(MemoryScope::new(Arc::new(BoundedReadMemory {
+        live: Arc::clone(&live),
+        limit: 96 * 1024,
+    }))));
+    reader.verify_closure(&[base, previous], 32, &mut verify)?;
+    require(verify.usage().reads == 25)?;
+    require(reads.0.lock().map_err(|_error| IndexError::Conflict)?.len() == 26)?;
+    require(live.0.load(Ordering::SeqCst) == 0)?;
+    Ok(())
+}
+
+#[test]
+fn closure_selected_root_alias_reuses_one_authentication() -> TestResult {
+    let root = private_root()?;
+    let store = FileObjectStore::open(root.path())?;
+    let mut build = budget(100)?;
+    let leaf = store.put(b"shared selected", &[], &mut build)?.reference;
+    drop(store);
+
+    let reader = reader(root.path(), Arc::new(Reads::default()))?;
+    let mut verify = budget(1)?;
+    let [request, profile] =
+        reader.verify_closure_with_selected_roots(&[leaf, leaf], [leaf, leaf], 2, &mut verify)?;
+    require(verify.usage().reads == 1)?;
+    require(request.payload == profile.payload && request.registration.reference == leaf)?;
+    Ok(())
+}
+
+#[test]
+fn closure_visit_table_rejects_back_edge_before_reauthentication() -> TestResult {
+    let reference = ObjectRef(quanta_index_core::index::Digest([7; 32]));
+    let work = budget(1)?;
+    let mut visits = ClosureVisits::default();
+    require(visits.begin(reference, &work)?)?;
+    require(matches!(
+        visits.begin(reference, &work),
+        Err(IndexError::DigestConflict)
+    ))?;
+    visits.finish(reference, &work)?;
+    require(!visits.begin(reference, &work)?)?;
+    require(work.usage().reads == 0)?;
     Ok(())
 }
 

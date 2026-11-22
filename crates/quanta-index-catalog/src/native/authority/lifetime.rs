@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use quanta_index_core::index::ports::CatalogReadPort;
 use quanta_index_core::index::{
-    CollectionId, IndexError, ReadSessionLease, ReadSessionRecoveryPage, ReadSessionRef,
-    ReadTicketLease, SlotId, TenantId, TicketRecord, ViewSelection, WorkBudget, WorkUsage,
-    WorktreeId, validate_read_ticket_lease,
+    CollectionId, IndexError, MemoryLease, MemoryLifetime, ReadSessionLease,
+    ReadSessionRecoveryPage, ReadSessionRef, ReadTicketLease, SlotId, TenantId, TicketRecord,
+    ViewSelection, WorkBudget, WorkUsage, WorktreeId, validate_read_ticket_lease,
 };
 use quanta_index_core::{DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1};
 use rusqlite::{Connection, OptionalExtension as _, params};
@@ -23,10 +23,11 @@ use super::*;
 
 pub(super) mod creation;
 mod read_attempt;
-use creation::{creation_lock, reap_open_intents};
+use creation::{creation_lock, prepare_open_intents, reap_open_intents};
 
 const MAX_RECOVERY_SESSIONS: u32 = 256;
 const MAX_RECOVERY_PINS: u32 = 256;
+const RECOVERY_LOOKAHEAD_SLOTS: usize = MAX_RECOVERY_SESSIONS as usize + 1;
 const SESSION_DIRECTORY: &str = "native-read-sessions";
 
 // Each ID is an array of 16 u8 values; all-255 has the widest canonical JSON encoding.
@@ -50,9 +51,47 @@ pub(super) fn max_workspace_key_bytes() -> Result<i64, IndexError> {
 
 pub(super) type SessionRow = (i64, i64, Vec<u8>, Vec<u8>, Vec<u8>);
 pub(super) type PinRow = (i64, i64, i64, i64, i64, Vec<u8>, i64, i64, Option<Vec<u8>>);
+type SessionRecoveryCandidate = (SessionRow, Option<LockFile>);
 type RetiredRow = (i64, Vec<u8>, Vec<u8>, Vec<u8>);
 type OptionalSessionIdentity = (Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>);
 type OptionalRetiredRow = (i64, Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>);
+
+struct RecoveryRows<Row> {
+    rows: Vec<Row>,
+    _memory: Option<MemoryLease>,
+}
+
+impl<Row> RecoveryRows<Row> {
+    fn empty() -> Self {
+        Self {
+            rows: Vec::new(),
+            _memory: None,
+        }
+    }
+
+    fn reserve(
+        &mut self,
+        capacity: usize,
+        payload_bytes: usize,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        let bytes = std::mem::size_of::<Row>()
+            .checked_add(payload_bytes)
+            .and_then(|slot| slot.checked_mul(capacity))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(IndexError::ResourceLimited)?;
+        let memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(capacity)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        if rows.capacity() > capacity {
+            return Err(IndexError::ResourceLimited);
+        }
+        self.rows = rows;
+        self._memory = memory;
+        Ok(())
+    }
+}
 
 pub(super) struct CatalogSessionLease {
     pub(super) binding: ReadSessionRef,
@@ -201,10 +240,11 @@ fn read_open_failpoint(phase: &str) {
     }
 }
 
+// None defers cleanup before any row is copied or lock is unlinked.
 fn retired_snapshot(
     catalog: &SqliteCatalog,
     budget: &mut WorkBudget,
-) -> Result<Vec<RetiredRow>, IndexError> {
+) -> Result<Option<RecoveryRows<RetiredRow>>, IndexError> {
     let connection = catalog.lock_native_budget(budget)?;
     let mut statement = connection
         .prepare(
@@ -212,23 +252,25 @@ fn retired_snapshot(
          CASE WHEN typeof(device)='blob' AND length(device)=8 THEN device END,
          CASE WHEN typeof(inode)='blob' AND length(inode)=8 THEN inode END,
          CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN row_digest END
-         FROM native_read_session_retire_v1 ORDER BY id LIMIT 257",
+         FROM native_read_session_retire_v1 ORDER BY id LIMIT ?1",
         )
         .map_err(|error| sql(&error))?;
-    let mut rows = statement.query([]).map_err(|error| sql(&error))?;
-    let mut result = Vec::new();
+    let mut rows = statement
+        .query(params![RECOVERY_LOOKAHEAD_SLOTS as i64])
+        .map_err(|error| sql(&error))?;
+    let mut page = RecoveryRows::empty();
     while let Some(row) = rows.next().map_err(|error| sql(&error))? {
         budget.charge(WorkUsage {
             reads: 1,
             bytes: 48,
             ..WorkUsage::default()
         })?;
-        let (device, inode, digest): OptionalSessionIdentity = (
-            row.get(1).map_err(|error| sql(&error))?,
-            row.get(2).map_err(|error| sql(&error))?,
-            row.get(3).map_err(|error| sql(&error))?,
-        );
-        let (Some(device), Some(inode), Some(digest)) = (device, inode, digest) else {
+        let device = row.get_ref(1).map_err(|error| sql(&error))?;
+        let inode = row.get_ref(2).map_err(|error| sql(&error))?;
+        let digest = row.get_ref(3).map_err(|error| sql(&error))?;
+        let (Ok(device), Ok(inode), Ok(digest)) =
+            (device.as_blob(), inode.as_blob(), digest.as_blob())
+        else {
             return Err(IndexError::Storage(
                 "retired read session row shape mismatch".into(),
             ));
@@ -238,17 +280,30 @@ fn retired_snapshot(
                 "retired read session row shape changed".into(),
             ));
         }
-        result.push((
+        if page.rows.is_empty() {
+            match page.reserve(RECOVERY_LOOKAHEAD_SLOTS, 48, budget) {
+                Ok(()) => {}
+                Err(IndexError::ResourceLimited) => {
+                    // Retirement is already durable. Leave the lock and its
+                    // tombstone for the next funded cleanup, and keep the
+                    // committed recovery cursor and counters observable.
+                    budget.checkpoint()?;
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        page.rows.push((
             row.get(0).map_err(|error| sql(&error))?,
-            device,
-            inode,
-            digest,
+            device.to_vec(),
+            inode.to_vec(),
+            digest.to_vec(),
         ));
     }
     drop(rows);
     drop(statement);
     drop(connection);
-    Ok(result)
+    Ok(Some(page))
 }
 
 fn cleanup_retired(
@@ -256,12 +311,10 @@ fn cleanup_retired(
     directory: &Path,
     budget: &mut WorkBudget,
 ) -> Result<bool, IndexError> {
-    cleanup_retired_rows(
-        catalog,
-        directory,
-        retired_snapshot(catalog, budget)?,
-        budget,
-    )
+    let Some(RecoveryRows { rows, _memory }) = retired_snapshot(catalog, budget)? else {
+        return Ok(true);
+    };
+    cleanup_retired_rows(catalog, directory, rows, budget)
 }
 
 fn cleanup_retired_rows(
@@ -280,8 +333,9 @@ fn cleanup_retired_rows_with_hook(
     budget: &mut WorkBudget,
     mut after_open: impl FnMut(&RetiredRow) -> Result<(), IndexError>,
 ) -> Result<bool, IndexError> {
-    let mut has_more = retired.len() > 256;
-    for row in retired.into_iter().take(256) {
+    let limit = RECOVERY_LOOKAHEAD_SLOTS - 1;
+    let mut has_more = retired.len() > limit;
+    for row in retired.into_iter().take(limit) {
         budget.charge(WorkUsage {
             reads: 1,
             writes: 1,
@@ -496,20 +550,240 @@ pub(super) fn guard<'a>(
     }
 }
 
-fn pin_digest(row: &PinRow) -> Result<Vec<u8>, IndexError> {
-    fields_digest(
-        b"qidx.native.pin.v2",
+fn pin_digest(row: &PinRow) -> Result<[u8; 32], IndexError> {
+    struct DigestWriter(Sha256);
+
+    impl std::io::Write for DigestWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut digest = DigestWriter(Sha256::new());
+    digest.0.update(b"qidx.native.pin.v2");
+    serde_json::to_writer(
+        &mut digest,
         &(
             &row.0, &row.1, &row.2, &row.3, &row.4, &row.5, &row.6, &row.7,
         ),
     )
+    .map_err(|error| IndexError::Storage(format!("encode native catalog row: {error}")))?;
+    Ok(digest.0.finalize().into())
+}
+
+fn pin_row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<PinRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+    ))
+}
+
+fn canonical_pin_workspace(workspace: &[u8]) -> bool {
+    struct MatchBytes<'a>(Option<&'a [u8]>);
+
+    impl std::io::Write for MatchBytes<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.and_then(|tail| tail.strip_prefix(bytes));
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let Ok(decoded) = serde_json::from_slice::<WorkspaceKey>(workspace) else {
+        return false;
+    };
+    let mut output = MatchBytes(Some(workspace));
+    serde_json::to_writer(&mut output, &decoded).is_ok() && output.0 == Some(&[])
+}
+
+fn check_pin_row_shape(row: &PinRow, max_workspace_bytes: i64) -> Result<(), IndexError> {
+    if row.5.is_empty()
+        || row.5.len()
+            > usize::try_from(max_workspace_bytes).map_err(|_error| IndexError::ResourceLimited)?
+        || row.8.as_ref().is_some_and(|digest| digest.len() != 32)
+        || !canonical_pin_workspace(&row.5)
+    {
+        return Err(IndexError::Storage("native pin row shape changed".into()));
+    }
+    Ok(())
+}
+
+fn check_pin_row_digest(row: &PinRow) -> Result<(), IndexError> {
+    if row.8.as_deref() != Some(pin_digest(row)?.as_slice()) {
+        return Err(IndexError::Storage("native pin digest mismatch".into()));
+    }
+    Ok(())
+}
+
+fn pin_row_scratch_bytes(workspace_bytes: i64) -> Result<u64, IndexError> {
+    // Workspace and digest copies plus bounded parsing and diagnostic scratch.
+    uint(workspace_bytes)?
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(32 + 256))
+        .ok_or(IndexError::ResourceLimited)
+}
+
+pub(super) struct PinReadScratch {
+    max_workspace_bytes: i64,
+    _memory: Option<MemoryLease>,
+}
+
+impl PinReadScratch {
+    pub(super) fn reserve(
+        budget: Option<&WorkBudget>,
+        lifetime: MemoryLifetime,
+    ) -> Result<Self, IndexError> {
+        let max_workspace_bytes = max_workspace_key_bytes()?;
+        let memory = match budget {
+            Some(budget) => {
+                budget.reserve_memory(pin_row_scratch_bytes(max_workspace_bytes)?, lifetime)?
+            }
+            None => None,
+        };
+        Ok(Self {
+            max_workspace_bytes,
+            _memory: memory,
+        })
+    }
+}
+
+fn pin_data_version(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<i64> {
+    transaction.query_row("PRAGMA main.data_version", [], |row| row.get(0))
+}
+
+enum PinRowsError {
+    Sql(rusqlite::Error),
+    Check(IndexError),
+}
+
+impl From<rusqlite::Error> for PinRowsError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sql(error)
+    }
+}
+
+impl From<IndexError> for PinRowsError {
+    fn from(error: IndexError) -> Self {
+        Self::Check(error)
+    }
+}
+
+impl PinRowsError {
+    fn into_index_error(self) -> IndexError {
+        match self {
+            Self::Sql(error) => sql(&error),
+            Self::Check(error) => error,
+        }
+    }
+}
+
+pub(crate) fn certify_open_pin_rows(
+    transaction: &rusqlite::Transaction<'_>,
+    path: &Path,
+) -> Result<i64, CoreError> {
+    let version = pin_data_version(transaction)
+        .map_err(|error| engine_error("read native pin data version", path, &error))?;
+    verify_pin_rows(transaction, None).map_err(|error| match error {
+        PinRowsError::Sql(error) => engine_error("validate persisted native pins", path, &error),
+        PinRowsError::Check(error) => {
+            crate::io_admission::storage("validate persisted native pins", path, &error)
+        }
+    })?;
+    Ok(version)
+}
+
+impl SqliteCatalog {
+    /// Catalog writers encode workspace keys before inserting pins and only
+    /// renew or remove existing pins. Changes by another SQLite connection
+    /// invalidate certification, including persisted noncanonical workspace
+    /// encodings. Check the connection-local data version inside the same
+    /// transaction that will use the workspace-first pin index.
+    pub(super) fn require_pin_integrity(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        use std::sync::atomic::Ordering;
+
+        budget.checkpoint()?;
+        budget.charge(WorkUsage {
+            reads: 1,
+            ..WorkUsage::default()
+        })?;
+        let version = pin_data_version(transaction).map_err(|error| sql(&error))?;
+        if self.pin_data_version.load(Ordering::Relaxed) != version {
+            verify_pin_rows(transaction, Some(budget)).map_err(PinRowsError::into_index_error)?;
+            self.pin_data_version.store(version, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+}
+
+fn verify_pin_rows(
+    connection: &Connection,
+    mut budget: Option<&mut WorkBudget>,
+) -> Result<(), PinRowsError> {
+    let max_workspace_bytes = max_workspace_key_bytes()?;
+    let mut statement = connection.prepare(
+            "SELECT ticket,session_id,session_fence,fence,expires_at_ms,
+             CASE WHEN typeof(workspace)='blob' AND length(workspace) BETWEEN 1 AND ?1 THEN workspace END,
+             epoch,sequence,
+             CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN row_digest END,
+             CASE WHEN typeof(workspace)='blob' AND length(workspace) BETWEEN 1 AND ?1 THEN length(workspace) END
+             FROM native_pin_v1 ORDER BY ticket",
+        )?;
+    let mut rows = statement.query(params![max_workspace_bytes])?;
+    loop {
+        if let Some(budget) = budget.as_deref_mut() {
+            budget.checkpoint()?;
+            budget.charge(WorkUsage {
+                reads: 1,
+                ..WorkUsage::default()
+            })?;
+        }
+        let Some(record) = rows.next()? else {
+            return Ok(());
+        };
+        let length: Option<i64> = record.get(9)?;
+        let length =
+            length.ok_or_else(|| IndexError::Storage("native pin row shape changed".into()))?;
+        let row_bytes = pin_row_scratch_bytes(length)?;
+        let _row_memory = if let Some(budget) = budget.as_deref_mut() {
+            budget.charge(WorkUsage {
+                bytes: row_bytes,
+                ..WorkUsage::default()
+            })?;
+            budget.reserve_memory(row_bytes, MemoryLifetime::Temporary)?
+        } else {
+            None
+        };
+        let pin = pin_row_from_sql(record)?;
+        check_pin_row_shape(&pin, max_workspace_bytes)?;
+        check_pin_row_digest(&pin)?;
+    }
 }
 
 pub(super) fn checked_pin(
     connection: &Connection,
     ticket: ReadTicketLease,
+    scratch: &PinReadScratch,
 ) -> Result<PinRow, IndexError> {
-    let max_workspace_bytes = max_workspace_key_bytes()?;
+    let max_workspace_bytes = scratch.max_workspace_bytes;
     let row: PinRow = cached_query_row(
         connection,
         "SELECT ticket,session_id,session_fence,fence,expires_at_ms,
@@ -518,30 +792,12 @@ pub(super) fn checked_pin(
          CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN row_digest END
          FROM native_pin_v1 WHERE ticket=?1",
         params![ticket_to_integer(ticket.id)?, max_workspace_bytes],
-        |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-                row.get(7)?,
-                row.get(8)?,
-            ))
-        },
+        pin_row_from_sql,
     )
     .optional()
     .map_err(|error| sql(&error))?
     .ok_or(IndexError::SnapshotUnavailable)?;
-    if row.5.is_empty()
-        || row.5.len()
-            > usize::try_from(max_workspace_bytes).map_err(|_error| IndexError::ResourceLimited)?
-        || row.8.as_ref().is_some_and(|digest| digest.len() != 32)
-    {
-        return Err(IndexError::Storage("native pin row shape changed".into()));
-    }
+    check_pin_row_shape(&row, max_workspace_bytes)?;
     if row.1 != int(ticket.session.id)?
         || row.2 != int(ticket.session.fence)?
         || row.3 != int(ticket.fence)?
@@ -549,9 +805,7 @@ pub(super) fn checked_pin(
     {
         return Err(IndexError::SnapshotUnavailable);
     }
-    if row.8.as_ref() != Some(&pin_digest(&row)?) {
-        return Err(IndexError::Storage("native pin digest mismatch".into()));
-    }
+    check_pin_row_digest(&row)?;
     Ok(row)
 }
 
@@ -559,48 +813,104 @@ pub(super) fn checked_pin(
 // The caller already authenticated the same live session and sampled its clock
 // inside the held transaction. No intermediate pin is committed by this helper.
 fn issue_ticket(
+    catalog: &SqliteCatalog,
     tx: &rusqlite::Transaction<'_>,
     binding: ReadSessionRef,
     selection: ViewSelection,
     milliseconds: u64,
     now: u64,
+    budget: &WorkBudget,
 ) -> Result<TicketRecord, IndexError> {
     let expiry = now
         .checked_add(milliseconds)
         .ok_or(IndexError::ResourceLimited)?;
+    // Hold one scratch grant through view lookup, root verification and pin
+    // sealing. The requested workspace key is encoded once and kept throughout.
+    let workspace_bytes =
+        u64::try_from(max_workspace_key_bytes()?).map_err(|_| IndexError::ResourceLimited)?;
+    // Workspace bytes are encoded as JSON integers (at most four bytes each).
+    // The view-root input has two counters and a 32-byte object key, which also
+    // bounds the pin input with seven counters and no object key.
+    let root_digest_input = workspace_bytes
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(2 * 20 + 32 * 4 + 16))
+        .and_then(u64::checked_next_power_of_two)
+        .ok_or(IndexError::ResourceLimited)?;
+    let ticket_backing = workspace_bytes
+        .checked_next_power_of_two()
+        .and_then(|bytes| bytes.checked_add(root_digest_input))
+        .and_then(|bytes| {
+            bytes.checked_add(
+                u64::try_from(std::mem::size_of::<[ObjectRef; MAX_VIEW_ROOTS + 1]>()).ok()? + 32,
+            )
+        })
+        .ok_or(IndexError::ResourceLimited)?;
+    let _ticket_memory = budget.reserve_memory(ticket_backing, MemoryLifetime::Temporary)?;
+    let workspace = match selection {
+        ViewSelection::Latest { workspace, .. } => workspace,
+        ViewSelection::Exact(identity) => identity.workspace,
+    };
+    let workspace_blob = workspace_key(workspace)?;
     let view = match selection {
-        ViewSelection::Latest { workspace, epoch } => {
-            let current = current_view(tx, workspace)?.ok_or(IndexError::SnapshotUnavailable)?;
+        ViewSelection::Latest { epoch, .. } => {
+            let current = current_view_by_key(tx, workspace, &workspace_blob)?
+                .ok_or(IndexError::SnapshotUnavailable)?;
             if current.identity.epoch != epoch {
                 return Err(IndexError::SnapshotUnavailable);
             }
             current
         }
         ViewSelection::Exact(identity) => {
-            let floor = retention::exact_floor_for_epoch(tx, identity.workspace, identity.epoch)?;
+            let registered: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM native_workspace_v1 WHERE workspace=?1)",
+                    params![&workspace_blob],
+                    |row| row.get(0),
+                )
+                .map_err(|error| sql(&error))?;
+            if !registered {
+                return Err(IndexError::SnapshotUnavailable);
+            }
+            let floor =
+                retention::exact_floor_for_epoch_by_key(tx, &workspace_blob, identity.epoch)?;
             if identity.sequence < floor {
                 return Err(IndexError::SnapshotUnavailable);
             }
-            read_view_row(tx, identity)?
+            read_view_row_by_key(tx, identity, &workspace_blob)?
         }
     };
-    ensure_roots(tx, &view)?;
+    ensure_roots_with_budget(tx, &view, Some(budget))?;
+    view_quarantine::refuse_if_quarantined(
+        catalog,
+        tx,
+        &workspace_blob,
+        int(view.identity.epoch)?,
+        int(view.identity.sequence)?,
+        Some(budget),
+    )?;
+    budget.checkpoint()?;
     let fence = next_fence(tx)?;
+    let session_id = int(binding.id)?;
+    let session_fence = int(binding.fence)?;
+    let fence_sql = int(fence)?;
+    let expiry_sql = int(expiry)?;
+    let epoch = int(view.identity.epoch)?;
+    let sequence = int(view.identity.sequence)?;
     let inserted = tx.execute(
             "INSERT INTO native_pin_v1(session_id,session_fence,fence,expires_at_ms,workspace,epoch,sequence) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![int(binding.id)?,int(binding.fence)?,int(fence)?,int(expiry)?,workspace_key(view.identity.workspace)?,int(view.identity.epoch)?,int(view.identity.sequence)?],
+            params![session_id,session_fence,fence_sql,expiry_sql,&workspace_blob,epoch,sequence],
         ).map_err(|error| sql(&error))?;
     exactly_one(inserted, "insert read pin")?;
     let id = ticket_from_integer(tx.last_insert_rowid())?;
     let pin = (
         ticket_to_integer(id)?,
-        int(binding.id)?,
-        int(binding.fence)?,
-        int(fence)?,
-        int(expiry)?,
-        workspace_key(view.identity.workspace)?,
-        int(view.identity.epoch)?,
-        int(view.identity.sequence)?,
+        session_id,
+        session_fence,
+        fence_sql,
+        expiry_sql,
+        workspace_blob,
+        epoch,
+        sequence,
         None,
     );
     let changed = tx
@@ -627,6 +937,7 @@ impl SqliteCatalog {
         session: &dyn ReadSessionLease,
         request: &UpdateRequest,
         lease: Duration,
+        budget: &WorkBudget,
     ) -> Result<TicketRecord, IndexError> {
         let UpdateKind::Materialize { claim } = &request.kind else {
             return Err(IndexError::InvalidInput(
@@ -635,9 +946,7 @@ impl SqliteCatalog {
         };
         let concrete = guard(self, session)?;
         let milliseconds = validate_read_ticket_lease(lease)?;
-        let mut connection = self
-            .lock()
-            .map_err(|error| IndexError::Storage(error.to_string()))?;
+        let mut connection = self.lock_native_budget(budget)?;
         let tx = begin(&mut connection)?;
         let session_row = checked_session(&tx, concrete.binding)?;
         if (session_row.2, session_row.3) != concrete.inode {
@@ -673,6 +982,7 @@ impl SqliteCatalog {
             ));
         }
         let ticket = issue_ticket(
+            self,
             &tx,
             concrete.binding,
             ViewSelection::Latest {
@@ -681,7 +991,9 @@ impl SqliteCatalog {
             },
             milliseconds,
             now,
+            budget,
         )?;
+        budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
         drop(connection);
         Ok(ticket)
@@ -730,12 +1042,14 @@ fn validate_live_ticket(
     })?;
     let connection_for_begin = &mut *connection;
     let tx = observe_ticket_validation(catalog, budget, 202, move || begin(connection_for_begin))?;
-    let pin = observe_ticket_validation(catalog, budget, 203, || {
+    let (_pin_scratch, pin) = observe_ticket_validation(catalog, budget, 203, || {
         let session_row = checked_session(&tx, concrete.binding)?;
         if (session_row.2, session_row.3) != concrete.inode {
             return Err(IndexError::Storage("read session inode mismatch".into()));
         }
-        checked_pin(&tx, ticket)
+        let scratch = PinReadScratch::reserve(budget, MemoryLifetime::Temporary)?;
+        let pin = checked_pin(&tx, ticket, &scratch)?;
+        Ok((scratch, pin))
     })?;
     let now = observe_ticket_validation(catalog, budget, 204, || {
         catalog_now_ms(&tx, catalog.clock.now_unix_ms())
@@ -743,6 +1057,7 @@ fn validate_live_ticket(
     if now >= uint(pin.4)? {
         return Err(IndexError::SnapshotUnavailable);
     }
+    view_quarantine::refuse_if_quarantined(catalog, &tx, &pin.5, pin.6, pin.7, budget)?;
     if let Some(budget) = budget {
         budget.checkpoint()?;
     }
@@ -776,7 +1091,9 @@ fn renew_live_ticket(
     if (session_row.2, session_row.3) != concrete.inode {
         return Err(IndexError::Storage("read session inode mismatch".into()));
     }
-    let pin = checked_pin(&tx, ticket)?;
+    let pin_scratch = PinReadScratch::reserve(budget, MemoryLifetime::Temporary)?;
+    let pin = checked_pin(&tx, ticket, &pin_scratch)?;
+    view_quarantine::refuse_if_quarantined(catalog, &tx, &pin.5, pin.6, pin.7, budget)?;
     let now = catalog_now_ms(&tx, catalog.clock.now_unix_ms())?;
     if now >= uint(pin.4)? {
         return Err(IndexError::SnapshotUnavailable);
@@ -913,7 +1230,15 @@ impl CatalogReadPort for SqliteCatalog {
             return Err(IndexError::Storage("read session inode mismatch".into()));
         }
         let now = catalog_now_ms(&tx, self.clock.now_unix_ms())?;
-        let ticket = issue_ticket(&tx, concrete.binding, selection, milliseconds, now)?;
+        let ticket = issue_ticket(
+            self,
+            &tx,
+            concrete.binding,
+            selection,
+            milliseconds,
+            now,
+            budget,
+        )?;
         budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
         drop(connection);
@@ -973,7 +1298,8 @@ impl CatalogReadPort for SqliteCatalog {
         if (session_row.2, session_row.3) != concrete.inode {
             return Err(IndexError::Storage("read session inode mismatch".into()));
         }
-        let pin = checked_pin(&tx, ticket)?;
+        let pin_scratch = PinReadScratch::reserve(None, MemoryLifetime::Temporary)?;
+        let pin = checked_pin(&tx, ticket, &pin_scratch)?;
         let changed = tx
             .execute(
                 "DELETE FROM native_pin_v1 WHERE ticket=?1 AND fence=?2",
@@ -1003,12 +1329,11 @@ impl CatalogReadPort for SqliteCatalog {
             ));
         }
         let directory = session_directory(self)?;
-        let (open_intents_reaped, more_intents) = reap_open_intents(self, &directory, budget)?;
         let mut cursor = after;
         let mut cursor_id = after.map(|value| int(value.id)).transpose()?.unwrap_or(0);
         let max_workspace_bytes = max_workspace_key_bytes()?;
         budget.checkpoint()?;
-        let candidates: Vec<SessionRow> = {
+        let mut page = {
             let connection = self.lock_native_budget(budget)?;
             let mut statement = connection
                 .prepare(
@@ -1022,13 +1347,20 @@ impl CatalogReadPort for SqliteCatalog {
             let mut rows = statement
                 .query(params![cursor_id, i64::from(limit)])
                 .map_err(|error| sql(&error))?;
-            let mut result = Vec::new();
+            let mut page = RecoveryRows::<SessionRecoveryCandidate>::empty();
             while let Some(row) = rows.next().map_err(|error| sql(&error))? {
                 budget.charge(WorkUsage {
                     reads: 1,
                     bytes: 48,
                     ..WorkUsage::default()
                 })?;
+                if page.rows.is_empty() {
+                    // Fund one page before copying blobs. Its rows also hold the
+                    // OS probes, so their backing survives until retirement commits.
+                    let capacity =
+                        usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?;
+                    page.reserve(capacity, 48, budget)?;
+                }
                 let (device, inode, digest): OptionalSessionIdentity = (
                     row.get(2).map_err(|error| sql(&error))?,
                     row.get(3).map_err(|error| sql(&error))?,
@@ -1044,24 +1376,27 @@ impl CatalogReadPort for SqliteCatalog {
                         "native read session row shape changed".into(),
                     ));
                 }
-                result.push((
-                    row.get(0).map_err(|error| sql(&error))?,
-                    row.get(1).map_err(|error| sql(&error))?,
-                    device,
-                    inode,
-                    digest,
+                page.rows.push((
+                    (
+                        row.get(0).map_err(|error| sql(&error))?,
+                        row.get(1).map_err(|error| sql(&error))?,
+                        device,
+                        inode,
+                        digest,
+                    ),
+                    None,
                 ));
             }
             drop(rows);
             drop(statement);
             drop(connection);
-            result
+            page
         };
         // No filesystem operation runs under the Catalog mutex or SQL transaction.
         // A successfully probed dead lock remains owned until after retirement commit.
-        let mut probes = Vec::with_capacity(candidates.len());
-        for row in candidates {
-            if row.4 != session_digest(&row)? {
+        for (row, dead_lock) in &mut page.rows {
+            budget.checkpoint()?;
+            if row.4 != session_digest(row)? {
                 return Err(IndexError::Storage(
                     "native read session digest mismatch".into(),
                 ));
@@ -1073,21 +1408,23 @@ impl CatalogReadPort for SqliteCatalog {
                     "read recovery lock inode mismatch".into(),
                 ));
             }
-            let dead_lock = match file.file()?.try_lock() {
+            *dead_lock = match file.file()?.try_lock() {
                 Ok(()) => Some(file),
                 Err(TryLockError::WouldBlock) => None,
                 Err(TryLockError::Error(error)) => {
                     return Err(io_error("probe recovery lock", &path, &error));
                 }
             };
-            probes.push((row, dead_lock));
         }
+        let open_intents = prepare_open_intents(self, &directory, budget)?;
+        let more_intents = open_intents.has_more;
         let mut connection = self.lock_native_budget(budget)?;
         let tx = begin(&mut connection)?;
+        let open_intents_reaped = reap_open_intents(&tx, &open_intents, budget)?;
         let mut recovered = 0u32;
         let mut pins_released = 0u32;
         let mut partial = false;
-        for (row, dead_lock) in &probes {
+        for (row, dead_lock) in &page.rows {
             let binding = ReadSessionRef {
                 id: uint(row.0)?,
                 fence: uint(row.1)?,
@@ -1107,7 +1444,7 @@ impl CatalogReadPort for SqliteCatalog {
                     reads: 1,
                     ..WorkUsage::default()
                 })?;
-                let pin: Option<(PinRow, usize)> = {
+                let pin = {
                     let mut statement = tx.prepare(
                         "SELECT ticket,session_id,session_fence,fence,expires_at_ms,
                          CASE WHEN typeof(workspace)='blob' AND length(workspace) BETWEEN 1 AND ?2 THEN workspace END,
@@ -1126,44 +1463,41 @@ impl CatalogReadPort for SqliteCatalog {
                                 "native recovery pin workspace shape mismatch".into(),
                             )
                         })?;
-                        let length = usize::try_from(length)
-                            .map_err(|_error| IndexError::ResourceLimited)?;
                         budget.charge(WorkUsage {
-                            bytes: u64::try_from(length)
-                                .map_err(|_error| IndexError::ResourceLimited)?
+                            bytes: uint(length)?
                                 .checked_add(32)
                                 .ok_or(IndexError::ResourceLimited)?,
                             ..WorkUsage::default()
                         })?;
+                        let memory = budget.reserve_memory(
+                            pin_row_scratch_bytes(length)?,
+                            MemoryLifetime::Temporary,
+                        )?;
                         Some((
-                            (
-                                record.get(0).map_err(|error| sql(&error))?,
-                                record.get(1).map_err(|error| sql(&error))?,
-                                record.get(2).map_err(|error| sql(&error))?,
-                                record.get(3).map_err(|error| sql(&error))?,
-                                record.get(4).map_err(|error| sql(&error))?,
-                                record.get(5).map_err(|error| sql(&error))?,
-                                record.get(6).map_err(|error| sql(&error))?,
-                                record.get(7).map_err(|error| sql(&error))?,
-                                record.get(8).map_err(|error| sql(&error))?,
-                            ),
-                            length,
+                            memory,
+                            pin_row_from_sql(record).map_err(|error| sql(&error))?,
+                            usize::try_from(length)
+                                .map_err(|_error| IndexError::ResourceLimited)?,
                         ))
                     } else {
                         None
                     }
                 };
-                let Some((pin, workspace_bytes)) = pin else {
+                let Some((_pin_memory, pin, workspace_bytes)) = pin else {
                     break;
                 };
                 if pin.5.len() != workspace_bytes
                     || pin.8.as_ref().is_some_and(|digest| digest.len() != 32)
+                    || !canonical_pin_workspace(&pin.5)
                 {
                     return Err(IndexError::Storage(
                         "native recovery pin row shape changed".into(),
                     ));
                 }
-                if pin.1 != row.0 || pin.2 != row.1 || pin.8.as_ref() != Some(&pin_digest(&pin)?) {
+                if pin.1 != row.0
+                    || pin.2 != row.1
+                    || pin.8.as_deref() != Some(pin_digest(&pin)?.as_slice())
+                {
                     return Err(IndexError::Storage(
                         "native recovery pin digest mismatch".into(),
                     ));
@@ -1233,7 +1567,8 @@ impl CatalogReadPort for SqliteCatalog {
         budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
         drop(connection);
-        drop(probes);
+        drop(open_intents);
+        drop(page);
         let more_locks = cleanup_retired(self, &directory, budget)?;
         Ok(ReadSessionRecoveryPage {
             after: cursor,
@@ -1248,17 +1583,20 @@ impl CatalogReadPort for SqliteCatalog {
 #[cfg(test)]
 mod tests {
     use std::error::Error;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use quanta_index_core::index::WorkLimits;
+    use quanta_index_core::index::{
+        MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort, WorkLimits,
+    };
 
     use super::{
-        CatalogReadPort, CollectionId, Connection, IndexError, PinRow, ReadSessionRef,
-        ReadTicketLease, RetiredRow, SlotId, SqliteCatalog, TenantId, WorkBudget, WorkspaceKey,
-        WorktreeId, begin, checked_pin, checked_session, cleanup_retired_rows,
-        cleanup_retired_rows_with_hook, int, lock_path, max_workspace_key_bytes, params,
-        pin_digest, retired_digest, retired_snapshot, session_directory, ticket_from_integer,
-        workspace_key,
+        CatalogReadPort, CollectionId, Connection, IndexError, PinReadScratch, PinRow,
+        PinRowsError, ReadSessionRef, ReadTicketLease, RetiredRow, SlotId, SqliteCatalog, TenantId,
+        WorkBudget, WorkspaceKey, WorktreeId, begin, checked_pin, checked_session,
+        cleanup_retired_rows, cleanup_retired_rows_with_hook, decode, fields_digest, int,
+        lock_path, max_workspace_key_bytes, params, pin_digest, retired_digest, retired_snapshot,
+        session_directory, ticket_from_integer, verify_pin_rows, workspace_key,
     };
 
     macro_rules! check {
@@ -1293,6 +1631,21 @@ mod tests {
         ))
     }
 
+    struct ScratchLimit(u64);
+
+    impl MemoryLeaseOwner for ScratchLimit {
+        fn release(&self, _bytes: u64) {}
+    }
+
+    impl MemoryScopePort for ScratchLimit {
+        fn reserve(&self, bytes: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+            if bytes > self.0 {
+                return Err(IndexError::ResourceLimited);
+            }
+            Ok(MemoryLease::new(bytes, Arc::new(Self(self.0))))
+        }
+    }
+
     #[test]
     fn widest_canonical_workspace_pin_is_accepted_and_corrupt_shapes_are_rejected()
     -> Result<(), Box<dyn Error>> {
@@ -1313,6 +1666,12 @@ mod tests {
         let encoded = workspace_key(widest)?;
         check_eq!(i64::try_from(encoded.len())?, max_workspace_key_bytes()?);
         let pin: PinRow = (1, 1, 1, 1, 1_000, encoded, 1, 1, None);
+        let persisted = fields_digest(
+            b"qidx.native.pin.v2",
+            &(1_i64, 1_i64, 1_i64, 1_i64, 1_000_i64, &pin.5, 1_i64, 1_i64),
+        )?;
+        let digest = pin_digest(&pin)?;
+        check_eq!(digest.as_slice(), persisted.as_slice());
         let _changed = connection.execute(
             "INSERT INTO native_pin_v1 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             params![
@@ -1333,7 +1692,57 @@ mod tests {
             fence: 1,
             expires_at_ms: 1_000,
         };
-        check_eq!(checked_pin(&connection, ticket)?.5, pin.5);
+        let unscoped = PinReadScratch::reserve(None, MemoryLifetime::Temporary)?;
+        check_eq!(checked_pin(&connection, ticket, &unscoped)?.5, pin.5);
+        let scratch_bytes = 2 * u64::try_from(pin.5.len())? + 32 + 256;
+        let mut work = budget()?;
+        work.bind_memory_scope(Some(MemoryScope::new(Arc::new(ScratchLimit(
+            scratch_bytes - 1,
+        )))));
+        check_eq!(
+            verify_pin_rows(&connection, Some(&mut work)).map_err(PinRowsError::into_index_error),
+            Err(IndexError::ResourceLimited)
+        );
+        check!(matches!(
+            PinReadScratch::reserve(Some(&work), MemoryLifetime::Temporary),
+            Err(IndexError::ResourceLimited)
+        ));
+        let mut work = budget()?;
+        work.bind_memory_scope(Some(MemoryScope::new(Arc::new(ScratchLimit(
+            scratch_bytes,
+        )))));
+        verify_pin_rows(&connection, Some(&mut work)).map_err(PinRowsError::into_index_error)?;
+        let funded = PinReadScratch::reserve(Some(&work), MemoryLifetime::Temporary)?;
+        check_eq!(checked_pin(&connection, ticket, &funded)?.5, pin.5);
+        // A rechecksummed JSON alias would pass the row digest but would not
+        // match the canonical workspace key used by Exact pin/reclaim joins.
+        let shorter = WorkspaceKey {
+            tenant: TenantId([0; 16]),
+            collection: CollectionId([0; 16]),
+            worktree: WorktreeId([0; 16]),
+            slot: SlotId([0; 16]),
+        };
+        let mut alias = workspace_key(shorter)?;
+        alias.push(b' ');
+        check_eq!(decode::<WorkspaceKey>(&alias)?, shorter);
+        check!(i64::try_from(alias.len())? <= max_workspace_key_bytes()?);
+        let aliased: PinRow = (pin.0, pin.1, pin.2, pin.3, pin.4, alias, pin.6, pin.7, None);
+        check_eq!(
+            connection.execute(
+                "UPDATE native_pin_v1 SET workspace=?1,row_digest=?2 WHERE ticket=?3",
+                params![&aliased.5, pin_digest(&aliased)?, aliased.0],
+            )?,
+            1
+        );
+        check_eq!(
+            checked_pin(&connection, ticket, &unscoped),
+            Err(IndexError::Storage("native pin row shape changed".into()))
+        );
+        check_eq!(
+            verify_pin_rows(&connection, Some(&mut budget()?))
+                .map_err(PinRowsError::into_index_error),
+            Err(IndexError::Storage("native pin row shape changed".into()))
+        );
         for corrupted in [
             "UPDATE native_pin_v1 SET workspace=zeroblob(0)",
             "UPDATE native_pin_v1 SET workspace=zeroblob(1048577)",
@@ -1341,7 +1750,7 @@ mod tests {
         ] {
             let _changed = connection.execute(corrupted, [])?;
             check!(matches!(
-                checked_pin(&connection, ticket),
+                checked_pin(&connection, ticket, &unscoped),
                 Err(IndexError::Storage(_))
             ));
         }
@@ -1378,7 +1787,9 @@ mod tests {
         drop(session);
 
         let directory = session_directory(&catalog)?;
-        let stale = retired_snapshot(&catalog, &mut budget()?)?;
+        let stale = retired_snapshot(&catalog, &mut budget()?)?
+            .ok_or("unscoped retirement snapshot deferred")?
+            .rows;
         let fresh = stale.clone();
         if stale.len() != 1 {
             return Err(format!("expected one stale retirement row, found {}", stale.len()).into());
@@ -1402,7 +1813,11 @@ mod tests {
         if !invoked {
             return Err("concurrent retirement cleanup hook was not invoked".into());
         }
-        if !retired_snapshot(&catalog, &mut budget()?)?.is_empty() {
+        if !retired_snapshot(&catalog, &mut budget()?)?
+            .ok_or("unscoped retirement snapshot deferred")?
+            .rows
+            .is_empty()
+        {
             return Err("retirement row survived concurrent cleanup".into());
         }
         if lock_path(&directory, binding.id).exists() {
@@ -1485,10 +1900,13 @@ mod tests {
                     &format!("UPDATE native_read_session_retire_v1 SET {column}={corrupt_value} WHERE id=1"),
                     [],
                 )?;
+                let mut work = budget()?;
+                work.bind_memory_scope(Some(MemoryScope::new(Arc::new(ScratchLimit(0)))));
                 check!(matches!(
-                    retired_snapshot(&catalog, &mut budget()?),
+                    retired_snapshot(&catalog, &mut work),
                     Err(IndexError::Storage(_))
                 ));
+                check!(work.first_denial().is_none());
             }
         }
         let count: i64 = catalog.lock()?.query_row(

@@ -53,6 +53,9 @@ use super::state_format::{
     sha256_file_hex, verify_root_against_manifest_v1,
 };
 
+mod command;
+pub use command::{OfflineStateCommandOutcomeV1, run_offline_state_command_v1};
+
 /// The daemon's state-root lock file: never part of an inventory.
 pub const STATE_ROOT_LOCK_FILE_NAME: &str = ".searchd-state-root.lock";
 
@@ -180,7 +183,7 @@ pub trait OfflineTargetSessionV1 {
         manifest: &StateRootManifestV1,
         fault: &dyn StateMigrationFaultPort,
     ) -> Result<(), CoreError>;
-    fn publish(&mut self) -> Result<(), CoreError>;
+    fn publish(&mut self, fault: &dyn StateMigrationFaultPort) -> Result<(), CoreError>;
 }
 
 /// Which offline operation a request describes.
@@ -880,8 +883,7 @@ fn finish_offline_operation_v1(
     deep_open: StateRootDeepOpenReceiptV1,
     fault: &dyn StateMigrationFaultPort,
 ) -> Result<OfflineStateOutcomeV1, CoreError> {
-    target.publish()?;
-    fault.reach(StateMigrationFaultPointV1::AfterCutoverRename)?;
+    target.publish(fault)?;
     let published = read_root_manifest_v1(&destination.join(manifest_file_name))?;
     verify_root_against_manifest_v1(
         destination,

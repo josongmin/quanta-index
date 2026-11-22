@@ -199,6 +199,61 @@ control the declared candidate windows. See the
 [command](../../../benchmarks/retrieval/src/native_file_profile.rs) and
 [recorded evaluator](native_file_evidence.py).
 
+For blind review, freeze the task roster in an unlabelled suite and run the same
+Native profile with its frozen query pack. The controlled `native-file-capture`
+profile verifies and archives the raw execution before qrels are available.
+Bind the decision policy to the cohort manifest. Replay checks the archived
+policy against that manifest. Capture and replay pin the active family's
+inputs and recheck its frozen Git revision and clean worktree before accepting
+a result. The capture output and RunStore-managed paths must be disjoint
+from the Git checkouts, release trees, and input files of every declared family.
+Put new captures and Native evaluation or decision reports in a separate
+directory such as `exports/`. The evaluation and decision commands recheck
+the replayed Git sources before issuing their results.
+
+Use `--require-signed-install` with `benchctl run native-file-capture`,
+`validate`, `summarize`, `replay <run-id>`, and the Native decision CLI
+when verifying a signed Linux installation. This mode requires a v2 capture
+plan with the installed approval. Replay checks the original published run,
+and a signed decision requires the matching controlled runs for every family
+on the same installed generation, release manifest, and Q executable.
+After the capture completes, issue the reviewer forms in a fresh directory.
+
+```sh
+uv run --frozen --offline python -m tools.benchmark.retrieval.holdout_review prepare-native \
+  --repo "$checkout" --suite "$unlabelled_suite" --query-pack "$pack" \
+  --capture "$native_capture" --contexts "$review_contexts" \
+  --control-pools "$control_pools" --seed "$review_seed" --output "$external_output"
+```
+
+For a composite source, also pass `--source-universe`, `--source-binding`,
+`--base-release`, `--target-releases` and `--family-id`. `--target-releases`
+accepts one target release directory containing `release.json`, or a parent
+whose release subdirectories each contain their own `release.json`.
+
+The review contexts supply task rubrics. The control pools supply source
+alternatives and seeded random controls. Reviewers see source files with empty
+grades in shuffled order. Version 2 forms carry an opaque `review_inputs_sha256`
+that binds the query pack, rubrics, pool membership, seed and Native capture.
+Keep the original `owner/custody.json` with the completed forms. To validate or
+finalize Native reviews, replay the original raw capture with
+`capture_native_review_pools` and pass its capture custody as `native_capture`.
+Finalized labels inherit the same input digest. Version 1 forms require reissue.
+Pass `--native-reviewed-labels` to the Native decision CLI with a JSON object
+mapping every family ID to its finalized labels receipt path. The decision
+replays the original capture and applies those labels after verifying the query
+pack and exact capture bytes. The original cohort manifest and SDK runner files
+stay fixed during scoring.
+
+For independently seeded state roots, use `schema_version: 2` in the Native
+cohort manifest. Each family pins `daemon_config` and `daemon_config_sha256`.
+Families served by `serve-native` also pin `selection_path` and
+`selection_sha256`. Use `serve-native-candidate` for an unselected v2 cohort.
+Use one serving mode throughout the cohort. Each family has its own state root
+and socket, with the same daemon configuration for every other setting. Pass
+the family's config and selection to its capture plan. The decision CLI reads
+them from the manifest, so omit its `--daemon-config` flag for v2 manifests.
+
 File pool hashes and replayable ranks do not establish the actual indexed
 universe, runtime qualification or a default-product decision. Those acceptance
 gaps remain with the [Native owner](../../../docs/plans/nov-12-native-cutover/README.md).
@@ -206,8 +261,9 @@ gaps remain with the [Native owner](../../../docs/plans/nov-12-native-cutover/RE
 <a id="native-scale-capacity-profile"></a>
 ## Generation scale and Native indexing fixtures
 
-The default `scale-supported-v1` examples below exercise generation serving.
-The separate `index-native` fixture described at the end uses the Native path.
+Run `just rust-verify-quality-scale` from the current checkout for Native scale
+verification. The `scale-supported-v1` examples below reproduce the Legacy
+generation-serving baseline from a compatible archived checkout.
 
 `scale_matrix` keeps the fixed small/medium/large/xlarge shapes (16/256/4,096/32,768
 files). Its default `scale-supported-v1` profile uses a 600-second client timeout,
@@ -219,17 +275,23 @@ limits. Both indexes share key and row allocations; writer admission, cold/reuse
 decoding and opened-handle charges use the snapshot owner's structural bound.
 These are conservative policy charges, not measured allocator use or RSS.
 These inputs appear in the artifact and config digest; explicit timeout/history
-overrides remain separate diagnostic inputs. The ordinary harness unit fixture
-keeps its 16 MiB retention limit. A profile or limit change never requalifies an
+overrides remain separate diagnostic inputs. The archived ordinary harness unit
+fixture kept a 16 MiB retention limit. A profile or limit change never requalifies an
 older result.
 
 ```sh
+# Run from the clean archived Legacy checkout, with fresh external roots.
 ./scripts/cargow --lane bench-scale-lane build --release \
-  -p quanta-index-searchd-harness --bin scale_matrix --locked
-# Run the matching binary from a clean source checkout, with fresh external roots.
-/absolute/matching/scale_matrix --tier large --out-dir /absolute/new-large-root
-/absolute/matching/scale_matrix --tier xlarge --out-dir /absolute/new-xlarge-root
+  -p quanta-index-searchd-harness --bin scale_matrix --features legacy-bench --locked
+/absolute/matching/scale_matrix --backend legacy --tier large --out-dir /absolute/new-large-root
+/absolute/matching/scale_matrix --backend legacy --tier xlarge --out-dir /absolute/new-xlarge-root
 ```
+
+For causal comparisons, `causal_cost_capture.py --backend legacy --managed-build`
+accepts that checkout through `--cwd` and pins its commit with `--source-revision`.
+The runner retains the compiler output and executable digest from that build.
+The current `scale_matrix` binary requires a Native daemon in every Cargo feature
+configuration. Managed Legacy capture requires a separate archived checkout.
 
 SDK and harness publications above 64 MiB use 1 MiB IPC parts followed by one
 commit. Parts are stored under the private state-root `source-publication-uploads`

@@ -1,4 +1,4 @@
-//! Open-loop offered-load matrix over the runtime harness query socket.
+//! Open-loop offered load over a pinned Legacy daemon's query socket.
 
 #[path = "../open_loop.rs"]
 mod open_loop;
@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result as AnyResult};
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
-use quanta_index_searchd_harness::scale::{
-    ScaleTier, source_binding_for_failure_in_dimension, write_refusal_artifact_with_context,
-};
+use quanta_index_searchd_harness::scale_provenance::source_binding_for_failure_in_dimension;
+use quanta_index_searchd_harness::scale_refusal::write_refusal_artifact_with_context;
+use quanta_index_searchd_harness::source_fixture::ScaleTier;
 use serde_json::{Value, json};
 
 const USAGE: &str = "Usage: open_loop_matrix [--tier small|medium|large|xlarge]
@@ -21,6 +21,7 @@ const USAGE: &str = "Usage: open_loop_matrix [--tier small|medium|large|xlarge]
     [--history-max-bytes POSITIVE_U64] [--history-max-total-bytes POSITIVE_U64]
     [--out-dir ABSOLUTE_EXTERNAL_NEW_PATH]
     Default tier: small (16 files). medium=256, large=4096, xlarge=32768.
+    Supply QUANTA_INDEX_LEGACY_SEARCHD_BIN and QUANTA_INDEX_LEGACY_SEARCHD_SHA256.
     Default history profile is separate from explicit diagnostic overrides.
     Fixture preparation uses the bounded scale capacity profile.
     --request-timeout-ms bounds each timed load request independently.
@@ -238,11 +239,11 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{execution_context, format_latency, open_loop, parse_history_max_bytes};
+    use quanta_index_searchd_harness::ScaleStageError;
     use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
-    use quanta_index_searchd_harness::scale::{
-        ScaleStageError, ScaleTier, refusal_json_with_context,
-        source_binding_for_failure_in_dimension,
-    };
+    use quanta_index_searchd_harness::scale_provenance::source_binding_for_failure_in_dimension;
+    use quanta_index_searchd_harness::scale_refusal::refusal_json_with_context;
+    use quanta_index_searchd_harness::source_fixture::ScaleTier;
     use std::time::Duration;
 
     #[test]

@@ -1114,6 +1114,7 @@ fn await_run(
         | UpdateKind::ProjectionAdvance(_)
         | UpdateKind::HistoryAdvance(_)
         | UpdateKind::HistoryAppend(_)
+        | UpdateKind::CompactSourceLocal { .. }
         | UpdateKind::Reconfigure { .. } => {
             started.cancel.cancel();
             let _finished = finish_rx.recv();

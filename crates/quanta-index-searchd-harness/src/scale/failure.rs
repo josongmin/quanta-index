@@ -19,14 +19,12 @@ impl ScaleAdmissionLimit {
 }
 
 #[derive(Debug)]
-#[cfg(feature = "legacy-bench")]
 pub struct ScaleAdmissionRefusal {
     pub limit: ScaleAdmissionLimit,
     pub observed: u64,
     pub maximum: u64,
 }
 
-#[cfg(feature = "legacy-bench")]
 impl std::fmt::Display for ScaleAdmissionRefusal {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -39,7 +37,6 @@ impl std::fmt::Display for ScaleAdmissionRefusal {
     }
 }
 
-#[cfg(feature = "legacy-bench")]
 impl std::error::Error for ScaleAdmissionRefusal {}
 
 #[derive(Debug)]
@@ -71,7 +68,6 @@ impl ScaleStageError {
         }
     }
 
-    #[cfg(feature = "legacy-bench")]
     #[must_use]
     pub fn source_admission(error: &anyhow::Error) -> Self {
         let refusal = error.downcast_ref::<ScaleAdmissionRefusal>();
@@ -80,18 +76,6 @@ impl ScaleStageError {
             limit: refusal.map(|refusal| refusal.limit),
             observed: refusal.map(|refusal| refusal.observed),
             maximum: refusal.map(|refusal| refusal.maximum),
-            message: format!("{error:#}"),
-        }
-    }
-
-    #[cfg(feature = "legacy-bench")]
-    #[must_use]
-    pub fn wire_admission(error: &anyhow::Error) -> Self {
-        Self {
-            stage: "wire_preflight",
-            limit: None,
-            observed: None,
-            maximum: None,
             message: format!("{error:#}"),
         }
     }

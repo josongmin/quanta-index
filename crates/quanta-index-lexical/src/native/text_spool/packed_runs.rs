@@ -7,7 +7,12 @@ use super::*;
 use quanta_index_core::index::{MemoryCreditLimits, MemoryLifetime};
 use sha2::{Digest as ShaDigest, Sha256};
 use std::cmp::Ordering;
+#[expect(
+    clippy::disallowed_types,
+    reason = "bounded packet-local ID lookup; insertion order defines IDs"
+)]
 use std::collections::HashMap;
+use std::mem::size_of;
 
 mod cold_run;
 
@@ -106,12 +111,18 @@ impl TermPage {
             .counts
             .as_ref()
             .ok_or_else(|| corrupt("count data absent"))?;
-        let bytes = self.keys.iter().try_fold(DOMAIN.len() + 9, |total, key| {
-            total
-                .checked_add(24)
-                .and_then(|n| n.checked_add(key.as_slice().len()))
-                .ok_or(IndexError::ResourceLimited)
-        })?;
+        let bytes = self.keys.iter().try_fold(
+            DOMAIN
+                .len()
+                .checked_add(9)
+                .ok_or(IndexError::ResourceLimited)?,
+            |total, key| {
+                total
+                    .checked_add(24)
+                    .and_then(|n| n.checked_add(key.as_slice().len()))
+                    .ok_or(IndexError::ResourceLimited)
+            },
+        )?;
         // This new bounded integrity pass is real work; only the eliminated
         // SQL read and packet-body copy disappear from the old path.
         measured_copy(bytes, budget)?;
@@ -227,7 +238,7 @@ impl<'a> From<&'a PostingRow> for RowView<'a> {
 }
 
 impl RowView<'_> {
-    fn check(self) -> Result<(), IndexError> {
+    fn check(&self) -> Result<(), IndexError> {
         check_term_key(self.term)
     }
 
@@ -252,8 +263,135 @@ impl RowView<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct RunSeal {
+    phase: i64,
+    run: i64,
+    pages: i64,
+    rows: u64,
+}
+
+#[derive(Default)]
+struct RunSeals {
+    entries: Vec<RunSeal>,
+    memory: Option<MemoryLease>,
+}
+
+impl RunSeals {
+    fn ensure_slot(&mut self, budget: &mut WorkBudget) -> Result<bool, IndexError> {
+        if self.entries.len() < self.entries.capacity() {
+            return Ok(true);
+        }
+        let capacity = self
+            .entries
+            .capacity()
+            .max(1)
+            .checked_mul(2)
+            .ok_or(IndexError::ResourceLimited)?;
+        let bytes = capacity
+            .checked_mul(size_of::<RunSeal>())
+            .ok_or(IndexError::ResourceLimited)?;
+        let Some(memory) =
+            budget.try_reserve_memory_for_optimization(width(bytes)?, MemoryLifetime::Retained)?
+        else {
+            return Ok(false);
+        };
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(capacity)
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        if entries.capacity() > capacity {
+            return Ok(false);
+        }
+        measured_copy(
+            self.entries
+                .len()
+                .checked_mul(size_of::<RunSeal>())
+                .ok_or(IndexError::ResourceLimited)?,
+            budget,
+        )?;
+        entries.extend_from_slice(&self.entries);
+        self.entries = entries;
+        self.memory = Some(memory);
+        Ok(true)
+    }
+
+    fn get(&self, phase: i64, run: i64) -> Option<RunSeal> {
+        self.entries
+            .binary_search_by_key(&(phase, run), |seal| (seal.phase, seal.run))
+            .map_or(None, |index| self.entries.get(index).copied())
+    }
+}
+
+struct OrderedRunState {
+    writer: PacketWriter,
+    run: i64,
+    rows: u64,
+}
+
+pub(in crate::native) struct OrderedColdRun<'a> {
+    spool: &'a TextSpool,
+    finished: bool,
+}
+
+impl OrderedColdRun<'_> {
+    pub(in crate::native) fn finish(mut self, budget: &mut WorkBudget) -> Result<(), IndexError> {
+        let postings = &self.spool.postings;
+        let mut state = postings
+            .ordered
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| corrupt("ordered cold run missing"))?;
+        if state.writer.count != 0 {
+            state.writer.finish(self.spool, 0, state.run, budget)?;
+        }
+        if state.rows != 0 {
+            let pages = state.writer.page;
+            if pages == 0 {
+                return Err(corrupt("ordered cold run has no pages"));
+            }
+            let next = state
+                .run
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
+            let mut seals = postings.run_seals.borrow_mut();
+            if seals.entries.len() == seals.entries.capacity()
+                || seals
+                    .entries
+                    .last()
+                    .is_some_and(|last| last.run >= state.run)
+            {
+                return Err(corrupt("ordered cold run seal order"));
+            }
+            measured_copy(size_of::<RunSeal>(), budget)?;
+            seals.entries.push(RunSeal {
+                phase: 0,
+                run: state.run,
+                pages,
+                rows: state.rows,
+            });
+            postings.runs.set(next);
+        }
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for OrderedColdRun<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _abandoned = self.spool.postings.ordered.borrow_mut().take();
+            self.spool.postings.poisoned.set(true);
+            self.spool.inventory_poisoned.set(true);
+        }
+    }
+}
+
 pub(super) struct PostingRuns {
     pending: RefCell<Option<InitialRun>>,
+    ordered: RefCell<Option<OrderedRunState>>,
+    run_seals: RefCell<RunSeals>,
+    ordered_parent_ready: Cell<bool>,
     cold: bool,
     last_cold_owner: Cell<Option<[u8; 32]>>,
     phase: Cell<i64>,
@@ -265,9 +403,21 @@ pub(super) struct PostingRuns {
 }
 
 impl PostingRuns {
+    pub(super) fn ordered_cold_run_credit_limits() -> Result<MemoryCreditLimits, IndexError> {
+        Ok(MemoryCreditLimits {
+            temporary_data_bytes: width(PACKET_WRITER_MEMORY)?,
+            retained_data_bytes: 0,
+            max_live_temporary_leases: 1,
+            max_live_retained_leases: 0,
+        })
+    }
+
     pub(super) fn new(cold: bool) -> Self {
         Self {
             pending: RefCell::new(None),
+            ordered: RefCell::new(None),
+            run_seals: RefCell::new(RunSeals::default()),
+            ordered_parent_ready: Cell::new(false),
             cold,
             last_cold_owner: Cell::new(None),
             phase: Cell::new(0),
@@ -277,6 +427,102 @@ impl PostingRuns {
             effect_epoch: Cell::new(0),
             page_source: RefCell::new(None),
         }
+    }
+
+    pub(super) fn prepare_ordered_cold_run_parent(
+        &self,
+        spool: &TextSpool,
+        budget: &mut WorkBudget,
+    ) -> Result<bool, IndexError> {
+        self.check()?;
+        spool.check_posting_usable()?;
+        if !self.cold {
+            return Ok(false);
+        }
+        if self.sealed.get() || self.ordered.borrow().is_some() {
+            return Err(IndexError::BackendViolation(
+                "ordered cold run is unavailable".into(),
+            ));
+        }
+        // Hold this optional parent grant locally until the registry has a
+        // slot. A registry miss releases it before the original path resumes.
+        let source_memory = if self.page_source.borrow().is_none() {
+            let bytes = Self::page_source_allocation_bytes()?;
+            let Some(memory) =
+                budget.try_reserve_memory_for_optimization(bytes, MemoryLifetime::Temporary)?
+            else {
+                self.ordered_parent_ready.set(false);
+                return Ok(false);
+            };
+            Some(memory)
+        } else {
+            None
+        };
+        if !self.run_seals.borrow_mut().ensure_slot(budget)? {
+            self.ordered_parent_ready.set(false);
+            return Ok(false);
+        }
+        if let Some(memory) = source_memory {
+            *self.page_source.borrow_mut() = Some(Rc::new(PostingPageSource {
+                expected_changes: Cell::new(spool.db.change_count()?),
+                _memory: Some(memory),
+            }));
+        }
+        self.ordered_parent_ready.set(true);
+        Ok(true)
+    }
+
+    pub(super) fn begin_ordered_cold_run<'a>(
+        &self,
+        spool: &'a TextSpool,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<OrderedColdRun<'a>>, IndexError> {
+        self.check()?;
+        spool.check_posting_usable()?;
+        if !self.cold || self.sealed.get() || self.ordered.borrow().is_some() {
+            return Err(IndexError::BackendViolation(
+                "ordered cold run is unavailable".into(),
+            ));
+        }
+        // Retained metadata and the spool-owned source token must have been
+        // granted through the Original parent before any run effect.
+        if !self.ordered_parent_ready.get() {
+            return Ok(None);
+        }
+        let seal_slot_available = {
+            let seals = self.run_seals.borrow();
+            seals.entries.len() < seals.entries.capacity()
+        };
+        if self.page_source.borrow().is_none() || !seal_slot_available {
+            return Err(IndexError::BackendViolation(
+                "ordered cold run parent admission absent".into(),
+            ));
+        }
+        let before_effect = self.effect_epoch.get();
+        let result = (|| {
+            self.flush_pending(spool, budget)?;
+            // The old phase-zero writer is empty after flush. Release its
+            // retained backing before the new bounded writer is funded.
+            drop(self.pending.borrow_mut().take());
+            let _source = self.page_source(spool, budget)?;
+            let writer = PacketWriter::new(budget, MemoryLifetime::Temporary)?;
+            let run = self.runs.get();
+            *self.ordered.borrow_mut() = Some(OrderedRunState {
+                writer,
+                run,
+                rows: 0,
+            });
+            self.ordered_parent_ready.set(false);
+            Ok(Some(OrderedColdRun {
+                spool,
+                finished: false,
+            }))
+        })();
+        if result.is_err() && self.effect_epoch.get() != before_effect {
+            self.poisoned.set(true);
+            spool.inventory_poisoned.set(true);
+        }
+        result
     }
 
     pub(super) fn check_page_source(&self, spool: &TextSpool) -> Result<(), IndexError> {
@@ -299,16 +545,23 @@ impl PostingRuns {
             return Ok(Rc::clone(source));
         }
         // Include the Rc strong/weak counters before allocating its backing.
-        let bytes = std::mem::size_of::<PostingPageSource>()
-            .checked_add(2 * std::mem::size_of::<usize>())
-            .ok_or(IndexError::ResourceLimited)?;
-        let memory = budget.reserve_memory(width(bytes)?, MemoryLifetime::Temporary)?;
+        let memory = budget.reserve_memory(
+            Self::page_source_allocation_bytes()?,
+            MemoryLifetime::Temporary,
+        )?;
         let source = Rc::new(PostingPageSource {
             expected_changes: Cell::new(spool.db.change_count()?),
             _memory: memory,
         });
         *self.page_source.borrow_mut() = Some(Rc::clone(&source));
         Ok(source)
+    }
+
+    fn page_source_allocation_bytes() -> Result<u64, IndexError> {
+        let bytes = std::mem::size_of::<PostingPageSource>()
+            .checked_add(std::mem::size_of::<[usize; 2]>())
+            .ok_or(IndexError::ResourceLimited)?;
+        width(bytes)
     }
 
     pub(super) fn accept_top_changes(&self, spool: &TextSpool) -> Result<(), IndexError> {
@@ -366,7 +619,8 @@ impl PostingRuns {
             // bytes; removed SQL text/bind construction is no longer work.
             let mut logical_bytes = 0_u64;
             let previous_owner = self.last_cold_owner.get();
-            let mut last_owner = previous_owner.as_ref().map(|owner| owner.as_slice());
+            let mut last_owner = previous_owner.as_ref().map(<[u8; 32]>::as_slice);
+            let ordered_cold = self.ordered.borrow().is_some();
             for row in rows {
                 budget.checkpoint()?;
                 let (term, edit) = fields(row);
@@ -378,15 +632,15 @@ impl PostingRuns {
                     if edit.expected.is_some() || !matches!(edit.next, Some(MapValue::Object(_))) {
                         return Err(corrupt("cold run requires object insertions"));
                     }
-                    if last_owner.is_some_and(|previous| previous > edit.key) {
+                    if !ordered_cold && last_owner.is_some_and(|previous| previous > edit.key) {
                         return Err(corrupt("cold posting owners are unordered"));
                     }
-                    last_owner = Some(edit.key);
+                    if !ordered_cold {
+                        last_owner = Some(edit.key);
+                    }
                 }
-                let old = edit
-                    .expected
-                    .map_or(Ok(1_usize), |value| value.encoded_len())?;
-                let next = edit.next.map_or(Ok(1_usize), |value| value.encoded_len())?;
+                let old = edit.expected.map_or(Ok(1_usize), MapValue::encoded_len)?;
+                let next = edit.next.map_or(Ok(1_usize), MapValue::encoded_len)?;
                 let fields_bytes = term
                     .len()
                     .checked_add(edit.key.len())
@@ -406,6 +660,36 @@ impl PostingRuns {
             // The source token belongs to the producing spool's Original,
             // never a later reader whose cursor may have already returned.
             let _source = self.page_source(spool, budget)?;
+            if ordered_cold {
+                for row in rows {
+                    budget.checkpoint()?;
+                    let (term, edit) = fields(row);
+                    let owner: [u8; 32] = edit
+                        .key
+                        .try_into()
+                        .map_err(|_error| corrupt("owner width"))?;
+                    let view = RowView {
+                        term,
+                        owner,
+                        expected: edit.expected.copied(),
+                        next: edit.next.copied(),
+                    };
+                    let mut ordered = self.ordered.borrow_mut();
+                    let state = ordered
+                        .as_mut()
+                        .ok_or_else(|| corrupt("ordered run missing"))?;
+                    if state.writer.plan_ordered_cold(&view)?.is_none() {
+                        state.writer.finish(spool, 0, state.run, budget)?;
+                    }
+                    state.writer.push_ordered_cold(&view, budget)?;
+                    state.rows = state
+                        .rows
+                        .checked_add(1)
+                        .ok_or(IndexError::ResourceLimited)?;
+                    pending_changed = true;
+                }
+                return Ok(());
+            }
             for row in rows {
                 budget.checkpoint()?;
                 let (term, edit) = fields(row);
@@ -428,7 +712,7 @@ impl PostingRuns {
                     pending
                         .as_ref()
                         .ok_or(IndexError::ResourceLimited)?
-                        .plan_row(row)?
+                        .plan_row(&row)?
                 };
                 if layout.is_none() {
                     // A pre-write refusal leaves the previous packet intact.
@@ -441,13 +725,14 @@ impl PostingRuns {
                 let writer = pending.as_mut().ok_or(IndexError::ResourceLimited)?;
                 let layout = match layout {
                     Some(layout) => layout,
-                    None => writer.plan_row(row)?.ok_or(IndexError::ResourceLimited)?,
+                    None => writer.plan_row(&row)?.ok_or(IndexError::ResourceLimited)?,
                 };
-                writer.push(row, layout, budget, &mut pending_changed)?;
+                writer.push(&row, layout, budget, &mut pending_changed)?;
             }
             if let Some(owner) = last_owner {
-                self.last_cold_owner
-                    .set(Some(owner.try_into().map_err(|_| corrupt("owner width"))?));
+                self.last_cold_owner.set(Some(
+                    owner.try_into().map_err(|_error| corrupt("owner width"))?,
+                ));
             }
             Ok(())
         })();
@@ -456,6 +741,26 @@ impl PostingRuns {
             spool.inventory_poisoned.set(true);
         }
         result
+    }
+
+    pub(super) fn finish_owner_major_run(
+        &self,
+        spool: &TextSpool,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        self.check()?;
+        spool.check_posting_usable()?;
+        if !self.cold {
+            return Ok(());
+        }
+        if self.sealed.get() || self.ordered.borrow().is_some() {
+            return Err(IndexError::BackendViolation(
+                "owner-major cold run is unavailable".into(),
+            ));
+        }
+        self.flush_pending(spool, budget)?;
+        drop(self.pending.borrow_mut().take());
+        Ok(())
     }
 
     fn flush_pending(&self, spool: &TextSpool, budget: &mut WorkBudget) -> Result<(), IndexError> {
@@ -482,6 +787,9 @@ impl PostingRuns {
         let before_effect = self.effect_epoch.get();
         let result = (|| {
             self.check()?;
+            if self.ordered.borrow().is_some() {
+                return Err(corrupt("ordered cold run was not finished"));
+            }
             if self.sealed.get() {
                 return budget.checkpoint();
             }
@@ -606,7 +914,7 @@ impl InitialRun {
         }
     }
 
-    fn plan_row(&self, row: RowView<'_>) -> Result<Option<RowLayout>, IndexError> {
+    fn plan_row(&self, row: &RowView<'_>) -> Result<Option<RowLayout>, IndexError> {
         match self {
             Self::General(writer) => writer.plan_row(row),
             Self::Cold(writer) => writer.plan_row(row),
@@ -615,7 +923,7 @@ impl InitialRun {
 
     fn push(
         &mut self,
-        row: RowView<'_>,
+        row: &RowView<'_>,
         layout: RowLayout,
         budget: &mut WorkBudget,
         pending_changed: &mut bool,
@@ -653,8 +961,17 @@ struct PacketWriter {
     sort_work: usize,
     owners: Vec<[u8; 32]>,
     references: Vec<ObjectRef>,
+    #[expect(
+        clippy::disallowed_types,
+        reason = "bounded packet-local ID lookup; no iteration"
+    )]
     owner_ids: HashMap<[u8; 32], u16>,
+    #[expect(
+        clippy::disallowed_types,
+        reason = "bounded packet-local ID lookup; no iteration"
+    )]
     reference_ids: HashMap<ObjectRef, u16>,
+    grouped_terms: bool,
     _memory: Option<MemoryLease>,
 }
 
@@ -678,6 +995,10 @@ impl PacketWriter {
         (self.bytes.len(), self.owners.len(), self.references.len())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "RowOffset and owner ID are produced by this packet writer before lookup"
+    )]
     fn fence(&self, row: RowOffset) -> (&[u8], [u8; 32]) {
         (
             &self.bytes[row.term_start..row.term_end],
@@ -689,6 +1010,10 @@ impl PacketWriter {
         // The bounded payload, row offsets, dictionaries and their hash
         // indices share one Original grant.
         let memory = budget.reserve_memory(width(PACKET_WRITER_MEMORY)?, lifetime)?;
+        Self::with_memory(memory)
+    }
+
+    fn with_memory(memory: Option<MemoryLease>) -> Result<Self, IndexError> {
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(PACKET_BYTES)
@@ -706,10 +1031,18 @@ impl PacketWriter {
         offsets
             .try_reserve_exact(MAX_EDIT_ROWS)
             .map_err(|_error| IndexError::ResourceLimited)?;
+        #[expect(
+            clippy::disallowed_types,
+            reason = "preallocated within packet Original grant"
+        )]
         let mut owner_ids = HashMap::new();
         owner_ids
             .try_reserve(MAX_EDIT_ROWS)
             .map_err(|_error| IndexError::ResourceLimited)?;
+        #[expect(
+            clippy::disallowed_types,
+            reason = "preallocated within packet Original grant"
+        )]
         let mut reference_ids = HashMap::new();
         reference_ids
             .try_reserve(MAX_REFERENCE_IDS)
@@ -726,6 +1059,7 @@ impl PacketWriter {
             references,
             owner_ids,
             reference_ids,
+            grouped_terms: false,
             _memory: memory,
         })
     }
@@ -741,7 +1075,7 @@ impl PacketWriter {
         }
     }
 
-    fn new_dictionary_bytes(&self, row: RowView<'_>) -> Result<usize, IndexError> {
+    fn new_dictionary_bytes(&self, row: &RowView<'_>) -> Result<usize, IndexError> {
         let mut count = usize::from(!self.owner_ids.contains_key(&row.owner));
         let prior = match row.expected {
             Some(MapValue::Object(reference)) => Some(reference),
@@ -752,17 +1086,17 @@ impl PacketWriter {
             _ => None,
         };
         if prior.is_some_and(|reference| !self.reference_ids.contains_key(&reference)) {
-            count += 1;
+            count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
         }
         if next.is_some_and(|reference| !self.reference_ids.contains_key(&reference))
             && next != prior
         {
-            count += 1;
+            count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
         }
         count.checked_mul(32).ok_or(IndexError::ResourceLimited)
     }
 
-    fn compact_row_len(row: RowView<'_>) -> Result<usize, IndexError> {
+    fn compact_row_len(row: &RowView<'_>) -> Result<usize, IndexError> {
         let old = Self::value_len(row.expected)?;
         let next = Self::value_len(row.next)?;
         2usize
@@ -773,13 +1107,13 @@ impl PacketWriter {
             .ok_or(IndexError::ResourceLimited)
     }
 
-    fn plan_row(&self, row: RowView<'_>) -> Result<Option<RowLayout>, IndexError> {
+    fn plan_row(&self, row: &RowView<'_>) -> Result<Option<RowLayout>, IndexError> {
         self.plan_row_at(row, self.bytes.len())
     }
 
     fn plan_row_at(
         &self,
-        row: RowView<'_>,
+        row: &RowView<'_>,
         body_end: usize,
     ) -> Result<Option<RowLayout>, IndexError> {
         if self.count == u16::MAX || usize::from(self.count) == MAX_EDIT_ROWS {
@@ -804,8 +1138,121 @@ impl PacketWriter {
         }))
     }
 
-    fn can_push(&self, row: RowView<'_>) -> Result<bool, IndexError> {
+    fn can_push(&self, row: &RowView<'_>) -> Result<bool, IndexError> {
         Ok(self.plan_row(row)?.is_some())
+    }
+
+    fn plan_ordered_cold(
+        &self,
+        row: &RowView<'_>,
+    ) -> Result<Option<(RowLayout, Option<u16>)>, IndexError> {
+        row.check()?;
+        if !matches!((row.expected, row.next), (None, Some(MapValue::Object(_)))) {
+            return Err(corrupt("ordered cold run requires object insertions"));
+        }
+        let repeat = if let Some(last) = self.last {
+            let (term, owner) = self.fence(last);
+            match term.cmp(row.term).then(owner.cmp(&row.owner)) {
+                Ordering::Less => {}
+                Ordering::Equal | Ordering::Greater => {
+                    return Err(corrupt("ordered cold posting keys are unordered"));
+                }
+            }
+            if term == row.term {
+                let literal = last
+                    .term_start
+                    .checked_sub(2)
+                    .ok_or(IndexError::ResourceLimited)?;
+                self.bytes
+                    .len()
+                    .checked_sub(literal)
+                    .filter(|&distance| distance < usize::from(REPEATED_TERM))
+                    .map(u16::try_from)
+                    .transpose()
+                    .map_err(|_error| IndexError::ResourceLimited)?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if usize::from(self.count) == MAX_EDIT_ROWS {
+            return Ok(None);
+        }
+        let row_len = 8usize
+            .checked_add(if repeat.is_some() { 0 } else { row.term.len() })
+            .ok_or(IndexError::ResourceLimited)?;
+        let dictionary_bytes = self.new_dictionary_bytes(row)?;
+        let used = self
+            .bytes
+            .len()
+            .checked_add(
+                self.owners
+                    .len()
+                    .checked_mul(32)
+                    .ok_or(IndexError::ResourceLimited)?,
+            )
+            .and_then(|bytes| bytes.checked_add(self.references.len().checked_mul(32)?))
+            .and_then(|bytes| bytes.checked_add(row_len))
+            .and_then(|bytes| bytes.checked_add(dictionary_bytes))
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok((used <= PACKET_BYTES).then_some((
+            RowLayout {
+                row_len,
+                dictionary_bytes,
+            },
+            repeat,
+        )))
+    }
+
+    fn push_ordered_cold(
+        &mut self,
+        row: &RowView<'_>,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        let (layout, repeat) = self
+            .plan_ordered_cold(row)?
+            .ok_or(IndexError::ResourceLimited)?;
+        measured_copy(
+            layout
+                .row_len
+                .checked_add(
+                    layout
+                        .dictionary_bytes
+                        .checked_mul(2)
+                        .ok_or(IndexError::ResourceLimited)?,
+                )
+                .ok_or(IndexError::ResourceLimited)?,
+            budget,
+        )?;
+        let owner_id = self.owner_id(row.owner)?;
+        let mut offset = if let Some(distance) = repeat {
+            let last = self.last.ok_or(IndexError::ResourceLimited)?;
+            let start = self.bytes.len();
+            self.bytes
+                .extend_from_slice(&(REPEATED_TERM | distance).to_be_bytes());
+            self.bytes.extend_from_slice(&owner_id.to_be_bytes());
+            self.grouped_terms = true;
+            RowOffset {
+                start,
+                end: self.bytes.len(),
+                term_start: last.term_start,
+                term_end: last.term_end,
+                owner_id,
+            }
+        } else {
+            Self::put_row_key(&mut self.bytes, row.term, owner_id)?
+        };
+        self.put_value(None)?;
+        self.put_value(row.next)?;
+        offset.end = self.bytes.len();
+        let _first = self.first.get_or_insert(offset);
+        self.last = Some(offset);
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok(())
     }
 
     fn reference_id(&mut self, reference: ObjectRef) -> Result<u16, IndexError> {
@@ -848,11 +1295,15 @@ impl PacketWriter {
         bytes.extend_from_slice(&length.to_be_bytes());
         bytes.extend_from_slice(term);
         bytes.extend_from_slice(&owner_id.to_be_bytes());
+        let term_start = start.checked_add(2).ok_or(IndexError::ResourceLimited)?;
+        let term_end = term_start
+            .checked_add(term.len())
+            .ok_or(IndexError::ResourceLimited)?;
         Ok(RowOffset {
             start,
             end: bytes.len(),
-            term_start: start + 2,
-            term_end: start + 2 + term.len(),
+            term_start,
+            term_end,
             owner_id,
         })
     }
@@ -877,13 +1328,13 @@ impl PacketWriter {
         Ok(())
     }
 
-    fn push(&mut self, row: RowView<'_>, budget: &mut WorkBudget) -> Result<(), IndexError> {
+    fn push(&mut self, row: &RowView<'_>, budget: &mut WorkBudget) -> Result<(), IndexError> {
         self.push_inner(row, budget, false, None)
     }
 
     fn push_unordered(
         &mut self,
-        row: RowView<'_>,
+        row: &RowView<'_>,
         layout: RowLayout,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
@@ -892,7 +1343,7 @@ impl PacketWriter {
 
     fn push_inner(
         &mut self,
-        row: RowView<'_>,
+        row: &RowView<'_>,
         budget: &mut WorkBudget,
         unordered: bool,
         layout: Option<RowLayout>,
@@ -928,14 +1379,15 @@ impl PacketWriter {
             self.offsets.push(offset);
             let old = row.expected.map_or(Ok(0), |value| value.encoded_len())?;
             let next = row.next.map_or(Ok(0), |value| value.encoded_len())?;
+            let sort_row_bytes = 2usize
+                .checked_add(row.term.len())
+                .and_then(|bytes| bytes.checked_add(36))
+                .and_then(|bytes| bytes.checked_add(old))
+                .and_then(|bytes| bytes.checked_add(next))
+                .ok_or(IndexError::ResourceLimited)?;
             self.sort_work = self
                 .sort_work
-                .checked_add(
-                    2usize
-                        .checked_add(row.term.len())
-                        .and_then(|bytes| bytes.checked_add(32 + 2 + old + 2 + next))
-                        .ok_or(IndexError::ResourceLimited)?,
-                )
+                .checked_add(sort_row_bytes)
                 .ok_or(IndexError::ResourceLimited)?;
         } else {
             let _first = self.first.get_or_insert(offset);
@@ -976,7 +1428,10 @@ impl PacketWriter {
         let first = *self.offsets.first().ok_or(IndexError::ResourceLimited)?;
         let last = *self.offsets.last().ok_or(IndexError::ResourceLimited)?;
         let body_len = self.bytes.len();
-        let header: [u8; EDIT_HEADER] = self.bytes[..EDIT_HEADER]
+        let header: [u8; EDIT_HEADER] = self
+            .bytes
+            .get(..EDIT_HEADER)
+            .ok_or_else(|| corrupt("pending packet header"))?
             .try_into()
             .map_err(|_error| corrupt("pending packet header"))?;
         let prior = (self.first, self.last, self.page);
@@ -986,7 +1441,10 @@ impl PacketWriter {
             // A pre-effect refusal may leave the dictionaries and seal in the
             // buffer. Restore the pending rows so the next attempt can seal.
             self.bytes.truncate(body_len);
-            self.bytes[..EDIT_HEADER].copy_from_slice(&header);
+            self.bytes
+                .get_mut(..EDIT_HEADER)
+                .ok_or(IndexError::ResourceLimited)?
+                .copy_from_slice(&header);
             (self.first, self.last, self.page) = prior;
             return Err(error);
         }
@@ -994,6 +1452,10 @@ impl PacketWriter {
         Ok(())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the infallible sort callback receives only this writer's bounded row offsets and owner IDs"
+    )]
     fn finish_unordered(
         &mut self,
         spool: &TextSpool,
@@ -1048,7 +1510,11 @@ impl PacketWriter {
                 budget,
             )?;
             for row in &self.offsets {
-                ordered.extend_from_slice(&self.bytes[row.start..row.end]);
+                ordered.extend_from_slice(
+                    self.bytes
+                        .get(row.start..row.end)
+                        .ok_or(IndexError::ResourceLimited)?,
+                );
             }
             Ok(())
         })?;
@@ -1065,7 +1531,7 @@ impl PacketWriter {
             phase,
             run,
             self.page,
-            PostingPacketFences {
+            &PostingPacketFences {
                 first: self.fence(first),
                 last: self.fence(last),
             },
@@ -1117,13 +1583,19 @@ impl PacketWriter {
             &self.references,
             budget,
         )?;
+        if self.grouped_terms {
+            self.bytes
+                .get_mut(..8)
+                .ok_or_else(|| corrupt("ordered packet header"))?
+                .copy_from_slice(GROUPED_EDIT_MAGIC);
+        }
         let first = self.first.ok_or(IndexError::ResourceLimited)?;
         let last = self.last.ok_or(IndexError::ResourceLimited)?;
         spool.insert_posting_packet(
             phase,
             run,
             self.page,
-            PostingPacketFences {
+            &PostingPacketFences {
                 first: self.fence(first),
                 last: self.fence(last),
             },
@@ -1149,6 +1621,7 @@ impl PacketWriter {
         self.reference_ids.clear();
         self.offsets.clear();
         self.sort_work = 0;
+        self.grouped_terms = false;
     }
 }
 
@@ -1177,19 +1650,37 @@ fn finalize_compact_packet(
         return Err(IndexError::ResourceLimited);
     }
     measured_copy(dictionary_bytes, budget)?;
-    bytes[42..46].copy_from_slice(&row_end.to_be_bytes());
-    bytes[46..48].copy_from_slice(&owner_count.to_be_bytes());
-    bytes[48..50].copy_from_slice(&reference_count.to_be_bytes());
+    bytes
+        .get_mut(42..46)
+        .ok_or(IndexError::ResourceLimited)?
+        .copy_from_slice(&row_end.to_be_bytes());
+    bytes
+        .get_mut(46..48)
+        .ok_or(IndexError::ResourceLimited)?
+        .copy_from_slice(&owner_count.to_be_bytes());
+    bytes
+        .get_mut(48..50)
+        .ok_or(IndexError::ResourceLimited)?
+        .copy_from_slice(&reference_count.to_be_bytes());
     for owner in owners {
         bytes.extend_from_slice(owner);
     }
     for reference in references {
         bytes.extend_from_slice(&reference.0.0);
     }
-    bytes[..8].copy_from_slice(EDIT_MAGIC);
-    bytes[8..10].copy_from_slice(&count.to_be_bytes());
-    let digest = Sha256::digest(&bytes[42..]);
-    bytes[10..42].copy_from_slice(&digest);
+    bytes
+        .get_mut(..8)
+        .ok_or(IndexError::ResourceLimited)?
+        .copy_from_slice(EDIT_MAGIC);
+    bytes
+        .get_mut(8..10)
+        .ok_or(IndexError::ResourceLimited)?
+        .copy_from_slice(&count.to_be_bytes());
+    let digest = Sha256::digest(bytes.get(42..).ok_or(IndexError::ResourceLimited)?);
+    bytes
+        .get_mut(10..42)
+        .ok_or(IndexError::ResourceLimited)?
+        .copy_from_slice(&digest);
     Ok(())
 }
 
@@ -1210,13 +1701,21 @@ struct PostingPacketFences<'a> {
     last: (&'a [u8], [u8; 32]),
 }
 
+type PacketParts<'a> = (&'a [u8], &'a [u8], &'a [u8]);
+
 impl Packet {
-    fn parts(&self) -> (&[u8], &[u8], &[u8]) {
-        (
-            &self.bytes[..self.row_end],
-            &self.bytes[self.row_end..self.references_begin],
-            &self.bytes[self.references_begin..],
-        )
+    fn parts(&self) -> Result<PacketParts<'_>, IndexError> {
+        Ok((
+            self.bytes
+                .get(..self.row_end)
+                .ok_or(IndexError::ResourceLimited)?,
+            self.bytes
+                .get(self.row_end..self.references_begin)
+                .ok_or(IndexError::ResourceLimited)?,
+            self.bytes
+                .get(self.references_begin..)
+                .ok_or(IndexError::ResourceLimited)?,
+        ))
     }
     fn parse(
         bytes: Vec<u8>,
@@ -1231,20 +1730,32 @@ impl Packet {
         if bytes.len() < EDIT_HEADER || bytes.len() > PACKET_BYTES || !known_magic {
             return Err(corrupt("packet header or size"));
         }
-        let count = u16::from_be_bytes(bytes[8..10].try_into().map_err(|_error| corrupt("count"))?);
+        let count = u16::from_be_bytes(
+            bytes
+                .get(8..10)
+                .ok_or_else(|| corrupt("count"))?
+                .try_into()
+                .map_err(|_error| corrupt("count"))?,
+        );
         let row_end = usize::try_from(u32::from_be_bytes(
-            bytes[42..46]
+            bytes
+                .get(42..46)
+                .ok_or_else(|| corrupt("row end"))?
                 .try_into()
                 .map_err(|_error| corrupt("row end"))?,
         ))
         .map_err(|_error| IndexError::ResourceLimited)?;
         let owner_count = usize::from(u16::from_be_bytes(
-            bytes[46..48]
+            bytes
+                .get(46..48)
+                .ok_or_else(|| corrupt("owners"))?
                 .try_into()
                 .map_err(|_error| corrupt("owners"))?,
         ));
         let reference_count = usize::from(u16::from_be_bytes(
-            bytes[48..50]
+            bytes
+                .get(48..50)
+                .ok_or_else(|| corrupt("references"))?
                 .try_into()
                 .map_err(|_error| corrupt("references"))?,
         ));
@@ -1263,10 +1774,11 @@ impl Packet {
             )
             .ok_or(IndexError::ResourceLimited)?;
         if count == 0
-            || count as usize > MAX_EDIT_ROWS
+            || usize::from(count) > MAX_EDIT_ROWS
             || row_end < EDIT_HEADER
             || end != bytes.len()
-            || Sha256::digest(&bytes[42..]).as_slice() != &bytes[10..42]
+            || Sha256::digest(bytes.get(42..).ok_or_else(|| corrupt("packet digest"))?).as_slice()
+                != bytes.get(10..42).ok_or_else(|| corrupt("packet digest"))?
         {
             return Err(corrupt("packet digest or dictionary layout"));
         }
@@ -1291,7 +1803,8 @@ impl Packet {
         for _ in 0..count {
             let decoded = packet.decode_row(offset)?;
             let RowView { term, owner, .. } = decoded.view;
-            if decoded.term_start == offset + 2 {
+            let literal_term_start = offset.checked_add(2).ok_or(IndexError::ResourceLimited)?;
+            if decoded.term_start == literal_term_start {
                 literal_start = Some(decoded.term_start);
             } else if literal_start != Some(decoded.term_start) {
                 return Err(corrupt("packet repeat points outside its term group"));
@@ -1331,7 +1844,9 @@ impl Packet {
 
     fn reposition(&mut self, start: &[u8], budget: &WorkBudget) -> Result<(), IndexError> {
         let count = u16::from_be_bytes(
-            self.bytes[8..10]
+            self.bytes
+                .get(8..10)
+                .ok_or_else(|| corrupt("checked packet count"))?
                 .try_into()
                 .map_err(|_error| corrupt("checked packet count"))?,
         );
@@ -1344,7 +1859,9 @@ impl Packet {
                 break;
             }
             offset = decoded.end;
-            remaining -= 1;
+            remaining = remaining
+                .checked_sub(1)
+                .ok_or(IndexError::ResourceLimited)?;
         }
         self.offset = offset;
         self.remaining = remaining;
@@ -1366,12 +1883,15 @@ impl Packet {
         // a row. A failed projection leaves its exact position available.
         let projected = project(decoded, budget)?;
         self.offset = end;
-        self.remaining -= 1;
+        self.remaining = self
+            .remaining
+            .checked_sub(1)
+            .ok_or(IndexError::ResourceLimited)?;
         Ok(Some(projected))
     }
 
     fn decode_row(&self, offset: usize) -> Result<DecodedPacketRow<'_>, IndexError> {
-        let (rows, owners, references) = self.parts();
+        let (rows, owners, references) = self.parts()?;
         decode_compact_row(rows, owners, references, offset, self.grouped_terms)
     }
 }
@@ -1453,14 +1973,19 @@ fn decode_compact_row<'a>(
             .filter(|&offset| offset >= EDIT_HEADER)
             .ok_or_else(|| corrupt("repeat points outside packet rows"))?;
         let length = read_u16(rows, &mut literal)?;
+        let end = literal
+            .checked_add(length)
+            .ok_or(IndexError::ResourceLimited)?;
         let term = rows
-            .get(literal..literal + length)
-            .filter(|_| literal + length <= begin)
+            .get(literal..end)
+            .filter(|_| end <= begin)
             .ok_or_else(|| corrupt("invalid repeated term literal"))?;
         (literal, term)
     } else {
         let start = offset;
-        offset += encoded;
+        offset = offset
+            .checked_add(encoded)
+            .ok_or(IndexError::ResourceLimited)?;
         (
             start,
             rows.get(start..offset)
@@ -1508,10 +2033,15 @@ struct RunReader<'a> {
     page: i64,
     packet: Option<Packet>,
     head: Option<RunHead>,
+    seal: Option<RunSeal>,
+    read_rows: u64,
+    closed: bool,
+    prior: Option<PreviousKey>,
 }
 
 impl<'a> RunReader<'a> {
     fn new(spool: &'a TextSpool, phase: i64, run: i64) -> Self {
+        let seal = spool.postings.run_seals.borrow().get(phase, run);
         Self {
             spool,
             phase,
@@ -1519,6 +2049,10 @@ impl<'a> RunReader<'a> {
             page: 0,
             packet: None,
             head: None,
+            seal,
+            read_rows: 0,
+            closed: false,
+            prior: None,
         }
     }
 
@@ -1546,13 +2080,19 @@ impl<'a> RunReader<'a> {
         if self.head.is_some() {
             return Ok(());
         }
+        if self.closed {
+            return Ok(());
+        }
         loop {
             if let Some(packet) = self.packet.as_mut() {
                 if let Some(head) = packet.next_row(budget, |decoded, _budget| {
                     let row = decoded.view;
                     Ok(RunHead {
                         term_start: decoded.term_start,
-                        term_end: decoded.term_start + row.term.len(),
+                        term_end: decoded
+                            .term_start
+                            .checked_add(row.term.len())
+                            .ok_or(IndexError::ResourceLimited)?,
                         owner: row.owner,
                         expected: row.expected,
                         next: row.next,
@@ -1561,14 +2101,68 @@ impl<'a> RunReader<'a> {
                     self.head = Some(head);
                     return Ok(());
                 }
+                if self.seal.is_some() {
+                    let (term, owner) = packet.last_key()?;
+                    measured_copy(
+                        term.len()
+                            .checked_add(owner.len())
+                            .ok_or(IndexError::ResourceLimited)?,
+                        budget,
+                    )?;
+                    let term = PostingTermKey::copy(term, budget)?;
+                    self.prior = Some(PreviousKey { term, owner });
+                }
                 self.packet = None;
+            }
+            if let Some(seal) = self.seal {
+                if self.page == seal.pages {
+                    if self.read_rows != seal.rows
+                        || self.spool.has_posting_packet_at_or_after(
+                            self.phase, self.run, self.page, budget,
+                        )?
+                    {
+                        return Err(corrupt("ordered cold run EOF or cardinality"));
+                    }
+                    self.closed = true;
+                    return Ok(());
+                }
+                if self.page > seal.pages {
+                    return Err(corrupt("ordered cold run page count"));
+                }
             }
             let Some(packet) = self
                 .spool
                 .read_posting_packet(self.phase, self.run, self.page, None, None, budget)?
             else {
+                if self.seal.is_some() {
+                    return Err(corrupt("ordered cold run missing page"));
+                }
                 return Ok(());
             };
+            if let Some(seal) = self.seal {
+                let first = packet.decode_row(EDIT_HEADER)?.view;
+                let (term, owner) = (first.term, first.owner);
+                if self.prior.as_ref().is_some_and(|prior| {
+                    prior.term().cmp(term).then(prior.owner.cmp(&owner)) != Ordering::Less
+                }) {
+                    return Err(corrupt("ordered cold run page order"));
+                }
+                let count = u16::from_be_bytes(
+                    packet
+                        .bytes
+                        .get(8..10)
+                        .ok_or_else(|| corrupt("ordered cold page count"))?
+                        .try_into()
+                        .map_err(|_error| corrupt("ordered cold page count"))?,
+                );
+                self.read_rows = self
+                    .read_rows
+                    .checked_add(u64::from(count))
+                    .ok_or(IndexError::ResourceLimited)?;
+                if self.read_rows > seal.rows {
+                    return Err(corrupt("ordered cold run cardinality"));
+                }
+            }
             self.page = self
                 .page
                 .checked_add(1)
@@ -1592,7 +2186,7 @@ impl PreviousKey {
 
     fn admit_next_term(
         prior: Option<&Self>,
-        row: RowView<'_>,
+        row: &RowView<'_>,
         budget: &mut WorkBudget,
         unordered: &'static str,
     ) -> Result<Option<PostingTermKey>, IndexError> {
@@ -1600,7 +2194,7 @@ impl PreviousKey {
             match previous.term().cmp(row.term) {
                 Ordering::Less => {}
                 Ordering::Equal if previous.owner < row.owner => return Ok(None),
-                _ => return Err(corrupt(unordered)),
+                Ordering::Equal | Ordering::Greater => return Err(corrupt(unordered)),
             }
         }
         measured_copy(row.term.len(), budget)?;
@@ -1617,7 +2211,7 @@ impl PreviousKey {
 }
 
 fn direct_merge_credit(runs: usize) -> Result<MemoryCreditLimits, IndexError> {
-    if runs < 2 || runs > DIRECT_FAN_IN {
+    if !(2..=DIRECT_FAN_IN).contains(&runs) {
         return Err(IndexError::ResourceLimited);
     }
     // Every reader retains at most one checked 128 KiB packet and one
@@ -1703,10 +2297,22 @@ impl MergeHeadHeap {
             return Err(IndexError::ResourceLimited);
         }
         self.slots.push(slot);
-        let mut child = self.slots.len() - 1;
+        let mut child = self
+            .slots
+            .len()
+            .checked_sub(1)
+            .ok_or(IndexError::ResourceLimited)?;
         while child != 0 {
-            let parent = (child - 1) / 2;
-            if Self::compare(readers, self.slots[child], self.slots[parent])? != Ordering::Less {
+            let parent = child
+                .checked_sub(1)
+                .ok_or(IndexError::ResourceLimited)?
+                .div_euclid(2);
+            if Self::compare(
+                readers,
+                *self.slots.get(child).ok_or(IndexError::ResourceLimited)?,
+                *self.slots.get(parent).ok_or(IndexError::ResourceLimited)?,
+            )? != Ordering::Less
+            {
                 break;
             }
             self.slots.swap(child, parent);
@@ -1722,7 +2328,10 @@ impl MergeHeadHeap {
         if self.slots.is_empty() {
             return Ok(Some(last));
         }
-        let first = std::mem::replace(&mut self.slots[0], last);
+        let first = std::mem::replace(
+            self.slots.get_mut(0).ok_or(IndexError::ResourceLimited)?,
+            last,
+        );
         let mut parent = 0_usize;
         loop {
             let left = parent
@@ -1733,13 +2342,23 @@ impl MergeHeadHeap {
                 break;
             }
             let right = left.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-            let mut child = left;
-            if right < self.slots.len()
-                && Self::compare(readers, self.slots[right], self.slots[left])? == Ordering::Less
+            let child = if right < self.slots.len()
+                && Self::compare(
+                    readers,
+                    *self.slots.get(right).ok_or(IndexError::ResourceLimited)?,
+                    *self.slots.get(left).ok_or(IndexError::ResourceLimited)?,
+                )? == Ordering::Less
             {
-                child = right;
-            }
-            if Self::compare(readers, self.slots[child], self.slots[parent])? != Ordering::Less {
+                right
+            } else {
+                left
+            };
+            if Self::compare(
+                readers,
+                *self.slots.get(child).ok_or(IndexError::ResourceLimited)?,
+                *self.slots.get(parent).ok_or(IndexError::ResourceLimited)?,
+            )? != Ordering::Less
+            {
                 break;
             }
             self.slots.swap(child, parent);
@@ -1759,15 +2378,23 @@ fn merge_group(
     maximum_runs: usize,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    let len =
-        usize::try_from(runs.end - runs.start).map_err(|_error| IndexError::ResourceLimited)?;
+    let len = usize::try_from(
+        runs.end
+            .checked_sub(runs.start)
+            .ok_or(IndexError::ResourceLimited)?,
+    )
+    .map_err(|_error| IndexError::ResourceLimited)?;
     if len == 0 || len > maximum_runs {
         return Err(IndexError::ResourceLimited);
     }
     let _heads = budget.reserve_memory(
         width(
-            len.checked_mul(std::mem::size_of::<RunReader<'_>>() + 1024)
-                .ok_or(IndexError::ResourceLimited)?,
+            len.checked_mul(
+                std::mem::size_of::<RunReader<'_>>()
+                    .checked_add(1024)
+                    .ok_or(IndexError::ResourceLimited)?,
+            )
+            .ok_or(IndexError::ResourceLimited)?,
         )?,
         MemoryLifetime::Temporary,
     )?;
@@ -1808,17 +2435,26 @@ fn merge_group(
                 .head_view()?;
             let term = PreviousKey::admit_next_term(
                 prior.as_ref(),
-                row,
+                &row,
                 budget,
                 "duplicate or unordered merge key",
             )?;
-            if !writer.can_push(row)? {
+            let can_push = if spool.postings.cold {
+                writer.plan_ordered_cold(&row)?.is_some()
+            } else {
+                writer.can_push(&row)?
+            };
+            if !can_push {
                 writer.finish(spool, next, output, budget)?;
             }
-            writer.push(row, budget)?;
+            if spool.postings.cold {
+                writer.push_ordered_cold(&row, budget)?;
+            } else {
+                writer.push(&row, budget)?;
+            }
             if let Some(terms) = terms.as_mut() {
                 let completed = prior.as_ref().filter(|_| term.is_some());
-                terms.observe(spool, completed, row, budget)?;
+                terms.observe(spool, completed, &row, budget)?;
             }
             PreviousKey::advance(&mut prior, term, row.owner);
         }
@@ -1855,7 +2491,7 @@ impl TermAccumulator {
         &mut self,
         spool: &TextSpool,
         completed: Option<&PreviousKey>,
-        row: RowView<'_>,
+        row: &RowView<'_>,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         if let Some(prior) = completed {
@@ -1909,12 +2545,12 @@ fn build_term_packets(
         let row = reader.head_view()?;
         let term = PreviousKey::admit_next_term(
             prior.as_ref(),
-            row,
+            &row,
             budget,
             "duplicate or unordered single-run key",
         )?;
         let completed = prior.as_ref().filter(|_| term.is_some());
-        terms.observe(spool, completed, row, budget)?;
+        terms.observe(spool, completed, &row, budget)?;
         PreviousKey::advance(&mut prior, term, row.owner);
         reader.head = None;
     }
@@ -1970,12 +2606,14 @@ impl TermPacketWriter {
         {
             self.finish(spool, budget)?;
         }
-        if self
-            .last
-            .as_ref()
-            .is_some_and(|last| &self.bytes[last.clone()] >= term)
-        {
-            return Err(corrupt("term metadata order"));
+        if let Some(last) = self.last.as_ref() {
+            let previous = self
+                .bytes
+                .get(last.clone())
+                .ok_or(IndexError::ResourceLimited)?;
+            if previous >= term {
+                return Err(corrupt("term metadata order"));
+            }
         }
         measured_copy(length, budget)?;
         self.bytes.extend_from_slice(
@@ -2000,16 +2638,29 @@ impl TermPacketWriter {
         if self.count == 0 {
             return budget.checkpoint();
         }
-        self.bytes[..8].copy_from_slice(TERM_MAGIC);
-        self.bytes[8..10].copy_from_slice(&self.count.to_be_bytes());
-        let digest = Sha256::digest(&self.bytes[PACKET_HEADER..]);
-        self.bytes[10..42].copy_from_slice(&digest);
+        self.bytes
+            .get_mut(..8)
+            .ok_or(IndexError::ResourceLimited)?
+            .copy_from_slice(TERM_MAGIC);
+        self.bytes
+            .get_mut(8..10)
+            .ok_or(IndexError::ResourceLimited)?
+            .copy_from_slice(&self.count.to_be_bytes());
+        let digest = Sha256::digest(
+            self.bytes
+                .get(PACKET_HEADER..)
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        self.bytes
+            .get_mut(10..42)
+            .ok_or(IndexError::ResourceLimited)?
+            .copy_from_slice(&digest);
         let first = self.first.clone().ok_or(IndexError::ResourceLimited)?;
         let last = self.last.clone().ok_or(IndexError::ResourceLimited)?;
         spool.insert_term_packet(
             self.sequence,
-            &self.bytes[first],
-            &self.bytes[last],
+            self.bytes.get(first).ok_or(IndexError::ResourceLimited)?,
+            self.bytes.get(last).ok_or(IndexError::ResourceLimited)?,
             &self.bytes,
             budget,
         )?;
@@ -2031,6 +2682,8 @@ struct TermPacket<'row> {
     remaining: u16,
 }
 
+type DecodedTerm<'row> = (&'row [u8], u64, u64);
+
 impl<'row> TermPacket<'row> {
     fn parse(bytes: &'row [u8], first: &[u8], last: &[u8]) -> Result<Self, IndexError> {
         if bytes.len() < PACKET_HEADER
@@ -2040,13 +2693,23 @@ impl<'row> TermPacket<'row> {
             return Err(corrupt("term packet header"));
         }
         let count = u16::from_be_bytes(
-            bytes[8..10]
+            bytes
+                .get(8..10)
+                .ok_or_else(|| corrupt("term count"))?
                 .try_into()
                 .map_err(|_error| corrupt("term count"))?,
         );
         if count == 0
             || count > 64
-            || Sha256::digest(&bytes[PACKET_HEADER..]).as_slice() != &bytes[10..42]
+            || Sha256::digest(
+                bytes
+                    .get(PACKET_HEADER..)
+                    .ok_or_else(|| corrupt("term packet digest or count"))?,
+            )
+            .as_slice()
+                != bytes
+                    .get(10..42)
+                    .ok_or_else(|| corrupt("term packet digest or count"))?
         {
             return Err(corrupt("term packet digest or count"));
         }
@@ -2075,13 +2738,16 @@ impl<'row> TermPacket<'row> {
             remaining: count,
         })
     }
-    fn next(&mut self) -> Result<Option<(&[u8], u64, u64)>, IndexError> {
+    fn next(&mut self) -> Result<Option<DecodedTerm<'_>>, IndexError> {
         if self.remaining == 0 {
             return Ok(None);
         }
         let (term, added, removed, end) = decode_term(self.bytes, self.offset)?;
         self.offset = end;
-        self.remaining -= 1;
+        self.remaining = self
+            .remaining
+            .checked_sub(1)
+            .ok_or(IndexError::ResourceLimited)?;
         Ok(Some((term, added, removed)))
     }
 }
@@ -2102,12 +2768,14 @@ fn decode_term(bytes: &[u8], begin: usize) -> Result<(&[u8], u64, u64, usize), I
         .get(offset..end)
         .ok_or_else(|| corrupt("truncated term counts"))?;
     let added = u64::from_be_bytes(
-        pair[..8]
+        pair.get(..8)
+            .ok_or_else(|| corrupt("truncated term counts"))?
             .try_into()
             .map_err(|_error| corrupt("added count"))?,
     );
     let removed = u64::from_be_bytes(
-        pair[8..]
+        pair.get(8..)
+            .ok_or_else(|| corrupt("truncated term counts"))?
             .try_into()
             .map_err(|_error| corrupt("removed count"))?,
     );
@@ -2120,7 +2788,7 @@ impl TextSpool {
         phase: i64,
         run: i64,
         page: i64,
-        fences: PostingPacketFences<'_>,
+        fences: &PostingPacketFences<'_>,
         payload: &[u8],
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
@@ -2155,6 +2823,32 @@ impl TextSpool {
             ));
         }
         Ok(())
+    }
+
+    fn has_posting_packet_at_or_after(
+        &self,
+        phase: i64,
+        run: i64,
+        page: i64,
+        budget: &mut WorkBudget,
+    ) -> Result<bool, IndexError> {
+        budget.charge(WorkUsage {
+            reads: 1,
+            bytes: 4096,
+            ..WorkUsage::default()
+        })?;
+        let db = self.db.scoped(budget)?;
+        let mut statement = db.prepare_cached(
+            "SELECT page FROM posting_packet WHERE phase=?1 AND run=?2 AND page>=?3 ORDER BY page LIMIT 1",
+        ).map_err(|error| sql(&error))?;
+        let mut rows = statement
+            .query(params![phase, run, page])
+            .map_err(|error| sql(&error))?;
+        let found = rows.next().map_err(|error| sql(&error))?.is_some();
+        if rows.next().map_err(|error| sql(&error))?.is_some() {
+            return Err(corrupt("duplicate ordered cold run EOF row"));
+        }
+        Ok(found)
     }
 
     fn read_posting_packet(
@@ -2228,7 +2922,9 @@ impl TextSpool {
                 last: (last_term, last_owner),
             }),
             start,
-            phase == 0 && run > 0 && page == 0 && self.postings.cold,
+            // Cold merge output uses the same packet-local grouped wire as
+            // phase zero; warm edits retain the original packet format.
+            self.postings.cold,
         )?;
         if rows.next().map_err(|error| sql(&error))?.is_some() {
             return Err(corrupt("duplicate packet identity"));
@@ -2276,7 +2972,7 @@ impl TextSpool {
         Ok(())
     }
 
-    /// Consume validated metadata while its SQLite row is live. The callback
+    /// Consume validated metadata while its `SQLite` row is live. The callback
     /// may only prepare local data; the query must reach EOF before it escapes.
     fn with_term_packet_at<T>(
         &self,
@@ -2351,13 +3047,17 @@ impl TextSpool {
         let mut result = TermPage::new();
         let _cursor_memory = budget.reserve_memory(1024, MemoryLifetime::Temporary)?;
         let mut cursor = [0_u8; 1024];
-        let mut cursor_len = 0_usize;
-        if let Some(after) = after {
+        let mut cursor_len = if let Some(after) = after {
             check_term_key(after)?;
             measured_copy(after.len(), budget)?;
-            cursor[..after.len()].copy_from_slice(after);
-            cursor_len = after.len();
-        }
+            cursor
+                .get_mut(..after.len())
+                .ok_or(IndexError::ResourceLimited)?
+                .copy_from_slice(after);
+            after.len()
+        } else {
+            0_usize
+        };
         if let Some(surface) = surface {
             if surface > 1 {
                 return Err(IndexError::InvalidInput(
@@ -2373,7 +3073,9 @@ impl TextSpool {
         }
         loop {
             budget.checkpoint()?;
-            let lower = &cursor[..cursor_len];
+            let lower = cursor
+                .get(..cursor_len)
+                .ok_or(IndexError::ResourceLimited)?;
             let before = result.len();
             let complete =
                 self.with_term_packet_at(lower, false, budget, |mut packet, budget| {
@@ -2382,10 +3084,11 @@ impl TextSpool {
                             continue;
                         }
                         if let Some(surface) = surface {
-                            if term[0] < surface {
+                            let first = *term.first().ok_or_else(|| corrupt("empty term"))?;
+                            if first < surface {
                                 continue;
                             }
-                            if term[0] > surface {
+                            if first > surface {
                                 return Ok(true);
                             }
                         }
@@ -2408,7 +3111,10 @@ impl TextSpool {
             }
             let last = result.last().ok_or(IndexError::ResourceLimited)?.as_slice();
             measured_copy(last.len(), budget)?;
-            cursor[..last.len()].copy_from_slice(last);
+            cursor
+                .get_mut(..last.len())
+                .ok_or(IndexError::ResourceLimited)?
+                .copy_from_slice(last);
             cursor_len = last.len();
         }
         Ok(result)
@@ -2466,7 +3172,7 @@ impl TextSpool {
                     first
                 } else {
                     terms
-                        .get(slot - 1)
+                        .get(slot.checked_sub(1).ok_or(IndexError::ResourceLimited)?)
                         .ok_or(IndexError::ResourceLimited)?
                         .as_slice()
                 };
@@ -2484,8 +3190,9 @@ impl TextSpool {
                         if term != expected.as_slice() {
                             return Err(corrupt("cardinality key differs"));
                         }
-                        deltas[slot] = PostingDelta { added, removed };
-                        slot += 1;
+                        *deltas.get_mut(slot).ok_or(IndexError::ResourceLimited)? =
+                            PostingDelta { added, removed };
+                        slot = slot.checked_add(1).ok_or(IndexError::ResourceLimited)?;
                     }
                     Ok(())
                 })?
@@ -2571,7 +3278,7 @@ pub(super) struct PackedRangeCursor<'a> {
     packet: Option<Packet>,
     reuse: Option<PacketReuse<'a>>,
     initialized: bool,
-    _key_memory: Option<MemoryLease>,
+    key_memory: Option<MemoryLease>,
     _prior_memory: Option<MemoryLease>,
     prior_term: [u8; 1024],
     prior_len: usize,
@@ -2623,7 +3330,7 @@ impl<'a> PackedRangeCursor<'a> {
             packet: None,
             reuse,
             initialized: false,
-            _key_memory: key_memory,
+            key_memory,
             _prior_memory: prior_memory,
             prior_term: [0; 1024],
             prior_len: 0,
@@ -2638,12 +3345,18 @@ impl<'a> PackedRangeCursor<'a> {
             && self.packet.as_ref().is_some_and(|packet| packet.reusable)
             && let Some(packet) = self.packet.take()
         {
-            let displaced =
-                reuse.cache.slots.borrow_mut()[reuse.surface].replace(RememberedPacket {
-                    source: Rc::clone(&reuse.source),
-                    phase,
-                    page,
-                    packet,
+            let displaced = reuse
+                .cache
+                .slots
+                .borrow_mut()
+                .get_mut(reuse.surface)
+                .and_then(|slot| {
+                    slot.replace(RememberedPacket {
+                        source: Rc::clone(&reuse.source),
+                        phase,
+                        page,
+                        packet,
+                    })
                 });
             drop(displaced);
         }
@@ -2687,7 +3400,7 @@ impl<'a> PackedRangeCursor<'a> {
                 budget.reserve_memory(width(start.len())?, MemoryLifetime::Temporary)?;
             measured_copy(start.len(), budget)?;
             self.start = start.to_vec();
-            self._key_memory = key_memory;
+            self.key_memory = key_memory;
             self.remember_packet();
             self.packet = None;
             self.next_page = page;
@@ -2700,6 +3413,10 @@ impl<'a> PackedRangeCursor<'a> {
         Ok(())
     }
 
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "the higher-ranked callback lifetime requires an explicit closure"
+    )]
     pub(super) fn next(
         &mut self,
         budget: &mut WorkBudget,
@@ -2731,7 +3448,10 @@ impl<'a> PackedRangeCursor<'a> {
                     let row = decoded.view;
                     if first_in_packet
                         && self.prior_len != 0
-                        && self.prior_term[..self.prior_len]
+                        && self
+                            .prior_term
+                            .get(..self.prior_len)
+                            .ok_or(IndexError::ResourceLimited)?
                             .cmp(row.term)
                             .then(self.prior_owner.cmp(&row.owner))
                             != Ordering::Less
@@ -2751,7 +3471,10 @@ impl<'a> PackedRangeCursor<'a> {
                         .ok_or(IndexError::ResourceLimited)?,
                     budget,
                 )?;
-                self.prior_term[..term.len()].copy_from_slice(term);
+                self.prior_term
+                    .get_mut(..term.len())
+                    .ok_or(IndexError::ResourceLimited)?
+                    .copy_from_slice(term);
                 self.prior_len = term.len();
                 self.prior_owner = owner;
                 self.remember_packet();
@@ -2771,7 +3494,13 @@ impl<'a> PackedRangeCursor<'a> {
                 if packet.is_none() {
                     // A miss replaces this surface's slot. The active
                     // packet and the other surface never need a third grant.
-                    let displaced = reuse.cache.slots.borrow_mut()[reuse.surface].take();
+                    let displaced = reuse
+                        .cache
+                        .slots
+                        .borrow_mut()
+                        .get_mut(reuse.surface)
+                        .ok_or(IndexError::ResourceLimited)?
+                        .take();
                     drop(displaced);
                 }
                 packet
@@ -2859,7 +3588,7 @@ impl TextSpool {
         let mut selected_count = 0_usize;
         for (slot, selected) in eligible.iter().copied().enumerate() {
             if selected {
-                offsets[slot] = selected_count
+                *offsets.get_mut(slot).ok_or(IndexError::ResourceLimited)? = selected_count
                     .checked_mul(8)
                     .ok_or(IndexError::ResourceLimited)?;
                 selected_count = selected_count
@@ -2902,7 +3631,8 @@ impl TextSpool {
                 continue;
             }
             let first = terms.get(start).ok_or(IndexError::ResourceLimited)?;
-            let last = terms.get(end - 1).ok_or(IndexError::ResourceLimited)?;
+            let last_slot = end.checked_sub(1).ok_or(IndexError::ResourceLimited)?;
+            let last = terms.get(last_slot).ok_or(IndexError::ResourceLimited)?;
             if let Some(cursor) = range.as_mut() {
                 cursor.reposition(first.as_slice(), budget)?;
             } else {
@@ -2924,15 +3654,20 @@ impl TextSpool {
                 let slot = terms
                     .binary_search_by(|key| key.as_slice().cmp(row.term.as_slice()))
                     .map_err(|_error| corrupt("sparse posting term outside selected page"))?;
-                seen[slot] = true;
-                if eligible[slot] && lengths[slot] < 8 {
-                    let index = offsets[slot]
-                        .checked_add(usize::from(lengths[slot]))
+                *seen.get_mut(slot).ok_or(IndexError::ResourceLimited)? = true;
+                let selected = *eligible.get(slot).ok_or(IndexError::ResourceLimited)?;
+                let length = lengths.get_mut(slot).ok_or(IndexError::ResourceLimited)?;
+                if selected && *length < 8 {
+                    let index = offsets
+                        .get(slot)
+                        .ok_or(IndexError::ResourceLimited)?
+                        .checked_add(usize::from(*length))
                         .ok_or(IndexError::ResourceLimited)?;
-                    rows[index] = Some(row.ordinal(0, budget)?);
-                    lengths[slot] += 1;
-                } else if eligible[slot] {
-                    lengths[slot] = 9;
+                    *rows.get_mut(index).ok_or(IndexError::ResourceLimited)? =
+                        Some(row.ordinal(0, budget)?);
+                    *length = length.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                } else if selected {
+                    *length = 9;
                 }
             }
         }
@@ -2948,11 +3683,17 @@ impl TextSpool {
             return PostingRootCursors::fallback(self, budget);
         }
         for slot in 0..terms.len() {
-            if !seen[slot] {
+            if !seen.get(slot).copied().ok_or(IndexError::ResourceLimited)? {
                 return Err(corrupt("sparse posting selected term missing"));
             }
-            if eligible[slot] && (1..=8).contains(&lengths[slot]) {
-                keys[slot] = Some(PreparedKey::copy(
+            let length = *lengths.get(slot).ok_or(IndexError::ResourceLimited)?;
+            if eligible
+                .get(slot)
+                .copied()
+                .ok_or(IndexError::ResourceLimited)?
+                && (1..=8).contains(&length)
+            {
+                *keys.get_mut(slot).ok_or(IndexError::ResourceLimited)? = Some(PreparedKey::copy(
                     terms
                         .get(slot)
                         .ok_or(IndexError::ResourceLimited)?
@@ -2960,7 +3701,7 @@ impl TextSpool {
                     budget,
                 )?);
             } else {
-                lengths[slot] = 0;
+                *lengths.get_mut(slot).ok_or(IndexError::ResourceLimited)? = 0;
             }
         }
         let mut result = PostingRootCursors::fallback(self, budget)?;
@@ -2970,7 +3711,7 @@ impl TextSpool {
         result.lengths = lengths;
         result.offsets = offsets;
         result.rows = rows;
-        result._row_memory = memory;
+        result.row_memory = memory;
         Ok(result)
     }
 }
@@ -3052,7 +3793,7 @@ mod dictionary_capacity_tests {
         let mut writer = PacketWriter::new(&budget, MemoryLifetime::Temporary)?;
         for owner in [[1; 32], [2; 32]] {
             writer.push(
-                RowView {
+                &RowView {
                     term,
                     owner,
                     expected: None,
@@ -3100,8 +3841,8 @@ mod dictionary_capacity_tests {
                 expected: Some(MapValue::Object(reference(index * 2))),
                 next: Some(MapValue::Object(reference(index * 2 + 1))),
             };
-            assert!(writer.can_push(row)?);
-            writer.push(row, &mut budget)?;
+            assert!(writer.can_push(&row)?);
+            writer.push(&row, &mut budget)?;
         }
         assert_eq!(writer.references.len(), 1_800);
         assert_eq!(writer.references.capacity(), initial_references);

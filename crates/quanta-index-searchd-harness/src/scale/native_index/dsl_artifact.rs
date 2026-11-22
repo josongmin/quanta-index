@@ -8,22 +8,52 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result, ensure};
 use nix::fcntl::OFlag;
+use quanta_index_contract::{
+    HistoryQueryRequest,
+    index::ViewRef,
+    native_protocol::{
+        NativeDslPageV1, NativeDslQueryV1, NativeHistoryPage, NativeReadSessionHistoryCutV1,
+    },
+};
+use serde::Deserialize as _;
 use serde_json::{Value, json};
 
+use super::dsl_history::{HISTORY_SAMPLES_SCHEMA, history_query, verify_sample};
+use super::dsl_retained::{
+    retained_config_digest, retained_dsl_query, retained_fixture_digest, verify_retained_page,
+};
+use super::dsl_text::{NATIVE_DSL_TEXT_REPOSITORY, native_text_fixture_digest};
 use super::executable::NativeExecutable;
 use crate::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, GitHeadV1, HostV1, LatencySummary,
-    PhaseDurationsV1, ResourceUsageV1, config_digest, corpus_digest, corpus_digest_refs,
+    PhaseDurationsV1, ResourceUsageV1, config_digest, corpus_digest,
 };
-use crate::history_fixture::history_fixture_corpus_files;
+use crate::history_fixture::{HISTORY_LEDGER, history_fixture_corpus_files};
 use crate::scenarios::{
-    FixtureKind, LEXICAL_CORPUS, NATIVE_TEXT_FILE_SCENARIOS, SCENARIOS, scenario_by_id,
+    DslBenchScenario, FixtureKind, LEXICAL_CORPUS, NATIVE_TEXT_FILE_SCENARIOS, SCENARIOS,
+    scenario_by_id,
 };
 
 const MATRIX_SCHEMA: &str = "native-dsl-matrix-v1";
 const MAX_MATRIX_BYTES: u64 = 16 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MatrixQualification {
+    Diagnostic,
+    Authority,
+}
+
+impl MatrixQualification {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Diagnostic => "diagnostic",
+            Self::Authority => "authority",
+        }
+    }
+}
+
 struct ValidatedMatrix {
+    qualification: MatrixQualification,
     mode: BenchMode,
     head: GitHeadV1,
     runner_sha256: String,
@@ -32,11 +62,14 @@ struct ValidatedMatrix {
     text_fixture_sha256: String,
     text_config_sha256: String,
     history_config_sha256: String,
+    retained_fixture_sha256: BTreeMap<String, String>,
+    retained_config_sha256: BTreeMap<String, String>,
     timing: ReportTiming,
     text_query_deadline_ms: f64,
     reports_per_scenario: usize,
     samples: BTreeMap<String, Vec<f64>>,
     report_count: usize,
+    daemon_peak_rss_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,8 +81,8 @@ struct ReportTiming {
     pass_settle_ms: f64,
 }
 
-/// Assemble a diagnostic common-schema artifact. This does not qualify the
-/// remaining DSL scenarios or turn assembler-process RSS into daemon RSS.
+/// Assemble a validated common-schema artifact. Authority additionally requires
+/// complete Linux daemon RSS and the registered per-row sample floor.
 pub fn assemble_native_dsl_artifact(
     input: &Path,
     output: &Path,
@@ -79,6 +112,7 @@ pub fn assemble_native_dsl_artifact(
         "Native DSL source HEAD differs from matrix capture"
     );
     let host = HostV1::observe()?;
+    validate_qualification_host(valid.qualification, &host)?;
     let resources = ResourceUsageV1::observe_self()?;
     let artifact = build_artifact(
         valid,
@@ -249,15 +283,111 @@ fn finite_nonnegative(report: &Value, field: &str, id: &str) -> Result<f64> {
         .with_context(|| format!("Native DSL {id} has missing or invalid {field}"))
 }
 
+fn validate_history_report(
+    report: &Value,
+    scenario: &DslBenchScenario,
+    binding: &mut Option<NativeReadSessionHistoryCutV1>,
+) -> Result<()> {
+    ensure!(
+        required_str(report, "result_shape")? == scenario.expected_shape.as_str(),
+        "History result shape differs"
+    );
+    let query =
+        HistoryQueryRequest::deserialize(report.get("query").context("missing History query")?)
+            .context("decode History query")?;
+    ensure!(
+        query == history_query(scenario),
+        "History query differs from canonical scenario"
+    );
+    let witness = NativeReadSessionHistoryCutV1::deserialize(
+        report
+            .get("published")
+            .context("missing History publication witness")?,
+    )
+    .context("decode History publication witness")?;
+    let page = NativeHistoryPage::deserialize(
+        report
+            .get("observed_page")
+            .context("missing observed History SDK page")?,
+    )
+    .context("decode observed History SDK page")?;
+    page.validate_reply(
+        witness.session,
+        witness.view,
+        witness.instance,
+        &query,
+        None,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let generation = &witness.cut.generation;
+    let fixture = HISTORY_LEDGER.build_batch(
+        generation.repo_id.clone(),
+        generation.revision_id.clone(),
+        generation.generation,
+    )?;
+    verify_sample(&page, &witness, &fixture, scenario.expected_shape)?;
+    ensure!(
+        scenario.expected_count == Some(page.matched),
+        "History count differs from scenario gold"
+    );
+    if let Some(previous) = binding {
+        // Every process opens its own session against the one retained fixture.
+        ensure!(
+            previous.view == witness.view
+                && previous.instance == witness.instance
+                && previous.member == witness.member
+                && previous.cut == witness.cut,
+            "History reports name different published members or cuts"
+        );
+    } else {
+        *binding = Some(witness);
+    }
+    Ok(())
+}
+
+fn validate_retained_report(report: &Value, scenario: &DslBenchScenario) -> Result<()> {
+    let query =
+        NativeDslQueryV1::deserialize(report.get("query").context("missing retained DSL query")?)
+            .context("decode retained DSL query")?;
+    ensure!(
+        query == retained_dsl_query(scenario)?,
+        "retained DSL query differs from canonical scenario"
+    );
+    let query_digest = query.digest().map_err(anyhow::Error::msg)?;
+    let published = required_array(report, "published")?;
+    ensure!(
+        u64::try_from(published.len())?
+            == report
+                .get("passes")
+                .and_then(Value::as_u64)
+                .context("missing retained DSL passes")?,
+        "retained DSL publication count differs"
+    );
+    for item in published {
+        let view = ViewRef::deserialize(item.get("view").context("missing retained DSL view")?)
+            .context("decode retained DSL view")?;
+        let page =
+            NativeDslPageV1::deserialize(item.get("page").context("missing retained DSL page")?)
+                .context("decode retained DSL page")?;
+        ensure!(
+            page.query == query_digest,
+            "retained DSL page query differs from the registered query"
+        );
+        verify_retained_page(scenario, view, &page)?;
+    }
+    Ok(())
+}
+
 fn validate_matrix(input: &Value) -> Result<ValidatedMatrix> {
     ensure!(
         required_str(input, "schema")? == MATRIX_SCHEMA,
         "wrong Native DSL matrix schema"
     );
-    ensure!(
-        required_str(input, "qualification")? == "diagnostic",
-        "Native DSL input qualification must be diagnostic"
-    );
+    let qualification = match required_str(input, "qualification")? {
+        "diagnostic" => MatrixQualification::Diagnostic,
+        "authority" => MatrixQualification::Authority,
+        other => anyhow::bail!("unsupported Native DSL qualification {other}"),
+    };
     let mode = match required_str(input, "mode")? {
         "warm" => BenchMode::Warm,
         "cold" => BenchMode::Cold,
@@ -284,14 +414,34 @@ fn validate_matrix(input: &Value) -> Result<ValidatedMatrix> {
             == NATIVE_TEXT_FILE_SCENARIOS.len()
                 + SCENARIOS
                     .iter()
+                    .filter(|s| s.fixture == FixtureKind::LexicalCorpus
+                        && s.expected_typed_error_code == Some("PARSE_FAIL"))
+                    .count()
+                + SCENARIOS
+                    .iter()
                     .filter(|s| s.fixture == FixtureKind::HistoryLedger)
+                    .count()
+                + SCENARIOS
+                    .iter()
+                    .filter(|s| matches!(
+                        s.fixture,
+                        FixtureKind::RuntimeCatalog | FixtureKind::StructuralTree
+                    ))
                     .count(),
-        "Native DSL matrix must contain the complete Native Text and History roster"
+        "Native DSL matrix must contain the complete Native Text, error, History and retained roster"
     );
     let mut expected = BTreeMap::new();
     for (id, paths) in NATIVE_TEXT_FILE_SCENARIOS {
         ensure!(
             expected.insert(*id, ("text", Some(*paths))).is_none(),
+            "duplicate Native DSL registry ID"
+        );
+    }
+    for scenario in SCENARIOS.iter().filter(|s| {
+        s.fixture == FixtureKind::LexicalCorpus && s.expected_typed_error_code == Some("PARSE_FAIL")
+    }) {
+        ensure!(
+            expected.insert(scenario.id, ("error", None)).is_none(),
             "duplicate Native DSL registry ID"
         );
     }
@@ -304,8 +454,19 @@ fn validate_matrix(input: &Value) -> Result<ValidatedMatrix> {
             "duplicate Native DSL registry ID"
         );
     }
+    for scenario in SCENARIOS.iter().filter(|s| {
+        matches!(
+            s.fixture,
+            FixtureKind::RuntimeCatalog | FixtureKind::StructuralTree
+        )
+    }) {
+        ensure!(
+            expected.insert(scenario.id, ("retained", None)).is_none(),
+            "duplicate Native DSL registry ID"
+        );
+    }
     ensure!(
-        NATIVE_TEXT_FILE_SCENARIOS.len() == 7 && expected.len() == 14,
+        NATIVE_TEXT_FILE_SCENARIOS.len() == 9 && expected.len() == 33,
         "Native DSL supported roster changed; review artifact assembly"
     );
     let mut seen = BTreeSet::new();
@@ -314,9 +475,13 @@ fn validate_matrix(input: &Value) -> Result<ValidatedMatrix> {
     let mut text_fixture = None;
     let mut text_config = None;
     let mut history_config = None;
+    let mut retained_fixture = BTreeMap::new();
+    let mut retained_config = BTreeMap::new();
+    let mut history_binding = None;
     let mut common_timing = None;
     let mut text_query_deadline_ms = None;
     let mut cold_repeats = None;
+    let mut daemon_peak_rss_bytes = Some(0_u64);
     for row in rows {
         let id = required_str(row, "scenario_id")?;
         let kind = required_str(row, "kind")?;
@@ -352,6 +517,8 @@ fn validate_matrix(input: &Value) -> Result<ValidatedMatrix> {
                     == daemon_sha256.trim_start_matches("sha256:"),
                 "Native DSL {id} daemon digest differs"
             );
+            daemon_peak_rss_bytes =
+                accumulate_daemon_peak_rss(daemon_peak_rss_bytes, wrapper, kind == "error", id)?;
             let report = if kind == "history" {
                 ensure!(
                     required_str(wrapper, "schema")?
@@ -367,15 +534,20 @@ fn validate_matrix(input: &Value) -> Result<ValidatedMatrix> {
             } else {
                 wrapper
             };
+            let expected_schema = if kind == "history" {
+                HISTORY_SAMPLES_SCHEMA.to_owned()
+            } else {
+                format!("native-dsl-{kind}-samples-v1")
+            };
             ensure!(
-                required_str(report, "schema")? == format!("native-dsl-{kind}-samples-v1"),
+                required_str(report, "schema")? == expected_schema,
                 "Native DSL {id} report schema differs"
             );
             ensure!(
                 required_str(report, "scenario_id")? == id,
                 "Native DSL report scenario differs"
             );
-            if kind == "text" {
+            if kind == "text" || kind == "error" {
                 ensure!(
                     required_str(report, "query_text")? == scenario.query.resolve().as_ref(),
                     "Native DSL {id} Text query differs"
@@ -384,26 +556,55 @@ fn validate_matrix(input: &Value) -> Result<ValidatedMatrix> {
                     required_str(report, "query_syntax")? == scenario.syntax.as_str(),
                     "Native DSL {id} syntax differs"
                 );
-                ensure!(
-                    required_str(report, "result_unit")? == "file",
-                    "Native DSL {id} result unit differs"
-                );
-                let paths = required_array(report, "matched_files")?;
-                ensure!(
-                    paths
-                        .iter()
-                        .map(Value::as_str)
-                        .collect::<Option<Vec<_>>>()
-                        .as_deref()
-                        == *expected_paths,
-                    "Native DSL {id} file oracle differs"
-                );
+                if kind == "text" {
+                    ensure!(
+                        required_str(report, "result_unit")? == "file",
+                        "Native DSL {id} result unit differs"
+                    );
+                    let paths = required_array(report, "matched_files")?;
+                    ensure!(
+                        paths
+                            .iter()
+                            .map(Value::as_str)
+                            .collect::<Option<Vec<_>>>()
+                            .as_deref()
+                            == *expected_paths,
+                        "Native DSL {id} file oracle differs"
+                    );
+                } else {
+                    let count = report
+                        .get("passes")
+                        .and_then(Value::as_u64)
+                        .and_then(|passes| {
+                            report
+                                .get("samples_per_pass")
+                                .and_then(Value::as_u64)
+                                .and_then(|samples| passes.checked_mul(samples))
+                        })
+                        .context("Native DSL error sample count is missing or overflows")?;
+                    ensure!(
+                        required_str(report, "result_shape")? == scenario.expected_shape.as_str()
+                            && required_str(report, "typed_error_code")?
+                                == scenario
+                                    .expected_typed_error_code
+                                    .context("missing error gold")?
+                            && report.get("error_count").and_then(Value::as_u64) == Some(count)
+                            && report
+                                .get("engine_touched")
+                                .and_then(Value::as_array)
+                                .is_some_and(Vec::is_empty)
+                            && required_str(report, "measurement_scope")? == "client_preflight"
+                            && report.get("matched_files").is_none()
+                            && report.get("result_unit").is_none(),
+                        "Native DSL {id} error oracle or measurement scope differs"
+                    );
+                }
                 let fixture = required_str(report, "fixture_sha256")?;
                 let config = required_str(report, "config_template_sha256")?;
                 ensure!(
-                    fixture
-                        == corpus_digest_refs("native-dsl-text", LEXICAL_CORPUS.iter().copied()),
-                    "Native DSL {id} Text fixture digest differs from canonical corpus"
+                    required_str(report, "source_repo_id")? == NATIVE_DSL_TEXT_REPOSITORY
+                        && fixture == native_text_fixture_digest()?,
+                    "Native DSL {id} Text fixture bytes or repository differ from canonical corpus"
                 );
                 raw_sha256(config, "Text config_template_sha256")?;
                 retain_equal(&mut text_fixture, fixture, "Text fixture")?;
@@ -447,37 +648,34 @@ fn validate_matrix(input: &Value) -> Result<ValidatedMatrix> {
                             )),
                     "Native DSL {id} missing Text publication witness"
                 );
+            } else if kind == "history" {
+                validate_history_report(report, scenario, &mut history_binding)
+                    .with_context(|| format!("Native DSL {id} History evidence"))?;
             } else {
+                let fixture = required_str(report, "fixture_sha256")?;
+                let config = required_str(report, "config_template_sha256")?;
+                sha256(fixture, "retained fixture_sha256")?;
                 ensure!(
-                    required_str(report, "result_shape")? == scenario.expected_shape.as_str(),
-                    "Native DSL {id} History result shape differs"
+                    config == retained_config_digest()?,
+                    "Native DSL {id} retained config differs from the canonical workload"
                 );
-                let query = report
-                    .get("query")
-                    .context("missing Native History query")?;
-                let text_query = query
-                    .get("text_query")
-                    .context("missing Native History text query")?;
                 ensure!(
-                    required_str(text_query, "query_text")? == scenario.query.resolve().as_ref()
-                        && required_str(text_query, "syntax")? == scenario.syntax.as_str()
-                        && text_query.get("top_k").and_then(Value::as_u64)
-                            == Some(u64::from(crate::scenarios::TOP_K))
-                        && required_str(query, "order")? == "recency"
-                        && query.get("cursor").is_none_or(Value::is_null),
-                    "Native DSL {id} History query differs from canonical scenario"
+                    fixture == retained_fixture_digest(scenario.fixture)?,
+                    "Native DSL {id} retained fixture differs from canonical source"
                 );
-                let published = report
-                    .get("published")
-                    .context("missing Native History publication witness")?;
-                ensure!(
-                    published.get("view").is_some_and(|value| !value.is_null())
-                        && published.get("cut").is_some_and(|value| !value.is_null())
-                        && published
-                            .get("session")
-                            .is_some_and(|value| !value.is_null()),
-                    "Native DSL {id} incomplete History publication witness"
-                );
+                let key = scenario.fixture.as_str().to_owned();
+                retain_equal(
+                    retained_fixture.entry(key.clone()).or_insert(None),
+                    fixture,
+                    "retained fixture",
+                )?;
+                retain_equal(
+                    retained_config.entry(key).or_insert(None),
+                    config,
+                    "retained config",
+                )?;
+                validate_retained_report(report, scenario)
+                    .with_context(|| format!("Native DSL {id} retained evidence"))?;
             }
             let (report_samples, timing) = samples_for_report(report, mode, id)?;
             if let Some(previous) = common_timing {
@@ -499,7 +697,21 @@ fn validate_matrix(input: &Value) -> Result<ValidatedMatrix> {
         seen.len() == expected.len(),
         "Native DSL matrix is missing supported scenarios"
     );
+    if qualification == MatrixQualification::Authority {
+        ensure!(
+            daemon_peak_rss_bytes.is_some(),
+            "Native DSL authority requires measured RSS for every daemon-backed report"
+        );
+        let sample_floor = if mode == BenchMode::Warm { 200 } else { 20 };
+        for (id, samples) in &all_samples {
+            ensure!(
+                samples.len() >= sample_floor,
+                "Native DSL authority {id} requires at least {sample_floor} samples"
+            );
+        }
+    }
     Ok(ValidatedMatrix {
+        qualification,
         mode,
         head,
         runner_sha256,
@@ -508,12 +720,58 @@ fn validate_matrix(input: &Value) -> Result<ValidatedMatrix> {
         text_fixture_sha256: text_fixture.context("missing Text fixture binding")?,
         text_config_sha256: text_config.context("missing Text config binding")?,
         history_config_sha256: history_config.context("missing History config binding")?,
+        retained_fixture_sha256: retained_fixture
+            .into_iter()
+            .map(|(kind, value)| Ok((kind, value.context("missing retained fixture binding")?)))
+            .collect::<Result<_>>()?,
+        retained_config_sha256: retained_config
+            .into_iter()
+            .map(|(kind, value)| Ok((kind, value.context("missing retained config binding")?)))
+            .collect::<Result<_>>()?,
         timing: common_timing.context("missing Native DSL timing")?,
         text_query_deadline_ms: text_query_deadline_ms.context("missing Text query deadline")?,
         reports_per_scenario: cold_repeats.unwrap_or(1),
         samples: all_samples,
         report_count,
+        daemon_peak_rss_bytes,
     })
+}
+
+fn validate_qualification_host(qualification: MatrixQualification, host: &HostV1) -> Result<()> {
+    if qualification == MatrixQualification::Authority {
+        ensure!(
+            host.os == "linux",
+            "Native DSL authority requires a Linux assembler host"
+        );
+    }
+    Ok(())
+}
+
+fn accumulate_daemon_peak_rss(
+    current: Option<u64>,
+    report: &Value,
+    client_error: bool,
+    id: &str,
+) -> Result<Option<u64>> {
+    let peak = match report.get("daemon_peak_rss_bytes") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .filter(|bytes| *bytes > 0)
+                .with_context(|| format!("Native DSL {id} daemon RSS is invalid"))?,
+        ),
+    };
+    if client_error {
+        ensure!(
+            peak.is_none(),
+            "Native DSL {id} client error has daemon RSS"
+        );
+        return Ok(current);
+    }
+    Ok(current
+        .zip(peak)
+        .map(|(measured, observed)| measured.max(observed)))
 }
 
 fn retain_equal(slot: &mut Option<String>, value: &str, name: &str) -> Result<()> {
@@ -535,6 +793,11 @@ fn build_artifact(
     native_matrix_sha256: String,
     native_matrix: Value,
 ) -> BenchArtifactV1 {
+    let resources = valid
+        .daemon_peak_rss_bytes
+        .map_or(resources, |peak_rss_bytes| ResourceUsageV1 {
+            peak_rss_bytes,
+        });
     let dimension = format!("dsl-{}", valid.mode.as_str());
     let measured_ids = valid.samples.keys().cloned().collect::<Vec<_>>();
     let remaining_ids = SCENARIOS
@@ -542,6 +805,18 @@ fn build_artifact(
         .filter(|s| !valid.samples.contains_key(s.id))
         .map(|s| s.id)
         .collect::<Vec<_>>();
+    let error_ids = SCENARIOS
+        .iter()
+        .filter(|scenario| {
+            scenario.expected_typed_error_code == Some("PARSE_FAIL")
+                && valid.samples.contains_key(scenario.id)
+        })
+        .map(|scenario| scenario.id)
+        .collect::<BTreeSet<_>>();
+    let measurement_scope_by_scenario = error_ids
+        .iter()
+        .map(|id| ((*id).to_owned(), "client_preflight"))
+        .collect::<BTreeMap<_, _>>();
     let rows = SCENARIOS
         .iter()
         .map(|scenario| {
@@ -553,7 +828,11 @@ fn build_artifact(
                 result_shape: scenario.expected_shape,
                 latency: samples.and_then(|values| LatencySummary::from_samples_ms(values)),
                 qps: None,
-                error_count: 0,
+                error_count: if error_ids.contains(scenario.id) {
+                    samples.map_or(0, |values| values.len() as u64)
+                } else {
+                    0
+                },
                 timeout_count: 0,
                 result_count: samples.and_then(|_| {
                     if NATIVE_TEXT_FILE_SCENARIOS
@@ -568,8 +847,12 @@ fn build_artifact(
                         scenario.expected_count
                     }
                 }),
-                typed_error_code: None,
-                engine_touched: if samples.is_some() {
+                typed_error_code: if error_ids.contains(scenario.id) {
+                    scenario.expected_typed_error_code.map(str::to_owned)
+                } else {
+                    None
+                },
+                engine_touched: if samples.is_some() && !error_ids.contains(scenario.id) {
                     vec!["native".into()]
                 } else {
                     Vec::new()
@@ -585,12 +868,25 @@ fn build_artifact(
         .map(|(path, content)| ((*path).to_owned(), (*content).to_owned()))
         .collect::<Vec<_>>();
     corpus_files.extend(history_fixture_corpus_files());
-    let corpus_digest = corpus_digest(&dimension, &corpus_files);
+    let corpus_binding = json!({
+        "source_bytes_sha256": corpus_digest(&dimension, &corpus_files),
+        "text_fixture_sha256": valid.text_fixture_sha256,
+        "retained_fixture_sha256": valid.retained_fixture_sha256,
+    });
+    let corpus_digest = format!(
+        "sha256:{}",
+        super::hex_sha256(corpus_binding.to_string().as_bytes())
+    );
     let config_digest = config_digest(
         &dimension,
         &[
             ("text_config_sha256", valid.text_config_sha256.clone()),
             ("history_config_sha256", valid.history_config_sha256.clone()),
+            (
+                "retained_config_sha256",
+                serde_json::to_string(&valid.retained_config_sha256)
+                    .expect("validated retained config map"),
+            ),
             ("mode", valid.mode.as_str().into()),
             ("passes", valid.timing.passes.to_string()),
             (
@@ -626,13 +922,14 @@ fn build_artifact(
         disk_amplification: None,
         rows,
         detail: json!({
-            "qualification": "diagnostic",
+            "qualification": valid.qualification.as_str(),
             "source_schema": MATRIX_SCHEMA,
             "native_matrix_sha256": native_matrix_sha256,
             "native_matrix": native_matrix,
             "native_subset": { "measured": measured_ids.len(), "total": SCENARIOS.len(),
                 "measured_ids": measured_ids, "remaining_ids": remaining_ids,
-                "remaining_disposition": "pending_owner_disposition" },
+                "remaining_disposition": "pending_owner_disposition",
+                "measurement_scope_by_scenario": measurement_scope_by_scenario },
             "report_count": valid.report_count,
             "runner_sha256": valid.runner_sha256,
             "daemon_sha256": valid.daemon_sha256,
@@ -640,14 +937,20 @@ fn build_artifact(
             "text_fixture_sha256": valid.text_fixture_sha256,
             "text_config_sha256": valid.text_config_sha256,
             "history_config_sha256": valid.history_config_sha256,
-            "resource_scope": "assembler process RUSAGE_SELF only; daemon measurement RSS unavailable in matrix",
+            "retained_fixture_sha256": valid.retained_fixture_sha256,
+            "retained_config_sha256": valid.retained_config_sha256,
+            "resource_scope": if valid.daemon_peak_rss_bytes.is_some() {
+                "maximum Linux daemon VmHWM across daemon-backed reports"
+            } else {
+                "assembler process RUSAGE_SELF only; complete daemon RSS unavailable in matrix"
+            },
             "host_scope": "assembler host; pinned frozen runner invokes assembly after measurement",
-            "corpus_digest_scope": "canonical Text source bytes and History source/payload bytes, independent of executable and fixture descriptor",
+            "corpus_digest_scope": "canonical Text and History source bytes plus retained RuntimeCatalog/StructuralTree fixture digests, independent of executable",
             "timing": {"passes": valid.timing.passes, "samples_per_pass": valid.timing.samples_per_pass,
                 "prime_queries": valid.timing.prime_queries, "cooldown_ms": valid.timing.cooldown_ms,
                 "pass_settle_ms": valid.timing.pass_settle_ms, "query_deadline_ms": valid.text_query_deadline_ms,
                 "reports_per_scenario": valid.reports_per_scenario},
-            "sample_scope": "SDK latency samples; per-sample oracle enforced by pinned Native runner",
+            "sample_scope": "SDK latency samples; error rows measure client preflight and have no daemon query; per-sample oracle enforced by pinned Native runner",
         }),
     }
 }
@@ -659,18 +962,152 @@ mod tests {
 
     use nix::sys::stat::Mode;
     use nix::unistd::mkfifo;
-    use serde_json::json;
+    use quanta_index_contract::{
+        AuxEpochV1, CommitCandidate, DiffCandidate, HistoryOrderV1, ManifestGeneration,
+        QueryResultWindowV1, QueryResultWindowV2, RepoId, RevisionId,
+        index::{
+            AuxiliaryGenerationKeyV1, CollectionId, Digest, HistorySourceCutV1, IndexInstanceId,
+            ObjectRef, SlotId, TenantId, ViewRef, WorkspaceKey, WorktreeId,
+        },
+        native_protocol::{NativeHistoryPage, NativeReadSessionHistoryCutV1, NativeReadSessionId},
+    };
+    use serde_json::{Value, json};
     use tempfile::TempDir;
 
+    use super::super::dsl_retained::{candidate_gold, runtime_metadata_source};
     use super::{
-        MAX_MATRIX_BYTES, build_artifact, read_matrix_bytes, samples_for_report, validate_matrix,
+        HISTORY_SAMPLES_SCHEMA, MAX_MATRIX_BYTES, MatrixQualification, NATIVE_DSL_TEXT_REPOSITORY,
+        build_artifact, history_query, native_text_fixture_digest, read_matrix_bytes,
+        retained_config_digest, retained_dsl_query, retained_fixture_digest, samples_for_report,
+        validate_matrix, validate_qualification_host,
     };
-    use crate::artifact::{
-        BenchArtifactV1, BenchMode, HostV1, ResourceUsageV1, corpus_digest_refs,
-    };
-    use crate::scenarios::{FixtureKind, LEXICAL_CORPUS, NATIVE_TEXT_FILE_SCENARIOS, SCENARIOS};
+    use crate::artifact::{BenchArtifactV1, BenchMode, HostV1, ResourceUsageV1, ResultShape};
+    use crate::history_fixture::HISTORY_LEDGER;
+    use crate::scenarios::{DslBenchScenario, FixtureKind, NATIVE_TEXT_FILE_SCENARIOS, SCENARIOS};
 
-    fn complete_matrix(mode: BenchMode) -> serde_json::Value {
+    fn history_page_fixture(
+        shape: ResultShape,
+    ) -> (NativeReadSessionHistoryCutV1, NativeHistoryPage) {
+        let fixture = HISTORY_LEDGER
+            .build_batch(
+                RepoId::new("history-fixture").expect("static repository"),
+                RevisionId::new("history-rev").expect("static revision"),
+                ManifestGeneration::new(1),
+            )
+            .expect("static History fixture");
+        let witness = NativeReadSessionHistoryCutV1 {
+            session: NativeReadSessionId([1; 32]),
+            view: ViewRef {
+                workspace: WorkspaceKey {
+                    tenant: TenantId([1; 16]),
+                    collection: CollectionId([2; 16]),
+                    worktree: WorktreeId([3; 16]),
+                    slot: SlotId([4; 16]),
+                },
+                epoch: 1,
+                sequence: 2,
+                digest: Digest([3; 32]),
+            },
+            instance: IndexInstanceId([4; 16]),
+            member: ObjectRef(Digest([5; 32])),
+            cut: HistorySourceCutV1 {
+                generation: AuxiliaryGenerationKeyV1 {
+                    repo_id: fixture.repo_id.clone(),
+                    revision_id: fixture.revision_id.clone(),
+                    generation: fixture.generation,
+                },
+                durable_epoch: AuxEpochV1::new(1),
+                snapshot_digest: Digest([6; 32]),
+                replay_start: Digest([7; 32]),
+            },
+        };
+        let commit = fixture.commits.first().expect("fixture commit");
+        let diff = fixture.diff_hunks.first().expect("fixture diff hunk");
+        let page = NativeHistoryPage {
+            session: witness.session,
+            view: witness.view,
+            instance: witness.instance,
+            member: witness.member,
+            order: HistoryOrderV1::Recency,
+            commits: (shape == ResultShape::Commits)
+                .then(|| CommitCandidate {
+                    sha: commit.sha,
+                    parent_ids: commit.parents.clone(),
+                    committed_at_unix_s: 0,
+                    author: commit.author.to_string(),
+                    committer: commit.committer.to_string(),
+                    message: commit.message.to_string(),
+                    is_merge: commit.is_merge,
+                    tags: commit.tags.iter().map(ToString::to_string).collect(),
+                    score: None,
+                })
+                .into_iter()
+                .collect(),
+            diffs: (shape == ResultShape::DiffPaths)
+                .then(|| DiffCandidate {
+                    repo_relative_path: diff.file_path.to_string(),
+                    hunk_header: diff.record.hunk_header.to_string(),
+                    side: diff.record.side,
+                    line_start: diff.record.byte_start,
+                    line_end: diff.record.byte_end,
+                    snippet: diff.record.touched_text.to_string(),
+                    score: None,
+                })
+                .into_iter()
+                .collect(),
+            matched: 1,
+            remaining: 1,
+            examined: 1,
+            read_epoch: witness.cut.durable_epoch,
+            window: QueryResultWindowV2::exact_probe(1),
+            after: None,
+        };
+        (witness, page)
+    }
+
+    fn retained_report(scenario: &DslBenchScenario, prime: u64) -> Value {
+        let (witness, _) = history_page_fixture(ResultShape::Commits);
+        let query = retained_dsl_query(scenario).expect("canonical retained query");
+        let ids = candidate_gold(scenario.id).expect("canonical retained IDs");
+        let rows = if scenario.fixture == FixtureKind::RuntimeCatalog {
+            let rows = ids
+                .iter()
+                .map(|id| {
+                    let (path, snippet) =
+                        runtime_metadata_source(id).expect("RuntimeMetadata fixture source");
+                    json!({"candidate_id": id, "path": path, "source_repo_id": "repo-e2e",
+                    "start_line": 1, "end_line": 1, "snippet": snippet})
+                })
+                .collect::<Vec<_>>();
+            json!({"RuntimeMetadata": rows})
+        } else {
+            json!({"Structural": [{
+                "candidate": {"candidate_id": "e2e-5-src/tree.rs", "bindings": [{
+                    "metavariable": "name", "start_byte": 14, "end_byte": 33,
+                    "start_line": 2, "end_line": 2
+                }]},
+                "match_range": {"byte_start": 11, "byte_end": 37, "line_start": 2, "line_end": 2},
+                "source_repo_id": "repo-e2e", "path": "src/tree.rs",
+                "pattern_kind": null, "matched_node": null
+            }]})
+        };
+        json!({
+            "schema": "native-dsl-retained-samples-v1", "scenario_id": scenario.id,
+            "query": query, "daemon_sha256": "2".repeat(64),
+            "config_template_sha256": retained_config_digest().expect("canonical retained config"),
+            "fixture_sha256": retained_fixture_digest(scenario.fixture).expect("canonical retained fixture"),
+            "published": [{"view": witness.view, "page": {"view": witness.view,
+                "projection": witness.member, "session": witness.session,
+                "query": query.digest().expect("query digest"), "rows": rows, "after": null,
+                "window": QueryResultWindowV1::exact(u32::try_from(ids.len()).unwrap())}}],
+            "passes": 1, "samples_per_pass": 1, "prime_queries": prime,
+            "cooldown_ms": 0.0, "pass_settle_ms": 0.0,
+            "samples_ms": [1.0],
+            "latency": {"p50_ms": 1.0, "p95_ms": 1.0, "p99_ms": 1.0, "samples": 1},
+        })
+    }
+
+    fn complete_matrix_without_errors(mode: BenchMode) -> serde_json::Value {
         let raw_daemon = "2".repeat(64);
         let raw_config = "3".repeat(64);
         let prime = if mode == BenchMode::Cold { 0 } else { 1 };
@@ -686,7 +1123,8 @@ mod tests {
                 "result_unit": "file", "matched_files": paths,
                 "daemon_sha256": raw_daemon,
                 "config_template_sha256": raw_config,
-                "fixture_sha256": corpus_digest_refs("native-dsl-text", LEXICAL_CORPUS.iter().copied()),
+                "fixture_sha256": native_text_fixture_digest().expect("canonical Text fixture"),
+                "source_repo_id": NATIVE_DSL_TEXT_REPOSITORY,
                 "query_deadline_ms": 1000.0,
                 "passes": 1, "samples_per_pass": 1, "prime_queries": prime,
                 "cooldown_ms": 0.0, "pass_settle_ms": 0.0,
@@ -700,12 +1138,12 @@ mod tests {
             .iter()
             .filter(|s| s.fixture == FixtureKind::HistoryLedger)
         {
+            let (witness, page) = history_page_fixture(scenario.expected_shape);
             let report = json!({
-                "schema": "native-dsl-history-samples-v1", "scenario_id": scenario.id,
-                "query": {"text_query": {"query_text": scenario.query.resolve(),
-                    "syntax": scenario.syntax.as_str(), "top_k": 10}, "order": "recency"},
+                "schema": HISTORY_SAMPLES_SCHEMA, "scenario_id": scenario.id,
+                "query": history_query(scenario),
                 "result_shape": scenario.expected_shape.as_str(),
-                "published": {"view": {}, "cut": {}, "session": {}},
+                "published": witness, "observed_page": page,
                 "passes": 1, "samples_per_pass": 1, "prime_queries": prime,
                 "cooldown_ms": 0.0, "pass_settle_ms": 0.0,
                 "samples_ms": [1.0],
@@ -719,6 +1157,15 @@ mod tests {
             scenarios
                 .push(json!({"scenario_id": scenario.id, "kind": "history", "reports": [wrapper]}));
         }
+        for scenario in SCENARIOS.iter().filter(|scenario| {
+            matches!(
+                scenario.fixture,
+                FixtureKind::RuntimeCatalog | FixtureKind::StructuralTree
+            )
+        }) {
+            scenarios.push(json!({"scenario_id": scenario.id, "kind": "retained",
+                "reports": [retained_report(scenario, prime)]}));
+        }
         json!({
             "schema": "native-dsl-matrix-v1", "qualification": "diagnostic",
             "mode": mode.as_str(), "git_head": "0123456789abcdef0123456789abcdef01234567",
@@ -727,6 +1174,70 @@ mod tests {
             "history_fixture_sha256": format!("sha256:{}", "4".repeat(64)),
             "scenarios": scenarios,
         })
+    }
+
+    fn complete_matrix(mode: BenchMode) -> serde_json::Value {
+        let mut matrix = complete_matrix_without_errors(mode);
+        let prime = if mode == BenchMode::Cold { 0 } else { 1 };
+        for scenario in SCENARIOS
+            .iter()
+            .filter(|scenario| scenario.expected_typed_error_code == Some("PARSE_FAIL"))
+        {
+            let report = json!({
+                "schema": "native-dsl-error-samples-v1", "scenario_id": scenario.id,
+                "query_text": scenario.query.resolve(), "query_syntax": scenario.syntax.as_str(),
+                "result_shape": scenario.expected_shape.as_str(),
+                "typed_error_code": "PARSE_FAIL", "error_count": 1,
+                "engine_touched": [], "measurement_scope": "client_preflight",
+                "daemon_sha256": "2".repeat(64),
+                "config_template_sha256": "3".repeat(64),
+                "fixture_sha256": native_text_fixture_digest().expect("canonical Text fixture"),
+                "source_repo_id": NATIVE_DSL_TEXT_REPOSITORY,
+                "query_deadline_ms": 1000.0,
+                "passes": 1, "samples_per_pass": 1, "prime_queries": prime,
+                "cooldown_ms": 0.0, "pass_settle_ms": 0.0,
+                "published": [{"view": {}, "source_cut": {}, "operations": [{"submit_count": 1, "completion": "immediate_ack"}]}],
+                "samples_ms": [1.0],
+                "latency": {"p50_ms": 1.0, "p95_ms": 1.0, "p99_ms": 1.0, "samples": 1},
+            });
+            matrix["scenarios"]
+                .as_array_mut()
+                .expect("fixed scenario array")
+                .push(json!({"scenario_id": scenario.id, "kind": "error", "reports": [report]}));
+        }
+        matrix
+    }
+
+    fn authority_matrix(mode: BenchMode) -> Value {
+        let mut matrix = complete_matrix(mode);
+        matrix["qualification"] = json!("authority");
+        for row in matrix["scenarios"].as_array_mut().expect("scenario rows") {
+            let client_error = row["kind"] == "error";
+            let history = row["kind"] == "history";
+            if mode == BenchMode::Cold {
+                let report = row["reports"][0].clone();
+                row["reports"] = json!(vec![report; 20]);
+            }
+            for wrapper in row["reports"].as_array_mut().expect("SDK reports") {
+                if !client_error {
+                    wrapper["daemon_peak_rss_bytes"] = json!(4096);
+                }
+                if mode == BenchMode::Warm {
+                    let report = if history {
+                        &mut wrapper["history"]
+                    } else {
+                        wrapper
+                    };
+                    report["samples_per_pass"] = json!(200);
+                    report["samples_ms"] = json!(vec![1.0; 200]);
+                    report["latency"]["samples"] = json!(200);
+                    if client_error {
+                        report["error_count"] = json!(200);
+                    }
+                }
+            }
+        }
+        matrix
     }
 
     fn artifact_for_test(matrix: serde_json::Value) -> BenchArtifactV1 {
@@ -747,33 +1258,395 @@ mod tests {
     }
 
     #[test]
-    fn complete_native_subset_keeps_all_registry_rows_and_explicit_gaps() {
+    fn complete_native_matrix_measures_all_registry_rows() {
         for mode in [BenchMode::Cold, BenchMode::Warm] {
             let matrix = complete_matrix(mode);
-            let valid = validate_matrix(&matrix).expect("valid complete Native subset");
-            assert_eq!(valid.samples.len(), 14);
+            let valid = validate_matrix(&matrix).expect("valid complete Native matrix");
+            assert_eq!(valid.samples.len(), 33);
             let artifact = artifact_for_test(matrix);
             assert_eq!(artifact.rows.len(), 33);
-            assert_eq!(
+            assert!(
                 artifact
                     .rows
                     .iter()
-                    .filter(|row| row.latency.is_some())
-                    .count(),
-                14
-            );
-            assert_eq!(
-                artifact
-                    .rows
-                    .iter()
-                    .filter(
-                        |row| row.early_stop_reason.as_deref() == Some("pending_owner_disposition")
-                    )
-                    .count(),
-                19
+                    .all(|row| row.latency.is_some() && row.early_stop_reason.is_none())
             );
             assert_eq!(artifact.detail["qualification"], "diagnostic");
         }
+    }
+
+    #[test]
+    fn authority_matrix_requires_complete_daemon_rss_sample_floor_and_linux_host() {
+        for mode in [BenchMode::Warm, BenchMode::Cold] {
+            let matrix = authority_matrix(mode);
+            let valid = validate_matrix(&matrix).expect("complete authority matrix");
+            assert_eq!(valid.qualification, MatrixQualification::Authority);
+            assert_eq!(valid.daemon_peak_rss_bytes, Some(4096));
+            let mut linux = HostV1 {
+                os: "linux".into(),
+                arch: "x86_64".into(),
+                cpu_count: 1,
+                mem_bytes: 1,
+                hostname_hash: "unit-test".into(),
+            };
+            assert!(validate_qualification_host(valid.qualification, &linux).is_ok());
+            linux.os = "macos".into();
+            assert!(validate_qualification_host(valid.qualification, &linux).is_err());
+            assert!(validate_qualification_host(MatrixQualification::Diagnostic, &linux).is_ok());
+            let artifact = artifact_for_test(matrix.clone());
+            assert_eq!(artifact.detail["qualification"], "authority");
+            assert_eq!(artifact.resources.peak_rss_bytes, 4096);
+            assert_eq!(
+                artifact.detail["resource_scope"],
+                "maximum Linux daemon VmHWM across daemon-backed reports"
+            );
+
+            let mut missing_rss = matrix.clone();
+            let daemon_row = missing_rss["scenarios"]
+                .as_array_mut()
+                .expect("scenario rows")
+                .iter_mut()
+                .find(|row| row["kind"] != "error")
+                .expect("daemon-backed row");
+            daemon_row["reports"][0]["daemon_peak_rss_bytes"] = Value::Null;
+            assert!(
+                validate_matrix(&missing_rss)
+                    .err()
+                    .expect("authority must reject missing measured RSS")
+                    .to_string()
+                    .contains("measured RSS")
+            );
+            missing_rss["qualification"] = json!("diagnostic");
+            assert!(validate_matrix(&missing_rss).is_ok());
+
+            let mut underfloor = matrix.clone();
+            if mode == BenchMode::Warm {
+                for row in underfloor["scenarios"]
+                    .as_array_mut()
+                    .expect("scenario rows")
+                {
+                    let client_error = row["kind"] == "error";
+                    let history = row["kind"] == "history";
+                    let wrapper = &mut row["reports"][0];
+                    let report = if history {
+                        &mut wrapper["history"]
+                    } else {
+                        wrapper
+                    };
+                    report["samples_per_pass"] = json!(199);
+                    report["samples_ms"] = json!(vec![1.0; 199]);
+                    report["latency"]["samples"] = json!(199);
+                    if client_error {
+                        report["error_count"] = json!(199);
+                    }
+                }
+            } else {
+                for row in underfloor["scenarios"]
+                    .as_array_mut()
+                    .expect("scenario rows")
+                {
+                    assert!(
+                        row["reports"]
+                            .as_array_mut()
+                            .expect("SDK reports")
+                            .pop()
+                            .is_some()
+                    );
+                }
+            }
+            assert!(
+                validate_matrix(&underfloor)
+                    .err()
+                    .expect("authority must reject samples below the floor")
+                    .to_string()
+                    .contains("at least")
+            );
+        }
+        let mut unknown = authority_matrix(BenchMode::Warm);
+        unknown["qualification"] = json!("unverified");
+        assert!(validate_matrix(&unknown).is_err());
+    }
+
+    #[test]
+    fn only_complete_daemon_rss_can_replace_assembler_resources() {
+        let mut matrix = complete_matrix(BenchMode::Warm);
+        let rows = matrix["scenarios"].as_array_mut().expect("scenario rows");
+        let mut daemon_row = None;
+        let mut error_row = None;
+        for (index, row) in rows.iter_mut().enumerate() {
+            if row["kind"] == "error" {
+                error_row = Some(index);
+            } else {
+                daemon_row = Some(index);
+                row["reports"][0]["daemon_peak_rss_bytes"] = json!(4096);
+            }
+        }
+        let daemon_row = daemon_row.expect("daemon row");
+        let error_row = error_row.expect("client error row");
+        let rss_field = "daemon_peak_rss_bytes";
+        matrix["scenarios"][daemon_row]["reports"][0][rss_field] = json!(8192);
+        let artifact = artifact_for_test(matrix.clone());
+        assert_eq!(artifact.resources.peak_rss_bytes, 8192);
+        assert_eq!(
+            artifact.detail["resource_scope"],
+            "maximum Linux daemon VmHWM across daemon-backed reports"
+        );
+
+        matrix["scenarios"][daemon_row]["reports"][0][rss_field] = Value::Null;
+        let artifact = artifact_for_test(matrix.clone());
+        assert_eq!(artifact.resources.peak_rss_bytes, 1);
+        assert_eq!(
+            validate_matrix(&matrix).unwrap().daemon_peak_rss_bytes,
+            None
+        );
+        matrix["scenarios"][daemon_row]["reports"][0][rss_field] = json!(0);
+        assert!(validate_matrix(&matrix).is_err());
+        matrix["scenarios"][daemon_row]["reports"][0][rss_field] = json!(8192);
+        matrix["scenarios"][error_row]["reports"][0][rss_field] = json!(4096);
+        assert!(validate_matrix(&matrix).is_err());
+    }
+
+    #[test]
+    fn retained_report_refuses_unrelated_view_query_or_gold() {
+        let matrix = complete_matrix(BenchMode::Cold);
+        assert!(validate_matrix(&matrix).is_ok());
+        let row = matrix["scenarios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|row| row["scenario_id"] == "structural.tree_match.native")
+            .unwrap();
+        let mut changed = matrix.clone();
+        changed["scenarios"][row]["reports"][0]["published"][0]["page"]["view"]["sequence"] =
+            json!(7);
+        assert!(
+            validate_matrix(&changed).is_err(),
+            "accepted another published view"
+        );
+        let mut changed = matrix.clone();
+        changed["scenarios"][row]["reports"][0]["config_template_sha256"] = json!("5".repeat(64));
+        assert!(
+            validate_matrix(&changed).is_err(),
+            "accepted a different retained workload"
+        );
+        let mut changed = matrix.clone();
+        changed["scenarios"][row]["reports"][0]["published"][0]["page"]["query"] =
+            json!(Digest([9; 32]));
+        assert!(
+            validate_matrix(&changed).is_err(),
+            "accepted an unrelated query digest"
+        );
+        for (field, replacement, expected_error) in [
+            (
+                "/candidate/bindings/0/end_byte",
+                json!(32),
+                "Structural capture differs",
+            ),
+            (
+                "/source_repo_id",
+                json!("foreign-repo"),
+                "Structural source or match range differs",
+            ),
+            (
+                "/match_range/byte_end",
+                json!(36),
+                "Structural source or match range differs",
+            ),
+        ] {
+            let mut changed = matrix.clone();
+            let hit = &mut changed["scenarios"][row]["reports"][0]["published"][0]["page"]["rows"]
+                ["Structural"][0];
+            *hit.pointer_mut(field).expect("known Structural field") = replacement;
+            let error = validate_matrix(&changed)
+                .err()
+                .expect("altered Structural row");
+            assert!(format!("{error:#}").contains(expected_error));
+        }
+    }
+
+    #[test]
+    fn retained_runtime_metadata_refuses_changed_payload_with_the_right_candidate_id() {
+        let matrix = complete_matrix(BenchMode::Cold);
+        assert!(validate_matrix(&matrix).is_ok());
+        let index = matrix["scenarios"]
+            .as_array()
+            .expect("scenario rows")
+            .iter()
+            .position(|row| row["scenario_id"] == "runtime.changed.sourcegraph")
+            .expect("canonical RuntimeMetadata scenario");
+        for (field, value) in [
+            ("path", json!("src/stale.rs")),
+            ("source_repo_id", json!("foreign-repo")),
+            ("start_line", json!(2)),
+            ("end_line", json!(2)),
+            ("snippet", json!("fn unrelated() {}")),
+        ] {
+            let mut changed = matrix.clone();
+            let row = &mut changed["scenarios"][index]["reports"][0]["published"][0]["page"]["rows"]
+                ["RuntimeMetadata"][0];
+            row[field] = value;
+            let error = validate_matrix(&changed).err().expect("altered payload");
+            assert!(format!("{error:#}").contains("RuntimeMetadata payload differs"));
+        }
+    }
+
+    #[test]
+    fn history_samples_require_observed_rows_and_one_retained_source() {
+        let matrix = complete_matrix(BenchMode::Cold);
+        assert!(validate_matrix(&matrix).is_ok());
+        let index = matrix["scenarios"]
+            .as_array()
+            .expect("scenario array")
+            .iter()
+            .position(|row| row["scenario_id"] == "history.since_commit.native")
+            .expect("canonical History scenario");
+        for (field, replacement) in [
+            ("/observed_page", Value::Null),
+            ("/observed_page/matched", json!(0)),
+            (
+                "/observed_page/commits/0/message",
+                json!("foreign revision"),
+            ),
+            ("/published/member", json!(vec![6_u8; 32])),
+        ] {
+            let mut invalid = matrix.clone();
+            let report = &mut invalid["scenarios"][index]["reports"][0]["history"];
+            *report.pointer_mut(field).expect("known report field") = replacement;
+            assert!(
+                validate_matrix(&invalid).is_err(),
+                "accepted altered {field}"
+            );
+        }
+        let mut mixed = matrix.clone();
+        let report = &mut mixed["scenarios"][index]["reports"][0]["history"];
+        report["published"]["view"]["sequence"] = json!(3);
+        report["observed_page"]["view"]["sequence"] = json!(3);
+        let error = validate_matrix(&mixed)
+            .err()
+            .expect("must reject mixed view");
+        assert!(format!("{error:#}").contains("different published members or cuts"));
+    }
+
+    #[test]
+    fn repository_predicate_requires_its_sourcegraph_query_and_exact_file_gold() {
+        let valid = complete_matrix(BenchMode::Cold);
+        assert!(validate_matrix(&valid).is_ok());
+        let position = valid["scenarios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|row| row["scenario_id"] == "lexical.repo_has_file.sourcegraph")
+            .expect("repository predicate is in the maintained Native roster");
+        assert_eq!(
+            valid["scenarios"][position]["reports"][0]["matched_files"],
+            json!(["src/lib.rs"])
+        );
+        for (field, forged) in [
+            ("query_text", json!("needle")),
+            ("query_syntax", json!("native")),
+            ("matched_files", json!(["src/other.rs"])),
+        ] {
+            let mut matrix = valid.clone();
+            matrix["scenarios"][position]["reports"][0][field] = forged;
+            assert!(validate_matrix(&matrix).is_err(), "accepted forged {field}");
+        }
+        let mut omitted = valid;
+        let _removed = omitted["scenarios"]
+            .as_array_mut()
+            .unwrap()
+            .remove(position);
+        assert!(validate_matrix(&omitted).is_err());
+    }
+
+    #[test]
+    fn native_error_gold_is_measured_as_client_preflight_without_engine_claim() {
+        for mode in [BenchMode::Cold, BenchMode::Warm] {
+            let matrix = complete_matrix(mode);
+            let valid = validate_matrix(&matrix).expect("33 supported Native DSL scenarios");
+            assert_eq!(valid.samples.len(), 33);
+            let artifact = artifact_for_test(matrix);
+            assert_eq!(artifact.rows.len(), 33);
+            assert_eq!(artifact.detail["qualification"], "diagnostic");
+            assert_eq!(artifact.detail["native_subset"]["measured"], 33);
+            assert_eq!(
+                artifact.detail["native_subset"]["remaining_ids"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                0
+            );
+            for scenario in SCENARIOS
+                .iter()
+                .filter(|scenario| scenario.expected_typed_error_code == Some("PARSE_FAIL"))
+            {
+                let row = artifact
+                    .rows
+                    .iter()
+                    .find(|row| row.scenario_id == scenario.id)
+                    .expect("measured error row");
+                assert!(row.latency.is_some(), "{} missing SDK latency", scenario.id);
+                assert_eq!(row.error_count, 1, "{} error count", scenario.id);
+                assert_eq!(
+                    row.typed_error_code.as_deref(),
+                    Some("PARSE_FAIL"),
+                    "{} code",
+                    scenario.id
+                );
+                assert!(
+                    row.engine_touched.is_empty(),
+                    "{} claimed daemon execution",
+                    scenario.id
+                );
+                assert_eq!(row.result_count, None, "{} has result rows", scenario.id);
+                assert_eq!(
+                    row.early_stop_reason, None,
+                    "{} is still pending",
+                    scenario.id
+                );
+                assert_eq!(
+                    artifact.detail["native_subset"]["measurement_scope_by_scenario"][scenario.id],
+                    "client_preflight"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_error_reports_refuse_missing_or_forged_gold_and_binary() {
+        let valid = complete_matrix(BenchMode::Cold);
+        assert!(
+            validate_matrix(&valid).is_ok(),
+            "fixed 33-row input is rejected"
+        );
+        let error_index = valid["scenarios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|row| row["kind"] == "error")
+            .unwrap();
+
+        for (field, forged) in [
+            ("typed_error_code", json!("INVALID_INPUT")),
+            ("error_count", json!(0)),
+            ("engine_touched", json!(["native"])),
+            ("measurement_scope", json!("daemon_query")),
+            ("query_text", json!("needle")),
+            ("daemon_sha256", json!("9".repeat(64))),
+        ] {
+            let mut matrix = valid.clone();
+            matrix["scenarios"][error_index]["reports"][0][field] = forged;
+            assert!(validate_matrix(&matrix).is_err(), "accepted forged {field}");
+        }
+        let mut missing = valid;
+        let omitted = missing["scenarios"]
+            .as_array_mut()
+            .unwrap()
+            .remove(error_index);
+        assert_eq!(omitted["kind"], "error");
+        assert!(
+            validate_matrix(&missing).is_err(),
+            "accepted missing error row"
+        );
     }
 
     #[test]
@@ -824,14 +1697,55 @@ mod tests {
     }
 
     #[test]
+    fn native_text_fixture_rejects_missing_or_foreign_repository_identity() {
+        let valid = complete_matrix(BenchMode::Cold);
+        assert!(validate_matrix(&valid).is_ok());
+        for repository in [
+            None,
+            Some(json!("different-fixture-repository")),
+            Some(serde_json::Value::Null),
+        ] {
+            let mut matrix = valid.clone();
+            let report = matrix["scenarios"]
+                .as_array_mut()
+                .expect("fixture scenarios")
+                .iter_mut()
+                .find(|row| row["kind"] == "text")
+                .expect("Text fixture row")["reports"][0]
+                .as_object_mut()
+                .expect("Text fixture report");
+            if let Some(repository) = repository {
+                let _previous = report.insert("source_repo_id".into(), repository);
+            } else {
+                let _previous = report.remove("source_repo_id");
+            }
+            assert!(
+                validate_matrix(&matrix).is_err(),
+                "fixture repository identity must be bound independently of its paths"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_null_publication_witnesses() {
         let mut text = complete_matrix(BenchMode::Cold);
-        text["scenarios"][0]["reports"][0]["published"][0]["view"] = serde_json::Value::Null;
+        let text_row = text["scenarios"]
+            .as_array_mut()
+            .expect("fixture scenarios")
+            .iter_mut()
+            .find(|row| row["kind"] == "text")
+            .expect("Text fixture row");
+        text_row["reports"][0]["published"][0]["view"] = serde_json::Value::Null;
         assert!(validate_matrix(&text).is_err());
 
         let mut history = complete_matrix(BenchMode::Cold);
-        history["scenarios"][7]["reports"][0]["history"]["published"]["cut"] =
-            serde_json::Value::Null;
+        let history_row = history["scenarios"]
+            .as_array_mut()
+            .expect("fixture scenarios")
+            .iter_mut()
+            .find(|row| row["kind"] == "history")
+            .expect("History fixture row");
+        history_row["reports"][0]["history"]["published"]["cut"] = serde_json::Value::Null;
         assert!(validate_matrix(&history).is_err());
     }
 

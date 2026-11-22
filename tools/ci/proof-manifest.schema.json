@@ -154,6 +154,14 @@
                   "inventory": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "daemon_observations": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "run_binding": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 }
               }
@@ -188,13 +196,17 @@
             "target": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["host_identity_digest", "binary_path", "config_path", "state_root", "config_sha256"],
+              "required": [
+                "host_identity_digest", "binary_path", "config_path", "state_root", "config_sha256",
+                "release_manifest_sha256"
+              ],
               "properties": {
                 "host_identity_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
                 "binary_path": {"type": "string", "minLength": 1},
                 "config_path": {"type": "string", "minLength": 1},
                 "state_root": {"type": "string", "minLength": 1},
-                "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "release_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
               }
             }
           }

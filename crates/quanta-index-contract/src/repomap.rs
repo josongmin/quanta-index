@@ -25,7 +25,8 @@ use quanta_index_contract_base::ids::{ManifestGeneration, RepoId, RevisionId};
 mod canonical_v3;
 pub use canonical_v3::*;
 mod admitted_v3;
-pub use admitted_v3::RepoMapDecodeLimitsV3;
+mod decode;
+pub use decode::RepoMapDecodeLimitsV3;
 mod terminal_receipt_v2;
 pub use terminal_receipt_v2::*;
 
@@ -102,6 +103,7 @@ macro_rules! repomap_string_enum {
 
 mod compile;
 pub use compile::*;
+pub mod compiler;
 
 repomap_string_enum! {
     pub enum RepoMapDocType {

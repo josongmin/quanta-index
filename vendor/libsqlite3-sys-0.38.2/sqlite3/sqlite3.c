@@ -125610,11 +125610,18 @@ SQLITE_PRIVATE int sqlite3AnalysisLoad(sqlite3 *db, int iDb){
   HashElem *i;
   char *zSql;
   int rc = SQLITE_OK;
+  int skipStatistics = 0;
   Schema *pSchema = db->aDb[iDb].pSchema;
   const Table *pStat1;
 
   assert( iDb>=0 && iDb<db->nDb );
   assert( db->aDb[iDb].pBt!=0 );
+#ifdef QUANTA_CAPACITY_VFS
+  /* Verification needs default planner estimates, not persisted samples.
+  ** A valid small sqlite_stat4 schema can hold arbitrarily many data rows. */
+  skipStatistics = qiv_is_verification_file(
+      sqlite3PagerFile(sqlite3BtreePager(db->aDb[iDb].pBt)));
+#endif
 
   /* Clear any prior statistics */
   assert( sqlite3SchemaMutexHeld(db, iDb, 0) );
@@ -125634,7 +125641,8 @@ SQLITE_PRIVATE int sqlite3AnalysisLoad(sqlite3 *db, int iDb){
   /* Load new statistics out of the sqlite_stat1 table */
   sInfo.db = db;
   sInfo.zDatabase = db->aDb[iDb].zDbSName;
-  if( (pStat1 = sqlite3FindTable(db, "sqlite_stat1", sInfo.zDatabase))
+  if( !skipStatistics
+   && (pStat1 = sqlite3FindTable(db, "sqlite_stat1", sInfo.zDatabase))
    && IsOrdinaryTable(pStat1)
   ){
     zSql = sqlite3MPrintf(db,
@@ -125656,7 +125664,7 @@ SQLITE_PRIVATE int sqlite3AnalysisLoad(sqlite3 *db, int iDb){
 
   /* Load the statistics from the sqlite_stat4 table. */
 #ifdef SQLITE_ENABLE_STAT4
-  if( rc==SQLITE_OK ){
+  if( rc==SQLITE_OK && !skipStatistics ){
     DisableLookaside;
     rc = loadStat4(db, sInfo.zDatabase);
     EnableLookaside;
@@ -145354,7 +145362,18 @@ SQLITE_PRIVATE void sqlite3Pragma(
 
   /* Make sure the database schema is loaded if the pragma requires that */
   if( (pPragma->mPragFlg & PragFlg_NeedSchema)!=0 ){
-    if( sqlite3ReadSchema(pParse) ) goto pragma_out;
+    int skipReadSchema = 0;
+#if defined(QUANTA_CAPACITY_VFS) && !defined(SQLITE_OMIT_PAGER_PRAGMAS)
+    /* The verification cache limit must precede schema initialization.
+    ** Its setter only changes the existing Schema and Btree pager cache. */
+    if( pPragma->ePragTyp==PragTyp_CACHE_SIZE && zRight!=0 && iDb==0
+     && pDb->pBt!=0
+    ){
+      sqlite3_file *pFile = sqlite3PagerFile(sqlite3BtreePager(pDb->pBt));
+      skipReadSchema = qiv_is_verification_file(pFile);
+    }
+#endif
+    if( !skipReadSchema && sqlite3ReadSchema(pParse) ) goto pragma_out;
   }
 
   /* Register the result column names for pragmas that return results */
@@ -148130,6 +148149,47 @@ SQLITE_PRIVATE int sqlite3InitCallback(void *pInit, int argc, char **argv, char 
   return 0;
 }
 
+#ifdef QUANTA_CAPACITY_VFS
+/*
+** Check the verified Catalog's aggregate schema input before any on-disk
+** CREATE statement reaches sqlite3InitCallback. The Catalog sets the current
+** SQLITE_LIMIT_SQL_LENGTH from its supported schema during this phase.
+** octet_length() on a column reads its record length without loading text.
+** A minimum per-row charge bounds even empty or malformed rows.
+*/
+static int qivCheckSchemaInput(
+  sqlite3 *db,
+  const char *zDb,
+  const char *zSchema
+){
+  const int recordCharge = 32;
+  int byteLimit = db->aLimit[SQLITE_LIMIT_SQL_LENGTH];
+  int rowLimit = byteLimit/recordCharge + 1;
+  sqlite3_stmt *pStmt = 0;
+  char *zSql = sqlite3MPrintf(db,
+     "SELECT coalesce(sum(n),0)<=%d FROM("
+     "SELECT %d+coalesce(octet_length(type),0)+coalesce(octet_length(name),0)"
+     "+coalesce(octet_length(tbl_name),0)+coalesce(octet_length(sql),0) AS n"
+     " FROM \"%w\".%s LIMIT %d)",
+     byteLimit, recordCharge, zDb, zSchema, rowLimit);
+  int rc;
+
+  if( zSql==0 ) return SQLITE_NOMEM_BKPT;
+  rc = sqlite3_prepare_v2(db, zSql, -1, &pStmt, 0);
+  sqlite3DbFree(db, zSql);
+  if( rc==SQLITE_OK ){
+    rc = sqlite3_step(pStmt);
+    if( rc==SQLITE_ROW ){
+      rc = sqlite3_column_int(pStmt, 0) ? SQLITE_OK : SQLITE_TOOBIG;
+    }else if( rc==SQLITE_DONE ){
+      rc = SQLITE_CORRUPT_BKPT;
+    }
+  }
+  sqlite3_finalize(pStmt);
+  return rc;
+}
+#endif
+
 /*
 ** Attempt to read the database schema and initialize internal
 ** data structures for a single database file.  The index of the
@@ -148313,7 +148373,18 @@ SQLITE_PRIVATE int sqlite3InitOne(sqlite3 *db, int iDb, char **pzErrMsg, u32 mFl
       xAuth = db->xAuth;
       db->xAuth = 0;
 #endif
-      rc = sqlite3_exec(db, zSql, sqlite3InitCallback, &initData, 0);
+      rc = SQLITE_OK;
+#ifdef QUANTA_CAPACITY_VFS
+      if( qiv_is_verification_file(sqlite3PagerFile(sqlite3BtreePager(pDb->pBt))) ){
+        rc = qivCheckSchemaInput(db, pDb->zDbSName, zSchemaTabName);
+        if( rc!=SQLITE_OK ){
+          sqlite3SetString(pzErrMsg, db, sqlite3ErrStr(rc));
+        }
+      }
+#endif
+      if( rc==SQLITE_OK ){
+        rc = sqlite3_exec(db, zSql, sqlite3InitCallback, &initData, 0);
+      }
 #ifndef SQLITE_OMIT_AUTHORIZATION
       db->xAuth = xAuth;
     }

@@ -1,36 +1,30 @@
-//! Native benchmark fixtures and optional Legacy runtime/DSL rails.
+//! Native benchmark fixtures and pinned external Legacy reference rails.
 //!
 //! Native indexing, exact ANN oracles and source fixtures are available by
-//! default. The explicit `legacy-bench` feature adds `E2eRuntime` and the
-//! maintained Legacy matrix generators. Daemon code uses this crate only as
-//! a development dependency; it is absent from the shipping daemon graph.
+//! default. Daemon code uses this crate only as a development dependency; it
+//! is absent from the shipping daemon graph.
 
+mod bench_fixture;
+mod e2e_error;
 mod fixture_support;
-#[cfg(feature = "legacy-bench")]
-mod harness;
 #[cfg(unix)]
 pub mod legacy_reference;
 #[path = "harness/source_publication.rs"]
 mod source_publication;
 
-#[cfg(feature = "legacy-bench")]
 pub mod ambiguity;
 pub mod ann;
 pub mod artifact;
-#[cfg(feature = "legacy-bench")]
 pub mod bench_support;
-#[cfg(feature = "legacy-bench")]
 pub mod concurrency;
 pub mod history_fixture;
 #[path = "scale/native_index.rs"]
 pub mod native_index;
 /// Shared bounded arrival scheduler for harness load adapters.
 pub mod offered_load;
-#[cfg(feature = "legacy-bench")]
+pub mod open_loop_accounting;
 pub mod ops;
 pub mod relevance;
-#[cfg(feature = "legacy-bench")]
-pub mod scale;
 #[path = "scale/diagnostic_span.rs"]
 mod scale_diagnostic_span;
 #[path = "scale/disk_census.rs"]
@@ -41,30 +35,34 @@ mod scale_failure;
 pub mod scale_provenance;
 #[path = "scale/refusal.rs"]
 pub mod scale_refusal;
+#[path = "scale/runtime_policy.rs"]
+pub mod scale_runtime_policy;
 pub mod scenarios;
-#[cfg(feature = "legacy-bench")]
 pub mod snippet;
+mod snippet_fixture;
 #[path = "scale/source_fixture.rs"]
 pub mod source_fixture;
-#[cfg(feature = "legacy-bench")]
 pub mod tail;
-#[cfg(feature = "legacy-bench")]
 pub mod ui;
 
+pub use bench_fixture::{
+    E2eRuntimeCatalogSpec, E2eRuntimeChangedSpec, E2eRuntimeEdgeSpec, E2eRuntimeFacetSpec,
+    E2eRuntimeSnapshotSpec, structural_function_tree_record,
+};
+pub use bench_fixture::{
+    RUNTIME_CATALOG_FILES, RUNTIME_DIRTY_EPOCH_MS, STRUCTURAL_TREE_CONTENT,
+    STRUCTURAL_TREE_IDENTIFIER, STRUCTURAL_TREE_PATH, runtime_catalog_batch,
+    runtime_catalog_fixture_spec,
+};
+pub use e2e_error::E2eErrorCode;
 pub use fixture_support::{
     private_tempdir, semantic_source_scopes_for_chunk_records, stamped_ingest_request,
 };
-#[cfg(feature = "legacy-bench")]
-pub use harness::*;
-#[cfg(feature = "legacy-bench")]
-pub use scale_failure::ScaleAdmissionRefusal;
-pub use scale_failure::{ScaleAdmissionLimit, ScaleStageError};
+pub use scale_failure::{ScaleAdmissionLimit, ScaleAdmissionRefusal, ScaleStageError};
 pub use source_publication::{SourceCorpusFixture, fixture_source_scope_v1};
 
 #[cfg(test)]
 mod source_fixture_boundary_tests {
-    #[cfg(feature = "legacy-bench")]
-    use super::scale;
     use super::source_fixture;
 
     #[test]
@@ -77,15 +75,5 @@ mod source_fixture_boundary_tests {
         assert!(canonical[0].content.contains("scale_needle_token"));
         assert!(canonical[0].content.contains("scalereponeedle000"));
         assert!(canonical[0].content.contains("scalefileneedle000file00000"));
-    }
-
-    #[cfg(feature = "legacy-bench")]
-    #[test]
-    fn legacy_scale_facade_shares_canonical_fixture() {
-        let tier = source_fixture::ScaleTier::Small;
-        assert_eq!(
-            scale::generate_scoped_corpus(tier, 42).unwrap(),
-            source_fixture::generate_scoped_corpus(tier, 42).unwrap()
-        );
     }
 }

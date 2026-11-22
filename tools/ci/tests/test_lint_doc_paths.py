@@ -41,3 +41,17 @@ def test_explicit_html_targets_preserve_exact_fragment_identity(tmp_path: Path) 
         assert LINK_ISSUE(source, f"target.md#{fragment}", tmp_path) is None
     for fragment in ("w2-03", "exact-identity", "not-an-anchor", "also-not-an-anchor"):
         assert LINK_ISSUE(source, f"target.md#{fragment}", tmp_path) == "broken doc anchor"
+
+
+def test_commonmark_angle_destinations_keep_spaces_and_validate_fragments(tmp_path: Path) -> None:
+    source = tmp_path / "source.md"
+    target = tmp_path / "target with spaces.md"
+    source.write_text("# Source\n", encoding="utf-8")
+    target.write_text("## Acceptance boundary\n", encoding="utf-8")
+
+    assert LINK_ISSUE(source, "<target with spaces.md#acceptance-boundary>", tmp_path) is None
+    assert LINK_ISSUE(source, f"<{target}#acceptance-boundary>", tmp_path) is None
+    assert LINK_ISSUE(source, "<target with spaces.md#missing>", tmp_path) == "broken doc anchor"
+    assert LINK_ISSUE(source, "<missing.md>", tmp_path) == "broken doc path"
+    assert LINK_ISSUE(source, "<../external.md>", tmp_path) == "broken doc path"
+    assert LINK_ISSUE(source, "</external/evidence/record.json>", tmp_path) is None

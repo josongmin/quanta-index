@@ -7,6 +7,9 @@ owners, carrier kinds, expected behavior and companion rails for leaves, Boolean
 filters, history, runtime, structural patterns and directives. The generated
 [Sourcegraph coverage](sourcegraph-filter-parity.md) names recognized
 forms and source-test owners. These are inventories, not current-source support receipts.
+Legacy carrier names in the table below identify historical proof ownership;
+they are not selectors for the current test inventory. The ledger's rail IDs
+are preserved as historical locators, not executable proof or a current pass.
 
 Accepted contracts: [DSL](../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md),
 [Sourcegraph](../adr/JUN-06-001-sourcegraph-compatibility-boundary.md),
@@ -23,7 +26,7 @@ historical runtime proofs were executed in this task. Six canonical predicate
 rows are not yet in the TOML ledger; their existing proof owners remain here
 so compaction does not erase that coverage mapping.
 
-| Surface | Declared proof owner | Admitted boundary |
+| Surface | Historical proof owner | Declared boundary |
 | --- | --- | --- |
 | `Predicate repo.has.file(...)` | TOML ledger | true-gate narrows by indexed `source_repo_id`; executable arg subset is one scalar path shorthand plus `path:` / `name:` regex matchers and `lang:` exact match on the indexed language field. Native alias `repo.has.path(...)`, SG sugar `repo:has.path(...)`, and scalar `repo:has.file(src/lib.rs)` all lower onto the same path matcher surface. The contract is owned by `predicate_registry::parse_repo_file_matchers`; other filters typed-fail |
 | `Predicate repo.has.content(...)` | TOML ledger | repo-wide existence gate uses the shared content scalar subset (`keyword` / `phrase` / `raw-string` / `number`). Native alias `repo.contains.content(...)` lowers onto the same gate, and numeric scalars canonicalize to decimal keywords. Matching repos return the lexical hits already selected by the surrounding query; this is a repo gate, not a matching-file projection. Scoped repo-content families remain typed-fail |
@@ -38,18 +41,30 @@ so compaction does not erase that coverage mapping.
 
 ## Select actual proof
 
-- `active_runtime` in the ledger declares a search-result runtime owner;
-  `active_owner_local` declares a companion owner. Neither means a current pass.
+- `declared_runtime` in the ledger identifies a search-result proof owner;
+  `declared_owner_local` identifies a companion owner. Neither is an executable
+  selector or a current pass. The `proof_rail` IDs record the original owner
+  mapping and include retired rails.
 - `typed_fail_closed` declares parser/planner/runtime rejection, `parser_only`
   declares syntax shape, and `blocked` identifies missing direct proof. Keep them distinct.
-- `runtime_rows.toml` and `e2e_full_corpus.rs` own executable search-result rows.
-  Fidelity/dual-syntax/SDK/restart/chaos and bridge companion rails keep their own
-  carriers; bridge directives and `Empty` must not become runtime-search claims.
+- [runtime_rows.toml](../../crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/runtime_rows.toml)
+  is a frozen 242-row schema/ID inventory. Its registered
+  [runtime_corpus_row_inventory_is_pinned](../../crates/quanta-index-searchd-runtime/tests/e2e_runtime_corpus_inventory.rs)
+  test checks count and sorted-ID digest; it does **not** execute those queries.
+  `e2e_full_corpus.rs` was retired. The registered
+  [e2e_lexical_full_fidelity](../../crates/quanta-index-searchd-runtime/tests/e2e_lexical_full_fidelity.rs)
+  rail contains six specialized rows that query a pinned old-Q process when
+  selected. Other fidelity/SDK/restart/chaos rails need
+  their own named test body and result before they count as current proof;
+  bridge directives and `Empty` are not runtime-search results.
 - `lowering.rs::structural_leaf_verdict` owns structural legality; the checker
   verifies the flat map against its independent expected verdicts.
-- Resolve selected/executed nonempty tests through current test authority and
-  Just profiles. External metadata producer emission, complete current-source
-  integration and qualification remain separately required where claimed.
+- Resolve selected/executed nonempty tests through the current
+  [test authority](../../tools/ci/test-authority.toml),
+  mounted test source, Just profiles and a body-bearing result. An ID appearing
+  only in this ledger or `runtime_rows.toml` is `NOT_RUN` for current-source
+  execution. External metadata producer emission and qualification remain
+  separately required where claimed.
 
 The old proof/status table and repeated rail lists are recoverable at
 `0b4839a4a8b4cf99e870b4251395b6e3df8f4a21`. Per-surface machine-ledger entries are preserved; metadata points to the live ADR.

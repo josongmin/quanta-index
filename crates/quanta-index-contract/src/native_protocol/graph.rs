@@ -1,8 +1,8 @@
 //! Canonical certified graph owner output and exact adjacency wire.
 
 use crate::{
-    RepoMapEdgeKind, RepoMapNodeRef,
-    index::{Digest, IndexInstanceId, ViewRef},
+    RepoMapEdgeKind, RepoMapNode, RepoMapNodeRef, RepoRelativePath,
+    index::{Digest, IndexInstanceId, ObjectRef, ViewRef},
 };
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -11,10 +11,21 @@ use serde::{
 };
 use std::fmt;
 
+use crate::bounded_cluster_members::BoundedVecV1;
+
+mod prior_file;
+mod producer;
 mod ranking;
+pub use prior_file::{
+    NativeRepoMapPriorFileResultV1, NativeRepoMapPriorFileV1, NativeRepoMapPriorNodeDegreeV1,
+};
+pub use producer::{
+    NativeRepoMapFileOwnerProjectionV1, NativeRepoMapOwnerError, NativeRepoMapOwnerProjection,
+};
 pub use ranking::*;
 
 pub const MAX_NATIVE_GRAPH_ITEMS: usize = 4096;
+pub const MAX_NATIVE_GRAPH_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_NATIVE_GRAPH_EDGES: u32 = 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,14 +57,55 @@ pub struct GraphOwnerOutput {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
     pub projection: Vec<GraphProjectionRow>,
+    /// Canonical typed source facts retained by a file-owned RepoMap output.
+    pub facts: Option<ObjectRef>,
+}
+
+/// One file's canonical typed facts. Edges remain in `GraphOwnerOutput`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeRepoMapFileFactsV1 {
+    pub owner_path: RepoRelativePath,
+    pub nodes: Vec<RepoMapNode>,
+}
+
+type BoundedFileNodes = BoundedVecV1<RepoMapNode, MAX_NATIVE_GRAPH_ITEMS>;
+
+struct FileFactsWire {
+    owner_path: RepoRelativePath,
+    nodes: BoundedFileNodes,
+}
+
+crate::native_serde_struct!(FileFactsWire {
+    owner_path: RepoRelativePath,
+    nodes: BoundedFileNodes
+});
+
+impl Serialize for NativeRepoMapFileFactsV1 {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut fields = serializer.serialize_struct("NativeRepoMapFileFactsV1", 2)?;
+        fields.serialize_field("owner_path", &self.owner_path)?;
+        fields.serialize_field("nodes", &self.nodes)?;
+        fields.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for NativeRepoMapFileFactsV1 {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = FileFactsWire::deserialize(deserializer)?;
+        Ok(Self {
+            owner_path: wire.owner_path,
+            nodes: wire.nodes.into_inner(),
+        })
+    }
 }
 
 impl Serialize for GraphOwnerOutput {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut fields = serializer.serialize_struct("GraphOwnerOutput", 3)?;
+        let mut fields = serializer.serialize_struct("GraphOwnerOutput", 4)?;
         fields.serialize_field("nodes", &self.nodes)?;
         fields.serialize_field("edges", &self.edges)?;
         fields.serialize_field("projection", &self.projection)?;
+        fields.serialize_field("facts", &self.facts)?;
         fields.end()
     }
 }
@@ -110,6 +162,7 @@ impl<'de> Deserialize<'de> for GraphOwnerOutput {
                 let mut nodes = None;
                 let mut edges = None;
                 let mut projection = None;
+                let mut facts = None;
                 while let Some(field) = map.next_key::<String>()? {
                     match field.as_str() {
                         "nodes" if nodes.is_none() => {
@@ -121,13 +174,17 @@ impl<'de> Deserialize<'de> for GraphOwnerOutput {
                         "projection" if projection.is_none() => {
                             projection = Some(map.next_value::<LimitedProjection>()?.0);
                         }
+                        "facts" if facts.is_none() => {
+                            facts = Some(map.next_value::<Option<ObjectRef>>()?);
+                        }
+                        "facts" => return Err(de::Error::duplicate_field("facts")),
                         "projection" => return Err(de::Error::duplicate_field("projection")),
                         "nodes" => return Err(de::Error::duplicate_field("nodes")),
                         "edges" => return Err(de::Error::duplicate_field("edges")),
                         _ => {
                             return Err(de::Error::unknown_field(
                                 &field,
-                                &["nodes", "edges", "projection"],
+                                &["nodes", "edges", "projection", "facts"],
                             ));
                         }
                     }
@@ -145,16 +202,18 @@ impl<'de> Deserialize<'de> for GraphOwnerOutput {
                 }
                 let projection =
                     projection.ok_or_else(|| de::Error::missing_field("projection"))?;
+                let facts = facts.ok_or_else(|| de::Error::missing_field("facts"))?;
                 Ok(GraphOwnerOutput {
                     nodes,
                     edges,
                     projection,
+                    facts,
                 })
             }
         }
         deserializer.deserialize_struct(
             "GraphOwnerOutput",
-            &["nodes", "edges", "projection"],
+            &["nodes", "edges", "projection", "facts"],
             Output,
         )
     }
@@ -244,13 +303,14 @@ mod tests {
 
     #[test]
     fn graph_projection_refs_are_required_and_bounded_in_owner_output() -> TestResult {
-        let empty = r#"{"nodes":[],"edges":[],"projection":[]}"#;
+        let empty = r#"{"nodes":[],"edges":[],"projection":[],"facts":null}"#;
         let output: super::GraphOwnerOutput = serde_json::from_str(empty)?;
         if !output.projection.is_empty() || serde_json::to_string(&output)? != empty {
             return Err("graph output projection contract changed".into());
         }
         for invalid in [
             r#"{"nodes":[],"edges":[]}"#,
+            r#"{"nodes":[],"edges":[],"projection":[]}"#,
             r#"{"nodes":[],"edges":[],"projection":[],"projection":[]}"#,
             r#"{"nodes":[],"edges":[],"projection":[],"unknown":0}"#,
         ] {

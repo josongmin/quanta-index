@@ -6,11 +6,10 @@
 
 use std::{
     fmt,
-    ops::{Deref, DerefMut},
     sync::{Arc, atomic::AtomicUsize},
 };
 
-use super::{IndexError, WorkBudget};
+use super::IndexError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryLifetime {
@@ -114,39 +113,16 @@ impl Drop for MemoryCredit {
     }
 }
 
-/// Restores the parent's allocation scope before closing unused credit.
-pub struct ScopedMemoryBudget<'a> {
-    pub(super) budget: &'a mut WorkBudget,
-    pub(super) previous: Option<MemoryScope>,
-    pub(super) previous_optional: Option<MemoryScope>,
-    pub(super) _credit: MemoryCredit,
-}
-
-impl Deref for ScopedMemoryBudget<'_> {
-    type Target = WorkBudget;
-
-    fn deref(&self) -> &Self::Target {
-        self.budget
-    }
-}
-
-impl DerefMut for ScopedMemoryBudget<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.budget
-    }
-}
-
-impl Drop for ScopedMemoryBudget<'_> {
-    fn drop(&mut self) {
-        self.budget
-            .restore_scoped_memory_credit(self.previous.take(), self.previous_optional.take());
-    }
-}
-
 /// The last lease owner releases its exact charge. Implementations fail closed
 /// on corrupted accounting; destructors cannot substitute a successful result.
 pub trait MemoryLeaseOwner: Send + Sync {
     fn release(&self, bytes: u64);
+
+    /// Promote the charge for the same allocation while execution is live.
+    /// A refusal leaves the original charge and its release contract intact.
+    fn try_retain(&mut self, _bytes: u64) -> Result<bool, IndexError> {
+        Ok(false)
+    }
 }
 
 #[derive(Clone)]
@@ -251,6 +227,18 @@ impl MemoryLease {
     #[must_use]
     pub fn bytes(&self) -> u64 {
         self.inner.bytes
+    }
+
+    /// Reclassify an exclusively owned charge without reserving its data twice.
+    /// Shared or unsupported charges remain unchanged.
+    pub fn try_retain(&mut self) -> Result<bool, IndexError> {
+        let Some(lease) = Arc::get_mut(&mut self.inner) else {
+            return Ok(false);
+        };
+        let Some(owner) = Arc::get_mut(&mut lease.owner) else {
+            return Ok(false);
+        };
+        owner.try_retain(lease.bytes)
     }
 }
 

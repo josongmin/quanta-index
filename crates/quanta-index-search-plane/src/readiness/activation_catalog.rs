@@ -603,7 +603,11 @@ impl ActivationCatalog {
         })
     }
 
-    #[cfg(test)]
+    /// Fixture-only entry to the same guarded durable writer used by the
+    /// control dispatcher. Runtime process tests enable the existing barrier
+    /// feature; ordinary search-plane dependencies cannot call this method.
+    #[cfg(any(test, feature = "test-runtime-barriers"))]
+    #[doc(hidden)]
     pub fn activate_prepared_search_corpus_generation_v1(
         &self,
         prepared: &PreparedSearchCorpusGenerationV1,

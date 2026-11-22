@@ -29,6 +29,7 @@ from evidence import (
     _write_atomic,
     canonical_json,
     digest_bytes,
+    is_digest,
     parse_json,
     write_raw_file,
 )
@@ -374,11 +375,14 @@ def publish_capture(
     runs: list[dict],
     replay: Callable[[RunStore, dict], object],
     verify_source: Callable[[], None],
+    verify_at_commit: Callable[[], None] | None = None,
 ) -> dict:
     """Publish prepared runs and their complete profile under one GC custody.
 
     Producers must have completed before entry. Domain replay and source checks
     remain caller-owned; no profile pointer changes until every run passes them.
+    When supplied, verify_at_commit performs the final source check after the
+    stored runs and capture manifest are validated.
     Failed epochs may leave immutable unreferenced runs for explicit collection.
     """
     from evidence_bridge import host_from_observations, promote_native_run, verify_host_binding
@@ -446,7 +450,7 @@ def publish_capture(
         raise EvidenceError("capture ID already exists")
     # Establish Rust-collector exclusion BEFORE materializing any immutable run.
     (root / "captures").mkdir(exist_ok=True)
-    store, promoted = RunStore(root), []
+    store, promoted, replayed_digests = RunStore(root), [], {}
     for run in prepared:
         epoch.step("publication_source", run_id=run["run_id"])
         verify_source()
@@ -459,17 +463,25 @@ def publish_capture(
         )
         result = promote_native_run(evidence_root=root, **run)
         epoch.step("promoted_load", run_id=result["run_id"])
-        record = store.load(result["run_id"])
+        record = store.load(result["run_id"], expected_digest=result["digest"])
         verify_host_binding(store, record, capture_id=capture_id)
         epoch.step("domain_replay")
         replay(store, record)
         epoch.require_healthy()
         promoted.append(record["run_id"])
+        replayed_digests[record["run_id"]] = record["digest"]
     epoch.step("final_source", promoted_run_ids=promoted)
-    verify_source()
-    epoch.require_healthy()
+    if verify_at_commit is None:
+        verify_source()
+        epoch.require_healthy()
     epoch.state["commit_state"] = "attempted"
     epoch.step("commit")
+
+    def check_before_publication() -> None:
+        if verify_at_commit is not None:
+            verify_at_commit()
+        epoch.require_healthy()
+
     document = commit_capture(
         root,
         capture_id=capture_id,
@@ -477,6 +489,8 @@ def publish_capture(
         registry_digest=registry_digest,
         expected_cases=expected,
         run_ids=promoted,
+        expected_run_digests=replayed_digests,
+        verify_at_commit=check_before_publication,
     )
     epoch.committed(document)
     return document
@@ -491,6 +505,8 @@ def commit_capture(
     registry_digest: str,
     expected_cases: dict[str, list[str | None]],
     run_ids: list[str],
+    expected_run_digests: dict[str, str] | None = None,
+    verify_at_commit: Callable[[], None] | None = None,
 ) -> dict:
     _run_id(capture_id)
     _run_id(profile)
@@ -502,9 +518,18 @@ def commit_capture(
         _run_id(run_id)
     if len(set(run_ids)) != len(run_ids):
         raise EvidenceError("capture needs unique, nonempty run IDs")
+    if expected_run_digests is not None and (
+        not isinstance(expected_run_digests, dict)
+        or set(expected_run_digests) != set(run_ids)
+        or any(not is_digest(digest) for digest in expected_run_digests.values())
+    ):
+        raise EvidenceError("capture replayed run digest inventory differs")
     records, actual, source = [], {}, None
     for run_id in run_ids:
-        evidence = store.load(run_id)
+        expected_digest = (
+            expected_run_digests[run_id] if expected_run_digests is not None else None
+        )
+        evidence = store.load(run_id, expected_digest=expected_digest)
         if evidence["profile"] != profile:
             raise EvidenceError("capture run belongs to a different profile")
         if evidence["verdict"]["status"] != "pass":
@@ -540,14 +565,22 @@ def commit_capture(
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() or target.is_symlink():
         raise EvidenceError("capture ID already exists")
+    # Independently verify the exact manifest bytes and all referenced runs
+    # before publishing the immutable record. The final caller check follows
+    # that disk I/O so a source change during it cannot escape the check.
+    _validate_capture_document(
+        root, encoded, capture_id=capture_id, profile=profile, registry_digest=registry_digest,
+    )
+    if verify_at_commit is not None:
+        verify_at_commit()
     # Exclusive creation: two writers must not overwrite an immutable capture.
     with target.open("xb") as handle:
         handle.write(encoded)
         handle.flush()
         os.fsync(handle.fileno())
     _sync_dir(target.parent)
-    # Publish only after the complete record can be loaded independently.
-    load_capture(root, capture_id=capture_id, profile=profile, registry_digest=registry_digest)
+    if _read_control_file(target) != encoded:
+        raise EvidenceError("capture record changed during publication")
     _write_atomic(
         root / "profiles" / f"{profile}.json",
         canonical_json(
@@ -581,8 +614,6 @@ def _check_cases(actual: dict[str, list], expected: dict[str, list]) -> None:
 def load_capture(
     root: Path, *, profile: str, registry_digest: str, capture_id: str | None = None
 ) -> dict:
-    from evidence_bridge import verify_host_binding
-
     _run_id(profile)
     _directories(root)
     pointer = None
@@ -592,7 +623,25 @@ def load_capture(
             raise EvidenceError("profile pointer is malformed")
         capture_id = pointer["capture_id"]
     _run_id(capture_id)
-    document = parse_json(_read_control_file(root / "captures" / f"{capture_id}.json").decode())
+    raw = _read_control_file(root / "captures" / f"{capture_id}.json")
+    return _validate_capture_document(
+        root, raw, capture_id=capture_id, profile=profile, registry_digest=registry_digest,
+        pointer=pointer,
+    )
+
+
+def _validate_capture_document(
+    root: Path,
+    raw: bytes,
+    *,
+    capture_id: str,
+    profile: str,
+    registry_digest: str,
+    pointer: dict | None = None,
+) -> dict:
+    from evidence_bridge import verify_host_binding
+
+    document = parse_json(raw.decode())
     keys = {
         "schema_version",
         "capture_id",

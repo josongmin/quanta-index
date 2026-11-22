@@ -12,4 +12,5 @@ mod lowering;
 mod projection;
 mod read;
 mod route;
+pub use route::execute_native_structural_v1;
 mod universe;

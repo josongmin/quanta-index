@@ -55,9 +55,7 @@ pub trait SemanticIngestPort: Send + Sync {
     >;
 }
 
-/// The checkpoint every budget-observing embedder names when the budget
-/// interrupts it (QI-BB-002).
-pub const EMBED_CHECKPOINT: &str = "semantic:embed";
+pub use crate::EMBED_CHECKPOINT;
 
 /// Provider output owns its allocation separately from execution capacity.
 /// Moving the vectors requires moving their lease; read access cannot grow them.

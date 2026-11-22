@@ -42,7 +42,6 @@ pub(super) fn search(
     }
     let query_norm = validate_search_query(query)?;
     validate_path_roots(query.source_owners, query.source_paths)?;
-    let top_k = usize::try_from(query.top_k).map_err(|_error| IndexError::ResourceLimited)?;
     let overlay_rows = u32::try_from(
         query
             .overlay
@@ -69,19 +68,7 @@ pub(super) fn search(
         drop(path_key);
         owner
     };
-    let heap_bytes = top_k
-        .checked_mul(std::mem::size_of::<RankedHit>())
-        .ok_or(IndexError::ResourceLimited)?;
-    let _heap_memory = context.budget.reserve_memory(
-        u64::try_from(heap_bytes).map_err(|_error| IndexError::ResourceLimited)?,
-        MemoryLifetime::Temporary,
-    )?;
-    let mut heap = BinaryHeap::new();
-    heap.try_reserve_exact(top_k)
-        .map_err(|_error| IndexError::ResourceLimited)?;
-    if heap.capacity() > top_k {
-        return Err(IndexError::ResourceLimited);
-    }
+    let mut heap = RankedHits::for_query(query, context.budget)?;
     let mut scanned_owners = 0;
     let mut skipped_stale = 0u32;
     let mut traversal = NativeSemanticTraversal::ExactExhausted;
@@ -121,6 +108,7 @@ pub(super) fn search(
             } else {
                 let member = selected.current_member(query, context)?;
                 let _rescored = rank_member(
+                    &selected,
                     &member,
                     Some(SelectedArtifactInput::Source {
                         reference: source,
@@ -129,7 +117,6 @@ pub(super) fn search(
                     None,
                     query,
                     query_norm,
-                    top_k,
                     &mut heap,
                     context,
                 )?;
@@ -192,7 +179,6 @@ pub(super) fn search(
     finish_ranked(
         query,
         query_norm,
-        top_k,
         heap,
         scanned_owners,
         skipped_stale,
@@ -218,7 +204,12 @@ fn search_projected(
     )
     .map_err(|_error| IndexError::ResourceLimited)?;
     if lexical_scope::selected_projected_empty(query.coverage) {
-        return lexical_scope::rank_selected(query, &[], overlay_count, None, context);
+        return lexical_scope::rank_selected(
+            query,
+            lexical_scope::SelectedLexicalScope::new(0, overlay_count),
+            None,
+            context,
+        );
     }
     let directory = directory.ok_or(IndexError::RebuildRequired)?;
     let limit = usize::try_from(
@@ -240,9 +231,14 @@ fn search_projected(
             .transpose()?
     };
     let Some(source_path) = source_path else {
-        return lexical_scope::rank_selected(query, &[], overlay_count, None, context);
+        return lexical_scope::rank_selected(
+            query,
+            lexical_scope::SelectedLexicalScope::new(0, overlay_count),
+            None,
+            context,
+        );
     };
-    let mut selected = lexical_scope::SelectedLexicalScope::reserve(limit, context)?;
+    let mut selected = lexical_scope::SelectedLexicalScope::new(limit, overlay_count);
     let mut scalar_file = None;
     match source_path {
         quanta_index_core::index::SourcePathOwners::LegacyOwner(source_owner) => {
@@ -285,7 +281,12 @@ fn search_projected(
                     // File hits reopen their selected source at ranking so one
                     // record cannot be incorrectly shared by every projection.
                     let source = lexical_scope::SelectedProjectedSource::from_authenticated(
-                        owner, reference, record, false, &mut read,
+                        owner,
+                        reference,
+                        query.source_owners,
+                        record,
+                        false,
+                        &mut read,
                     )?;
                     lexical_scope::select_projected_source(
                         &source,
@@ -301,11 +302,5 @@ fn search_projected(
             )?;
         }
     }
-    lexical_scope::rank_selected(
-        query,
-        &selected.owners,
-        overlay_count,
-        scalar_file.as_ref(),
-        context,
-    )
+    lexical_scope::rank_selected(query, selected, scalar_file, context)
 }

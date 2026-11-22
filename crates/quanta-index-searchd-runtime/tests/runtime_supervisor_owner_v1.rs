@@ -12,6 +12,13 @@
     reason = "integration-test helpers outside `#[test]` fns assert fixture setup with `expect`; the workspace already permits this inside test fns and a helper that cannot set up its fixture has no caller to propagate to"
 )]
 
+#[path = "runtime_supervisor_owner_v1/manifest_authority.rs"]
+mod manifest_authority;
+#[path = "common/offline_live_root.rs"]
+mod offline_live_root;
+#[path = "common/offline_state_fixture.rs"]
+mod offline_state_fixture;
+
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;

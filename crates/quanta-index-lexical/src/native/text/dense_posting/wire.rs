@@ -114,9 +114,9 @@ pub(in crate::native::text) fn page_payload(
     if rows.is_empty() || rows.len() > PAGE_ROWS {
         return Err(invalid("page row count exceeds bound"));
     }
-    for pair in rows.windows(2) {
+    for (left, right) in rows.iter().zip(rows.iter().skip(1)) {
         budget.checkpoint()?;
-        if pair[0].owner >= pair[1].owner {
+        if left.owner >= right.owner {
             return Err(invalid("page owners are not strictly ordered"));
         }
     }
@@ -216,7 +216,10 @@ impl Directory {
         let payload = self.object.payload.as_slice();
         let count = u16::from_be_bytes(
             payload
-                .get(offset + 64..offset + 66)
+                .get(
+                    offset.checked_add(64).ok_or(IndexError::ResourceLimited)?
+                        ..offset.checked_add(66).ok_or(IndexError::ResourceLimited)?,
+                )
                 .ok_or_else(|| corrupt("directory descriptor is truncated"))?
                 .try_into()
                 .map_err(|_error| corrupt("directory count width differs"))?,
@@ -230,7 +233,10 @@ impl Directory {
         Ok((
             PageFence {
                 first: read32(payload, offset)?,
-                last: read32(payload, offset + 32)?,
+                last: read32(
+                    payload,
+                    offset.checked_add(32).ok_or(IndexError::ResourceLimited)?,
+                )?,
                 count,
             },
             reference,
@@ -256,12 +262,16 @@ pub(in crate::native::text) fn decode_directory(
         return Err(corrupt("directory envelope differs"));
     }
     let total = u64::from(u32::from_be_bytes(
-        payload[8..12]
+        payload
+            .get(8..12)
+            .ok_or_else(|| corrupt("directory total width differs"))?
             .try_into()
             .map_err(|_error| corrupt("directory total width differs"))?,
     ));
     let pages = usize::from(u16::from_be_bytes(
-        payload[12..14]
+        payload
+            .get(12..14)
+            .ok_or_else(|| corrupt("directory page count width differs"))?
             .try_into()
             .map_err(|_error| corrupt("directory page count width differs"))?,
     ));
@@ -280,11 +290,28 @@ pub(in crate::native::text) fn decode_directory(
     let mut previous_last = None;
     for slot in 0..pages {
         budget.checkpoint()?;
-        let offset = DIRECTORY_HEADER + slot * FENCE_BYTES;
+        let offset = slot
+            .checked_mul(FENCE_BYTES)
+            .and_then(|body| DIRECTORY_HEADER.checked_add(body))
+            .ok_or_else(|| corrupt("directory size overflows"))?;
         let first = read32(payload, offset)?;
-        let last = read32(payload, offset + 32)?;
+        let last = read32(
+            payload,
+            offset
+                .checked_add(32)
+                .ok_or_else(|| corrupt("directory size overflows"))?,
+        )?;
         let count = u16::from_be_bytes(
-            payload[offset + 64..offset + 66]
+            payload
+                .get(
+                    offset
+                        .checked_add(64)
+                        .ok_or_else(|| corrupt("directory size overflows"))?
+                        ..offset
+                            .checked_add(66)
+                            .ok_or_else(|| corrupt("directory size overflows"))?,
+                )
+                .ok_or_else(|| corrupt("directory descriptor is truncated"))?
                 .try_into()
                 .map_err(|_error| corrupt("directory fence count width differs"))?,
         );
@@ -346,7 +373,10 @@ impl Page {
         let payload = self.object.payload.as_slice();
         Ok(PostingRow {
             owner: read32(payload, offset)?,
-            witness: read32(payload, offset + 32)?,
+            witness: read32(
+                payload,
+                offset.checked_add(32).ok_or(IndexError::ResourceLimited)?,
+            )?,
         })
     }
 
@@ -370,7 +400,9 @@ pub(in crate::native::text) fn decode_page(
         return Err(corrupt("page envelope differs"));
     }
     let rows = usize::from(u16::from_be_bytes(
-        payload[8..10]
+        payload
+            .get(8..10)
+            .ok_or_else(|| corrupt("page count width differs"))?
             .try_into()
             .map_err(|_error| corrupt("page count width differs"))?,
     ));
@@ -388,11 +420,21 @@ pub(in crate::native::text) fn decode_page(
     let mut previous = None;
     for slot in 0..rows {
         budget.checkpoint()?;
-        let owner = read32(payload, PAGE_HEADER + slot * ROW_BYTES)?;
+        let offset = slot
+            .checked_mul(ROW_BYTES)
+            .and_then(|body| PAGE_HEADER.checked_add(body))
+            .ok_or_else(|| corrupt("page size overflows"))?;
+        let owner = read32(payload, offset)?;
         if previous.is_some_and(|old| old >= owner) {
             return Err(corrupt("page owners are not strictly ordered"));
         }
-        if slot == 0 && owner != fence.first || slot + 1 == rows && owner != fence.last {
+        if (slot == 0 && owner != fence.first)
+            || (slot
+                .checked_add(1)
+                .ok_or_else(|| corrupt("page size overflows"))?
+                == rows
+                && owner != fence.last)
+        {
             return Err(corrupt("page endpoints differ from directory fence"));
         }
         previous = Some(owner);

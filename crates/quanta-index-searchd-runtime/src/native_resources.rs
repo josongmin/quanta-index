@@ -975,6 +975,17 @@ impl MemoryLeaseOwner for NativeMemoryLease {
             self.ledger.invalid.store(true, Ordering::Release);
         }
     }
+
+    fn try_retain(&mut self, bytes: u64) -> Result<bool, IndexError> {
+        if self.lifetime == MemoryLifetime::Retained {
+            return Ok(true);
+        }
+        if !self.ledger.try_retain_memory(self.reservation, bytes)? {
+            return Ok(false);
+        }
+        self.lifetime = MemoryLifetime::Retained;
+        Ok(true)
+    }
 }
 
 impl NativeResourceLedger {
@@ -1395,6 +1406,44 @@ impl NativeResourceLedger {
         let _previous = state.allocations.insert(reservation, allocation);
         drop(state);
         Ok(())
+    }
+
+    fn try_retain_memory(&self, reservation: u64, bytes: u64) -> Result<bool, IndexError> {
+        let mut state = self.state.lock().map_err(|_poison| invalid_ledger())?;
+        if self.invalid.load(Ordering::Acquire) {
+            return Err(invalid_ledger());
+        }
+        let mut allocation = state
+            .allocations
+            .get(&reservation)
+            .copied()
+            .filter(|allocation| allocation.active)
+            .ok_or_else(|| IndexError::BackendViolation("allocation scope has ended".into()))?;
+        let temporary = allocation
+            .temporary_bytes
+            .checked_sub(bytes)
+            .ok_or_else(invalid_ledger)?;
+        let extra = ResourceNeed {
+            memory_bytes: bytes,
+            ..ResourceNeed::default()
+        };
+        let promised = self
+            .promised(&state)
+            .and_then(|promised| add(promised, extra));
+        if promised.is_none_or(|promised| !fits(promised, self.plan.capacity)) {
+            return Ok(false);
+        }
+        allocation.temporary_bytes = temporary;
+        allocation.retained_bytes = allocation
+            .retained_bytes
+            .checked_add(bytes)
+            .ok_or_else(invalid_ledger)?;
+        state.pending_escape_bytes = state
+            .pending_escape_bytes
+            .checked_add(bytes)
+            .ok_or_else(invalid_ledger)?;
+        let _previous = state.allocations.insert(reservation, allocation);
+        Ok(true)
     }
 
     fn release_memory(
@@ -2780,6 +2829,54 @@ mod tests {
         ))?;
         drop(temporary);
         drop(guard);
+        check_eq!(ledger.snapshot()?.live_memory_bytes, 0)?;
+        Ok(())
+    }
+
+    #[test]
+    fn retaining_existing_scratch_updates_escape_promise_without_double_charge()
+    -> Result<(), IndexError> {
+        let mut configured = plan();
+        let bytes = 64;
+        configured.capacity.memory_bytes = configured
+            .capacity
+            .memory_bytes
+            .checked_add(bytes)
+            .ok_or(IndexError::ResourceLimited)?;
+        let ledger = NativeResourceLedger::new(configured)?;
+        let guard = ReservationGuard::try_acquire(
+            ledger.scheduler(NativeResourceClass::Control),
+            configured.control,
+        )
+        .ok_or(IndexError::ResourceLimited)?;
+        let scope = guard.memory_scope().ok_or_else(invalid_ledger)?;
+        let mut scratch = scope.reserve(bytes, MemoryLifetime::Temporary)?;
+
+        // Candidate work can still retain its own data while ranking owns
+        // scratch. It would be refused if the window had escaped already.
+        let required = scope.reserve(1, MemoryLifetime::Retained)?;
+        let before = ledger.snapshot()?;
+        check_eq!(before.live_memory_bytes, bytes.saturating_add(1))?;
+        check_eq!(before.pending_escape_bytes, 1)?;
+        check!(!scratch.try_retain()?)?;
+        check_eq!(ledger.snapshot()?, before)?;
+        drop(required);
+
+        let shared = scratch.clone();
+        check!(!scratch.try_retain()?)?;
+        drop(shared);
+        check!(scratch.try_retain()?)?;
+        check!(scratch.try_retain()?)?;
+        let retained = ledger.snapshot()?;
+        check_eq!(retained.live_memory_bytes, bytes)?;
+        check_eq!(retained.pending_escape_bytes, bytes)?;
+        check_eq!(retained.reserved, configured.control)?;
+        drop(guard);
+        let detached = ledger.snapshot()?;
+        check_eq!(detached.reserved, ResourceNeed::default())?;
+        check_eq!(detached.pending_escape_bytes, 0)?;
+        check_eq!(detached.retained_memory_bytes, bytes)?;
+        drop(scratch);
         check_eq!(ledger.snapshot()?.live_memory_bytes, 0)?;
         Ok(())
     }

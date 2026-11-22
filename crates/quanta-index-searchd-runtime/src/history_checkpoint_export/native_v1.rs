@@ -77,7 +77,8 @@ pub(super) fn export_v1(
                 )?;
                 exported = exported.checked_add(1).ok_or(IndexError::ResourceLimited)?;
                 Ok(())
-            })?;
+            },
+        )?;
         ensure!(
             witnessed_history_count >= exported,
             "Native History export count exceeds selected inventory"
@@ -325,7 +326,7 @@ impl<W: io::Write, P: Iterator<Item = (ObjectRef, usize)>> io::Write
     }
 }
 
-fn write_native_object_v1(
+pub(super) fn write_native_object_v1(
     reference: ObjectRef,
     payload: &[u8],
     children: &[ObjectRef],

@@ -32,7 +32,7 @@ use std::time::Instant;
 
 use quanta_index_lq_trigram::{DocId, DocResolver, NecessaryGramExpr};
 use regex_automata::{MatchKind, meta};
-use regex_syntax::hir::Hir;
+use regex_syntax::hir::{Hir, Look};
 
 use crate::dialect::{classify_ast_error, classify_construct_from_slice, dialect_filter};
 use crate::dialect_ast_walk::{classify_parse_failure, walk_for_inline_flag};
@@ -68,6 +68,25 @@ pub struct RegexCompilationPlan {
 }
 
 impl RegexCompilationPlan {
+    /// Require the validated expression to match the entire input. This
+    /// transforms HIR after parsing, so leading inline flags keep their
+    /// original scope and no second dialect parse is needed.
+    pub fn into_full_match(self) -> Result<Self, RegexError> {
+        fn anchored(hir: Hir) -> Hir {
+            Hir::concat(vec![Hir::look(Look::Start), hir, Hir::look(Look::End)])
+        }
+
+        let hir = anchored(self.hir);
+        let execution_hir = self.execution_hir.map(anchored);
+        let estimated_states = estimate_nfa_states(&hir)?;
+        Ok(Self {
+            pattern: self.pattern,
+            hir,
+            execution_hir,
+            estimated_states,
+        })
+    }
+
     /// The dialect estimator's state count, not an aggregate byte bound.
     #[must_use]
     pub const fn estimated_states(&self) -> u64 {
@@ -564,6 +583,38 @@ mod tests {
     use crate::errors::{ForbiddenKind, LimitDimension, RegexErrorCode};
     use quanta_index_lq_trigram::{DocId, DocResolver};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn full_match_hir_preserves_flags_alternation_and_captures()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let compile_full = |pattern| {
+            let plan = RegexExecutor::prepare(pattern)?.into_full_match()?;
+            RegexExecutor::compile_prepared(plan)
+        };
+
+        for pattern in ["(?i)café", "(?i)(café)"] {
+            let full = compile_full(pattern)?;
+            assert!(full.verify("CAFÉ".as_bytes()));
+            assert!(!full.verify("xCAFÉ".as_bytes()));
+            assert!(!full.verify("CAFÉx".as_bytes()));
+        }
+
+        let alternatives = compile_full("a|aa")?;
+        assert!(alternatives.verify(b"aa"));
+        assert!(!alternatives.verify(b"xaa"));
+        assert!(!alternatives.verify(b"aa\n"));
+        let captured = compile_full("(a|aa)")?;
+        assert!(captured.verify(b"aa"));
+        assert!(!captured.verify(b"xaa"));
+
+        let empty = compile_full("")?;
+        assert!(empty.verify(b""));
+        assert!(!empty.verify(b"x"));
+        assert!(RegexExecutor::compile("")?.verify(b"x"));
+        assert!(RegexExecutor::compile("a")?.verify(b"xa"));
+        assert!(!compile_full("a")?.verify(b"xa"));
+        Ok(())
+    }
 
     #[test]
     fn l4_capture_heavy_matcher_retains_only_whole_match_slots()

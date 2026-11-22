@@ -13,6 +13,16 @@ use crate::regex::RegexPlan;
 use crate::symbol::SymbolPlan;
 use crate::trigram_plan::TrigramPlan;
 
+pub(crate) const MAX_FILE_CONTAINS_LITERAL_BYTES: usize = 4_096;
+
+/// Native accepts the literal raw-string subset. Slash-delimited raw input
+/// denotes a regex on the existing lexical route and must not become literal.
+pub(crate) fn file_contains_raw_literal_supported(needle: &str) -> bool {
+    !needle.is_empty()
+        && needle.len() <= MAX_FILE_CONTAINS_LITERAL_BYTES
+        && !(needle.len() >= 2 && needle.starts_with('/') && needle.ends_with('/'))
+}
+
 /// The single engine an execution path can route a leaf to.
 ///
 /// Adding a new variant must be a deliberate planner change: the planner's
@@ -20,8 +30,8 @@ use crate::trigram_plan::TrigramPlan;
 /// for which adapters get woken up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EngineKind {
-    /// Tantivy text/BM25 over the content field.
-    Tantivy,
+    /// Native text and BM25 over the content field.
+    Text,
     /// Trigram index (LXE-04).
     Trigram,
     /// Compiled regex over a candidate set (LXE-04).
@@ -73,15 +83,17 @@ pub struct RepoFileConstraint {
 /// terms, regex AST, phrase positions, symbol kind filter, …).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanLeaf {
-    /// Tokenized content match — Tantivy BM25 over `chunk_text`.
+    /// Tokenized content match through Native BM25.
     Content { term: String },
     /// Path / file-name predicate (LXE-03).
     Path { pattern: String },
-    /// Executable predicate that still routes through the Tantivy adapter.
+    /// Executable predicate resolved by the lexical executor.
     ///
     /// The planner validates the predicate shape up-front; execution stays on
-    /// the adapter's predicate-preparation path (`prepare_predicate_plan`).
+    /// the route's predicate-preparation path.
     Predicate { name: String },
+    /// Literal substring of the authenticated UTF-8 source body.
+    FileContains { needle: String },
     /// Gates all hits in a repository using a correlated single-file match.
     RepoHasFile { constraint: RepoFileConstraint },
     /// Symbol-name predicate (LXE-06).
@@ -125,7 +137,8 @@ impl PlanLeaf {
             Self::Content { .. }
             | Self::Path { .. }
             | Self::Predicate { .. }
-            | Self::RepoHasFile { .. } => EngineKind::Tantivy,
+            | Self::FileContains { .. }
+            | Self::RepoHasFile { .. } => EngineKind::Text,
         }
     }
 }

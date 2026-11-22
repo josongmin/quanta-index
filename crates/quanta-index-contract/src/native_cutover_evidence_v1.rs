@@ -5,14 +5,19 @@
 //! authority while holding the actual root lease.
 
 use crate::index::{
-    Digest, HistorySourceCutV1, IndexInstanceId, NativeImportedSourceHeadV1, ObjectRef, OperationKey, ProducerId, Refusal, SourceCut, SourceOperationMode,
-    SourceTextAdmission, StreamId, UpdateRequest, ViewRef, WorkspaceKey,
+    Digest, HistorySourceCutV1, IndexInstanceId, NativeImportedSourceHeadV1, ObjectRef,
+    OperationKey, ProducerId, Refusal, SourceCut, SourceTextAdmission, StreamId, UpdateRequest,
+    ViewRef, WorkspaceKey,
 };
 pub use quanta_index_contract_base::NativeCutoverDigest64V1;
 
 #[path = "native_cutover_evidence_v1/before_selection_v1.rs"]
 mod before_selection_v1;
 pub use before_selection_v1::read_native_cutover_before_native_selector_v1;
+pub(crate) mod source_binding;
+pub use source_binding::{
+    NativeCutoverEvidenceSourcePublicationBindingV1, NativeCutoverEvidenceTargetV1,
+};
 
 /// FD6 is a private, pinned, read-only CBOR file. Refuse before decoding any
 /// record when its physical length exceeds this limit.
@@ -130,34 +135,6 @@ crate::native_serde_struct!(NativeCutoverEvidenceHeaderV1 {
     sdk_lock_file: NativeCutoverEvidenceFileIdentityV1,
     current_selection_sha256: Digest,
     candidate_selection_sha256: Digest
-});
-
-/// An authenticated signed-store target. `expected_source` is the prior CAS
-/// cut; a Q receiver must independently read the actually Published `SourceCut`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeCutoverEvidenceTargetV1 {
-    pub operation: OperationKey,
-    pub expected_view: ViewRef,
-    pub expected_source: SourceCut,
-    pub expected_profile: ObjectRef,
-    pub source_mode: SourceOperationMode,
-    pub event_predecessor: u64,
-    pub event_sequence: u64,
-    pub owner_identity_policy_digest: Digest,
-    pub text_admission: SourceTextAdmission,
-    pub canonical_target_digest: Digest,
-}
-crate::native_serde_struct!(NativeCutoverEvidenceTargetV1 {
-    operation: OperationKey,
-    expected_view: ViewRef,
-    expected_source: SourceCut,
-    expected_profile: ObjectRef,
-    source_mode: SourceOperationMode,
-    event_predecessor: u64,
-    event_sequence: u64,
-    owner_identity_policy_digest: Digest,
-    text_admission: SourceTextAdmission,
-    canonical_target_digest: Digest
 });
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -316,24 +293,6 @@ crate::native_serde_struct!(NativeCutoverEvidenceOutboxDeliveryReceiptV1 {
     accepted_semantic_tombstone_scopes: u32,
     sealed: bool,
     semantic_admission_metrics: Option<NativeCutoverEvidenceOutboxSemanticAdmissionMetricsV1>
-});
-
-/// The existing producer's committed Source association. Ordinary Replay and
-/// Native initial and completed Watch facts reuse these exact axes and wire.
-/// Terminal/ACK and Q publication identities remain on their existing facts.
-/// Decoding this tuple never proves that its producer or publication is genuine.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeCutoverEvidenceSourcePublicationBindingV1 {
-    pub transition_digest: NativeCutoverDigest64V1,
-    pub completion_pointer_digest: NativeCutoverDigest64V1,
-    pub physical_target_source_digest: NativeCutoverDigest64V1,
-    pub target_snapshot_id: u64,
-}
-crate::native_serde_struct!(NativeCutoverEvidenceSourcePublicationBindingV1 {
-    transition_digest: NativeCutoverDigest64V1,
-    completion_pointer_digest: NativeCutoverDigest64V1,
-    physical_target_source_digest: NativeCutoverDigest64V1,
-    target_snapshot_id: u64
 });
 
 /// Projections retain each actual category and its binding axes. A receiver

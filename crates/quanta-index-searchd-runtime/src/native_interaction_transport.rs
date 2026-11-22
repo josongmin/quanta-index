@@ -78,6 +78,7 @@ pub(super) fn dispatch(
         | NativeIndexRequest::BindOverlaySave(_)
         | NativeIndexRequest::CompleteOverlaySave(_)
         | NativeIndexRequest::QueryGraph { .. }
+        | NativeIndexRequest::ReadRepoMapPriorFileV1 { .. }
         | NativeIndexRequest::QueryImportedRepoMap { .. }
         | NativeIndexRequest::QueryRepoMap { .. }
         | NativeIndexRequest::LookupSourceOwners { .. }
@@ -86,6 +87,7 @@ pub(super) fn dispatch(
         | NativeIndexRequest::CreateWorkspace { .. }
         | NativeIndexRequest::SealCandidateWithSourceRoutes { .. }
         | NativeIndexRequest::BeginInput(_)
+        | NativeIndexRequest::ReopenInputWithRootForSourceStageV1 { .. }
         | NativeIndexRequest::StageSource { .. }
         | NativeIndexRequest::StageSources { .. }
         | NativeIndexRequest::StageRepositorySources { .. }
@@ -96,6 +98,8 @@ pub(super) fn dispatch(
         | NativeIndexRequest::StageProjectionCertificate { .. }
         | NativeIndexRequest::StageMutationPage { .. }
         | NativeIndexRequest::SealMutations { .. }
+        | NativeIndexRequest::SealMutationsForReplayV1 { .. }
+        | NativeIndexRequest::ReadSealedMutationsForReplayV1 { .. }
         | NativeIndexRequest::DiscardInput(_)
         | NativeIndexRequest::SearchLiteral { .. }
         | NativeIndexRequest::QueryPaths { .. }
@@ -103,18 +107,24 @@ pub(super) fn dispatch(
         | NativeIndexRequest::SearchOverlayText(_)
         | NativeIndexRequest::ReadSession(_)
         | NativeIndexRequest::SearchText { .. }
+        | NativeIndexRequest::SearchTextPreview { .. }
         | NativeIndexRequest::SearchSemantic { .. }
         | NativeIndexRequest::QueryEffortStream { .. }
         | NativeIndexRequest::Submit(_)
         | NativeIndexRequest::Resume(_)
+        | NativeIndexRequest::ReplayDslV1(_)
         | NativeIndexRequest::ReadView(_)
         | NativeIndexRequest::ObserveRootView(_)
+        | NativeIndexRequest::ObserveCandidateInstallationV1
+        | NativeIndexRequest::ObserveRepoMapGraphInstallationV1(_)
+        | NativeIndexRequest::ObserveRepoMapEventFrontierV1 { .. }
         | NativeIndexRequest::ResolveProtectedSourceHead { .. }
             | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
             | NativeIndexRequest::ReadImportedRepoMapMember { .. }
         | NativeIndexRequest::PublishedViewMetadata(_)
         | NativeIndexRequest::ReadProjection { .. }
         | NativeIndexRequest::LookupProjectionOwners { .. }
+        | NativeIndexRequest::ListProducerProjectionOwnersV1 { .. }
         | NativeIndexRequest::Status(_)
         | NativeIndexRequest::ReadyWork { .. }
         | NativeIndexRequest::ClaimWork { .. }

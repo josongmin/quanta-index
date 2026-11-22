@@ -5,18 +5,20 @@ use std::cmp::Ordering;
 
 use quanta_index_core::index::{
     AttemptContext, AttemptRef, DeltaInput, Digest, IndexError, InputBinding, MapPageCursor,
-    MapRoot, MemberBinding, MemoryLease, MemoryLifetime, ObjectBatchInput, ObjectChildren,
-    ObjectRef, OrdinalMapEdit, SourceCut, SourceDelta, SourceInputCursor, WorkBudget, WorkUsage,
-    ports::{MapEditCursor, PersistentMapPort},
+    MapRoot, MapValue, MemberBinding, MemoryLease, MemoryLifetime, ObjectBatchInput,
+    ObjectChildren, ObjectRef, OrdinalMapEdit, SourceCut, SourceDelta, SourceInputCursor,
+    WorkBudget, WorkUsage,
+    ports::{MapDiffRange, MapDiffVisitor, MapEditCursor, PersistentMapPort},
 };
 
 use super::{
-    literal::{load_literal_body, observe_member_work, owner_key},
     literal_blocks::{
-        ColdOwnerPrefix, LiteralBlockBuilder, PreparedLiteralBlock, PushResult, load_block,
+        ColdOwnerPrefix, LiteralBlockBuilder, PreparedLiteralBlock, PushResult, last_entry_page,
+        load_block, lower_bound_page, lower_bound_page_with_end,
     },
     literal_delta_runs::{DeltaCollector, DeltaStream},
     literal_memberships::{MembershipEdit, OwnerMemberships},
+    literal_work::{load_literal_body, observe_member_work, owner_key},
     text_memory::PreparedRows,
 };
 
@@ -116,13 +118,12 @@ pub(super) struct SealInput {
     pub(super) prior: MapRoot,
 }
 
-#[derive(Clone, Debug)]
 pub(super) struct SealWitness {
     attempt: AttemptRef,
     source: SourceCut,
     input: InputBinding,
     prior: MapRoot,
-    directory: Option<DirectorySeal>,
+    directory: DirectoryProof,
     member: Option<MemberBinding>,
 }
 
@@ -149,6 +150,12 @@ impl SealWitness {
     }
 }
 
+enum DirectoryProof {
+    Unchanged,
+    Full(DirectorySeal),
+    Patch(PreparedRows<OrdinalMapEdit>),
+}
+
 #[derive(Clone, Copy, Debug)]
 struct DirectorySeal {
     count: u64,
@@ -169,7 +176,7 @@ impl Changes {
             context.maps,
             context.objects,
         )?;
-        let mut owners = PreparedRows::new(usize::MAX / 32)?;
+        let mut owners = PreparedRows::new(usize::MAX.div_euclid(32))?;
         let mut rows = DeltaCollector::new(context.budget)?;
         let mut grams = None;
         while let Some(change) = cursor.next_change(context.budget)? {
@@ -243,10 +250,6 @@ impl Changes {
         }
         Ok(self.ready)
     }
-
-    fn affects(&mut self, upper: Key, budget: &mut WorkBudget) -> Result<bool, IndexError> {
-        Ok(self.peek(budget)?.is_some_and(|(key, _)| key <= upper))
-    }
 }
 
 type DirectoryEntry = (Key, ObjectRef);
@@ -308,6 +311,7 @@ struct BlockSeal {
     last: Key,
     count: u16,
     digest: [u8; 32],
+    shared: Option<ColdOwnerPrefix>,
 }
 
 struct BlockHasher {
@@ -315,6 +319,7 @@ struct BlockHasher {
     first: Option<Key>,
     last: Option<Key>,
     count: u16,
+    shared: Option<ColdOwnerPrefix>,
 }
 
 impl BlockHasher {
@@ -326,36 +331,113 @@ impl BlockHasher {
             first: None,
             last: None,
             count: 0,
+            shared: None,
         }
     }
 
+    fn cold(shared: ColdOwnerPrefix) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"QIDX literal logical block keys v3");
+        Self {
+            hasher,
+            first: None,
+            last: None,
+            count: 0,
+            shared: Some(shared),
+        }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Key is 35 bytes and the private shared-prefix constructor bounds owner width by 32"
+    )]
     fn push(&mut self, key: Key, budget: &mut WorkBudget) -> Result<(), IndexError> {
         budget.checkpoint()?;
         if self.last.is_some_and(|last| last >= key) {
             return Err(corrupt("logical block keys are not ordered"));
         }
-        // This transcript is derived from logical keys, independently of the
-        // block encoder and the persisted block parser. The prefix byte makes
-        // the fixed-width suffix self-delimiting; the first key uses prefix 0.
-        let mut prefix = 0_usize;
-        if let Some(previous) = self.last.as_ref() {
-            while prefix < key.len() && previous[prefix] == key[prefix] {
-                prefix += 1;
-            }
-        }
-        let suffix = key.get(prefix..).ok_or(IndexError::ResourceLimited)?;
-        let prefix = u8::try_from(prefix).map_err(|_| IndexError::ResourceLimited)?;
+        // The cold V4 builder and readback decoder establish the shared owner
+        // prefix before calling this private transcript. Hash that prefix once
+        // per block, then front-code logical (gram, owner suffix) keys.
+        let (prefix, gram_suffix, owner_suffix) = if let Some(shared) = self.shared.as_ref() {
+            let (width, _) = shared.parts();
+            let owner_at = 3_usize
+                .checked_add(width)
+                .ok_or(IndexError::ResourceLimited)?;
+            let previous = self.last.as_ref();
+            let gram_prefix = previous.map_or(0, |old| {
+                old[..3]
+                    .iter()
+                    .zip(&key[..3])
+                    .take_while(|(left, right)| left == right)
+                    .count()
+            });
+            let owner_prefix = if gram_prefix == 3 {
+                previous.map_or(0, |old| {
+                    old[owner_at..]
+                        .iter()
+                        .zip(&key[owner_at..])
+                        .take_while(|(left, right)| left == right)
+                        .count()
+                })
+            } else {
+                0
+            };
+            let prefix = gram_prefix
+                .checked_add(owner_prefix)
+                .ok_or(IndexError::ResourceLimited)?;
+            let gram_suffix: &[u8] = if prefix < 3 { &key[prefix..3] } else { &[] };
+            let suffix_at = owner_at
+                .checked_add(owner_prefix)
+                .ok_or(IndexError::ResourceLimited)?;
+            let owner_suffix: &[u8] = &key[suffix_at..];
+            (prefix, gram_suffix, owner_suffix)
+        } else {
+            // Warm blocks preserve the existing full-key transcript exactly.
+            let prefix = self.last.as_ref().map_or(0, |previous| {
+                previous
+                    .iter()
+                    .zip(&key)
+                    .take_while(|(left, right)| left == right)
+                    .count()
+            });
+            let suffix = key.get(prefix..).ok_or(IndexError::ResourceLimited)?;
+            (prefix, suffix, &[][..])
+        };
+        let prefix = u8::try_from(prefix).map_err(|_width| IndexError::ResourceLimited)?;
+        let initial_shared_bytes = if self.first.is_none() {
+            self.shared.as_ref().map_or(Ok(0_usize), |shared| {
+                shared
+                    .parts()
+                    .0
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)
+            })?
+        } else {
+            0
+        };
         budget.charge(WorkUsage {
             bytes: u64::try_from(
                 1_usize
-                    .checked_add(suffix.len())
+                    .checked_add(gram_suffix.len())
+                    .and_then(|bytes| bytes.checked_add(owner_suffix.len()))
+                    .and_then(|bytes| bytes.checked_add(initial_shared_bytes))
                     .ok_or(IndexError::ResourceLimited)?,
             )
-            .map_err(|_| IndexError::ResourceLimited)?,
+            .map_err(|_width| IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
+        if self.first.is_none()
+            && let Some(shared) = self.shared.as_ref()
+        {
+            let (width, bytes) = shared.parts();
+            self.hasher
+                .update([u8::try_from(width).map_err(|_width| IndexError::ResourceLimited)?]);
+            self.hasher.update(bytes);
+        }
         self.hasher.update([prefix]);
-        self.hasher.update(suffix);
+        self.hasher.update(gram_suffix);
+        self.hasher.update(owner_suffix);
         if self.first.is_none() {
             self.first = Some(key);
         }
@@ -380,6 +462,7 @@ impl BlockHasher {
             last,
             count: self.count,
             digest: self.hasher.finalize().into(),
+            shared: self.shared,
         })
     }
 }
@@ -412,8 +495,12 @@ impl DirectoryHasher {
             return Err(corrupt("intended directory keys are not ordered"));
         }
         budget.charge(WorkUsage {
-            bytes: u64::try_from(key.len() + reference.0.0.len())
-                .map_err(|_| IndexError::ResourceLimited)?,
+            bytes: u64::try_from(
+                key.len()
+                    .checked_add(reference.0.0.len())
+                    .ok_or(IndexError::ResourceLimited)?,
+            )
+            .map_err(|_width| IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
         self.hasher.update(key);
@@ -488,15 +575,15 @@ struct Pending {
 struct Publisher {
     pending: PreparedRows<Pending>,
     edits: PreparedRows<OrdinalMapEdit>,
-    directory: DirectoryHasher,
+    full_directory: Option<DirectoryHasher>,
 }
 
 impl Publisher {
-    fn new() -> Result<Self, IndexError> {
+    fn new(prior: MapRoot) -> Result<Self, IndexError> {
         Ok(Self {
             pending: PreparedRows::new(BLOCK_BATCH)?,
-            edits: PreparedRows::new(usize::MAX / std::mem::size_of::<OrdinalMapEdit>())?,
-            directory: DirectoryHasher::new(),
+            edits: PreparedRows::new(usize::MAX.div_euclid(std::mem::size_of::<OrdinalMapEdit>()))?,
+            full_directory: prior.0.is_none().then(DirectoryHasher::new),
         })
     }
 
@@ -566,7 +653,12 @@ impl Publisher {
                 // Lane 47 re-reads and independently validates the persisted child.
                 observe_member_work(context, 47, |context| {
                     let block = load_block(context.objects, row.key, reference, context.budget)?;
-                    let mut observed = BlockHasher::new();
+                    if let Some(shared) = expected.shared {
+                        block.require_cold_owner_prefix(shared)?;
+                    }
+                    let mut observed = expected
+                        .shared
+                        .map_or_else(BlockHasher::new, BlockHasher::cold);
                     for key in block.keys() {
                         observed.push(key?, context.budget)?;
                     }
@@ -575,7 +667,9 @@ impl Publisher {
                     }
                     Ok(())
                 })?;
-                self.directory.push(row.key, reference, context.budget)?;
+                if let Some(directory) = &mut self.full_directory {
+                    directory.push(row.key, reference, context.budget)?;
+                }
                 Some(reference)
             } else {
                 if row.seal.is_some() {
@@ -595,15 +689,6 @@ impl Publisher {
         Ok(())
     }
 
-    fn untouched(
-        &mut self,
-        entry: DirectoryEntry,
-        context: &mut AttemptContext<'_>,
-    ) -> Result<(), IndexError> {
-        self.flush(context)?;
-        self.directory.push(entry.0, entry.1, context.budget)
-    }
-
     fn range(
         &mut self,
         mut rows: impl FnMut(&mut WorkBudget) -> Result<Option<Key>, IndexError>,
@@ -612,7 +697,7 @@ impl Publisher {
         context: &mut AttemptContext<'_>,
     ) -> Result<(), IndexError> {
         let mut builder = LiteralBlockBuilder::new(context.budget, shared)?;
-        let mut seal = BlockHasher::new();
+        let mut seal = shared.map_or_else(BlockHasher::new, BlockHasher::cold);
         let mut expected = old;
         while let Some(key) = rows(context.budget)? {
             if matches!(builder.try_push(key, context.budget)?, PushResult::Full) {
@@ -621,7 +706,7 @@ impl Publisher {
                     LiteralBlockBuilder::new(context.budget, shared)?,
                 );
                 self.block(full.finish()?, seal.finish()?, &mut expected, context)?;
-                seal = BlockHasher::new();
+                seal = shared.map_or_else(BlockHasher::new, BlockHasher::cold);
                 if matches!(builder.try_push(key, context.budget)?, PushResult::Full) {
                     return Err(corrupt("one posting exceeds a block"));
                 }
@@ -653,10 +738,20 @@ impl Publisher {
         {
             return Err(corrupt("published block boundary differs"));
         }
-        let prior = if expected.is_some_and(|(last, _)| last == key) {
-            expected.take().map(|(_, reference)| reference)
-        } else {
-            None
+        let prior = match *expected {
+            Some((last, reference)) if last < key => {
+                // Repacking moved the fence to the right. Retire the old
+                // descriptor before emitting the new key: both the map edit
+                // cursor and the transition diff require sorted positions.
+                self.push(last, Some(reference), None, context)?;
+                *expected = None;
+                None
+            }
+            Some((last, reference)) if last == key => {
+                *expected = None;
+                Some(reference)
+            }
+            _ => None,
         };
         self.push(key, prior, Some((block, seal)), context)
     }
@@ -669,6 +764,96 @@ impl MapEditCursor for EditCursor<'_> {
         budget.checkpoint()?;
         Ok(self.0.next().cloned())
     }
+}
+
+struct DirectoryDiff<'a> {
+    remaining: std::slice::Iter<'a, OrdinalMapEdit>,
+    last: Option<Key>,
+}
+
+impl<'a> DirectoryDiff<'a> {
+    fn new(edits: &'a [OrdinalMapEdit]) -> Self {
+        Self {
+            remaining: edits.iter(),
+            last: None,
+        }
+    }
+
+    fn next_change(
+        &mut self,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<&'a OrdinalMapEdit>, IndexError> {
+        for edit in self.remaining.by_ref() {
+            budget.checkpoint()?;
+            if edit.expected_wire() != edit.next_wire() {
+                return Ok(Some(edit));
+            }
+        }
+        Ok(None)
+    }
+
+    fn finish(mut self, budget: &mut WorkBudget) -> Result<(), IndexError> {
+        if self.next_change(budget)?.is_some() {
+            return Err(corrupt("persisted directory omitted an edit"));
+        }
+        budget.checkpoint()
+    }
+}
+
+impl MapDiffVisitor for DirectoryDiff<'_> {
+    fn changed(
+        &mut self,
+        key: &[u8],
+        before: Option<MapValue>,
+        after: Option<MapValue>,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        budget.checkpoint()?;
+        let Some(expected) = self.next_change(budget)? else {
+            return Err(corrupt("persisted directory contains an extra edit"));
+        };
+        if key != expected.key() || before != expected.expected()? || after != expected.next()? {
+            return Err(corrupt("persisted directory edit differs"));
+        }
+        self.last = Some(
+            key.try_into()
+                .map_err(|_error| corrupt("persisted directory key width"))?,
+        );
+        Ok(())
+    }
+}
+
+fn seal_changed_directory(
+    witness: &SealWitness,
+    root: MapRoot,
+    edits: &[OrdinalMapEdit],
+    context: &mut AttemptContext<'_>,
+) -> Result<(), IndexError> {
+    let mut visitor = DirectoryDiff::new(edits);
+    let mut after: Option<Key> = None;
+    loop {
+        let more = context.maps.visit_diff(
+            witness.prior,
+            root,
+            MapDiffRange {
+                prefix: &[],
+                after: after.as_ref().map(<[u8; 35]>::as_slice),
+                limit: DIRECTORY_PAGE,
+            },
+            &mut visitor,
+            context.budget,
+        )?;
+        if !more {
+            break;
+        }
+        after = Some(
+            visitor
+                .last
+                .take()
+                .ok_or_else(|| corrupt("empty directory diff continuation"))?,
+        );
+    }
+    visitor.finish(context.budget)
 }
 
 pub(super) fn publish(
@@ -687,32 +872,44 @@ pub(super) fn publish(
     };
     let mut changes = observe_member_work(context, 44, |context| Changes::collect(input, context))?;
     if changes.peek(context.budget)?.is_none() {
-        return Ok((input.prior, witness(None)));
+        return Ok((input.prior, witness(DirectoryProof::Unchanged)));
     }
-    let mut publisher = Publisher::new()?;
-    let mut directory = Directory::new(context.maps, input.prior);
-    let mut lower = None;
-    while let Some(old @ (last, reference)) = directory.next(context.budget)? {
-        if changes.affects(last, context.budget)? {
+    let mut publisher = Publisher::new(input.prior)?;
+    if input.prior.0.is_some() {
+        while let Some((changed, _)) = changes.peek(context.budget)? {
+            let (old @ (last, reference), is_last) = match lower_bound_page_with_end(
+                context.maps,
+                input.prior,
+                &changed,
+                context.budget,
+            )? {
+                Some((old, is_last)) => (old, is_last),
+                None => (
+                    last_entry_page(context.maps, input.prior, context.budget)?
+                        .ok_or_else(|| corrupt("nonempty prior directory has no final block"))?,
+                    true,
+                ),
+            };
             let block = load_block(context.objects, last, reference, context.budget)?;
             let first = block.first_key()?;
-            if lower.is_some_and(|key| key >= first) {
+            if lower_bound_page(context.maps, input.prior, &first, context.budget)? != Some(old) {
                 return Err(corrupt("prior block overlaps its predecessor"));
             }
-            // Lane 45 covers range merge and block encoding. Nested lanes 46/47
-            // separate any batch flush from that inclusive range cost.
+            // Lane 45 covers only changed block ranges; storage checks the
+            // original root before applying these exact descriptor edits.
             observe_member_work(context, 45, |context| {
                 publisher.range(
-                    merge_keys(block.keys(), &mut changes, Some(last)),
+                    merge_keys(
+                        block.keys(),
+                        &mut changes,
+                        if is_last { None } else { Some(last) },
+                    ),
                     Some(old),
                     None,
                     context,
                 )
             })?;
-        } else {
-            publisher.untouched(old, context)?;
         }
-        lower = Some(last);
     }
     if changes.peek(context.budget)?.is_some() {
         // Empty prior blocks mean every emitted key comes from the sorted owner table.
@@ -732,7 +929,6 @@ pub(super) fn publish(
     }
     drop(changes);
     publisher.flush(context)?;
-    let directory = publisher.directory.finish();
     let roots = observe_member_work(context, 48, |context| {
         context.apply_stream(
             &[input.prior],
@@ -744,7 +940,11 @@ pub(super) fn publish(
         .next()
         .ok_or_else(|| corrupt("missing directory output"))?;
     context.budget.checkpoint()?;
-    Ok((root, witness(Some(directory))))
+    let directory = match publisher.full_directory {
+        Some(full) => DirectoryProof::Full(full.finish()),
+        None => DirectoryProof::Patch(publisher.edits),
+    };
+    Ok((root, witness(directory)))
 }
 
 /// Verify the persisted directory against the source-derived descriptors.
@@ -757,11 +957,17 @@ pub(super) fn seal(
 ) -> Result<(), IndexError> {
     context.budget.checkpoint()?;
     witness.validate_identity(binding, root, context.attempt)?;
-    let Some(expected) = witness.directory else {
-        if root.blocks != witness.prior {
-            return Err(corrupt("unchanged literal directory differs"));
+    let expected = match &witness.directory {
+        DirectoryProof::Unchanged => {
+            if root.blocks != witness.prior {
+                return Err(corrupt("unchanged literal directory differs"));
+            }
+            return context.budget.checkpoint();
         }
-        return context.budget.checkpoint();
+        DirectoryProof::Patch(edits) => {
+            return seal_changed_directory(witness, root.blocks, edits.as_slice(), context);
+        }
+        DirectoryProof::Full(expected) => expected,
     };
     let mut actual = DirectoryHasher::new();
     let mut directory = Directory::new(context.maps, root.blocks);
@@ -801,6 +1007,39 @@ mod tests {
             },
             deadline,
         ))
+    }
+
+    #[test]
+    fn changed_directory_witness_skips_noops_and_rejects_wrong_ref() -> Result<(), IndexError> {
+        let admission = budget(1_000)?;
+        let key = [1; 35];
+        let old = ObjectRef(Digest([2; 32]));
+        let new = ObjectRef(Digest([3; 32]));
+        let same = OrdinalMapEdit::copy_object_key(0, &[0; 35], Some(old), Some(old), &admission)?;
+        let edit = OrdinalMapEdit::copy_object_key(0, &key, Some(old), Some(new), &admission)?;
+        let edits = [same, edit];
+        let mut work = budget(1_000)?;
+        let mut complete = DirectoryDiff::new(&edits);
+        complete.changed(&key, Some(old.into()), Some(new.into()), &mut work)?;
+        assert_eq!(complete.last, Some(key));
+        complete.finish(&mut work)?;
+
+        let mut wrong = DirectoryDiff::new(&edits);
+        assert!(
+            wrong
+                .changed(&key, Some(old.into()), Some(old.into()), &mut work)
+                .is_err()
+        );
+        let missing = DirectoryDiff::new(&edits);
+        assert!(missing.finish(&mut work).is_err());
+        let mut extra = DirectoryDiff::new(&edits);
+        extra.changed(&key, Some(old.into()), Some(new.into()), &mut work)?;
+        assert!(
+            extra
+                .changed(&[2; 35], None, Some(new.into()), &mut work)
+                .is_err()
+        );
+        Ok(())
     }
 
     fn attempt() -> AttemptRef {
@@ -852,7 +1091,7 @@ mod tests {
             source,
             input,
             prior: MapRoot(None),
-            directory: None,
+            directory: DirectoryProof::Unchanged,
             member: None,
         };
         witness.bind_member(&member);
@@ -959,6 +1198,64 @@ mod tests {
                 0x38, 0x20, 0x16, 0xfb,
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn cold_literal_seal_factors_owner_prefix_at_gram_transitions() -> Result<(), IndexError> {
+        let mut owners = [[0x42_u8; 32]; 4];
+        owners[0][30..].copy_from_slice(&[0, 0]);
+        owners[1][30..].copy_from_slice(&[0, 1]);
+        owners[2][30..].copy_from_slice(&[1, 2]);
+        owners[3][30..].copy_from_slice(&[1, 3]);
+        let shared = ColdOwnerPrefix::from_sorted(&[owners[0], owners[3]])
+            .ok_or(IndexError::ResourceLimited)?;
+        let keys = [
+            super::super::literal_blocks::literal_key(*b"aaa", owners[0]),
+            super::super::literal_blocks::literal_key(*b"aaa", owners[1]),
+            super::super::literal_blocks::literal_key(*b"aab", owners[2]),
+            super::super::literal_blocks::literal_key(*b"aac", owners[3]),
+        ];
+        let mut work = budget(1_000)?;
+        let before = work.usage().bytes;
+        let mut cold = BlockHasher::cold(shared);
+        for key in keys {
+            cold.push(key, &mut work)?;
+        }
+        let seal = cold.finish()?;
+        assert_eq!(work.usage().bytes - before, 47);
+        assert_eq!(seal.first, keys[0]);
+        assert_eq!(seal.last, keys[3]);
+        assert_eq!(seal.count, 4);
+        assert_eq!(seal.shared, Some(shared));
+        assert_eq!(
+            seal.digest,
+            [
+                0xec, 0x96, 0xeb, 0x7a, 0xda, 0xe8, 0x46, 0xdf, 0xee, 0xe4, 0xbd, 0x99, 0xcd, 0x43,
+                0x4e, 0xa5, 0x39, 0x60, 0x30, 0xa2, 0x70, 0x04, 0xf6, 0xe2, 0x28, 0x6c, 0x79, 0x2e,
+                0xbf, 0x32, 0x9e, 0x24,
+            ]
+        );
+        let mut changed = BlockHasher::cold(shared);
+        for key in [keys[0], keys[1], keys[3]] {
+            changed.push(key, &mut work)?;
+        }
+        assert_ne!(changed.finish()?, seal);
+        let mut warm = BlockHasher::new();
+        let before_warm = work.usage().bytes;
+        for key in keys {
+            warm.push(key, &mut work)?;
+        }
+        assert_eq!(work.usage().bytes - before_warm, 106);
+        let mut limited = budget(46)?;
+        let mut refused = BlockHasher::cold(shared);
+        for key in &keys[..3] {
+            refused.push(*key, &mut limited)?;
+        }
+        assert!(matches!(
+            refused.push(keys[3], &mut limited),
+            Err(IndexError::ResourceLimited)
+        ));
         Ok(())
     }
 

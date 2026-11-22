@@ -115,7 +115,11 @@ fn bounded_read(path: &Path, limit: u64) -> BenchResult<Vec<u8>> {
     Ok(bytes)
 }
 
-fn bound_command(raw: &[u8], config: &Path, digest: &str) -> BenchResult<String> {
+fn bytes_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn bound_command(raw: &[u8], config: &Path, digest: &str) -> BenchResult<(String, Option<Value>)> {
     if raw.last() != Some(&0) {
         return Err(refuse("incomplete process command line"));
     }
@@ -148,7 +152,15 @@ fn bound_command(raw: &[u8], config: &Path, digest: &str) -> BenchResult<String>
     if actual_hex != digest {
         return Err(refuse("peer --config-digest differs"));
     }
-    Ok(mode.to_owned())
+    let boot_identity = native.identity.map(|identity| {
+        json!({
+            "root_nonce_hex": bytes_hex(&identity.root_nonce),
+            "manifest_operation": identity.manifest_operation,
+            "manifest_object_hex": bytes_hex(&identity.manifest_object.0.0),
+            "source_cut_digest_hex": bytes_hex(&identity.source_cut_digest.0),
+        })
+    });
+    Ok((mode.to_owned(), boot_identity))
 }
 
 #[derive(Deserialize)]
@@ -167,6 +179,7 @@ pub(super) struct RuntimeCapture {
     policy_sha: String,
     runner_sha: String,
     command: String,
+    boot_identity: Option<Value>,
     command_line: Vec<u8>,
     socket: PathBuf,
 }
@@ -218,7 +231,7 @@ impl RuntimeCapture {
             .ok_or_else(|| refuse("peer PID is unavailable"))?;
         let command_line = bounded_read(Path::new(&format!("/proc/{pid}/cmdline")), 65536)?;
         let config_sha = sha256_hex(&raw_config);
-        let command = bound_command(&command_line, &config, &config_sha)?;
+        let (command, boot_identity) = bound_command(&command_line, &config, &config_sha)?;
         let captured = Self {
             peer,
             binary_sha: hash_file(&binary)?,
@@ -229,6 +242,7 @@ impl RuntimeCapture {
             policy,
             config_sha,
             command,
+            boot_identity,
             command_line,
             socket: socket.to_path_buf(),
         };
@@ -286,6 +300,7 @@ impl RuntimeCapture {
             "daemon_binary_sha256": self.binary_sha, "daemon_config_sha256": self.config_sha,
             "runner_binary_sha256": self.runner_sha, "decision_policy_sha256": self.policy_sha,
             "socket_path": self.socket, "config_path": self.config, "command": self.command,
+            "boot_identity": self.boot_identity,
             "pid": credentials.pid, "uid": credentials.uid, "gid": credentials.gid,
             "peer_image_verified": true,
         }))
@@ -355,7 +370,9 @@ mod tests {
             path.display()
         );
         assert_eq!(
-            bound_command(valid.as_bytes(), &path, &digest).expect("bound argv"),
+            bound_command(valid.as_bytes(), &path, &digest)
+                .expect("bound argv")
+                .0,
             "serve-native-candidate"
         );
         for invalid in [
@@ -395,10 +412,50 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                bound_command(argv.as_bytes(), &path, &digest).expect("canonical daemon CLI"),
+                bound_command(argv.as_bytes(), &path, &digest)
+                    .expect("canonical daemon CLI")
+                    .0,
                 "serve-native-candidate"
             );
         }
+    }
+
+    #[test]
+    fn selected_command_carries_exact_existing_boot_identity() {
+        let config = tempfile::NamedTempFile::new().expect("config");
+        let path = config.path().canonicalize().expect("canonical config");
+        let digest = "a".repeat(64);
+        let tenant = [1_u8; 16];
+        let collection = [2_u8; 16];
+        let worktree = [3_u8; 16];
+        let slot = [4_u8; 16];
+        let producer = [5_u8; 16];
+        let stream = [6_u8; 16];
+        let operation = json!({
+            "workspace": {"tenant": tenant, "collection": collection,
+                "worktree": worktree, "slot": slot},
+            "epoch": 1, "producer": producer, "stream": stream,
+            "stream_epoch": 1, "sequence": 7,
+        });
+        let argv = format!(
+            "daemon\0serve-native\0--config\0{}\0--config-digest\0{digest}\0--root-nonce\0{}\0--manifest-operation\0{operation}\0--manifest-object\0{}\0--source-cut-digest\0{}\0",
+            path.display(),
+            "11".repeat(32),
+            "22".repeat(32),
+            "33".repeat(32)
+        );
+        let (mode, identity) =
+            bound_command(argv.as_bytes(), &path, &digest).expect("selected command");
+        assert_eq!(mode, "serve-native");
+        assert_eq!(
+            identity,
+            Some(json!({
+                "root_nonce_hex": "11".repeat(32),
+                "manifest_operation": operation,
+                "manifest_object_hex": "22".repeat(32),
+                "source_cut_digest_hex": "33".repeat(32),
+            }))
+        );
     }
 
     #[test]

@@ -10,7 +10,9 @@ import json
 import os
 import stat
 import subprocess
+from functools import partial
 from pathlib import Path
+from typing import BinaryIO
 
 SCHEMA_VERSION = 1
 PROFILES = {
@@ -147,6 +149,7 @@ PROFILES = {
             "tools/benchmark/retrieval_capture.py",
             "tools/benchmark/native_file_capture.py",
             "tools/ci/tests/test_native_file_capture.py",
+            "tools/ci/tests/test_native_release_approval.py",
             "tools/benchmark/lexical_capture.py",
             "tools/benchmark/pair_capture.py",
             "tools/benchmark/recorded_capture.py",
@@ -684,6 +687,67 @@ def _assert_clean(repo: Path, roots: list[str]) -> None:
     if status:
         sample = ", ".join(status.splitlines()[:8])
         raise ClosureError(f"refusing dirty relevant source: {sample}")
+
+
+def _physical_source_state(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+        info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
+def require_source_files_unchanged(repo: Path, states: dict[str, tuple[int, ...]]) -> None:
+    for path, observed in states.items():
+        if _physical_source_state((repo / path).lstat()) != observed:
+            raise ValueError(f"release source changed during execution: {path}")
+
+
+def capture_committed_source(
+    repo: Path, expected_head: str | None,
+) -> tuple[dict[str, str], dict[str, tuple[int, ...]]]:
+    """Stream the complete worktree through the committed Git blob and mode checks."""
+    from tools.ci.lint.handoff_validation import _consume_repo_regular_file
+
+    revision = _git(repo, "rev-parse", "HEAD")
+    if expected_head is not None and revision != expected_head:
+        raise ValueError("release checkout HEAD differs from P10 source")
+    _assert_clean(repo, ["."])
+    tree = subprocess.check_output(
+        ["git", "--no-replace-objects", "ls-tree", "-rz", "--full-tree", revision],
+        cwd=repo,
+    )
+    files: dict[str, str] = {}
+    states: dict[str, tuple[int, ...]] = {}
+
+    def inspect(handle: BinaryIO, path: str, mode: bytes, oid: bytes) -> tuple[str, tuple[int, ...]]:
+        info = os.fstat(handle.fileno())
+        executable = bool(info.st_mode & stat.S_IXUSR)
+        blob = hashlib.new("sha1" if len(oid) == 40 else "sha256")
+        blob.update(f"blob {info.st_size}\0".encode("ascii"))
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            blob.update(chunk)
+            digest.update(chunk)
+        if blob.hexdigest().encode("ascii") != oid or executable != (mode == b"100755"):
+            raise ClosureError(f"refusing dirty relevant source: differs from committed HEAD: {path}")
+        return digest.hexdigest(), _physical_source_state(info)
+
+    for row in filter(None, tree.split(b"\0")):
+        entry, name = row.split(b"\t", 1)
+        mode, kind, oid = entry.split()
+        path = name.decode()
+        if kind != b"blob" or mode not in {b"100644", b"100755"}:
+            raise ClosureError(f"release source is not a committed regular file: {path}")
+        files[path], states[path] = _consume_repo_regular_file(
+            repo, path, label="release source",
+            consume=partial(inspect, path=path, mode=mode, oid=oid),
+        )
+
+    _assert_clean(repo, ["."])
+    if _git(repo, "rev-parse", "HEAD") != revision or set(_files(repo, ["."])) != files.keys():
+        raise ValueError("release source tree changed during inventory")
+    require_source_files_unchanged(repo, states)
+    return files, states
 
 
 def build_manifest(repo: Path, profile: str) -> dict:

@@ -1,5 +1,5 @@
 //! Predicate capability registry — the single source of truth for which
-//! lexical predicate leaves are executable on the Tantivy adapter.
+//! lexical predicate leaves are supported by the query planner.
 //!
 //! It records what argument shapes each predicate admits and which lowering
 //! target it resolves to.
@@ -29,8 +29,6 @@
 //! arm. Legacy lowering uses `unimplemented_predicate` for unsupported names.
 
 use quanta_index_contract::{LqFileScope, LqPredicateArg};
-#[cfg(feature = "legacy-tantivy")]
-use quanta_index_core::CoreError;
 use quanta_index_core::{LexicalPredicateAliasV1, LexicalPredicateV1};
 
 use crate::plan::{RepoFileConstraint, RepoFileMatcher};
@@ -283,16 +281,6 @@ pub(crate) fn kind_of(name: &str) -> Option<PredicateKind> {
     canonical_predicate_name(name)
         .and_then(registry_spec)
         .map(|spec| spec.kind)
-}
-
-/// Build the canonical typed reject for a predicate shape the registry does not
-/// admit. Centralizes the wire code so every lowering site stays consistent.
-#[cfg(feature = "legacy-tantivy")]
-pub(crate) fn unimplemented_predicate(message: String) -> CoreError {
-    CoreError::Typed {
-        code: quanta_index_contract::SearchPlaneErrorCodeV2::LexPredicateUnimplemented,
-        message,
-    }
 }
 
 /// Why a repository-file predicate is invalid.
@@ -729,13 +717,6 @@ pub(crate) struct ContentPredicateConstraint {
     pub content: ContentScalarArg,
     pub path_scope: Option<ContentPathScope>,
     pub language: Option<String>,
-}
-
-impl ContentPredicateConstraint {
-    #[cfg(feature = "legacy-tantivy")]
-    pub(crate) const fn has_scopes(&self) -> bool {
-        self.path_scope.is_some() || self.language.is_some()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

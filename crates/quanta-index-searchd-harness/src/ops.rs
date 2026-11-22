@@ -7,8 +7,8 @@
 //! provenance preserved rather than swallowed behind human-only strings.
 //!
 //! It is a read-only first increment (per the ticket: read-only diagnosis before
-//! any mutating workflow). It boots one [`E2eRuntime`], seeds a single seeded
-//! document, and captures four surfaces into `cli_snapshots.json`:
+//! any mutating workflow). It seeds a document in a pinned Legacy daemon via
+//! the public SDK and captures four surfaces into `cli_snapshots.json`:
 //!
 //! - `result_provenance` — a served query's `engines_touched` labels plus the
 //!   repo / revision / serving-generation stamp the candidate carries;
@@ -18,25 +18,40 @@
 //!   surface an operator reads for tail/latency diagnosis;
 //! - `generation_state` — the runtime's current generation plus its pin.
 //!
-//! Fail-closed posture: a surface that swallows its provenance (empty engine
-//! set, a generation mismatch, a blank typed-error code, or no metrics) is a rail
+//! Fail-closed posture: a surface that swallows its provenance (a generation
+//! mismatch, the wrong typed refusal, or no query metrics) is a rail
 //! failure recorded as `provenance_ok=false`; the rail does NOT fabricate or
 //! guess missing runtime state.
 
 use std::path::Path;
 
 use anyhow::Result as AnyResult;
-use quanta_index_contract::TextQuerySyntax;
+use quanta_index_contract::{
+    MetricsSnapshotV1, SearchCorpusActiveHeadV1, SearchPlaneErrorCodeV2, TextQueryResponse,
+};
+use quanta_index_sdk::{GenerationPin, QuantaIndex, RepoId, RevisionId, SdkError};
 use serde_json::{Value, json};
 
 use crate::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
     PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest, corpus_digest,
 };
-use crate::harness::E2eRuntime;
+#[cfg(any(target_os = "macos", test))]
+use crate::legacy_reference::peak_rss_from_darwin_metrics;
+use crate::legacy_reference::{LegacySearchdBinary, publish_legacy_source, request_when_ready};
+use crate::private_tempdir;
 
 /// Repo id the ops fixture is ingested under.
-const OPS_REPO: &str = "repo-ops";
+const OPS_REPO: &str = "repo-e2e";
+const OPS_PATH: &str = "src/ops.rs";
+const OPS_SOURCE: &str =
+    "fn ops_probe() {\n    // ops_diagnosis_needle marker for the operator rail\n}\n";
+const BACKEND: &str = "legacy-reference";
+
+#[cfg(target_os = "linux")]
+const RSS_SOURCE: &str = "daemon-proc-vmhwm";
+#[cfg(target_os = "macos")]
+const RSS_SOURCE: &str = "daemon-ru-maxrss-gauge";
 
 /// Result cap for the served diagnosis query.
 const OPS_TOP_K: u32 = 10;
@@ -65,23 +80,24 @@ pub struct OpsSnapshot {
 pub struct OpsReport {
     pub snapshots: Vec<OpsSnapshot>,
     pub passed: bool,
+    daemon_sha256: String,
+    resources: ResourceUsageV1,
 }
 
-/// Boot one runtime, seed the ops fixture, seal + activate.
-fn prepare_ops_runtime() -> AnyResult<E2eRuntime> {
-    let mut rt = E2eRuntime::boot()?;
-    rt.ingest_text(
-        OPS_REPO,
-        "src/ops.rs",
-        "fn ops_probe() {\n    // ops_diagnosis_needle marker for the operator rail\n}\n",
-    )?;
-    let _generation = rt.seal()?;
-    rt.activate_last_sealed_generation()?;
-    Ok(rt)
-}
-
-fn engine_labels(engines: &[quanta_index_contract::EngineTouched]) -> Vec<String> {
-    engines.iter().map(|engine| format!("{engine:?}")).collect()
+fn lexical_probe(
+    client: &QuantaIndex,
+    pin: &GenerationPin,
+    text: &str,
+) -> Result<TextQueryResponse, SdkError> {
+    request_when_ready(|| {
+        client
+            .lexical()
+            .query()
+            .native(text)
+            .pinned(pin.clone())
+            .top_k(OPS_TOP_K)
+            .execute()
+    })
 }
 
 /// Capture the result-provenance surface from a served query.
@@ -92,10 +108,16 @@ fn engine_labels(engines: &[quanta_index_contract::EngineTouched]) -> Vec<String
 /// is recorded as-is (the single-engine lexical path leaves it implicit; it is
 /// the explain surface that enumerates engines), so it is informational here, not
 /// the gating signal.
-fn capture_result_provenance(rt: &mut E2eRuntime) -> OpsSnapshot {
-    let result = rt.query_text(TextQuerySyntax::Native, OPS_QUERY, OPS_TOP_K);
-    let engines = engine_labels(&result.engines_touched);
-    let first_provenance = result.candidates.first().map(|candidate| {
+fn capture_result_provenance(client: &QuantaIndex, pin: &GenerationPin) -> OpsSnapshot {
+    let response = lexical_probe(client, pin, OPS_QUERY);
+    let result = response.as_ref().ok();
+    let candidate = result.and_then(|result| result.results.first());
+    let engines: Vec<_> = result
+        .into_iter()
+        .flat_map(|result| &result.explanation.engines_touched)
+        .map(|engine| format!("{engine:?}"))
+        .collect();
+    let first_provenance = candidate.map(|candidate| {
         json!({
             "repo_id": candidate.repo_id.as_str(),
             "revision_id": candidate.revision_id.as_str(),
@@ -104,16 +126,21 @@ fn capture_result_provenance(rt: &mut E2eRuntime) -> OpsSnapshot {
             "score": candidate.score,
         })
     });
-    // Provenance is preserved when the query served a hit that carries its own
-    // repo/revision/serving-generation stamp (attributable without internals).
-    let provenance_ok = result.typed_error.is_none() && first_provenance.is_some();
+    let provenance_ok = result.is_some_and(|result| result.generation == *pin)
+        && candidate.is_some_and(|candidate| {
+            candidate.repo_id == pin.repo_id
+                && candidate.revision_id == pin.revision_id
+                && candidate.manifest_generation == pin.manifest_generation
+                && candidate.repo_relative_path.as_str() == OPS_PATH
+        });
     OpsSnapshot {
         surface: "result_provenance",
         operator_question: "where did a served result come from (repo / revision / serving generation)?",
         json: json!({
             "engines_touched": engines,
-            "candidate_count": result.candidates.len(),
+            "candidate_count": result.map_or(0, |result| result.results.len()),
             "first_candidate_provenance": first_provenance,
+            "query_error": response.err().map(|error| error.to_string()),
         }),
         provenance_ok,
         note: if provenance_ok {
@@ -125,55 +152,79 @@ fn capture_result_provenance(rt: &mut E2eRuntime) -> OpsSnapshot {
 }
 
 /// Capture the typed-error surface from a rejected (empty) query.
-fn capture_typed_error(rt: &mut E2eRuntime) -> OpsSnapshot {
-    let result = rt.query_text(TextQuerySyntax::Native, "", OPS_TOP_K);
-    let (code, message) = result.typed_error.as_ref().map_or((None, None), |error| {
-        (Some(error.code.as_str()), Some(error.message.clone()))
-    });
-    // Provenance is preserved when the rejection carries a non-empty TYPED code,
-    // not a generic human string (the ticket No-Go).
-    let provenance_ok = code.is_some_and(|code| !code.is_empty());
+fn capture_typed_error(client: &QuantaIndex, pin: &GenerationPin) -> OpsSnapshot {
+    let result = lexical_probe(client, pin, "");
+    let (code, message, query_error) = match result {
+        Err(SdkError::Remote { code, message, .. }) => (Some(code), Some(message), None),
+        Err(error) => (None, None, Some(error.to_string())),
+        Ok(_) => (None, None, None),
+    };
+    let provenance_ok = code == Some(SearchPlaneErrorCodeV2::InvalidRequest);
     OpsSnapshot {
         surface: "typed_error",
         operator_question: "what typed error does the remote return for a rejected query?",
         json: json!({
             "probe": "empty query text (policy rejection)",
-            "typed_error_code": code,
+            "typed_error_code": code.map(SearchPlaneErrorCodeV2::as_wire_str),
             "typed_error_message": message,
+            "query_error": query_error,
         }),
         provenance_ok,
         note: if provenance_ok {
             "typed error code surfaced verbatim".to_string()
         } else {
-            "rejected query did not surface a typed error code".to_string()
+            "empty query did not surface the daemon's INVALID_REQUEST refusal".to_string()
         },
     }
 }
 
 /// Capture the perf/observability surface (the tail-diagnosis read surface).
-fn capture_perf_metrics(rt: &E2eRuntime) -> OpsSnapshot {
-    let (names, count, error) = match rt.query_metrics_snapshot() {
-        Ok(samples) => {
-            let mut names: Vec<String> = samples
+fn capture_perf_metrics(metrics: &Result<MetricsSnapshotV1, SdkError>) -> OpsSnapshot {
+    let (names, count, served_count, latency_count, error) = match metrics {
+        Ok(snapshot) => {
+            let mut names = snapshot
+                .counters
                 .iter()
-                .map(|sample| sample.name.to_string())
-                .collect();
+                .map(|counter| counter.name.as_str())
+                .chain(
+                    snapshot
+                        .histograms
+                        .iter()
+                        .map(|histogram| histogram.name.as_str()),
+                )
+                .filter(|name| name.starts_with("lq_"))
+                .collect::<Vec<_>>();
             names.sort_unstable();
             names.dedup();
-            let count = samples.len();
-            (names, count, None)
+            let latency_count = snapshot
+                .histograms
+                .iter()
+                .find(|histogram| histogram.name == "lq_route_lexical_latency_ms")
+                .map_or(0, |histogram| histogram.count);
+            let served_count = snapshot
+                .counters
+                .iter()
+                .find(|counter| counter.name == "lq_route_lexical_served_total")
+                .map_or(0, |counter| counter.value);
+            (
+                names,
+                snapshot.diagnostics.samples_recorded,
+                served_count,
+                latency_count,
+                None,
+            )
         }
-        Err(err) => (Vec::new(), 0, Some(format!("{err}"))),
+        Err(err) => (Vec::new(), 0, 0, 0, Some(err.to_string())),
     };
-    // Provenance is preserved when the obs surface is queryable and emitted at
-    // least one sample for the served queries (perf/tail is diagnosable).
-    let provenance_ok = error.is_none() && count > 0;
+    let provenance_ok = count > 0 && served_count > 0 && latency_count >= served_count;
     OpsSnapshot {
         surface: "perf_metrics",
         operator_question: "are perf / tail metrics queryable for diagnosis?",
         json: json!({
             "metric_sample_count": count,
             "metric_names": names,
+            "lexical_served_count": served_count,
+            "lexical_latency_observation_count": latency_count,
             "snapshot_error": error,
         }),
         provenance_ok,
@@ -186,35 +237,91 @@ fn capture_perf_metrics(rt: &E2eRuntime) -> OpsSnapshot {
 }
 
 /// Capture the generation-state surface (serving-head provenance).
-fn capture_generation_state(rt: &E2eRuntime) -> OpsSnapshot {
-    let active_generation = format!("{:?}", rt.current_generation());
-    let generation_pin = format!("{:?}", rt.generation_pin());
-    let provenance_ok = !active_generation.is_empty();
+fn capture_generation_state(
+    client: &QuantaIndex,
+    pin: &GenerationPin,
+    expected: &SearchCorpusActiveHeadV1,
+) -> OpsSnapshot {
+    let publication = client
+        .generations()
+        .active_head(pin.repo_id.clone(), pin.revision_id.clone());
+    let active = publication.as_ref().ok().and_then(Option::as_ref);
+    let provenance_ok = active == Some(expected);
     OpsSnapshot {
         surface: "generation_state",
         operator_question: "what is the runtime's current generation and pin?",
         json: json!({
-            "repo_id": rt.repo().as_str(),
-            "revision_id": rt.revision().as_str(),
-            "current_generation": active_generation,
-            "generation_pin": generation_pin,
+            "repo_id": pin.repo_id.as_str(),
+            "revision_id": pin.revision_id.as_str(),
+            "current_generation": active.map(|head| format!("{:?}", head.generation.lexical.manifest_generation)),
+            "generation_pin": format!("{pin:?}"),
+            "active_head_error": publication.err().map(|error| error.to_string()),
         }),
         provenance_ok,
-        note: "current generation + pin exposed".to_string(),
+        note: if provenance_ok {
+            "daemon active head matches the fixture publication".to_string()
+        } else {
+            "daemon active head differs from the fixture publication or is unavailable".to_string()
+        },
     }
 }
 
-/// Run the full ops rail against a freshly seeded runtime.
+/// Run the full ops rail against the selected pinned Legacy daemon.
 pub fn run_ops_report() -> AnyResult<OpsReport> {
-    let mut rt = prepare_ops_runtime()?;
+    let root = private_tempdir()?;
+    let binary = LegacySearchdBinary::from_environment()
+        .map_err(|error| anyhow::anyhow!("old-Q ops input: {error}"))?;
+    let process = binary
+        .start(root.path(), 8)
+        .map_err(|error| anyhow::anyhow!("start old-Q ops process: {error}"))?;
+    let client = process
+        .connect()
+        .map_err(|error| anyhow::anyhow!("connect old-Q ops process: {error}"))?;
+    let repo = RepoId::new(OPS_REPO)?;
+    let revision = RevisionId::new("rev-e2e")?;
+    let (head, _receipt) = publish_legacy_source(
+        &client,
+        &repo,
+        &revision,
+        1,
+        None,
+        &[(OPS_PATH, OPS_SOURCE, 1)],
+        None,
+    )
+    .map_err(|error| anyhow::anyhow!("publish old-Q ops fixture: {error}"))?;
+    let pin = GenerationPin::new(repo, revision, head.generation.lexical.manifest_generation);
+    let result = capture_result_provenance(&client, &pin);
+    let typed_error = capture_typed_error(&client, &pin);
+    let generation = capture_generation_state(&client, &pin, &head);
+    let metrics = client.observability().metrics_snapshot();
     let snapshots = vec![
-        capture_result_provenance(&mut rt),
-        capture_typed_error(&mut rt),
-        capture_perf_metrics(&rt),
-        capture_generation_state(&rt),
+        result,
+        typed_error,
+        capture_perf_metrics(&metrics),
+        generation,
     ];
+    #[cfg(target_os = "linux")]
+    let peak_rss_bytes = process.peak_rss_bytes()?;
+    #[cfg(target_os = "macos")]
+    let peak_rss_bytes = peak_rss_from_darwin_metrics(
+        metrics
+            .as_ref()
+            .map_err(|error| anyhow::anyhow!("read old-Q ops metrics for peak RSS: {error}"))?,
+    )?;
+    drop(client);
+    process
+        .stop()
+        .map_err(|error| anyhow::anyhow!("stop old-Q ops process: {error}"))?;
+    binary
+        .verify()
+        .map_err(|error| anyhow::anyhow!("verify old-Q ops input: {error}"))?;
     let passed = snapshots.iter().all(|snapshot| snapshot.provenance_ok);
-    Ok(OpsReport { snapshots, passed })
+    Ok(OpsReport {
+        snapshots,
+        passed,
+        daemon_sha256: binary.sha256().to_owned(),
+        resources: ResourceUsageV1 { peak_rss_bytes },
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -238,22 +345,20 @@ fn cli_snapshots_supplement_json(report: &OpsReport, git_head: &GitHeadV1) -> Va
         "supplement_schema_version": 1,
         "dimension": "ops",
         "git_head": git_head.as_str(),
+        "backend": BACKEND,
+        "daemon_sha256": report.daemon_sha256,
         "surfaces": report.snapshots.iter().map(snapshot_json).collect::<Vec<_>>(),
         "snapshot_note": "read-only operator-diagnosis surfaces captured machine-readably; route/generation/typed-error provenance is asserted preserved, never collapsed to a human-only string",
     })
 }
 
-/// The current-source authority envelope for operator diagnosis surfaces.
+/// The benchmark envelope binds the producer source and separately binds the Legacy daemon.
 pub fn artifact(
     report: &OpsReport,
     git_head: GitHeadV1,
     host: HostV1,
 ) -> AnyResult<BenchArtifactV1> {
-    let corpus = vec![(
-        "src/ops.rs".to_string(),
-        "fn ops_probe() {\n    // ops_diagnosis_needle marker for the operator rail\n}\n"
-            .to_string(),
-    )];
+    let corpus = vec![(OPS_PATH.to_owned(), OPS_SOURCE.to_owned())];
     Ok(BenchArtifactV1 {
         dimension: "ops".to_string(),
         mode: BenchMode::Warm,
@@ -263,12 +368,17 @@ pub fn artifact(
             corpus_digest: corpus_digest("ops", &corpus),
             config_digest: config_digest(
                 "ops",
-                &[("surfaces", report.snapshots.len().to_string())],
+                &[
+                    ("backend", BACKEND.to_owned()),
+                    ("daemon_sha256", report.daemon_sha256.clone()),
+                    ("rss_source", RSS_SOURCE.to_owned()),
+                    ("surfaces", report.snapshots.len().to_string()),
+                ],
             ),
             model_revision: None,
         },
         host,
-        resources: ResourceUsageV1::observe_self()?,
+        resources: report.resources,
         phases: PhaseDurationsV1::default(),
         disk_amplification: None,
         rows: report
@@ -291,7 +401,11 @@ pub fn artifact(
             .collect(),
         detail: json!({
             "passed": report.passed,
-            "blocking_signal": "every captured diagnosis surface must preserve its provenance (engines, generation, typed-error code, perf metrics); a swallowed provenance fails the rail",
+            "backend": BACKEND,
+            "daemon_sha256": report.daemon_sha256,
+            "resource_scope": "daemon",
+            "rss_source": RSS_SOURCE,
+            "blocking_signal": "every captured diagnosis surface must preserve its provenance (candidate identity, active head, typed refusal and query metrics)",
             "surfaces": report.snapshots.iter().map(snapshot_json).collect::<Vec<_>>(),
         }),
     })
@@ -320,6 +434,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn seeded_ops_diagnosis_uses_the_pinned_daemon() -> AnyResult<()> {
+        let report = run_ops_report()?;
+        anyhow::ensure!(report.snapshots.len() == 4, "wrong operator surface count");
+        anyhow::ensure!(
+            report.passed,
+            "failed operator observations: {:?}",
+            report.snapshots
+        );
+        anyhow::ensure!(
+            report.resources.peak_rss_bytes > 0,
+            "missing daemon peak RSS"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn snapshot_json_preserves_surface_and_provenance() {
         let snapshot = OpsSnapshot {
             surface: "route_provenance",
@@ -332,6 +462,48 @@ mod tests {
         assert_eq!(value["surface"], "route_provenance");
         assert_eq!(value["provenance_ok"], true);
         assert_eq!(value["snapshot"]["engines_touched"][0], "Lexical");
+    }
+
+    #[test]
+    fn daemon_peak_gauge_requires_one_exact_positive_count() {
+        use quanta_index_contract::MetricGaugeV1;
+
+        let gauge = |value| MetricGaugeV1 {
+            name: "process_resident_bytes".into(),
+            value,
+        };
+        let mut report = MetricsSnapshotV1::default();
+        assert!(peak_rss_from_darwin_metrics(&report).is_err());
+        for value in [0.0, -1.0, 1.5, f64::NAN, 9_007_199_254_740_994.0] {
+            report.gauges = vec![gauge(value)];
+            assert!(peak_rss_from_darwin_metrics(&report).is_err(), "{value}");
+        }
+        report.gauges = vec![gauge(16_384.0)];
+        assert_eq!(peak_rss_from_darwin_metrics(&report).ok(), Some(16_384));
+        report.gauges.push(gauge(24_576.0));
+        assert!(peak_rss_from_darwin_metrics(&report).is_err());
+    }
+
+    #[test]
+    fn perf_metrics_require_served_query_observations() {
+        use quanta_index_contract::{MetricCounterV1, MetricHistogramV1};
+
+        let mut snapshot = MetricsSnapshotV1::default();
+        snapshot.diagnostics.samples_recorded = 4;
+        snapshot.histograms.push(MetricHistogramV1 {
+            name: "lq_route_lexical_latency_ms".into(),
+            count: 1,
+            sum: 2.0,
+            min: 2.0,
+            max: 2.0,
+            buckets: Vec::new(),
+        });
+        assert!(!capture_perf_metrics(&Ok(snapshot.clone())).provenance_ok);
+        snapshot.counters.push(MetricCounterV1 {
+            name: "lq_route_lexical_served_total".into(),
+            value: 1,
+        });
+        assert!(capture_perf_metrics(&Ok(snapshot)).provenance_ok);
     }
 
     #[test]
@@ -353,10 +525,15 @@ mod tests {
         let pass_report = OpsReport {
             snapshots: vec![ok.clone()],
             passed: true,
+            daemon_sha256: "c".repeat(64),
+            resources: ResourceUsageV1 {
+                peak_rss_bytes: 16_384,
+            },
         };
         let fail_report = OpsReport {
             snapshots: vec![ok, bad],
             passed: false,
+            ..pass_report.clone()
         };
         assert!(pass_report.passed);
         assert!(!fail_report.passed);
@@ -378,5 +555,9 @@ mod tests {
         .expect("json");
         assert_eq!(artifact["schema_version"], 2);
         assert_eq!(artifact["detail"]["passed"], true);
+        assert_eq!(artifact["detail"]["backend"], "legacy-reference");
+        assert_eq!(artifact["detail"]["daemon_sha256"], "c".repeat(64));
+        assert_eq!(artifact["detail"]["resource_scope"], "daemon");
+        assert_eq!(artifact["resources"]["peak_rss_bytes"], 16_384);
     }
 }

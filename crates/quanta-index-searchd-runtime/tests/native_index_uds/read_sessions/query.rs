@@ -2,14 +2,24 @@
 
 use super::*;
 
-// Each History case bootstraps its first FULL through the Legacy SDK producer.
-#[cfg(feature = "legacy-tantivy")]
+// History fixtures publish through a pinned external Legacy daemon; the
+// current test binary and Native service do not embed that engine.
 #[path = "query/history.rs"]
 mod history;
 #[path = "query/hybrid.rs"]
 mod hybrid;
+#[path = "query/preview.rs"]
+mod preview;
 #[path = "query/profile.rs"]
 mod profile;
+#[path = "query/regex_alternation.rs"]
+mod regex_alternation;
+#[path = "query/repo_predicates.rs"]
+mod repo_predicates;
+#[path = "query/repository_query_contract.rs"]
+mod repository_query_contract;
+#[path = "query/text_query_contract.rs"]
+mod text_query_contract;
 use quanta_index_contract::native_protocol::NativeReadSessionRequest;
 
 #[test]

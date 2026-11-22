@@ -75,6 +75,38 @@ def test_explicit_lane_overrides_inherited_target_dir(tmp_path: Path) -> None:
     assert str(payload["target_directory"]).endswith(f"/target/{checkout_id}/release-bin-lane")
 
 
+def test_lane_does_not_reuse_an_inherited_cargo_build_directory(tmp_path: Path) -> None:
+    env = os.environ | {
+        "QUANTA_INDEX_BUILD_LOGGING": "0",
+        "QUANTA_INDEX_CACHE_ROOT": str(tmp_path / "cache"),
+        "CARGO_TARGET_DIR": str(tmp_path / "foreign-output"),
+        "CARGO_BUILD_BUILD_DIR": str(tmp_path / "foreign-intermediates"),
+    }
+    payload = _run_metadata("--lane", "test-workspace-lane", env=env)
+    assert payload["build_directory"] == payload["target_directory"]
+    assert Path(str(payload["build_directory"])).name == "test-workspace-lane"
+
+
+def test_explicit_build_directory_config_is_respected(tmp_path: Path) -> None:
+    directory = tmp_path / "exact build directory"
+    env = os.environ | {
+        "QUANTA_INDEX_BUILD_LOGGING": "0",
+        "QUANTA_INDEX_CACHE_ROOT": str(tmp_path / "cache"),
+        "CARGO_BUILD_BUILD_DIR": str(tmp_path / "foreign-intermediates"),
+    }
+    result = subprocess.run(
+        [
+            str(SCRIPT), "--lane", "release-native-daemon-bin-lane",
+            "metadata", "--format-version", "1", "--no-deps",
+            "--config", f"build.build-dir={json.dumps(str(directory))}",
+        ],
+        cwd=REPO_ROOT, env=env, check=True, capture_output=True, text=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["build_directory"] == str(directory)
+    assert Path(payload["target_directory"]).name == "release-native-daemon-bin-lane"
+
+
 def test_distinct_checkouts_cannot_share_a_cargo_target_lane(tmp_path: Path) -> None:
     cache_root = tmp_path / "cache"
     env = os.environ.copy()
@@ -119,12 +151,15 @@ def test_auxiliary_cargo_tools_share_the_checkout_namespace(
 ) -> None:
     cache_root = tmp_path / "cache"
     monkeypatch.setenv("QUANTA_INDEX_CACHE_ROOT", str(cache_root))
+    monkeypatch.setenv("CARGO_BUILD_BUILD_DIR", str(tmp_path / "foreign-intermediates"))
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     monkeypatch.delenv("QUANTA_INDEX_BUILD_LANE", raising=False)
     cargo_env = runpy.run_path(str(REPO_ROOT / "tools" / "ci" / "lint" / script_name))["cargo_env"]
     checkout_id = hashlib.sha256(str(REPO_ROOT.resolve()).encode()).hexdigest()[:16]
     lane = "auxiliary-lane"
-    assert cargo_env(lane)["CARGO_TARGET_DIR"] == str(cache_root / "target" / checkout_id / lane)
+    env = cargo_env(lane)
+    assert env["CARGO_TARGET_DIR"] == str(cache_root / "target" / checkout_id / lane)
+    assert "CARGO_BUILD_BUILD_DIR" not in env
 
 
 def test_preserve_opt_out_keeps_inherited_target_dir(tmp_path: Path) -> None:

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import os
 import runpy
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -79,6 +82,131 @@ def _config(root: Path):
 
 def test_real_catalog_binds_to_circleci():
     assert _checker().audit_catalog() == []
+
+
+def _required_run_steps(job, *required_names):
+    steps = job["steps"]
+    runs = [step["run"] for step in steps if isinstance(step, dict) and "run" in step]
+    names = [run.get("name") if isinstance(run, dict) else None for run in runs]
+    assert all(names.count(name) == 1 for name in required_names), names
+    positions = [names.index(name) for name in required_names]
+    assert positions == sorted(positions), names
+
+    checker = _checker()
+    required = [runs[index] for index in positions]
+    for run in required:
+        assert checker._circleci_run_error(job, run) is None, run["name"]
+    for run in runs[: positions[-1] + 1]:
+        assert not checker._circleci_run_halts_job(run), run
+    return required
+
+
+def test_legacy_reference_readiness_runs_without_default_features_after_linux_pin():
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    job = config["jobs"]["heavy-correctness"]
+    steps = job["steps"]
+    install, versions, _, readiness = _required_run_steps(
+        job,
+        "Install verification tools",
+        "Verify tool versions",
+        "Verify pinned Legacy searchd input",
+        "Pinned Legacy reference readiness without default features",
+    )
+    static_steps = config["jobs"]["verify-rust-static"]["steps"]
+    assert {"run": install} in static_steps
+    assert {"run": versions} in static_steps
+
+    recipe = "rust-test-process-readiness-no-default"
+    log = "artifacts/test-authority/no-default-nextest.log"
+    assert f"just {recipe} 2>&1 | tee {log}" in readiness["command"].splitlines()
+    assert {"store_artifacts": {"path": log, "destination": log.removeprefix("artifacts/")}} in (
+        steps[steps.index({"run": readiness}) + 1 :]
+    )
+
+    command = subprocess.run(
+        ["just", "--dry-run", recipe], cwd=ROOT, check=True, capture_output=True, text=True
+    ).stderr
+    assert "nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1" in (
+        command
+    )
+    assert "--no-default-features" in command
+    assert "--no-tests fail" in command
+    assert "--all-features" not in command
+
+
+def test_f15_runs_three_maintained_cases_without_default_features_after_linux_pin():
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    job = config["jobs"]["heavy-correctness"]
+    _, f15 = _required_run_steps(
+        job, "Verify pinned Legacy searchd input", "Pinned Legacy F15 without default features"
+    )
+    recipe = "rust-test-f15-no-default"
+    log = "artifacts/test-authority/f15-no-default-nextest.log"
+    assert f"just {recipe} 2>&1 | tee {log}" in f15["command"].splitlines()
+    assert {"store_artifacts": {"path": log, "destination": log.removeprefix("artifacts/")}} in (
+        job["steps"][job["steps"].index({"run": f15}) + 1 :]
+    )
+
+    command = subprocess.run(
+        ["just", "--dry-run", recipe], cwd=ROOT, check=True, capture_output=True, text=True
+    ).stderr
+    assert "package=quanta-index-lexical" in command
+    assert "binary=f15_file_authority" in command
+    assert "delta=delta_delete_noop_and_cold_open_match_independent_full_build" in command
+    assert "nontext=nontext_source_stays_path_only_across_cold_delta_noop_and_delete" in command
+    assert "damage=damaged_file_bodies_stay_quarantined_after_restart" in command
+    assert '-E "test(=$delta) | test(=$nontext) | test(=$damage)"' in command
+    assert "--no-default-features --locked --offline --no-tests fail" in command
+    assert '"$package" "$binary" "$delta" "$nontext" "$damage"' in command
+    assert "-p quanta-index-searchd-runtime --test native_index_uds" in command
+    assert "-E 'test(file_body_quarantine)'" in command
+
+
+@pytest.mark.parametrize(
+    ("passing", "producer_exit", "native_exit", "expected_exit"),
+    [(3, 0, 0, 0), (2, 0, 0, 1), (0, 124, 0, 124), (3, 0, 100, 100)],
+)
+def test_f15_recipe_requires_three_passes_and_preserves_producer_failure(
+    tmp_path, passing, producer_exit, native_exit, expected_exit
+):
+    package, binary = "quanta-index-lexical", "f15_file_authority"
+    cases = (
+        "delta_delete_noop_and_cold_open_match_independent_full_build",
+        "nontext_source_stays_path_only_across_cold_delta_noop_and_delete",
+        "damaged_file_bodies_stay_quarantined_after_restart",
+    )
+    suite = {"crate": package, "test_binary": binary, "kind": "test"}
+    events = [{"type": "suite", "event": "started", "test_count": passing, "nextest": suite}]
+    for case in cases[:passing]:
+        name = f"{package}::{binary}${case}"
+        events.extend({"type": "test", "event": event, "name": name} for event in ("started", "ok"))
+    events.append(
+        {
+            "type": "suite",
+            "event": "ok",
+            "passed": passing,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": len(cases) - passing,
+            "nextest": suite,
+        }
+    )
+    payload = "" if producer_exit else "".join(f"{json.dumps(event)}\n" for event in events)
+    stub = tmp_path / "cargow"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'case " $* " in *" --test native_index_uds "*) exit {native_exit};; esac\n'
+        f"printf '%s' {shlex.quote(payload)}\nexit {producer_exit}\n"
+    )
+    stub.chmod(0o700)
+    result = subprocess.run(
+        ["just", "--set", "cargo", str(stub), "rust-test-f15-no-default"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == expected_exit, (result.stdout, result.stderr)
 
 
 def test_circleci_custody_unset_allows_only_shell_startup_hooks(tmp_path: Path):
@@ -173,6 +301,172 @@ def test_regular_admission_matches_receipt_context_before_cargo(event, branch, e
                 expected_tier,
                 f"{expected_tier}-workspace-nextest",
             ]
+
+
+def test_workspace_jobs_preflight_the_same_pinned_legacy_reference(tmp_path):
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    rust_job = config["jobs"]["verify-rust-tests"]
+    coverage_job = config["jobs"]["verify-pr-coverage"]
+    heavy_job = config["jobs"]["heavy-correctness"]
+    key = "QUANTA_INDEX_LEGACY_SEARCHD_SHA256"
+    size_key = "QUANTA_INDEX_LEGACY_SEARCHD_BYTES"
+    pin = rust_job["environment"][key]
+    assert pin == coverage_job["environment"][key] == heavy_job["environment"][key]
+    assert len(pin) == 64 and set(pin) <= set("0123456789abcdef")
+    size = rust_job["environment"][size_key]
+    assert size == coverage_job["environment"][size_key] == heavy_job["environment"][size_key]
+    assert size.isdecimal() and int(size) > 0
+
+    def preflight(job, nextest_name):
+        steps = job["steps"]
+        _, _, verify, nextest = _required_run_steps(
+            job,
+            "Install verification tools",
+            "Verify tool versions",
+            "Verify pinned Legacy searchd input",
+            nextest_name,
+        )
+        assert {
+            "store_artifacts": {"path": "artifacts/test-authority", "destination": "test-authority"}
+        } in (steps[steps.index({"run": nextest}) + 1 :])
+        return verify["command"]
+
+    command = preflight(rust_job, "rust nextest")
+    assert command == preflight(coverage_job, "Changed production Rust line coverage")
+    assert command == preflight(heavy_job, "rust nextest authority receipt")
+    binary = tmp_path / "legacy searchd"
+    original = b"fixed executable bytes"
+    binary.write_bytes(original)
+    binary.chmod(0o700)
+    link = tmp_path / "link"
+    link.symlink_to(binary)
+    fixture_pin = hashlib.sha256(original).hexdigest()
+
+    path_key = "QUANTA_INDEX_LEGACY_SEARCHD_BIN"
+    url_key = "QUANTA_INDEX_LEGACY_SEARCHD_ARTIFACT_URL"
+
+    input_evidence = tmp_path / "artifacts/test-authority/legacy-searchd-input.txt"
+
+    def run(path, extra_env=None):
+        env = {
+            name: value
+            for name, value in os.environ.items()
+            if name not in {path_key, url_key, "BASH_ENV", "ENV"}
+        }
+        env[key] = fixture_pin
+        env[size_key] = str(len(original))
+        if extra_env is not None:
+            env.update(extra_env)
+        if path is not None:
+            env[path_key] = str(path)
+        return subprocess.run(
+            ["bash", "-c", command],
+            cwd=tmp_path,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    observed = f"bytes={len(original)} sha256={fixture_pin}\n"
+    supplied_path = run(binary)
+    assert supplied_path.returncode == 0, supplied_path.stderr
+    assert supplied_path.stdout == f"transport=runner-path {observed}"
+    assert input_evidence.read_text(encoding="utf-8") == supplied_path.stdout
+    input_evidence.unlink()
+    missing = run(None)
+    assert missing.returncode != 0
+    assert "approved Linux Legacy searchd path" in missing.stderr
+    symlink = run(link)
+    assert symlink.returncode == 2
+    assert "absolute regular executable" in symlink.stderr
+    for wrong_size in (len(original) - 1, len(original) + 1):
+        mismatch = run(binary, {size_key: str(wrong_size)})
+        assert mismatch.returncode == 2
+        assert "size differs from the approved Linux input" in mismatch.stderr
+    tampered = b"X" + original[1:]
+    binary.write_bytes(tampered)
+    rejected = run(binary)
+    assert rejected.returncode == 2
+    assert "SHA-256 differs from the approved Linux input" in rejected.stderr
+    assert not input_evidence.exists()
+
+    curl = tmp_path / "curl"
+    curl.write_text(
+        "#!/bin/bash\n"
+        "set -eu\n"
+        'while [[ "$1" != --output ]]; do shift; done\n'
+        'cat "$LEGACY_ARTIFACT_FIXTURE" > "$2"\n'
+        'touch "$LEGACY_ARTIFACT_TRANSFER_COMPLETE"\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o700)
+    bash_env = tmp_path / "job-env"
+    bash_env.touch()
+    downloads = tmp_path / "downloads with spaces"
+    downloads.mkdir()
+    transfer_complete = tmp_path / "transfer-complete"
+    artifact_env = {
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+        "BASH_ENV": str(bash_env),
+        "TMPDIR": str(downloads),
+        url_key: "https://artifact.example/quanta-index-searchd",
+        "LEGACY_ARTIFACT_FIXTURE": str(binary),
+        "LEGACY_ARTIFACT_TRANSFER_COMPLETE": str(transfer_complete),
+    }
+    binary.write_bytes(b"x" * 4096)
+    oversize = run(None, artifact_env)
+    assert oversize.returncode != 0
+    assert not transfer_complete.exists()
+    assert bash_env.read_text(encoding="utf-8") == ""
+    assert not list(downloads.iterdir())
+
+    binary.write_bytes(tampered)
+    invalid_download = run(None, artifact_env)
+    assert invalid_download.returncode == 2
+    assert "SHA-256 differs from the approved Linux input" in invalid_download.stderr
+    assert bash_env.read_text(encoding="utf-8") == ""
+    assert not list(downloads.iterdir())
+
+    binary.write_bytes(original)
+    short_download = run(None, {**artifact_env, size_key: str(len(original) + 1)})
+    assert short_download.returncode == 2
+    assert "size differs from the approved Linux input" in short_download.stderr
+    assert bash_env.read_text(encoding="utf-8") == ""
+    assert not list(downloads.iterdir())
+    assert not input_evidence.exists()
+
+    transfer_complete.unlink()
+    failed_handoff = run(None, {**artifact_env, "BASH_ENV": str(tmp_path)})
+    assert failed_handoff.returncode != 0
+    assert transfer_complete.exists()
+    assert failed_handoff.stdout == ""
+    assert not input_evidence.exists()
+    assert not list(downloads.iterdir())
+
+    discarded_handoff = run(None, {**artifact_env, "BASH_ENV": "/dev/null"})
+    assert discarded_handoff.returncode == 2
+    assert "BASH_ENV must be a regular file" in discarded_handoff.stderr
+    assert discarded_handoff.stdout == ""
+    assert not input_evidence.exists()
+    assert not list(downloads.iterdir())
+
+    supplied = run(None, artifact_env)
+    assert supplied.returncode == 0, supplied.stderr
+    assert supplied.stdout == f"transport=https {observed}"
+    assert input_evidence.read_text(encoding="utf-8") == supplied.stdout
+    next_step = subprocess.run(
+        ["bash", "-c", 'printf "%s" "${QUANTA_INDEX_LEGACY_SEARCHD_BIN:?}"'],
+        env={"BASH_ENV": str(bash_env)},
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    downloaded = Path(next_step.stdout)
+    assert downloaded.read_bytes() == original
+    assert os.access(downloaded, os.X_OK)
 
 
 def test_regular_gate_rejects_unresolved_or_unsupported_logic():
@@ -298,7 +592,9 @@ def test_regular_ci_runs_the_pinned_public_api_ratchet():
     assert "--update-baseline" not in command
     public_api = runpy.run_path(str(ROOT / "tools/ci/lint/check-public-api.py"))
     assert public_api["GUARDED_CRATES"] == [
-        "quanta-index-contract-base", "quanta-index-contract", "quanta-index-sdk"
+        "quanta-index-contract-base",
+        "quanta-index-contract",
+        "quanta-index-sdk",
     ]
     toolchain = public_api["PUBLIC_API_TOOLCHAIN"]
     install = steps[tool_install_index]["run"]["command"]
@@ -316,7 +612,7 @@ def test_regular_ci_runs_the_pinned_public_api_ratchet():
     assert steps[gate_index - 1]["save_cache"]["paths"] == ["~/.cargo/bin/cargo-public-api"]
 
 
-def test_pr_coverage_uses_exact_base_and_fails_closed():
+def test_pr_coverage_uses_exact_base_and_fails_closed(tmp_path):
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     steps = config["jobs"]["verify-pr-coverage"]["steps"]
     coverage = next(
@@ -328,16 +624,64 @@ def test_pr_coverage_uses_exact_base_and_fails_closed():
     assert coverage["environment"]["CI_PR_BASE_SHA"] == (
         "<< pipeline.event.github.pull_request.base.sha >>"
     )
-    command = coverage["command"]
-    assert "git cat-file -e" in command
-    assert "--minimum-percent 90" in command
-    assert "llvm-cov nextest" in command
     assert "cargo install cargo-llvm-cov --version 0.8.5 --locked" in next(
         step["run"]["command"]
         for step in steps
         if isinstance(step, dict)
         and step.get("run", {}).get("name") == "Install pinned coverage tooling"
     )
+
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for path in (tools / "git", tools / "uv", scripts / "cargow"):
+        path.write_text(
+            "#!/bin/sh\n"
+            'printf "%s %s\\n" "${0##*/}" "$*"\n'
+            'if [ "${0##*/}" = "${FAIL_COMMAND:-}" ]; then exit 19; fi\n',
+            encoding="utf-8",
+        )
+        path.chmod(0o700)
+
+    base = "1a" * 20
+    lcov = "/tmp/quanta-index-coverage.lcov"
+    expected = [
+        f"git fetch --no-tags origin {base}",
+        f"git cat-file -e {base}^{{commit}}",
+        "uv run --frozen --extra dev python -m pytest "
+        "tools/ci/tests/test_check_changed_line_coverage.py -q",
+        "cargow --lane coverage-lane llvm-cov nextest --workspace --all-features --locked "
+        f"--lcov --output-path {lcov}",
+        "uv run --frozen --extra dev python tools/ci/lint/check-changed-line-coverage.py "
+        f"--lcov {lcov} --base {base} --minimum-percent 90",
+    ]
+
+    def run(base_sha, fail_command=""):
+        return subprocess.run(
+            ["bash", "-c", coverage["command"]],
+            cwd=tmp_path,
+            env={
+                "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+                "CI_PR_BASE_SHA": base_sha,
+                "FAIL_COMMAND": fail_command,
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+    malformed = run("main")
+    assert malformed.returncode == 2
+    assert malformed.stdout == ""
+    assert "PR coverage requires the exact pull request base SHA" in malformed.stderr
+    accepted = run(base)
+    assert accepted.returncode == 0, accepted.stderr
+    assert accepted.stdout.splitlines() == expected
+    failed = run(base, fail_command="cargow")
+    assert failed.returncode == 19
+    assert failed.stdout.splitlines() == expected[:-1]
 
 
 def test_bench_capacity_matches_worker_without_changing_compile_scope():

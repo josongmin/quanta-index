@@ -9,11 +9,12 @@ use quanta_index_core::index::{
     WorkBudget,
     ports::{MAX_OBJECT_INSTALL_BATCH, ObjectInstallMemoryShape},
 };
+use std::sync::Arc;
 
 use super::{
     ConfirmedOccurrences, InventoryEdits, InventoryPartition, OccurrenceEdit, OccurrenceWrites,
     PreparedKey, PreparedPositions, TextSpool, check_term_key,
-    cold_tokens::{ColdBlockShape, ColdTokens},
+    cold_tokens::{ColdBlockShape, ColdTokenProgram, ColdTokenProgramView, ColdTokens},
     entry_patch::{
         COLD_ALIAS_MAX_TERMS, COLD_ALIAS_MIN_TERMS, COLD_INLINE_ANCHOR_KEY_BYTES, ColdAliasLayout,
         ColdDescriptorSeal, ColdInventoryAlias, ColdInventoryKeySeal,
@@ -54,8 +55,9 @@ impl ColdShapeObservation {
             return;
         }
         let next = (|| {
-            let key = u64::try_from(key_bytes).ok()?;
-            let count = u64::try_from(positions).ok()?;
+            let (Ok(key), Ok(count)) = (u64::try_from(key_bytes), u64::try_from(positions)) else {
+                return None;
+            };
             Some((
                 self.occurrences.checked_add(count)?,
                 self.terms.checked_add(1)?,
@@ -97,7 +99,9 @@ impl ColdShapeObservation {
 }
 
 /// Maximum new caller-owned grants that may coexist during one cold owner's
-/// canonical block/stage pass. Existing pending grants remain in their parent
+/// canonical block/stage pass.
+///
+/// Existing pending grants remain in their parent
 /// authority; Object and Scratch provider grants are composed separately.
 pub(super) fn owned_cold_memory_bound(
     shape: ColdBlockShape,
@@ -107,18 +111,20 @@ pub(super) fn owned_cold_memory_bound(
         .checked_next_power_of_two()
         .ok_or(IndexError::ResourceLimited)?
         .clamp(8, MAX_BLOCK_TERMS);
+    let block_row_bytes = std::mem::size_of::<BlockTerm>()
+        .checked_add(std::mem::size_of::<PreparedPositions>())
+        .ok_or(IndexError::ResourceLimited)?;
+    let vector_index_bytes = MAX_BLOCK_TERMS
+        .checked_mul(std::mem::size_of::<u16>())
+        .ok_or(IndexError::ResourceLimited)?;
     let block_rows = block_capacity
-        .checked_add(block_capacity / 2)
-        .and_then(|rows| {
-            rows.checked_mul(
-                std::mem::size_of::<BlockTerm>() + std::mem::size_of::<PreparedPositions>(),
-            )
-        })
+        .checked_add(block_capacity.div_euclid(2))
+        .and_then(|rows| rows.checked_mul(block_row_bytes))
         .ok_or(IndexError::ResourceLimited)?;
     let group_and_draft = shape
         .maximum_key_position_peak
         .checked_add(block_rows)
-        .and_then(|bytes| bytes.checked_add(MAX_BLOCK_TERMS * std::mem::size_of::<u16>()))
+        .and_then(|bytes| bytes.checked_add(vector_index_bytes))
         .and_then(|bytes| bytes.checked_add(super::super::text_occurrence::block::MAX_BLOCK_BYTES))
         .ok_or(IndexError::ResourceLimited)?;
     let packet_payloads = shape
@@ -130,6 +136,7 @@ pub(super) fn owned_cold_memory_bound(
         .checked_add(shape.maximum_payload_bytes)
         .ok_or(IndexError::ResourceLimited)?;
     let write_rows = OccurrenceWrites::metadata_bytes(MAX_OBJECT_INSTALL_BATCH * 2)?;
+    let write_rows = usize::try_from(write_rows).map_err(|_width| IndexError::ResourceLimited)?;
     let inventory_rows = (quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS * 2)
         .checked_mul(std::mem::size_of::<(
             InventoryPartition,
@@ -147,7 +154,7 @@ pub(super) fn owned_cold_memory_bound(
         .ok_or(IndexError::ResourceLimited)?;
     let temporary = group_and_draft
         .checked_add(packet_payloads)
-        .and_then(|bytes| bytes.checked_add(usize::try_from(write_rows).ok()?))
+        .and_then(|bytes| bytes.checked_add(write_rows))
         .and_then(|bytes| bytes.checked_add(inventory_rows))
         .and_then(|bytes| bytes.checked_add(inventory_keys))
         .and_then(|bytes| bytes.checked_add(confirmed))
@@ -159,7 +166,11 @@ pub(super) fn owned_cold_memory_bound(
         .checked_mul(2)
         .and_then(|slots| slots.checked_add(3)) // incoming key and grow-copy positions
         .and_then(|slots| slots.checked_add(5)) // two row growths and vector index
-        .and_then(|slots| slots.checked_add(object_slots + 3)) // payload and packet growth
+        .and_then(|slots| {
+            object_slots
+                .checked_add(3)
+                .and_then(|objects| slots.checked_add(objects))
+        }) // payload and packet growth
         .and_then(|slots| slots.checked_add(quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS + 3))
         .ok_or(IndexError::ResourceLimited)?;
     Ok(MemoryCreditLimits {
@@ -279,11 +290,43 @@ impl PackedSelectors {
 
 /// Prepare one new owner's sorted token inventory. The caller must establish
 /// an empty prior source and empty prior inventory before choosing this path.
+#[cfg(test)]
 pub(super) fn prepare_owner_blocks(
     ordinal: u32,
     context: &mut AttemptContext<'_>,
     spool: &TextSpool,
     cold_tokens: &mut Option<ColdTokens>,
+    confirmed: &mut ConfirmedOccurrences,
+    inventory_edits: &mut InventoryEdits,
+    writes: &mut OccurrenceWrites<'_>,
+    shape: Option<&mut ColdShapeObservation>,
+) -> Result<(u64, Option<ColdInventoryAlias>), IndexError> {
+    let mut program = None;
+    prepare_owner_blocks_with_program(
+        ordinal,
+        context,
+        spool,
+        cold_tokens,
+        &mut program,
+        confirmed,
+        inventory_edits,
+        writes,
+        shape,
+    )
+}
+
+/// Flattened prefix program backed by verified canonical rows. The caller proves exact NFC prefix
+/// bytes, a delimiter boundary, and a complete suffix before selecting it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The private caller supplies separate source, scratch, output and diagnostic authorities"
+)]
+pub(super) fn prepare_owner_blocks_with_program(
+    ordinal: u32,
+    context: &mut AttemptContext<'_>,
+    spool: &TextSpool,
+    cold_tokens: &mut Option<ColdTokens>,
+    cached_program: &mut Option<Arc<ColdTokenProgram>>,
     confirmed: &mut ConfirmedOccurrences,
     inventory_edits: &mut InventoryEdits,
     writes: &mut OccurrenceWrites<'_>,
@@ -304,7 +347,20 @@ pub(super) fn prepare_owner_blocks(
     };
     let mut use_sql_after_optional_denial = false;
     let mut tentative_alias_shape = shape.is_some().then(ColdShapeObservation::default);
-    let prepared_alias = if let Some(tokens) = cold_tokens.as_ref() {
+    if cold_tokens.is_some() && cached_program.is_some() {
+        return Err(IndexError::BackendViolation(
+            "cold owner has two token programs".into(),
+        ));
+    }
+    let program = if let Some(cached) = cached_program.as_ref() {
+        Some(ColdTokenProgramView::from_program(cached)?)
+    } else {
+        cold_tokens
+            .as_ref()
+            .map(|tokens| ColdTokenProgramView::new(None, tokens))
+            .transpose()?
+    };
+    let prepared_alias = if let Some(tokens) = program.as_ref() {
         if let Some(borrowed) = tokens.try_packed_alias(context.budget)? {
             let first_bytes = borrowed.first_key()?;
             let first_memory = context.budget.try_reserve_memory_for_optimization(
@@ -375,6 +431,7 @@ pub(super) fn prepare_owner_blocks(
         // The canonical payload and selector now own their exact grants. The
         // optional source arena cannot compete with installation metadata.
         *cold_tokens = None;
+        *cached_program = None;
         let terms = u64::try_from(term_count).map_err(|_error| IndexError::ResourceLimited)?;
         let reference = target.stage_packed_selected(
             payload,
@@ -399,51 +456,49 @@ pub(super) fn prepare_owner_blocks(
             }),
         ));
     }
-    if !use_sql_after_optional_denial {
-        if let Some(tokens) = cold_tokens.as_ref() {
-            let block_shape = tokens.block_shape(context.budget)?;
-            if let Some(limits) =
-                cold_output_credit_bound(block_shape, context, spool, &*target.writes)?
-            {
-                let attempt = context.attempt;
-                let objects = context.objects;
-                let maps = context.maps;
-                let custody = context.custody;
-                let scratch = context.scratch;
-                if let Some(mut credit) = context.budget.try_scoped_memory_credit(limits)? {
-                    let mut scoped_context = AttemptContext {
-                        attempt,
-                        objects,
-                        maps,
-                        custody,
-                        scratch,
-                        budget: &mut credit,
-                    };
-                    let multiblock = block_shape.object_count > 1
-                        && block_shape.term_count
-                            > usize::try_from(COLD_ALIAS_MAX_TERMS)
-                                .map_err(|_error| IndexError::ResourceLimited)?
-                        && block_shape.maximum_key_bytes
-                            <= usize::try_from(super::MAX_TERM_KEY_BYTES)
-                                .map_err(|_error| IndexError::ResourceLimited)?;
-                    let result = run_owner_blocks(
-                        &mut target,
-                        cold_tokens,
-                        &mut scoped_context,
-                        multiblock,
-                        shape.as_deref_mut(),
-                    )?;
-                    if let Some(shape) = shape.as_deref_mut() {
-                        shape.finish(ColdShapeBranch::Direct, result.0);
-                    }
-                    return Ok(result);
+    if !use_sql_after_optional_denial && let Some(tokens) = program.as_ref() {
+        let block_shape = tokens.block_shape(context.budget)?;
+        if let Some(limits) =
+            cold_output_credit_bound(block_shape, context, spool, &*target.writes)?
+        {
+            let attempt = context.attempt;
+            let objects = context.objects;
+            let maps = context.maps;
+            let custody = context.custody;
+            let scratch = context.scratch;
+            if let Some(mut credit) = context.budget.try_scoped_memory_credit(limits)? {
+                let mut scoped_context = AttemptContext {
+                    attempt,
+                    objects,
+                    maps,
+                    custody,
+                    scratch,
+                    budget: &mut credit,
+                };
+                let multiblock = block_shape.object_count > 1
+                    && block_shape.term_count
+                        > usize::try_from(COLD_ALIAS_MAX_TERMS)
+                            .map_err(|_error| IndexError::ResourceLimited)?
+                    && block_shape.maximum_key_bytes
+                        <= usize::try_from(super::MAX_TERM_KEY_BYTES)
+                            .map_err(|_error| IndexError::ResourceLimited)?;
+                let result = run_owner_blocks(
+                    &mut target,
+                    Some(tokens),
+                    &mut scoped_context,
+                    multiblock,
+                    shape.as_deref_mut(),
+                )?;
+                if let Some(shape) = shape.as_deref_mut() {
+                    shape.finish(ColdShapeBranch::Direct, result.0);
                 }
+                return Ok(result);
             }
-            use_sql_after_optional_denial = true;
         }
+        use_sql_after_optional_denial = true;
     }
     if use_sql_after_optional_denial {
-        let tokens = cold_tokens.as_ref().ok_or_else(|| {
+        let tokens = program.as_ref().ok_or_else(|| {
             IndexError::BackendViolation("cold SQL replay lost its validated arena".into())
         })?;
         // The fixed SQL statement and borrowed rows need no second arena or
@@ -453,15 +508,10 @@ pub(super) fn prepare_owner_blocks(
             spool.token_batch_borrowed(rows, budget)
         })?;
         *cold_tokens = None;
+        *cached_program = None;
     }
-    let result = run_owner_blocks(
-        &mut target,
-        cold_tokens,
-        context,
-        false,
-        shape.as_deref_mut(),
-    )?;
-    if let Some(shape) = shape.as_deref_mut() {
+    let result = run_owner_blocks(&mut target, None, context, false, shape.as_deref_mut())?;
+    if let Some(shape) = shape {
         shape.finish(ColdShapeBranch::Sql, result.0);
     }
     Ok(result)
@@ -469,7 +519,7 @@ pub(super) fn prepare_owner_blocks(
 
 fn run_owner_blocks(
     target: &mut PackTarget<'_, '_>,
-    cold_tokens: &Option<ColdTokens>,
+    program: Option<&ColdTokenProgramView<'_>>,
     context: &mut AttemptContext<'_>,
     multiblock: bool,
     mut shape: Option<&mut ColdShapeObservation>,
@@ -564,7 +614,7 @@ fn run_owner_blocks(
     };
     let limit = usize::try_from(super::MAX_POSITIONS_PER_TERM)
         .map_err(|_error| IndexError::ResourceLimited)?;
-    if let Some(tokens) = cold_tokens.as_ref() {
+    if let Some(tokens) = program {
         tokens.visit_groups(limit, context.budget, &mut consume)?;
     } else {
         spool.visit_token_groups(limit, context.budget, &mut consume)?;
@@ -743,7 +793,8 @@ impl PackTarget<'_, '_> {
         context: &mut AttemptContext<'_>,
         directory: bool,
     ) -> Result<ObjectRef, IndexError> {
-        let payload = crate::native::text_memory::encode(&positions.occurrence, context.budget)?;
+        let payload =
+            crate::native::text_memory::encode(positions.as_occurrence(), context.budget)?;
         drop(positions);
         let reference = context
             .objects

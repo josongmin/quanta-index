@@ -372,7 +372,7 @@ impl PublicationFileDeletions {
     }
 
     /// Recover matching move or prior source cleanup without a new path probe.
-    #[cfg(any(test, feature = "legacy-tantivy"))]
+    #[cfg(test)]
     pub(crate) fn recover_directory_move_if_pending(
         &self,
         from: &Path,
@@ -405,7 +405,7 @@ impl PublicationFileDeletions {
     }
 
     /// Recover only the matching original delete, preserving its path receipt.
-    #[cfg(any(test, feature = "legacy-tantivy"))]
+    #[cfg(test)]
     pub(crate) fn recover_directory_delete_if_pending(
         &self,
         path: &Path,

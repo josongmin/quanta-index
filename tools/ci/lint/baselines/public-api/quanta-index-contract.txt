@@ -695,6 +695,21 @@ impl core::marker::Unpin for quanta_index_contract::UpsertSymbol
 impl core::marker::UnsafeUnpin for quanta_index_contract::UpsertSymbol
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::UpsertSymbol
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::UpsertSymbol
+pub mod quanta_index_contract::compiler
+pub struct quanta_index_contract::compiler::RepoMapGraphCompiler
+impl quanta_index_contract::compiler::RepoMapGraphCompiler
+pub fn quanta_index_contract::compiler::RepoMapGraphCompiler::compile(&self, bundle: &quanta_index_contract::RepoMapSourceBundle) -> core::result::Result<quanta_index_contract::CompiledRepoMapCandidateV1, quanta_index_contract::RepoMapCompileRefusalV1>
+pub const fn quanta_index_contract::compiler::RepoMapGraphCompiler::new(budget: quanta_index_contract::RepoMapCompilerBudgetV1) -> Self
+pub const fn quanta_index_contract::compiler::RepoMapGraphCompiler::with_default_budget() -> Self
+impl quanta_index_contract::compiler::RepoMapGraphCompiler
+pub fn quanta_index_contract::compiler::RepoMapGraphCompiler::compile_native_owner(&self, bundle: &quanta_index_contract::RepoMapSourceBundle) -> core::result::Result<quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection, quanta_index_contract::native_protocol::NativeRepoMapOwnerError>
+impl core::marker::Freeze for quanta_index_contract::compiler::RepoMapGraphCompiler
+impl core::marker::Send for quanta_index_contract::compiler::RepoMapGraphCompiler
+impl core::marker::Sync for quanta_index_contract::compiler::RepoMapGraphCompiler
+impl core::marker::Unpin for quanta_index_contract::compiler::RepoMapGraphCompiler
+impl core::marker::UnsafeUnpin for quanta_index_contract::compiler::RepoMapGraphCompiler
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::compiler::RepoMapGraphCompiler
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::compiler::RepoMapGraphCompiler
 pub mod quanta_index_contract::index
 pub use quanta_index_contract::index::<<quanta_index_contract_base::index_refs::*>>
 pub enum quanta_index_contract::index::CatalogViewDigestErrorV3<E>
@@ -1091,6 +1106,10 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::index::SubmitOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::index::SubmitOutcome
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::index::SubmitOutcome
 pub enum quanta_index_contract::index::UpdateKind
+pub quanta_index_contract::index::UpdateKind::CompactSourceLocal
+pub quanta_index_contract::index::UpdateKind::CompactSourceLocal::expected_artifact: quanta_index_contract_base::index_refs::ObjectRef
+pub quanta_index_contract::index::UpdateKind::CompactSourceLocal::instance: quanta_index_contract_base::index_refs::IndexInstanceId
+pub quanta_index_contract::index::UpdateKind::CompactSourceLocal::owner: quanta_index_contract_base::index_refs::OwnerKey
 pub quanta_index_contract::index::UpdateKind::HistoryAdvance(quanta_index_contract::index::HistoryTransition)
 pub quanta_index_contract::index::UpdateKind::HistoryAppend(quanta_index_contract::index::HistoryAppendV1)
 pub quanta_index_contract::index::UpdateKind::Materialize
@@ -9297,7 +9316,6 @@ pub quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSou
 pub quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1::v5_artifacts: &'a [quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceV5ArtifactV1]
 impl<'a> quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'a>
 pub fn quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'a>::ast_update_request_v1(&self) -> core::option::Option<&'a quanta_index_contract::index::UpdateRequest>
-pub fn quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'a>::completed_source_request_for_event_v1<E>(&self, event_id: u128, charge: &mut impl core::ops::function::FnMut(u64) -> core::result::Result<(), E>) -> core::result::Result<core::option::Option<(&'a quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceSourcePublicationBindingV1, &'a [u128], core::option::Option<quanta_index_contract_base::index_refs::OperationKey>)>, E>
 pub fn quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'a>::completed_watch_source_for_operation_v1(&self, operation: quanta_index_contract_base::index_refs::OperationKey) -> core::option::Option<(&'a quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceSourcePublicationBindingV1, &'a [u128])>
 pub fn quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'a>::current_legacy_ordinary_source_binding_v1(&self) -> core::option::Option<&'a quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceSourcePublicationBindingV1>
 pub fn quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'a>::current_native_update_request_v1(&self) -> core::option::Option<&'a quanta_index_contract::index::UpdateRequest>
@@ -9315,8 +9333,88 @@ impl<'a> core::marker::Unpin for quanta_index_contract::native_cutover_source_jo
 impl<'a> core::marker::UnsafeUnpin for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'a>
-pub fn quanta_index_contract::native_cutover_source_join_v1::join_native_cutover_source_facts_v1<'a, E>(evidence: &'a quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceV1, reservation_rows: &mut alloc::vec::Vec<usize>, replay_rows: &mut alloc::vec::Vec<usize>, charge: &mut impl core::ops::function::FnMut(u64) -> core::result::Result<(), E>) -> core::result::Result<quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'a>, quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceJoinErrorV1<E>>
+pub struct quanta_index_contract::native_cutover_source_join_v1::NativeCutoverPublicationFactsV1<'a>
+impl<'a> quanta_index_contract::native_cutover_source_join_v1::NativeCutoverPublicationFactsV1<'a>
+pub fn quanta_index_contract::native_cutover_source_join_v1::NativeCutoverPublicationFactsV1<'a>::for_operation_v1(&self, key: quanta_index_contract_base::index_refs::OperationKey) -> impl core::iter::traits::iterator::Iterator<Item = &'a quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceSourceFactV1> + core::clone::Clone + '_
+pub fn quanta_index_contract::native_cutover_source_join_v1::NativeCutoverPublicationFactsV1<'a>::from_facts_v1<E>(facts: &'a [quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceSourceFactV1], rows: &'a mut alloc::vec::Vec<usize>, charge: &mut impl core::ops::function::FnMut(u64) -> core::result::Result<(), E>) -> core::result::Result<Self, quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceJoinErrorV1<E>>
+impl<'a> core::marker::Freeze for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverPublicationFactsV1<'a>
+impl<'a> core::marker::Send for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverPublicationFactsV1<'a>
+impl<'a> core::marker::Sync for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverPublicationFactsV1<'a>
+impl<'a> core::marker::Unpin for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverPublicationFactsV1<'a>
+impl<'a> core::marker::UnsafeUnpin for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverPublicationFactsV1<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverPublicationFactsV1<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverPublicationFactsV1<'a>
+pub struct quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchV1<'a>
+impl quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchV1<'_>
+pub fn quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchV1<'_>::event_id_v1(&self) -> u128
+pub fn quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchV1<'_>::new(event_id: u128) -> Self
+impl<'a> core::marker::Freeze for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchV1<'a>
+impl<'a> core::marker::Send for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchV1<'a>
+impl<'a> core::marker::Sync for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchV1<'a>
+impl<'a> core::marker::Unpin for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchV1<'a>
+impl<'a> core::marker::UnsafeUnpin for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchV1<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchV1<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchV1<'a>
+pub struct quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchesV1<'a, 'scratch>
+impl<'a> quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchesV1<'a, '_>
+pub fn quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchesV1<'a, '_>::source_for_event_v1<E>(&self, event_id: u128, charge: &mut impl core::ops::function::FnMut(u64) -> core::result::Result<(), E>) -> core::result::Result<core::option::Option<&'a quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceSourcePublicationBindingV1>, E>
+impl<'a, 'scratch> core::marker::Freeze for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchesV1<'a, 'scratch>
+impl<'a, 'scratch> core::marker::Send for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchesV1<'a, 'scratch>
+impl<'a, 'scratch> core::marker::Sync for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchesV1<'a, 'scratch>
+impl<'a, 'scratch> core::marker::Unpin for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchesV1<'a, 'scratch>
+impl<'a, 'scratch> core::marker::UnsafeUnpin for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchesV1<'a, 'scratch>
+impl<'a, 'scratch> core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchesV1<'a, 'scratch>
+impl<'a, 'scratch> core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchesV1<'a, 'scratch>
+pub fn quanta_index_contract::native_cutover_source_join_v1::join_native_cutover_source_facts_v1<'a, 'scratch, E>(evidence: &'a quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceV1, reservation_rows: &mut alloc::vec::Vec<usize>, replay_rows: &mut alloc::vec::Vec<usize>, event_matches: &'scratch mut [quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchV1<'a>], charge: &mut impl core::ops::function::FnMut(u64) -> core::result::Result<(), E>) -> core::result::Result<(quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'a>, quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceEventMatchesV1<'a, 'scratch>), quanta_index_contract::native_cutover_source_join_v1::NativeCutoverSourceJoinErrorV1<E>>
 pub mod quanta_index_contract::native_protocol
+pub enum quanta_index_contract::native_protocol::NativeDslKindV1
+pub quanta_index_contract::native_protocol::NativeDslKindV1::RuntimeMetadata
+pub quanta_index_contract::native_protocol::NativeDslKindV1::Structural
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeDslKindV1
+pub fn quanta_index_contract::native_protocol::NativeDslKindV1::clone(&self) -> quanta_index_contract::native_protocol::NativeDslKindV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeDslKindV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeDslKindV1
+pub fn quanta_index_contract::native_protocol::NativeDslKindV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeDslKindV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslKindV1
+pub fn quanta_index_contract::native_protocol::NativeDslKindV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::native_protocol::NativeDslKindV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslKindV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslKindV1
+pub fn quanta_index_contract::native_protocol::NativeDslKindV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslKindV1
+pub fn quanta_index_contract::native_protocol::NativeDslKindV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslKindV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslKindV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslKindV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeDslKindV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeDslKindV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeDslKindV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeDslKindV1
+pub enum quanta_index_contract::native_protocol::NativeDslRowsV1
+pub quanta_index_contract::native_protocol::NativeDslRowsV1::RuntimeMetadata(alloc::vec::Vec<quanta_index_contract::native_protocol::NativeDslRuntimeHitV1>)
+pub quanta_index_contract::native_protocol::NativeDslRowsV1::Structural(alloc::vec::Vec<quanta_index_contract::native_protocol::NativeDslStructuralHitV1>)
+impl quanta_index_contract::native_protocol::NativeDslRowsV1
+pub fn quanta_index_contract::native_protocol::NativeDslRowsV1::candidate_ids(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
+pub fn quanta_index_contract::native_protocol::NativeDslRowsV1::kind(&self) -> quanta_index_contract::native_protocol::NativeDslKindV1
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeDslRowsV1
+pub fn quanta_index_contract::native_protocol::NativeDslRowsV1::clone(&self) -> quanta_index_contract::native_protocol::NativeDslRowsV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeDslRowsV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeDslRowsV1
+pub fn quanta_index_contract::native_protocol::NativeDslRowsV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeDslRowsV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslRowsV1
+pub fn quanta_index_contract::native_protocol::NativeDslRowsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslRowsV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslRowsV1
+pub fn quanta_index_contract::native_protocol::NativeDslRowsV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslRowsV1
+pub fn quanta_index_contract::native_protocol::NativeDslRowsV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslRowsV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslRowsV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslRowsV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeDslRowsV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeDslRowsV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeDslRowsV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeDslRowsV1
 pub enum quanta_index_contract::native_protocol::NativeEffortPreference
 pub quanta_index_contract::native_protocol::NativeEffortPreference::Auto
 pub quanta_index_contract::native_protocol::NativeEffortPreference::Deep
@@ -9413,6 +9511,7 @@ pub quanta_index_contract::native_protocol::NativeIndexErrorCode::FocusSubjectNo
 pub quanta_index_contract::native_protocol::NativeIndexErrorCode::InvalidInput
 pub quanta_index_contract::native_protocol::NativeIndexErrorCode::MaintenanceRequired
 pub quanta_index_contract::native_protocol::NativeIndexErrorCode::Overloaded
+pub quanta_index_contract::native_protocol::NativeIndexErrorCode::ProcessRssCeilingExceeded
 pub quanta_index_contract::native_protocol::NativeIndexErrorCode::RebuildRequired
 pub quanta_index_contract::native_protocol::NativeIndexErrorCode::ResourceLimited
 pub quanta_index_contract::native_protocol::NativeIndexErrorCode::ResponseTooLarge
@@ -9558,6 +9657,10 @@ pub quanta_index_contract::native_protocol::NativeIndexRequest::SearchText
 pub quanta_index_contract::native_protocol::NativeIndexRequest::SearchText::instance: quanta_index_contract_base::index_refs::IndexInstanceId
 pub quanta_index_contract::native_protocol::NativeIndexRequest::SearchText::query: quanta_index_contract_base::query::requests::TextQueryRequest
 pub quanta_index_contract::native_protocol::NativeIndexRequest::SearchText::selection: quanta_index_contract::index::ViewSelection
+pub quanta_index_contract::native_protocol::NativeIndexRequest::SearchTextPreview
+pub quanta_index_contract::native_protocol::NativeIndexRequest::SearchTextPreview::instance: quanta_index_contract_base::index_refs::IndexInstanceId
+pub quanta_index_contract::native_protocol::NativeIndexRequest::SearchTextPreview::query: quanta_index_contract_base::query::requests::TextQueryRequest
+pub quanta_index_contract::native_protocol::NativeIndexRequest::SearchTextPreview::selection: quanta_index_contract::index::ViewSelection
 pub quanta_index_contract::native_protocol::NativeIndexRequest::StageImmutableObject
 pub quanta_index_contract::native_protocol::NativeIndexRequest::StageImmutableObject::bytes: quanta_index_contract::native_protocol::NativeImmutableObjectPayloadV1
 pub quanta_index_contract::native_protocol::NativeIndexRequest::StageImmutableObject::children: quanta_index_contract::native_protocol::NativeImmutableObjectChildrenV1
@@ -9616,6 +9719,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_prot
 pub enum quanta_index_contract::native_protocol::NativeIndexResponse
 pub quanta_index_contract::native_protocol::NativeIndexResponse::Claimed(quanta_index_contract::index::WorkClaim)
 pub quanta_index_contract::native_protocol::NativeIndexResponse::Created(quanta_index_contract_base::index_refs::ViewRef)
+pub quanta_index_contract::native_protocol::NativeIndexResponse::DslPageV1(quanta_index_contract::native_protocol::NativeDslPageV1)
 pub quanta_index_contract::native_protocol::NativeIndexResponse::EffortDone(quanta_index_contract::native_protocol::NativeEffortDone)
 pub quanta_index_contract::native_protocol::NativeIndexResponse::Error(quanta_index_contract::native_protocol::NativeIndexWireError)
 pub quanta_index_contract::native_protocol::NativeIndexResponse::Graph(quanta_index_contract::native_protocol::NativeGraphResult)
@@ -9656,6 +9760,9 @@ pub quanta_index_contract::native_protocol::NativeIndexResponse::StagedSources(a
 pub quanta_index_contract::native_protocol::NativeIndexResponse::Status(quanta_index_contract::index::OperationReply<quanta_index_contract::index::OperationStatus>)
 pub quanta_index_contract::native_protocol::NativeIndexResponse::Stub(quanta_index_contract::native_protocol::NativeStubReply)
 pub quanta_index_contract::native_protocol::NativeIndexResponse::Submitted(quanta_index_contract::index::OperationReply<quanta_index_contract::index::SubmitOutcome>)
+pub quanta_index_contract::native_protocol::NativeIndexResponse::TextPathPageV1(quanta_index_contract::native_protocol::NativeTextPathPageV1)
+pub quanta_index_contract::native_protocol::NativeIndexResponse::TextPathRankedV1(quanta_index_contract::native_protocol::NativeTextPathResultV1)
+pub quanta_index_contract::native_protocol::NativeIndexResponse::TextPreviewRanked(quanta_index_contract::native_protocol::NativeTextPreviewResult)
 pub quanta_index_contract::native_protocol::NativeIndexResponse::TextRanked(quanta_index_contract::native_protocol::NativeTextResult)
 pub quanta_index_contract::native_protocol::NativeIndexResponse::TextRankedPage(quanta_index_contract::native_protocol::NativeTextPage)
 pub quanta_index_contract::native_protocol::NativeIndexResponse::View(quanta_index_contract::index::CatalogView)
@@ -9675,6 +9782,9 @@ pub fn quanta_index_contract::native_protocol::NativeIndexResponse::serialize_re
 pub fn quanta_index_contract::native_protocol::NativeIndexResponse::serialize_semantic_ranked_ref<S: serde_core::ser::Serializer>(result: &quanta_index_contract::native_protocol::NativeSemanticResult, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 pub fn quanta_index_contract::native_protocol::NativeIndexResponse::serialize_source_owners_ref<S: serde_core::ser::Serializer>(result: &quanta_index_contract::native_protocol::NativeSourceOwnerLookup, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 pub fn quanta_index_contract::native_protocol::NativeIndexResponse::serialize_staged_sources_ref<S: serde_core::ser::Serializer>(references: &[quanta_index_contract_base::index_refs::ObjectRef], serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+pub fn quanta_index_contract::native_protocol::NativeIndexResponse::serialize_text_path_page_ref<S: serde_core::ser::Serializer>(result: &quanta_index_contract::native_protocol::NativeTextPathPageV1, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+pub fn quanta_index_contract::native_protocol::NativeIndexResponse::serialize_text_path_ranked_ref<S: serde_core::ser::Serializer>(result: &quanta_index_contract::native_protocol::NativeTextPathResultV1, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+pub fn quanta_index_contract::native_protocol::NativeIndexResponse::serialize_text_preview_ranked_ref<S: serde_core::ser::Serializer>(result: &quanta_index_contract::native_protocol::NativeTextPreviewResult, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 pub fn quanta_index_contract::native_protocol::NativeIndexResponse::serialize_text_ranked_ref<S: serde_core::ser::Serializer>(result: &quanta_index_contract::native_protocol::NativeTextResult, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl quanta_index_contract::native_protocol::NativeIndexResponse
 pub fn quanta_index_contract::native_protocol::NativeIndexResponse::serialize_graph_ref<S: serde_core::ser::Serializer>(result: &quanta_index_contract::native_protocol::NativeGraphResult, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
@@ -9844,6 +9954,9 @@ pub quanta_index_contract::native_protocol::NativeReadSessionRequest::Release(qu
 pub quanta_index_contract::native_protocol::NativeReadSessionRequest::Renew
 pub quanta_index_contract::native_protocol::NativeReadSessionRequest::Renew::revision: u64
 pub quanta_index_contract::native_protocol::NativeReadSessionRequest::Renew::session: quanta_index_contract::native_protocol::NativeReadSessionId
+pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchDslV1
+pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchDslV1::query: quanta_index_contract::native_protocol::NativeDslQueryV1
+pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchDslV1::session: quanta_index_contract::native_protocol::NativeReadSessionId
 pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchHistory
 pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchHistory::after: core::option::Option<quanta_index_contract::native_protocol::NativeHistoryCursor>
 pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchHistory::instance: quanta_index_contract_base::index_refs::IndexInstanceId
@@ -9865,6 +9978,11 @@ pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchText
 pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchTextPage::instance: quanta_index_contract_base::index_refs::IndexInstanceId
 pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchTextPage::query: quanta_index_contract_base::query::requests::TextQueryRequest
 pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchTextPage::session: quanta_index_contract::native_protocol::NativeReadSessionId
+pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchTextPathPageV1
+pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchTextPathPageV1::after: core::option::Option<quanta_index_contract::native_protocol::NativeTextPathCursorV1>
+pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchTextPathPageV1::instance: quanta_index_contract_base::index_refs::IndexInstanceId
+pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchTextPathPageV1::query: quanta_index_contract_base::query::requests::TextQueryRequest
+pub quanta_index_contract::native_protocol::NativeReadSessionRequest::SearchTextPathPageV1::session: quanta_index_contract::native_protocol::NativeReadSessionId
 pub quanta_index_contract::native_protocol::NativeReadSessionRequest::Settlement(quanta_index_contract::native_protocol::NativeReadSessionId)
 pub quanta_index_contract::native_protocol::NativeReadSessionRequest::Status(quanta_index_contract::native_protocol::NativeReadSessionId)
 impl core::clone::Clone for quanta_index_contract::native_protocol::NativeReadSessionRequest
@@ -9934,6 +10052,25 @@ impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeReadS
 impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeReadSettlementState
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeReadSettlementState
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeReadSettlementState
+pub enum quanta_index_contract::native_protocol::NativeRepoMapOwnerError
+pub quanta_index_contract::native_protocol::NativeRepoMapOwnerError::Compile(quanta_index_contract::RepoMapCompileRefusalV1)
+pub quanta_index_contract::native_protocol::NativeRepoMapOwnerError::Encoding(serde_json::error::Error)
+pub quanta_index_contract::native_protocol::NativeRepoMapOwnerError::GraphLimit
+pub quanta_index_contract::native_protocol::NativeRepoMapOwnerError::InvalidRankRow
+pub quanta_index_contract::native_protocol::NativeRepoMapOwnerError::RankLeafBinding
+impl core::error::Error for quanta_index_contract::native_protocol::NativeRepoMapOwnerError
+pub fn quanta_index_contract::native_protocol::NativeRepoMapOwnerError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeRepoMapOwnerError
+pub fn quanta_index_contract::native_protocol::NativeRepoMapOwnerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::native_protocol::NativeRepoMapOwnerError
+pub fn quanta_index_contract::native_protocol::NativeRepoMapOwnerError::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeRepoMapOwnerError
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeRepoMapOwnerError
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeRepoMapOwnerError
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeRepoMapOwnerError
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeRepoMapOwnerError
+impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeRepoMapOwnerError
+impl !core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeRepoMapOwnerError
 pub enum quanta_index_contract::native_protocol::NativeSemanticChunkSpan
 pub quanta_index_contract::native_protocol::NativeSemanticChunkSpan::ProjectionPayload
 pub quanta_index_contract::native_protocol::NativeSemanticChunkSpan::ProjectionPayload::end_byte: u64
@@ -10176,6 +10313,29 @@ impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeTextC
 impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeTextCoverage
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeTextCoverage
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeTextCoverage
+pub enum quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+pub quanta_index_contract::native_protocol::NativeTextPreviewEvidence::Excerpt(quanta_index_contract::native_protocol::NativeTextExcerpt)
+pub quanta_index_contract::native_protocol::NativeTextPreviewEvidence::Path
+pub quanta_index_contract::native_protocol::NativeTextPreviewEvidence::Unavailable(quanta_index_contract_base::results::preview::PreviewUnavailableReason)
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+pub fn quanta_index_contract::native_protocol::NativeTextPreviewEvidence::clone(&self) -> quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+pub fn quanta_index_contract::native_protocol::NativeTextPreviewEvidence::eq(&self, other: &quanta_index_contract::native_protocol::NativeTextPreviewEvidence) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+pub fn quanta_index_contract::native_protocol::NativeTextPreviewEvidence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+pub fn quanta_index_contract::native_protocol::NativeTextPreviewEvidence::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+pub fn quanta_index_contract::native_protocol::NativeTextPreviewEvidence::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeTextPreviewEvidence
 pub struct quanta_index_contract::native_protocol::GraphEdge
 pub quanta_index_contract::native_protocol::GraphEdge::kind: quanta_index_contract::RepoMapEdgeKind
 pub quanta_index_contract::native_protocol::GraphEdge::source: quanta_index_contract::RepoMapNodeRef
@@ -10266,6 +10426,255 @@ impl core::marker::Unpin for quanta_index_contract::native_protocol::GraphProjec
 impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::GraphProjectionRow
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::GraphProjectionRow
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::GraphProjectionRow
+pub struct quanta_index_contract::native_protocol::NativeDslCorpusV1
+pub quanta_index_contract::native_protocol::NativeDslCorpusV1::pin: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::native_protocol::NativeDslCorpusV1::source_producer: quanta_index_contract_base::index_refs::ProducerId
+pub quanta_index_contract::native_protocol::NativeDslCorpusV1::structural_ready: bool
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeDslCorpusV1
+pub fn quanta_index_contract::native_protocol::NativeDslCorpusV1::clone(&self) -> quanta_index_contract::native_protocol::NativeDslCorpusV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeDslCorpusV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeDslCorpusV1
+pub fn quanta_index_contract::native_protocol::NativeDslCorpusV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeDslCorpusV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslCorpusV1
+pub fn quanta_index_contract::native_protocol::NativeDslCorpusV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslCorpusV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslCorpusV1
+pub fn quanta_index_contract::native_protocol::NativeDslCorpusV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslCorpusV1
+pub fn quanta_index_contract::native_protocol::NativeDslCorpusV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslCorpusV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslCorpusV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslCorpusV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeDslCorpusV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeDslCorpusV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeDslCorpusV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeDslCorpusV1
+pub struct quanta_index_contract::native_protocol::NativeDslCursorV1
+pub quanta_index_contract::native_protocol::NativeDslCursorV1::candidate_id: alloc::string::String
+pub quanta_index_contract::native_protocol::NativeDslCursorV1::projection: quanta_index_contract_base::index_refs::ObjectRef
+pub quanta_index_contract::native_protocol::NativeDslCursorV1::query: quanta_index_contract_base::index_refs::Digest
+pub quanta_index_contract::native_protocol::NativeDslCursorV1::view: quanta_index_contract_base::index_refs::ViewRef
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeDslCursorV1
+pub fn quanta_index_contract::native_protocol::NativeDslCursorV1::clone(&self) -> quanta_index_contract::native_protocol::NativeDslCursorV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeDslCursorV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeDslCursorV1
+pub fn quanta_index_contract::native_protocol::NativeDslCursorV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeDslCursorV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslCursorV1
+pub fn quanta_index_contract::native_protocol::NativeDslCursorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslCursorV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslCursorV1
+pub fn quanta_index_contract::native_protocol::NativeDslCursorV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslCursorV1
+pub fn quanta_index_contract::native_protocol::NativeDslCursorV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslCursorV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslCursorV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslCursorV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeDslCursorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeDslCursorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeDslCursorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeDslCursorV1
+pub struct quanta_index_contract::native_protocol::NativeDslFileV1
+pub quanta_index_contract::native_protocol::NativeDslFileV1::chunks: alloc::vec::Vec<quanta_index_contract::ChunkRecord>
+pub quanta_index_contract::native_protocol::NativeDslFileV1::trees: alloc::vec::Vec<quanta_index_contract::StructuralTreeRecord>
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeDslFileV1
+pub fn quanta_index_contract::native_protocol::NativeDslFileV1::clone(&self) -> quanta_index_contract::native_protocol::NativeDslFileV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeDslFileV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeDslFileV1
+pub fn quanta_index_contract::native_protocol::NativeDslFileV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeDslFileV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslFileV1
+pub fn quanta_index_contract::native_protocol::NativeDslFileV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslFileV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslFileV1
+pub fn quanta_index_contract::native_protocol::NativeDslFileV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslFileV1
+pub fn quanta_index_contract::native_protocol::NativeDslFileV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslFileV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslFileV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslFileV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeDslFileV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeDslFileV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeDslFileV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeDslFileV1
+pub struct quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+pub quanta_index_contract::native_protocol::NativeDslMatchRangeV1::byte_end: u32
+pub quanta_index_contract::native_protocol::NativeDslMatchRangeV1::byte_start: u32
+pub quanta_index_contract::native_protocol::NativeDslMatchRangeV1::line_end: u32
+pub quanta_index_contract::native_protocol::NativeDslMatchRangeV1::line_start: u32
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+pub fn quanta_index_contract::native_protocol::NativeDslMatchRangeV1::clone(&self) -> quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+pub fn quanta_index_contract::native_protocol::NativeDslMatchRangeV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeDslMatchRangeV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+pub fn quanta_index_contract::native_protocol::NativeDslMatchRangeV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+pub fn quanta_index_contract::native_protocol::NativeDslMatchRangeV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+pub fn quanta_index_contract::native_protocol::NativeDslMatchRangeV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+pub struct quanta_index_contract::native_protocol::NativeDslPageV1
+pub quanta_index_contract::native_protocol::NativeDslPageV1::after: core::option::Option<quanta_index_contract::native_protocol::NativeDslCursorV1>
+pub quanta_index_contract::native_protocol::NativeDslPageV1::projection: quanta_index_contract_base::index_refs::ObjectRef
+pub quanta_index_contract::native_protocol::NativeDslPageV1::query: quanta_index_contract_base::index_refs::Digest
+pub quanta_index_contract::native_protocol::NativeDslPageV1::rows: quanta_index_contract::native_protocol::NativeDslRowsV1
+pub quanta_index_contract::native_protocol::NativeDslPageV1::session: quanta_index_contract::native_protocol::NativeReadSessionId
+pub quanta_index_contract::native_protocol::NativeDslPageV1::view: quanta_index_contract_base::index_refs::ViewRef
+pub quanta_index_contract::native_protocol::NativeDslPageV1::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeDslPageV1
+pub fn quanta_index_contract::native_protocol::NativeDslPageV1::clone(&self) -> quanta_index_contract::native_protocol::NativeDslPageV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeDslPageV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeDslPageV1
+pub fn quanta_index_contract::native_protocol::NativeDslPageV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeDslPageV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslPageV1
+pub fn quanta_index_contract::native_protocol::NativeDslPageV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslPageV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslPageV1
+pub fn quanta_index_contract::native_protocol::NativeDslPageV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslPageV1
+pub fn quanta_index_contract::native_protocol::NativeDslPageV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslPageV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslPageV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslPageV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeDslPageV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeDslPageV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeDslPageV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeDslPageV1
+pub struct quanta_index_contract::native_protocol::NativeDslQueryV1
+pub quanta_index_contract::native_protocol::NativeDslQueryV1::after: core::option::Option<quanta_index_contract::native_protocol::NativeDslCursorV1>
+pub quanta_index_contract::native_protocol::NativeDslQueryV1::kind: quanta_index_contract::native_protocol::NativeDslKindV1
+pub quanta_index_contract::native_protocol::NativeDslQueryV1::scope: quanta_index_contract::native_protocol::NativeDslScopeV1
+pub quanta_index_contract::native_protocol::NativeDslQueryV1::text: quanta_index_contract_base::query::requests::TextQueryRequest
+impl quanta_index_contract::native_protocol::NativeDslQueryV1
+pub fn quanta_index_contract::native_protocol::NativeDslQueryV1::digest(&self) -> core::result::Result<quanta_index_contract_base::index_refs::Digest, &'static str>
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeDslQueryV1
+pub fn quanta_index_contract::native_protocol::NativeDslQueryV1::clone(&self) -> quanta_index_contract::native_protocol::NativeDslQueryV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeDslQueryV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeDslQueryV1
+pub fn quanta_index_contract::native_protocol::NativeDslQueryV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeDslQueryV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslQueryV1
+pub fn quanta_index_contract::native_protocol::NativeDslQueryV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslQueryV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslQueryV1
+pub fn quanta_index_contract::native_protocol::NativeDslQueryV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslQueryV1
+pub fn quanta_index_contract::native_protocol::NativeDslQueryV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslQueryV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslQueryV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslQueryV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeDslQueryV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeDslQueryV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeDslQueryV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeDslQueryV1
+pub struct quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+pub quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::catalog: quanta_index_contract::RuntimeCatalogIngestBatch
+pub quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::corpus_certificate: quanta_index_contract_base::index_refs::ObjectRef
+pub quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::dirty: alloc::vec::Vec<quanta_index_contract::lex::dirty::DirtyRecord>
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::clone(&self) -> quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
+pub struct quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+pub quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::candidate_id: alloc::string::String
+pub quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::end_line: u32
+pub quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::path: quanta_index_contract_base::ids::RepoRelativePath
+pub quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::snippet: alloc::string::String
+pub quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::source_repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::start_line: u32
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::clone(&self) -> quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeDslRuntimeHitV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
+pub struct quanta_index_contract::native_protocol::NativeDslScopeV1
+pub quanta_index_contract::native_protocol::NativeDslScopeV1::repository: quanta_index_contract_base::ids::RepoId
+pub quanta_index_contract::native_protocol::NativeDslScopeV1::revision: quanta_index_contract_base::ids::RevisionId
+impl quanta_index_contract::native_protocol::NativeDslScopeV1
+pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::for_pin(pin: &quanta_index_contract_base::query::pin::GenerationPin) -> Self
+pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::matches_pin(&self, pin: &quanta_index_contract_base::query::pin::GenerationPin) -> bool
+pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::projection(&self, kind: quanta_index_contract::native_protocol::NativeDslKindV1) -> quanta_index_contract_base::index_refs::ProjectionId
+pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::stream(&self, kind: quanta_index_contract::native_protocol::NativeDslKindV1) -> quanta_index_contract_base::index_refs::StreamId
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeDslScopeV1
+pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::clone(&self) -> quanta_index_contract::native_protocol::NativeDslScopeV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeDslScopeV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeDslScopeV1
+pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeDslScopeV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslScopeV1
+pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslScopeV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslScopeV1
+pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslScopeV1
+pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslScopeV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslScopeV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslScopeV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeDslScopeV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeDslScopeV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeDslScopeV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeDslScopeV1
+pub struct quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+pub quanta_index_contract::native_protocol::NativeDslStructuralHitV1::candidate: quanta_index_contract_base::results::structural::StructuralCandidate
+pub quanta_index_contract::native_protocol::NativeDslStructuralHitV1::match_range: quanta_index_contract::native_protocol::NativeDslMatchRangeV1
+pub quanta_index_contract::native_protocol::NativeDslStructuralHitV1::matched_node: core::option::Option<alloc::string::String>
+pub quanta_index_contract::native_protocol::NativeDslStructuralHitV1::path: quanta_index_contract_base::ids::RepoRelativePath
+pub quanta_index_contract::native_protocol::NativeDslStructuralHitV1::pattern_kind: core::option::Option<alloc::string::String>
+pub quanta_index_contract::native_protocol::NativeDslStructuralHitV1::source_repo_id: quanta_index_contract_base::ids::RepoId
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+pub fn quanta_index_contract::native_protocol::NativeDslStructuralHitV1::clone(&self) -> quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+pub fn quanta_index_contract::native_protocol::NativeDslStructuralHitV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeDslStructuralHitV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+pub fn quanta_index_contract::native_protocol::NativeDslStructuralHitV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+pub fn quanta_index_contract::native_protocol::NativeDslStructuralHitV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+pub fn quanta_index_contract::native_protocol::NativeDslStructuralHitV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
 pub struct quanta_index_contract::native_protocol::NativeEffortDone
 pub quanta_index_contract::native_protocol::NativeEffortDone::corpus: core::option::Option<quanta_index_contract::native_protocol::NativeOverlayCorpusStamp>
 pub quanta_index_contract::native_protocol::NativeEffortDone::deep_delivered: bool
@@ -11713,6 +12122,17 @@ impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeRepoM
 impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeRepoMapHit
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeRepoMapHit
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeRepoMapHit
+pub struct quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection
+impl quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection
+pub fn quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection::bind_rank_leaves(self, leaves: &[quanta_index_contract::native_protocol::GraphProjectionRow]) -> core::result::Result<(quanta_index_contract::native_protocol::GraphOwnerOutput, quanta_index_contract::RepoMapCandidateCommitmentsV1), quanta_index_contract::native_protocol::NativeRepoMapOwnerError>
+pub fn quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection::rank_rows(&self) -> &[quanta_index_contract::CompiledRepoMapProjectionEntryV1]
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection
 pub struct quanta_index_contract::native_protocol::NativeRepoMapQuery
 pub quanta_index_contract::native_protocol::NativeRepoMapQuery::focus_subjects: alloc::vec::Vec<quanta_index_contract::RepoMapFocusSubjectDto>
 pub quanta_index_contract::native_protocol::NativeRepoMapQuery::query_text: alloc::string::String
@@ -12469,6 +12889,33 @@ impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeTextC
 impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeTextCursor
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeTextCursor
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeTextCursor
+pub struct quanta_index_contract::native_protocol::NativeTextExcerpt
+pub quanta_index_contract::native_protocol::NativeTextExcerpt::highlights: alloc::vec::Vec<quanta_index_contract_base::results::highlight::HighlightSpan>
+pub quanta_index_contract::native_protocol::NativeTextExcerpt::normalized_focus: quanta_index_contract_base::results::preview::PreviewByteRange
+pub quanta_index_contract::native_protocol::NativeTextExcerpt::original_context: quanta_index_contract_base::results::preview::PreviewByteRange
+pub quanta_index_contract::native_protocol::NativeTextExcerpt::original_focus: quanta_index_contract_base::results::preview::PreviewByteRange
+pub quanta_index_contract::native_protocol::NativeTextExcerpt::text: alloc::string::String
+impl quanta_index_contract::native_protocol::NativeTextExcerpt
+pub fn quanta_index_contract::native_protocol::NativeTextExcerpt::validate(&self) -> core::result::Result<(), &'static str>
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeTextExcerpt
+pub fn quanta_index_contract::native_protocol::NativeTextExcerpt::clone(&self) -> quanta_index_contract::native_protocol::NativeTextExcerpt
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeTextExcerpt
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeTextExcerpt
+pub fn quanta_index_contract::native_protocol::NativeTextExcerpt::eq(&self, other: &quanta_index_contract::native_protocol::NativeTextExcerpt) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeTextExcerpt
+pub fn quanta_index_contract::native_protocol::NativeTextExcerpt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeTextExcerpt
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeTextExcerpt
+pub fn quanta_index_contract::native_protocol::NativeTextExcerpt::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeTextExcerpt
+pub fn quanta_index_contract::native_protocol::NativeTextExcerpt::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeTextExcerpt
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeTextExcerpt
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeTextExcerpt
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeTextExcerpt
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeTextExcerpt
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeTextExcerpt
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeTextExcerpt
 pub struct quanta_index_contract::native_protocol::NativeTextHit
 pub quanta_index_contract::native_protocol::NativeTextHit::owner: quanta_index_contract_base::index_refs::OwnerKey
 pub quanta_index_contract::native_protocol::NativeTextHit::path: alloc::string::String
@@ -12521,6 +12968,150 @@ impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeTextP
 impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeTextPage
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeTextPage
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeTextPage
+pub struct quanta_index_contract::native_protocol::NativeTextPathCursorV1
+pub quanta_index_contract::native_protocol::NativeTextPathCursorV1::artifact: quanta_index_contract_base::index_refs::ObjectRef
+pub quanta_index_contract::native_protocol::NativeTextPathCursorV1::instance: quanta_index_contract_base::index_refs::IndexInstanceId
+pub quanta_index_contract::native_protocol::NativeTextPathCursorV1::path: alloc::string::String
+pub quanta_index_contract::native_protocol::NativeTextPathCursorV1::query: quanta_index_contract_base::index_refs::Digest
+pub quanta_index_contract::native_protocol::NativeTextPathCursorV1::repository: quanta_index_contract_base::ids::RepoId
+pub quanta_index_contract::native_protocol::NativeTextPathCursorV1::score: quanta_index_contract::FiniteScore
+pub quanta_index_contract::native_protocol::NativeTextPathCursorV1::view: quanta_index_contract_base::index_refs::ViewRef
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathCursorV1::clone(&self) -> quanta_index_contract::native_protocol::NativeTextPathCursorV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathCursorV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeTextPathCursorV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathCursorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathCursorV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathCursorV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeTextPathCursorV1
+pub struct quanta_index_contract::native_protocol::NativeTextPathPageV1
+pub quanta_index_contract::native_protocol::NativeTextPathPageV1::after: core::option::Option<quanta_index_contract::native_protocol::NativeTextPathCursorV1>
+pub quanta_index_contract::native_protocol::NativeTextPathPageV1::ranked: quanta_index_contract::native_protocol::NativeTextPathRankingV1
+pub quanta_index_contract::native_protocol::NativeTextPathPageV1::remaining: u64
+pub quanta_index_contract::native_protocol::NativeTextPathPageV1::session: quanta_index_contract::native_protocol::NativeReadSessionId
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeTextPathPageV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathPageV1::clone(&self) -> quanta_index_contract::native_protocol::NativeTextPathPageV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeTextPathPageV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeTextPathPageV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathPageV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeTextPathPageV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeTextPathPageV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathPageV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeTextPathPageV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeTextPathPageV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathPageV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeTextPathPageV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathPageV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeTextPathPageV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeTextPathPageV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeTextPathPageV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeTextPathPageV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeTextPathPageV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeTextPathPageV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeTextPathPageV1
+pub struct quanta_index_contract::native_protocol::NativeTextPathRankingV1
+pub quanta_index_contract::native_protocol::NativeTextPathRankingV1::ranking: quanta_index_contract::native_protocol::NativeTextResult
+pub quanta_index_contract::native_protocol::NativeTextPathRankingV1::repositories: alloc::vec::Vec<quanta_index_contract_base::ids::RepoId>
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathRankingV1::clone(&self) -> quanta_index_contract::native_protocol::NativeTextPathRankingV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathRankingV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeTextPathRankingV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathRankingV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathRankingV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathRankingV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeTextPathRankingV1
+pub struct quanta_index_contract::native_protocol::NativeTextPathResultV1
+pub quanta_index_contract::native_protocol::NativeTextPathResultV1::previews: core::option::Option<alloc::vec::Vec<quanta_index_contract::native_protocol::NativeTextPreview>>
+pub quanta_index_contract::native_protocol::NativeTextPathResultV1::ranked: quanta_index_contract::native_protocol::NativeTextPathRankingV1
+impl quanta_index_contract::native_protocol::NativeTextPathResultV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathResultV1::validate_previews(&self) -> core::result::Result<(), &'static str>
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeTextPathResultV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathResultV1::clone(&self) -> quanta_index_contract::native_protocol::NativeTextPathResultV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeTextPathResultV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeTextPathResultV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathResultV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeTextPathResultV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeTextPathResultV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathResultV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeTextPathResultV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeTextPathResultV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathResultV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeTextPathResultV1
+pub fn quanta_index_contract::native_protocol::NativeTextPathResultV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeTextPathResultV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeTextPathResultV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeTextPathResultV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeTextPathResultV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeTextPathResultV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeTextPathResultV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeTextPathResultV1
+pub struct quanta_index_contract::native_protocol::NativeTextPreview
+pub quanta_index_contract::native_protocol::NativeTextPreview::evidence: quanta_index_contract::native_protocol::NativeTextPreviewEvidence
+pub quanta_index_contract::native_protocol::NativeTextPreview::owner: quanta_index_contract_base::index_refs::OwnerKey
+pub quanta_index_contract::native_protocol::NativeTextPreview::source: quanta_index_contract_base::index_refs::ObjectRef
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeTextPreview
+pub fn quanta_index_contract::native_protocol::NativeTextPreview::clone(&self) -> quanta_index_contract::native_protocol::NativeTextPreview
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeTextPreview
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeTextPreview
+pub fn quanta_index_contract::native_protocol::NativeTextPreview::eq(&self, other: &quanta_index_contract::native_protocol::NativeTextPreview) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeTextPreview
+pub fn quanta_index_contract::native_protocol::NativeTextPreview::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeTextPreview
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeTextPreview
+pub fn quanta_index_contract::native_protocol::NativeTextPreview::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeTextPreview
+pub fn quanta_index_contract::native_protocol::NativeTextPreview::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeTextPreview
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeTextPreview
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeTextPreview
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeTextPreview
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeTextPreview
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeTextPreview
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeTextPreview
+pub struct quanta_index_contract::native_protocol::NativeTextPreviewResult
+pub quanta_index_contract::native_protocol::NativeTextPreviewResult::previews: alloc::vec::Vec<quanta_index_contract::native_protocol::NativeTextPreview>
+pub quanta_index_contract::native_protocol::NativeTextPreviewResult::ranking: quanta_index_contract::native_protocol::NativeTextResult
+impl quanta_index_contract::native_protocol::NativeTextPreviewResult
+pub fn quanta_index_contract::native_protocol::NativeTextPreviewResult::validate(&self) -> core::result::Result<(), &'static str>
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeTextPreviewResult
+pub fn quanta_index_contract::native_protocol::NativeTextPreviewResult::clone(&self) -> quanta_index_contract::native_protocol::NativeTextPreviewResult
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeTextPreviewResult
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeTextPreviewResult
+pub fn quanta_index_contract::native_protocol::NativeTextPreviewResult::eq(&self, other: &quanta_index_contract::native_protocol::NativeTextPreviewResult) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeTextPreviewResult
+pub fn quanta_index_contract::native_protocol::NativeTextPreviewResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeTextPreviewResult
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeTextPreviewResult
+pub fn quanta_index_contract::native_protocol::NativeTextPreviewResult::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeTextPreviewResult
+pub fn quanta_index_contract::native_protocol::NativeTextPreviewResult::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeTextPreviewResult
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeTextPreviewResult
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeTextPreviewResult
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeTextPreviewResult
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeTextPreviewResult
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeTextPreviewResult
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeTextPreviewResult
 pub struct quanta_index_contract::native_protocol::NativeTextResult
 pub quanta_index_contract::native_protocol::NativeTextResult::artifact: quanta_index_contract_base::index_refs::ObjectRef
 pub quanta_index_contract::native_protocol::NativeTextResult::coverage: quanta_index_contract::native_protocol::NativeTextCoverage
@@ -12550,6 +13141,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_p
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeTextResult
 pub const quanta_index_contract::native_protocol::MAX_NATIVE_GRAPH_EDGES: u32
 pub const quanta_index_contract::native_protocol::MAX_NATIVE_GRAPH_ITEMS: usize
+pub const quanta_index_contract::native_protocol::MAX_NATIVE_GRAPH_OUTPUT_BYTES: usize
 pub const quanta_index_contract::native_protocol::MAX_NATIVE_IMMUTABLE_OBJECT_WIRE_BYTES_V1: u64
 pub const quanta_index_contract::native_protocol::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN: usize
 pub const quanta_index_contract::native_protocol::MAX_NATIVE_READ_PROFILE_INSTANCES: usize
@@ -12560,6 +13152,8 @@ pub const quanta_index_contract::native_protocol::MAX_NATIVE_SEMANTIC_VECTOR_ID_
 pub const quanta_index_contract::native_protocol::MAX_NATIVE_SOURCE_OWNER_LOOKUP: usize
 pub const quanta_index_contract::native_protocol::MAX_NATIVE_STUB_CERTIFICATE_BYTES: usize
 pub const quanta_index_contract::native_protocol::MAX_NATIVE_STUB_CERTIFICATE_ITEMS: usize
+pub const quanta_index_contract::native_protocol::MAX_NATIVE_TEXT_PREVIEW_BYTES: usize
+pub const quanta_index_contract::native_protocol::MAX_NATIVE_TEXT_PREVIEW_HIGHLIGHTS: usize
 pub const quanta_index_contract::native_protocol::MAX_NATIVE_TEXT_TOP_K: u32
 pub const quanta_index_contract::native_protocol::MAX_REPOMAP_RANK_FOCUS_SUBJECTS: usize
 pub const quanta_index_contract::native_protocol::MAX_REPOMAP_RANK_HITS: usize
@@ -12568,6 +13162,10 @@ pub const quanta_index_contract::native_protocol::MAX_REPOMAP_RANK_PROJECTION_LE
 pub const quanta_index_contract::native_protocol::MAX_REPOMAP_RANK_QUERY_BYTES: usize
 pub const quanta_index_contract::native_protocol::MAX_REPOMAP_RANK_SEARCH_TEXT_BYTES: usize
 pub const quanta_index_contract::native_protocol::MAX_REPOMAP_RANK_SUBJECT_BYTES: usize
+pub const quanta_index_contract::native_protocol::NATIVE_DSL_HEADER_OWNER_V1: quanta_index_contract_base::index_refs::OwnerKey
+pub const quanta_index_contract::native_protocol::NATIVE_DSL_POLICY_V1: quanta_index_contract_base::index_refs::Digest
+pub const quanta_index_contract::native_protocol::NATIVE_DSL_PRODUCER_V1: quanta_index_contract_base::index_refs::ProducerId
+pub const quanta_index_contract::native_protocol::NATIVE_DSL_SCHEMA_V1: quanta_index_contract_base::index_refs::SchemaId
 pub const quanta_index_contract::native_protocol::NATIVE_LEGACY_REPOMAP_FORMAT_V1: quanta_index_contract_base::index_refs::StorageFormatId
 pub const quanta_index_contract::native_protocol::NATIVE_LEGACY_REPOMAP_KIND_V1: quanta_index_contract_base::index_refs::IndexKind
 pub const quanta_index_contract::native_protocol::NATIVE_LEGACY_REPOMAP_SCHEMA_V1: quanta_index_contract_base::index_refs::SchemaId
@@ -12575,8 +13173,12 @@ pub const quanta_index_contract::native_protocol::NATIVE_REPOMAP_RANK_POLICY_DES
 pub const quanta_index_contract::native_protocol::NATIVE_STUB_AST_PRODUCER: quanta_index_contract_base::index_refs::ProducerId
 pub const quanta_index_contract::native_protocol::NATIVE_STUB_AST_PROJECTION: quanta_index_contract_base::index_refs::ProjectionId
 pub const quanta_index_contract::native_protocol::NATIVE_STUB_AST_SCHEMA: quanta_index_contract_base::index_refs::SchemaId
+pub fn quanta_index_contract::native_protocol::compare_native_text_path_rank_v1(left: (quanta_index_contract::FiniteScore, &quanta_index_contract_base::ids::RepoId, &str), right: (quanta_index_contract::FiniteScore, &quanta_index_contract_base::ids::RepoId, &str)) -> core::cmp::Ordering
 pub fn quanta_index_contract::native_protocol::encode_native_semantic_manifest_into(header: quanta_index_contract::native_protocol::NativeSemanticManifestHeader, members: &[quanta_index_contract::native_protocol::NativeSemanticManifestMember<'_>], limits: quanta_index_contract::native_protocol::NativeSemanticManifestLimits, output: &mut [u8]) -> core::result::Result<(), quanta_index_contract::native_protocol::NativeSemanticManifestError>
 pub fn quanta_index_contract::native_protocol::encode_native_stub_certificate_into(header: &quanta_index_contract::native_protocol::NativeStubCertificateHeader<'_>, items: &[quanta_index_contract::native_protocol::NativeStubCertificateItem<'_>], output: &mut [u8]) -> core::result::Result<(), quanta_index_contract::native_protocol::NativeStubCertificateError>
+pub fn quanta_index_contract::native_protocol::native_dsl_context_v1(event_sequence: u64, authority: quanta_index_contract_base::index_refs::Digest) -> quanta_index_contract_base::index_refs::Digest
+pub fn quanta_index_contract::native_protocol::native_dsl_file_owner_v1(source: quanta_index_contract_base::index_refs::OwnerKey) -> quanta_index_contract_base::index_refs::OwnerKey
+pub fn quanta_index_contract::native_protocol::native_dsl_sequence_v1(context: quanta_index_contract_base::index_refs::Digest) -> u64
 pub fn quanta_index_contract::native_protocol::native_history_query_digest(instance: quanta_index_contract_base::index_refs::IndexInstanceId, query: &quanta_index_contract::HistoryQueryRequest) -> core::result::Result<quanta_index_contract_base::index_refs::Digest, alloc::string::String>
 pub fn quanta_index_contract::native_protocol::native_repomap_rank_policy() -> quanta_index_contract_base::index_refs::Digest
 pub fn quanta_index_contract::native_protocol::native_semantic_manifest_encoded_len(header: quanta_index_contract::native_protocol::NativeSemanticManifestHeader, members: &[quanta_index_contract::native_protocol::NativeSemanticManifestMember<'_>], limits: quanta_index_contract::native_protocol::NativeSemanticManifestLimits) -> core::result::Result<usize, quanta_index_contract::native_protocol::NativeSemanticManifestError>
@@ -12978,11 +13580,12 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::GoTestTrace
 pub struct quanta_index_contract::query::GoTestTraceSourceFramesV1
 impl quanta_index_contract::GoTestTraceSourceFramesV1
 pub fn quanta_index_contract::GoTestTraceSourceFramesV1::contains_path(&self, path: &str) -> bool
-pub fn quanta_index_contract::GoTestTraceSourceFramesV1::frame_class(&self) -> quanta_index_contract::GoTestTraceFrameClassV1
 pub fn quanta_index_contract::GoTestTraceSourceFramesV1::from_failure_excerpt(text: &str) -> Self
 pub fn quanta_index_contract::GoTestTraceSourceFramesV1::from_module_cache_panic(text: &str, module: &quanta_index_contract::GoTestTraceModuleContextV1) -> Self
 pub fn quanta_index_contract::GoTestTraceSourceFramesV1::module_cache_panic_frame(text: &str, module: &quanta_index_contract::GoTestTraceModuleContextV1) -> core::option::Option<quanta_index_contract::GoTestTraceModuleCacheFrameV1>
 pub fn quanta_index_contract::GoTestTraceSourceFramesV1::paths(&self) -> &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::query::constraints::ExactRepoRelativePathV1>
+impl quanta_index_contract::GoTestTraceSourceFramesV1
+pub fn quanta_index_contract::GoTestTraceSourceFramesV1::frame_class(&self) -> quanta_index_contract::GoTestTraceFrameClassV1
 impl core::clone::Clone for quanta_index_contract::GoTestTraceSourceFramesV1
 pub fn quanta_index_contract::GoTestTraceSourceFramesV1::clone(&self) -> quanta_index_contract::GoTestTraceSourceFramesV1
 impl core::cmp::Eq for quanta_index_contract::GoTestTraceSourceFramesV1
@@ -13334,6 +13937,21 @@ pub fn quanta_index_contract::query::sourcegraph_query_requests_rev_at_time(quer
 pub fn quanta_index_contract::query::tokenize_native_content_query(input: &str) -> core::result::Result<quanta_index_contract::NativeContentQueryTokens<'_>, quanta_index_lq_norm::errors::LqParseError>
 pub type quanta_index_contract::query::LqQuery = quanta_index_lq_norm::ast::LqNormalizedQuery
 pub mod quanta_index_contract::repomap
+pub mod quanta_index_contract::repomap::compiler
+pub struct quanta_index_contract::repomap::compiler::RepoMapGraphCompiler
+impl quanta_index_contract::compiler::RepoMapGraphCompiler
+pub fn quanta_index_contract::compiler::RepoMapGraphCompiler::compile(&self, bundle: &quanta_index_contract::RepoMapSourceBundle) -> core::result::Result<quanta_index_contract::CompiledRepoMapCandidateV1, quanta_index_contract::RepoMapCompileRefusalV1>
+pub const fn quanta_index_contract::compiler::RepoMapGraphCompiler::new(budget: quanta_index_contract::RepoMapCompilerBudgetV1) -> Self
+pub const fn quanta_index_contract::compiler::RepoMapGraphCompiler::with_default_budget() -> Self
+impl quanta_index_contract::compiler::RepoMapGraphCompiler
+pub fn quanta_index_contract::compiler::RepoMapGraphCompiler::compile_native_owner(&self, bundle: &quanta_index_contract::RepoMapSourceBundle) -> core::result::Result<quanta_index_contract::native_protocol::NativeRepoMapOwnerProjection, quanta_index_contract::native_protocol::NativeRepoMapOwnerError>
+impl core::marker::Freeze for quanta_index_contract::compiler::RepoMapGraphCompiler
+impl core::marker::Send for quanta_index_contract::compiler::RepoMapGraphCompiler
+impl core::marker::Sync for quanta_index_contract::compiler::RepoMapGraphCompiler
+impl core::marker::Unpin for quanta_index_contract::compiler::RepoMapGraphCompiler
+impl core::marker::UnsafeUnpin for quanta_index_contract::compiler::RepoMapGraphCompiler
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::compiler::RepoMapGraphCompiler
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::compiler::RepoMapGraphCompiler
 pub enum quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1
 pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::ArtifactBindingMismatch
 pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::EvidenceBindingMismatch
@@ -14002,6 +14620,7 @@ pub fn quanta_index_contract::CompiledRepoMapCandidateV1::content_digest(&self) 
 pub fn quanta_index_contract::CompiledRepoMapCandidateV1::envelope(&self, logical_identity: quanta_index_contract_base::ids::LogicalGenerationIdentityV1) -> core::result::Result<quanta_index_contract::RepoMapCandidateEnvelopeV1, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
 pub fn quanta_index_contract::CompiledRepoMapCandidateV1::from_parts(graph: quanta_index_contract::CompiledRepoMapGraphV1, projection: alloc::vec::Vec<quanta_index_contract::CompiledRepoMapProjectionEntryV1>, commitments: quanta_index_contract::RepoMapCandidateCommitmentsV1, compiled_payload: alloc::vec::Vec<u8>, resource_receipt: quanta_index_contract::RepoMapResourceReceiptV1) -> Self
 pub fn quanta_index_contract::CompiledRepoMapCandidateV1::graph(&self) -> &quanta_index_contract::CompiledRepoMapGraphV1
+pub fn quanta_index_contract::CompiledRepoMapCandidateV1::into_graph_and_projection(self) -> (quanta_index_contract::CompiledRepoMapGraphV1, alloc::vec::Vec<quanta_index_contract::CompiledRepoMapProjectionEntryV1>)
 pub fn quanta_index_contract::CompiledRepoMapCandidateV1::projection(&self) -> &[quanta_index_contract::CompiledRepoMapProjectionEntryV1]
 pub const fn quanta_index_contract::CompiledRepoMapCandidateV1::resource_receipt(&self) -> quanta_index_contract::RepoMapResourceReceiptV1
 impl core::clone::Clone for quanta_index_contract::CompiledRepoMapCandidateV1
@@ -19496,6 +20115,7 @@ pub fn quanta_index_contract::CompiledRepoMapCandidateV1::content_digest(&self) 
 pub fn quanta_index_contract::CompiledRepoMapCandidateV1::envelope(&self, logical_identity: quanta_index_contract_base::ids::LogicalGenerationIdentityV1) -> core::result::Result<quanta_index_contract::RepoMapCandidateEnvelopeV1, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
 pub fn quanta_index_contract::CompiledRepoMapCandidateV1::from_parts(graph: quanta_index_contract::CompiledRepoMapGraphV1, projection: alloc::vec::Vec<quanta_index_contract::CompiledRepoMapProjectionEntryV1>, commitments: quanta_index_contract::RepoMapCandidateCommitmentsV1, compiled_payload: alloc::vec::Vec<u8>, resource_receipt: quanta_index_contract::RepoMapResourceReceiptV1) -> Self
 pub fn quanta_index_contract::CompiledRepoMapCandidateV1::graph(&self) -> &quanta_index_contract::CompiledRepoMapGraphV1
+pub fn quanta_index_contract::CompiledRepoMapCandidateV1::into_graph_and_projection(self) -> (quanta_index_contract::CompiledRepoMapGraphV1, alloc::vec::Vec<quanta_index_contract::CompiledRepoMapProjectionEntryV1>)
 pub fn quanta_index_contract::CompiledRepoMapCandidateV1::projection(&self) -> &[quanta_index_contract::CompiledRepoMapProjectionEntryV1]
 pub const fn quanta_index_contract::CompiledRepoMapCandidateV1::resource_receipt(&self) -> quanta_index_contract::RepoMapResourceReceiptV1
 impl core::clone::Clone for quanta_index_contract::CompiledRepoMapCandidateV1
@@ -20378,11 +20998,12 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::GoTestTrace
 pub struct quanta_index_contract::GoTestTraceSourceFramesV1
 impl quanta_index_contract::GoTestTraceSourceFramesV1
 pub fn quanta_index_contract::GoTestTraceSourceFramesV1::contains_path(&self, path: &str) -> bool
-pub fn quanta_index_contract::GoTestTraceSourceFramesV1::frame_class(&self) -> quanta_index_contract::GoTestTraceFrameClassV1
 pub fn quanta_index_contract::GoTestTraceSourceFramesV1::from_failure_excerpt(text: &str) -> Self
 pub fn quanta_index_contract::GoTestTraceSourceFramesV1::from_module_cache_panic(text: &str, module: &quanta_index_contract::GoTestTraceModuleContextV1) -> Self
 pub fn quanta_index_contract::GoTestTraceSourceFramesV1::module_cache_panic_frame(text: &str, module: &quanta_index_contract::GoTestTraceModuleContextV1) -> core::option::Option<quanta_index_contract::GoTestTraceModuleCacheFrameV1>
 pub fn quanta_index_contract::GoTestTraceSourceFramesV1::paths(&self) -> &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::query::constraints::ExactRepoRelativePathV1>
+impl quanta_index_contract::GoTestTraceSourceFramesV1
+pub fn quanta_index_contract::GoTestTraceSourceFramesV1::frame_class(&self) -> quanta_index_contract::GoTestTraceFrameClassV1
 impl core::clone::Clone for quanta_index_contract::GoTestTraceSourceFramesV1
 pub fn quanta_index_contract::GoTestTraceSourceFramesV1::clone(&self) -> quanta_index_contract::GoTestTraceSourceFramesV1
 impl core::cmp::Eq for quanta_index_contract::GoTestTraceSourceFramesV1

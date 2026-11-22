@@ -26,8 +26,8 @@ use quanta_index_searchd_harness::{
     fixture_source_scope_v1, private_tempdir, semantic_source_scopes_for_chunk_records,
 };
 
-use crate::searchd_binary_process::SearchdBinaryProcess;
 use model::{Cas, Event, Head, Observation, Operation, Publication, Row};
+use quanta_index_searchd_harness::legacy_reference::LegacySearchdBinary;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const REPO: &str = "repo-lifecycle-history";
@@ -376,7 +376,8 @@ fn query_at_gate(
 #[test]
 fn sdk_source_delete_append_pin_cas_duplicate_reorder_rollback_restart_history() -> TestResult {
     let directory = private_tempdir()?;
-    let process = SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 8)?;
+    let binary = LegacySearchdBinary::from_environment()?;
+    let process = binary.start(directory.path(), 8)?;
     let client = process.connect()?;
     let history = History::default();
     let inputs = [
@@ -577,8 +578,7 @@ fn sdk_source_delete_append_pin_cas_duplicate_reorder_rollback_restart_history()
     // Restart is recorded as one operation only after all racing SDK calls have completed.
     let (process, client) = history.record(Operation::Restart, || {
         process.stop()?;
-        let restarted =
-            SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 8)?;
+        let restarted = binary.start(directory.path(), 8)?;
         let client = restarted.connect()?;
         let wire = client
             .generations()
@@ -603,7 +603,8 @@ fn sdk_source_delete_append_pin_cas_duplicate_reorder_rollback_restart_history()
         }
     }
     history.check()?;
-    process.stop()
+    process.stop()?;
+    binary.verify()
 }
 
 #[path = "lifecycle_history/oracle_tests.rs"]

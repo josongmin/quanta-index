@@ -79,15 +79,6 @@ impl RecordGroupIndex {
         })
     }
 
-    #[cfg(feature = "legacy-tantivy")]
-    pub(crate) fn charge(&self) -> Option<usize> {
-        self.entries
-            .capacity()
-            .checked_mul(std::mem::size_of::<([u8; 32], std::ops::Range<usize>)>())?
-            .checked_add(std::mem::size_of::<Self>())?
-            .checked_add(std::mem::size_of::<[usize; 2]>())
-    }
-
     pub(crate) fn select<'a>(
         &self,
         bytes: &'a [u8],

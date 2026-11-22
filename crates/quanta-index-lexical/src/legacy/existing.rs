@@ -11,19 +11,22 @@ use super::{
     object_codec::ObjectRef,
     overlay_names::OverlayFamily,
 };
-use quanta_index_contract::{GenerationSnapshot, SearchPlaneTrackKind};
+use quanta_index_contract::{GenerationSnapshot, SearchPlaneErrorCodeV2, SearchPlaneTrackKind};
 use quanta_index_core::{
-    ExistingTreeMetadataIoPortV1,
+    CoreError, ExistingTreeEntryKindV1, ExistingTreeMetadataIoPortV1,
     index::{
         IndexError, MemoryLease, MemoryLifetime, ObjectReadIoPort, WorkBudget, WorkUsage,
         existing_file::{
             ExistingFileBytesV1, ExistingFileReadFailureV1 as Failure,
             read_existing_committed_file_v1, read_existing_file_v1,
-            verify_existing_committed_files_v1,
+            read_existing_file_with_oversize_error_v1, verify_existing_committed_files_v1,
         },
     },
 };
 use std::{mem::size_of, path::Path};
+
+const FILE_AUTHORITY_ROOT_DIR: &str = "file-authority";
+const TEXT_AUTHORITY_ROOT_DIR: &str = "text-authority";
 
 fn memory(budget: &WorkBudget, bytes: u64) -> Result<MemoryLease, Failure> {
     budget
@@ -36,7 +39,157 @@ fn width(n: usize) -> Result<u64, Failure> {
 fn corrupt(root: &Path, name: &str, reason: &str) -> Failure {
     sidecar_corrupt(root, name, reason).into()
 }
-pub(super) fn decoder_memory(bytes: usize, budget: &mut WorkBudget) -> Result<MemoryLease, Failure> {
+fn manifest_missing(generation: &Path) -> Failure {
+    let path = generation.join(super::manifest::LEXICAL_SEALED_MANIFEST_FILE_NAME);
+    CoreError::Typed {
+        code: SearchPlaneErrorCodeV2::GenerationManifestMissing,
+        message: format!(
+            "lexical: sealed generation has no content manifest at {}; it predates the sealed-manifest format and must be rebuilt from its producer",
+            path.display()
+        ),
+    }
+    .into()
+}
+
+#[derive(Clone, Copy, Default)]
+struct GenerationLayout {
+    manifest: Option<ExistingTreeEntryKindV1>,
+    file_authority: Option<ExistingTreeEntryKindV1>,
+    text_authority: Option<ExistingTreeEntryKindV1>,
+}
+
+fn inspect_generation_layout(
+    generation: &Path,
+    metadata: &dyn ExistingTreeMetadataIoPortV1,
+    budget: &mut WorkBudget,
+) -> Result<GenerationLayout, Failure> {
+    let mut layout = GenerationLayout::default();
+    metadata.visit_directory_v1(generation, budget, &mut |name, kind, _bytes, _budget| {
+        if name == names::LEXICAL_QUARANTINE_RECEIPT_FILE_NAME {
+            return Err(IndexError::RebuildRequired.into());
+        }
+        if name == super::manifest::LEXICAL_SEALED_MANIFEST_FILE_NAME {
+            if kind != ExistingTreeEntryKindV1::File {
+                return Err(corrupt(
+                    generation,
+                    super::manifest::LEXICAL_SEALED_MANIFEST_FILE_NAME,
+                    "is not a regular file within its generation",
+                ));
+            }
+            layout.manifest = Some(kind);
+        } else if name == FILE_AUTHORITY_ROOT_DIR {
+            if kind != ExistingTreeEntryKindV1::Directory {
+                return Err(corrupt(
+                    generation,
+                    FILE_AUTHORITY_ROOT_DIR,
+                    "is not a directory within its generation",
+                ));
+            }
+            layout.file_authority = Some(kind);
+        } else if name == TEXT_AUTHORITY_ROOT_DIR {
+            if kind != ExistingTreeEntryKindV1::Directory {
+                return Err(corrupt(
+                    generation,
+                    TEXT_AUTHORITY_ROOT_DIR,
+                    "is not a directory within its generation",
+                ));
+            }
+            layout.text_authority = Some(kind);
+        }
+        Ok(())
+    })?;
+    Ok(layout)
+}
+
+fn validate_generation_layout(generation: &Path, layout: GenerationLayout) -> Result<(), Failure> {
+    match layout.manifest {
+        Some(ExistingTreeEntryKindV1::File) => {}
+        None => return Err(manifest_missing(generation)),
+        Some(_) => {
+            return Err(corrupt(
+                generation,
+                super::manifest::LEXICAL_SEALED_MANIFEST_FILE_NAME,
+                "is not a regular file within its generation",
+            ));
+        }
+    }
+    match layout.file_authority {
+        Some(ExistingTreeEntryKindV1::Directory) => {}
+        Some(_) => {
+            return Err(corrupt(
+                generation,
+                FILE_AUTHORITY_ROOT_DIR,
+                "is not a directory within its generation",
+            ));
+        }
+        None => {
+            return Err(corrupt(
+                generation,
+                FILE_AUTHORITY_ROOT_DIR,
+                "directory is missing from its generation",
+            ));
+        }
+    }
+    match layout.text_authority {
+        Some(ExistingTreeEntryKindV1::Directory) => {}
+        Some(_) => {
+            return Err(corrupt(
+                generation,
+                TEXT_AUTHORITY_ROOT_DIR,
+                "is not a directory within its generation",
+            ));
+        }
+        None => {
+            return Err(corrupt(
+                generation,
+                TEXT_AUTHORITY_ROOT_DIR,
+                "directory is missing from its generation",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_authority_root_entry(
+    generation: &Path,
+    directory: &str,
+    file: &str,
+    commitment_name: &str,
+    metadata: &dyn ExistingTreeMetadataIoPortV1,
+    budget: &mut WorkBudget,
+) -> Result<(), Failure> {
+    let mut present = false;
+    metadata.visit_directory_v1(
+        &generation.join(directory),
+        budget,
+        &mut |name, kind, _bytes, _budget| {
+            if name != file {
+                return Ok(());
+            }
+            if kind != ExistingTreeEntryKindV1::File {
+                return Err(corrupt(
+                    generation,
+                    commitment_name,
+                    "is not a regular file within its authority directory",
+                ));
+            }
+            present = true;
+            Ok(())
+        },
+    )?;
+    if !present {
+        return Err(corrupt(
+            generation,
+            commitment_name,
+            "is missing from its authority directory",
+        ));
+    }
+    Ok(())
+}
+pub(super) fn decoder_memory(
+    bytes: usize,
+    budget: &mut WorkBudget,
+) -> Result<MemoryLease, Failure> {
     // Typed compact roots can encounter one cautious 1MiB Vec preallocation
     // before a malformed field fails. Prior completed fields are bounded by
     // actual input. Cover that transient, ordinary typed/round-trip copies and
@@ -143,6 +296,7 @@ impl ClosureControl for AdmittedGraph<'_> {
 
 /// Authenticate the current canonical lexical control rows, all outer committed
 /// bytes, every reachable pooled object and all committed coverage pages.
+///
 /// `lexical_track_root` is the actual indexes/lexical root; `generation` is its
 /// existing generation path. Caller IO must carry that same genuinely inventoried
 /// Legacy root, with original WorkBudget/memory and root lease held through its
@@ -196,13 +350,43 @@ pub fn verify_existing_lexical_generation_read_only(
     let observed = crate::channel_payloads::decode_cbor_exact(identity.bytes_v1())
         .map_err(|error| corrupt(generation, names::LEXICAL_SEALED_IDENTITY_FILE_NAME, &error))?;
     super::identity::validate_lexical_sealed_identity(&observed, expected)?;
-    let input = read_existing_file_v1(
+    let input = read_existing_file_with_oversize_error_v1(
         &manifest_path,
         owner,
         width(super::manifest::MAX_SEALED_MANIFEST_BYTES)?,
         io,
         budget,
-    )?;
+        |path, length, limit| {
+            Failure::Canonical(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+                message: format!(
+                    "lexical: sealed generation manifest {} is {length} bytes, above the {limit}-byte limit; the generation must be rebuilt",
+                    path.display()
+                ),
+            })
+        },
+    );
+    let input = match input {
+        Ok(input) => input,
+        Err(
+            error @ Failure::Canonical(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+                ..
+            }),
+        ) => return Err(error),
+        Err(error) => {
+            let layout = inspect_generation_layout(generation, metadata, budget)?;
+            return match layout.manifest {
+                None => Err(manifest_missing(generation)),
+                Some(ExistingTreeEntryKindV1::File) => Err(error),
+                Some(_) => Err(corrupt(
+                    generation,
+                    super::manifest::LEXICAL_SEALED_MANIFEST_FILE_NAME,
+                    "is not a regular file within its generation",
+                )),
+            };
+        }
+    };
     // Canonical preflight bounds complete Value members before construction.
     // This conservative actual-byte envelope covers their nodes, bounded row
     // vectors and typed copies; it grants no new resource or dataset limit.
@@ -221,12 +405,26 @@ pub fn verify_existing_lexical_generation_read_only(
             "manifest digest differs from sealed identity",
         ));
     }
-    metadata.visit_directory_v1(generation, budget, &mut |name, _kind, _bytes, _budget| {
-        if name == names::LEXICAL_QUARANTINE_RECEIPT_FILE_NAME {
-            return Err(IndexError::RebuildRequired.into());
-        }
-        Ok(())
-    })?;
+    validate_generation_layout(
+        generation,
+        inspect_generation_layout(generation, metadata, budget)?,
+    )?;
+    validate_authority_root_entry(
+        generation,
+        FILE_AUTHORITY_ROOT_DIR,
+        "root.cbor",
+        crate::lexical_root_names::FILE_ROOT_NAME,
+        metadata,
+        budget,
+    )?;
+    validate_authority_root_entry(
+        generation,
+        TEXT_AUTHORITY_ROOT_DIR,
+        "manifest.cbor",
+        crate::lexical_root_names::NATIVE_ROOT_NAME,
+        metadata,
+        budget,
+    )?;
     // The canonical manifest commits index-meta referenced files, not every
     // directory entry. Old unreferenced segment leftovers are not extra files.
     for artifact in manifest.all_commitments().filter(|a| {
@@ -381,10 +579,47 @@ fn check_directory(
     metadata: &dyn ExistingTreeMetadataIoPortV1,
     budget: &mut WorkBudget,
 ) -> Result<(), Failure> {
-    metadata.visit_directory_v1(root, budget, &mut |name, _kind, _bytes, budget| {
+    let mut has_file_authority = false;
+    let mut has_text_authority = false;
+    metadata.visit_directory_v1(root, budget, &mut |name, kind, _bytes, budget| {
         budget.checkpoint()?;
         if name == names::LEXICAL_QUARANTINE_RECEIPT_FILE_NAME {
             return Err(IndexError::RebuildRequired.into());
+        }
+        if name == FILE_AUTHORITY_ROOT_DIR {
+            if kind != ExistingTreeEntryKindV1::Directory {
+                return Err(corrupt(
+                    root,
+                    FILE_AUTHORITY_ROOT_DIR,
+                    "is not a directory within its generation",
+                ));
+            }
+            has_file_authority = true;
+        } else if name == TEXT_AUTHORITY_ROOT_DIR {
+            if kind != ExistingTreeEntryKindV1::Directory {
+                return Err(corrupt(
+                    root,
+                    TEXT_AUTHORITY_ROOT_DIR,
+                    "is not a directory within its generation",
+                ));
+            }
+            has_text_authority = true;
+        }
+        let entry = name.as_encoded_bytes();
+        if entry.starts_with(names::RANKED_KEYS_PREFIX.as_bytes())
+            && entry.ends_with(names::RANKED_KEYS_SUFFIX.as_bytes())
+            && !name.to_str().is_some_and(|name| {
+                manifest
+                    .ranked_keys
+                    .binary_search_by(|artifact| artifact.name.as_str().cmp(name))
+                    .is_ok()
+            })
+        {
+            return Err(corrupt(
+                root,
+                &name.to_string_lossy(),
+                "uncommitted ranked-key file",
+            ));
         }
         let Some(text) = name.to_str() else {
             if name
@@ -399,10 +634,10 @@ fn check_directory(
             }
             return Ok(());
         };
-        if let Some(family) = OverlayFamily::from_file_name(text) {
-            if manifest.overlay(family).is_none() {
-                return Err(corrupt(root, text, "uncommitted overlay"));
-            }
+        if let Some(family) = OverlayFamily::from_file_name(text)
+            && manifest.overlay(family).is_none()
+        {
+            return Err(corrupt(root, text, "uncommitted overlay"));
         }
         if name == names::SOURCE_FILE_COVERAGE_FILE_NAME && coverage.is_none() {
             return Err(corrupt(
@@ -418,6 +653,20 @@ fn check_directory(
         }
         Ok(())
     })?;
+    if !has_file_authority {
+        return Err(corrupt(
+            root,
+            FILE_AUTHORITY_ROOT_DIR,
+            "directory is missing from its generation",
+        ));
+    }
+    if !has_text_authority {
+        return Err(corrupt(
+            root,
+            TEXT_AUTHORITY_ROOT_DIR,
+            "directory is missing from its generation",
+        ));
+    }
     Ok(())
 }
 

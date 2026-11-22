@@ -217,6 +217,28 @@ def test_valid_handoff_binds_git_result_and_immutable_manifest(tmp_path: Path) -
     )
 
 
+def test_handoff_replays_schema_from_proof_commit_after_registry_relocation(tmp_path: Path) -> None:
+    root, handoff, _ = _fixture(tmp_path)
+    registry = root / "tools/ci/proof-authority.toml"
+    original = root / "tools/ci/proof-manifest.schema.json"
+    replacement = original.with_name("relocated.schema.json")
+    original.rename(replacement)
+    replacement.write_text('{"not": {}}\n')
+    registry.write_text(
+        registry.read_text().replace(
+            original.relative_to(root).as_posix(), replacement.relative_to(root).as_posix()
+        )
+    )
+    _run(root, "git", "add", "-A", "tools/ci")
+    _run(root, "git", "commit", "-qm", "Relocate proof schemas")
+    assert HANDOFF.validate_handoff(
+        handoff,
+        handoff_path=root / "P00.json",
+        root=root,
+        require_result_head=False,
+    ) == []
+
+
 def test_leaf_handoff_validator_accepts_injected_proof_checker(tmp_path: Path) -> None:
     root, handoff, _ = _fixture(tmp_path)
     assert (

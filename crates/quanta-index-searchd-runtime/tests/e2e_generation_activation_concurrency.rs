@@ -13,7 +13,7 @@
 
 use std::error::Error;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,9 +25,12 @@ use quanta_index_contract::{
     lex::LanguageCode, source_event_payload_sha256,
 };
 use quanta_index_sdk::{
-    BatchMode, ConnectOptions, QuantaIndex, RepoMetaBatch, SdkError, SearchCorpusBatch,
+    BatchMode, PublishedBatchEvidence, QuantaIndex, RepoMetaBatch, SdkError, SearchCorpusBatch,
 };
-use quanta_index_searchd_harness::{E2eRuntime, fixture_source_scope_v1};
+use quanta_index_searchd_harness::legacy_reference::SearchdBinaryProcess;
+use quanta_index_searchd_harness::{fixture_source_scope_v1, private_tempdir};
+
+use crate::legacy_searchd_binary::LegacySearchdBinary;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -39,54 +42,36 @@ const RESULT_COUNT: usize = 32;
 const NEEDLE: &str = "generation_activation_concurrency_needle";
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Harness-owned concurrency fixture (TOPT-03: runtime fixture ownership).
+/// Process-owned concurrency fixture (TOPT-03: runtime fixture ownership).
 ///
-/// `E2eRuntime::boot` binds query/control/ingest under the same retention
-/// policy the old `config_for` spelled out (8 generations, 16 MiB pair
-/// bytes, 128 pairs, 256 MiB total). The test keeps its own query loop
-/// and transition-window waits: those are scenario synchronization, not
-/// lifecycle. Explicit `stop` surfaces a driver failure; drop remains the
-/// unwind path.
+/// The pinned Legacy daemon binds query/control/ingest under the original
+/// retention policy (8 generations, 16 MiB pair bytes, 128 pairs, 256 MiB
+/// total). The test owns only its query loop and transition-window waits.
 struct RunningRuntime {
-    runtime: E2eRuntime,
-    query_socket: std::path::PathBuf,
-    control_socket: std::path::PathBuf,
-    ingest_socket: std::path::PathBuf,
+    process: SearchdBinaryProcess,
+    pinned: LegacySearchdBinary,
+    _state_root: tempfile::TempDir,
 }
 
 impl RunningRuntime {
     fn start() -> Result<Self, Box<dyn Error>> {
-        let mut runtime = E2eRuntime::boot()?;
-        runtime.start()?;
-        let (query_socket, control_socket, ingest_socket) = runtime
-            .socket_paths()
-            .ok_or_else(|| "fixture: driver started without socket paths".to_string())
-            .map(|(query, control, ingest)| {
-                (
-                    query.to_path_buf(),
-                    control.to_path_buf(),
-                    ingest.to_path_buf(),
-                )
-            })?;
+        let pinned = LegacySearchdBinary::from_environment()?;
+        let state_root = private_tempdir()?;
+        let process = pinned.start(state_root.path(), 8)?;
         Ok(Self {
-            runtime,
-            query_socket,
-            control_socket,
-            ingest_socket,
+            process,
+            pinned,
+            _state_root: state_root,
         })
     }
 
     fn connect(&self) -> Result<QuantaIndex, Box<dyn Error>> {
-        Ok(QuantaIndex::connect_legacy(
-            ConnectOptions::from_state_root(self.runtime.state_root())
-                .with_query_socket(&self.query_socket)
-                .with_control_socket(&self.control_socket)
-                .with_ingest_socket(&self.ingest_socket),
-        )?)
+        self.process.connect()
     }
 
     fn stop(self) -> TestResult {
-        Ok(self.runtime.stop()?)
+        self.process.stop()?;
+        self.pinned.verify()
     }
 }
 
@@ -106,7 +91,7 @@ fn generation(raw: u64) -> ManifestGeneration {
 enum QueryEvent {
     Generation(u64),
     NotReady,
-    TransitionQueryCompleted,
+    BeforeActivation(u64),
     Failed(String),
 }
 
@@ -254,6 +239,7 @@ fn publish_and_activate(
     client: &QuantaIndex,
     raw_generation: u64,
     expected_active: Option<SearchCorpusActiveHeadV1>,
+    before_activation: impl FnOnce() -> TestResult,
 ) -> Result<SearchCorpusActiveHeadV1, Box<dyn Error>> {
     let (batch, source_event) = corpus_batch(raw_generation)?;
     let request = reservation_request(&batch, source_event)?;
@@ -271,9 +257,16 @@ fn publish_and_activate(
     let _receipt = client
         .history()
         .publish_repo_meta(&authority_batch(raw_generation))?;
-    let (_receipt, activation) = client
-        .search_corpus()
-        .publish_and_activate(&batch, expected_active)?;
+    let search_corpus = client.search_corpus();
+    let outcome = search_corpus.publish_outcome(&batch)?;
+    before_activation()?;
+    let activation = search_corpus.activate_published(
+        &PublishedBatchEvidence {
+            publication: outcome.publication,
+            receipt: outcome.receipt,
+        },
+        expected_active,
+    )?;
     if activation.active.generation.lexical.manifest_generation != generation(raw_generation)
         || activation.active.generation.semantic.manifest_generation != generation(raw_generation)
     {
@@ -349,21 +342,21 @@ fn concurrent_queries_observe_only_complete_predicate_authority_generations() ->
     let runtime = RunningRuntime::start()?;
     let publisher = runtime.connect()?;
     let query_client = runtime.connect()?;
-    let active_g1 = publish_and_activate(&publisher, G1, None)?;
+    let active_g1 = publish_and_activate(&publisher, G1, None, || Ok(()))?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let transition_open = Arc::new(AtomicBool::new(false));
-    let transition_queries = Arc::new(AtomicU64::new(0));
     let (events_tx, events_rx) = mpsc::channel();
     let query_stop = Arc::clone(&stop);
     let query_transition_open = Arc::clone(&transition_open);
-    let query_transition_queries = Arc::clone(&transition_queries);
     let query_loop = thread::Builder::new()
         .name("generation-activation-concurrency-query".to_string())
         .spawn(move || -> Result<(), String> {
             let mut last_generation = None;
             let mut not_ready_reported = false;
+            let mut transition_reported = false;
             while !query_stop.load(Ordering::Acquire) {
+                let after_publish = query_transition_open.load(Ordering::Acquire);
                 let observed = match query_active_generation(&query_client) {
                     Ok(Some(observed)) => {
                         not_ready_reported = false;
@@ -382,11 +375,9 @@ fn concurrent_queries_observe_only_complete_predicate_authority_generations() ->
                         return Err(message);
                     }
                 };
-                if query_transition_open.load(Ordering::Acquire) {
-                    let previous = query_transition_queries.fetch_add(1, Ordering::AcqRel);
-                    if previous == 0 {
-                        let _reported = events_tx.send(QueryEvent::TransitionQueryCompleted);
-                    }
+                if after_publish && !transition_reported {
+                    transition_reported = true;
+                    let _reported = events_tx.send(QueryEvent::BeforeActivation(observed));
                 }
                 if last_generation != Some(observed) {
                     let _reported = events_tx.send(QueryEvent::Generation(observed));
@@ -399,9 +390,10 @@ fn concurrent_queries_observe_only_complete_predicate_authority_generations() ->
     let test_result = (|| -> TestResult {
         expect_query_event(&events_rx, &QueryEvent::Generation(G1))?;
 
-        transition_open.store(true, Ordering::Release);
-        expect_query_event(&events_rx, &QueryEvent::TransitionQueryCompleted)?;
-        let active_g2 = publish_and_activate(&publisher, G2, Some(active_g1.clone()))?;
+        let active_g2 = publish_and_activate(&publisher, G2, Some(active_g1), || {
+            transition_open.store(true, Ordering::Release);
+            expect_query_event(&events_rx, &QueryEvent::BeforeActivation(G1))
+        })?;
         if active_g2.generation.lexical.manifest_generation != generation(G2) {
             return Err("generation two activation acknowledgement did not select G2".into());
         }
@@ -420,8 +412,5 @@ fn concurrent_queries_observe_only_complete_predicate_authority_generations() ->
     query_result?;
     test_result?;
     stop_result?;
-    if transition_queries.load(Ordering::Acquire) == 0 {
-        return Err("no query completed during the generation-two transition window".into());
-    }
     Ok(())
 }

@@ -1080,14 +1080,22 @@ pub const fn fault_point_name_v1(point: StateMigrationFaultPointV1) -> &'static 
 
 /// Write the manifest last: bytes, fsync, then the parent directory.
 ///
-/// Every caller has already made the data durable and reached
-/// [`StateMigrationFaultPointV1::AfterDataSync`]; this is the only place a
-/// manifest file is created, so there is exactly one ordering to audit.
+/// The caller has made the data durable before creating the manifest.
 pub fn write_root_manifest_last_v1(
     root: &Path,
     file_name: &str,
     manifest: &StateRootManifestV1,
     fault: &dyn StateMigrationFaultPort,
+) -> Result<PathBuf, CoreError> {
+    write_root_manifest_and_sync_v1(root, file_name, manifest, fault, fs::File::sync_all)
+}
+
+fn write_root_manifest_and_sync_v1(
+    root: &Path,
+    file_name: &str,
+    manifest: &StateRootManifestV1,
+    fault: &dyn StateMigrationFaultPort,
+    sync_file: impl FnOnce(&fs::File) -> std::io::Result<()>,
 ) -> Result<PathBuf, CoreError> {
     if !matches!(
         file_name,
@@ -1101,7 +1109,6 @@ pub fn write_root_manifest_last_v1(
     manifest.validate_authority()?;
     let encoded = manifest.encode();
     let path = root.join(file_name);
-    fault.reach(StateMigrationFaultPointV1::BeforeManifestSync)?;
     // create_new is atomic and refuses even a dangling symlink. A separate
     // exists() probe followed by fs::write would follow that link outside
     // the staged root.
@@ -1124,11 +1131,70 @@ pub fn write_root_manifest_last_v1(
     };
     file.write_all(encoded.as_bytes())
         .map_err(|error| storage("write manifest", &path, &error))?;
-    file.sync_all()
-        .map_err(|error| storage("fsync manifest", &path, &error))?;
+    fault.reach(StateMigrationFaultPointV1::BeforeManifestSync)?;
+    sync_file(&file).map_err(|error| storage("fsync manifest", &path, &error))?;
     fsync_directory_v1(root)?;
     fault.reach(StateMigrationFaultPointV1::BeforeCutoverRename)?;
     Ok(path)
+}
+
+#[cfg(test)]
+#[test]
+fn before_manifest_sync_observes_the_complete_written_manifest() -> anyhow::Result<()> {
+    const INTERRUPTED: &str = "stop before the manifest file sync";
+
+    struct Interrupt<'a> {
+        path: &'a Path,
+        expected: &'a str,
+    }
+
+    impl StateMigrationFaultPort for Interrupt<'_> {
+        fn reach(&self, point: StateMigrationFaultPointV1) -> Result<(), CoreError> {
+            let bytes = fs::read(self.path)
+                .map_err(|error| storage("read manifest at test fault", self.path, &error))?;
+            if point != StateMigrationFaultPointV1::BeforeManifestSync
+                || bytes != self.expected.as_bytes()
+            {
+                return Err(CoreError::InvalidContract(
+                    "manifest bytes were incomplete at the sync boundary".to_owned(),
+                ));
+            }
+            Err(CoreError::Storage(INTERRUPTED.to_owned()))
+        }
+    }
+
+    let root = tempfile::tempdir()?;
+    let manifest = StateRootManifestV1 {
+        format_version: STATE_ROOT_MANIFEST_FORMAT_VERSION,
+        root_format: StateRootFormatV1::CurrentV1 { manifest: true },
+        catalog_digest_hex: sha256_hex(b"fixture catalog"),
+        catalog_rows: 0,
+        objects: Vec::new(),
+        directories: Vec::new(),
+    };
+    let path = root.path().join(STATE_ROOT_MANIFEST_FILE_NAME);
+    let expected = manifest.encode();
+    let fault = Interrupt {
+        path: &path,
+        expected: &expected,
+    };
+    let mut synced = false;
+    let outcome = write_root_manifest_and_sync_v1(
+        root.path(),
+        STATE_ROOT_MANIFEST_FILE_NAME,
+        &manifest,
+        &fault,
+        |_| {
+            synced = true;
+            Ok(())
+        },
+    );
+    anyhow::ensure!(
+        outcome == Err(CoreError::Storage(INTERRUPTED.to_owned())),
+        "manifest did not reach its named sync boundary: {outcome:?}"
+    );
+    anyhow::ensure!(!synced, "the manifest synced before the fault returned");
+    Ok(())
 }
 
 /// Read and strictly decode a root manifest.

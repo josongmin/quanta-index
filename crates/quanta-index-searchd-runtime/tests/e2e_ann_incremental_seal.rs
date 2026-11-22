@@ -21,23 +21,30 @@ use std::error::Error;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context as _;
-use quanta_index_contract::{ManifestGeneration, PlannerStage};
+use quanta_index_contract::lex::LanguageCode;
+use quanta_index_contract::{
+    ChunkId, ChunkRecord, GenerationPin, PlannerStage, QueryConstraintSetV1, RepoId,
+    RepoRelativePath, RevisionId, SemanticQueryRequest, SemanticQueryResponse,
+    SemanticWorkBoundedQueryRequestV1,
+};
 use quanta_index_core::GenerationStorageKeyV1;
-use quanta_index_searchd_harness as e2e_harness;
+use quanta_index_sdk::QuantaIndex;
+use quanta_index_searchd_harness::legacy_reference::{
+    LegacySearchdBinary, SearchdBinaryProcess, legacy_source_delta_from_chunks,
+    legacy_source_replacement_from_chunks, publish_legacy_source_batch, request_when_ready,
+};
+use quanta_index_searchd_harness::private_tempdir;
+use quanta_index_searchd_harness::scale_runtime_policy::DEFAULT_HISTORY_MAX_GENERATIONS;
 
-use e2e_harness::{E2eQueryResult, E2eRuntime, E2eTextChunkSpec};
-
-type TestResult = Result<(), Box<dyn Error>>;
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 /// Rows in the base generation: past the index floor of 256.
 const BASE_FILES: u32 = 288;
 /// Rows the delta adds: 32 of 288 is 111 per mille, inside the quarter.
 const DELTA_FILES: u32 = 32;
-/// Files per ingest batch: one batch is one ingest IPC round trip, and the
-/// daemon's ingest socket answers within its I/O timeout only for batches
-/// of this order on a debug build.
-const FILES_PER_BATCH: u32 = 32;
+// The old harness used request IDs for chunk IDs. Between the two waves it
+// sent the Source publication, head read, activation CAS and semantic query.
+const FIRST_DELTA_CHUNK_ID: u32 = BASE_FILES + 5;
 const TOP_K: u32 = 10;
 
 /// One file's text: five tokens no other file shares, so the daemon's
@@ -49,58 +56,37 @@ fn file_content(generation: u64, index: u32) -> String {
     )
 }
 
-/// Ingest `count` files into the current generation, [`FILES_PER_BATCH`]
-/// per batch, and return their candidate ids in ingest order.
-fn ingest_files(
-    rt: &mut E2eRuntime,
+fn fixture_chunks(
     generation: u64,
+    first_chunk_id: u32,
     count: u32,
-) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut ids = Vec::with_capacity(usize::try_from(count)?);
-    for first in (0..count).step_by(usize::try_from(FILES_PER_BATCH)?) {
-        let last = first.saturating_add(FILES_PER_BATCH).min(count);
-        let contents: Vec<(String, String)> = (first..last)
-            .map(|index| {
-                (
-                    format!("src/g{generation}/item_{index:03}.rs"),
-                    file_content(generation, index),
-                )
+) -> TestResult<Vec<ChunkRecord>> {
+    let language =
+        LanguageCode::new("rust").map_err(|error| format!("fixture language: {error}"))?;
+    (0..count)
+        .map(|index| {
+            let path = format!("src/g{generation}/item_{index:03}.rs");
+            let text = file_content(generation, index);
+            Ok(ChunkRecord {
+                chunk_id: ChunkId::new(format!("e2e-{}-{path}", first_chunk_id + index)),
+                repo_relative_path: RepoRelativePath::new(path),
+                language: language.clone(),
+                start_byte: 0,
+                end_byte: u32::try_from(text.len())?,
+                start_line: 1,
+                end_line: 1,
+                text: text.into_boxed_str(),
+                structural: None,
+                parent_chunk_id: None,
+                source_repo_id: None,
             })
-            .collect();
-        let chunks: Vec<[E2eTextChunkSpec<'_>; 1]> = contents
-            .iter()
-            .map(|(_, content)| {
-                [E2eTextChunkSpec {
-                    content,
-                    start_line: 1,
-                    end_line: 1,
-                    source_repo_id: None,
-                }]
-            })
-            .collect();
-        let files: Vec<(&str, &[E2eTextChunkSpec<'_>])> = contents
-            .iter()
-            .zip(chunks.iter())
-            .map(|((path, _), chunk)| (path.as_str(), chunk.as_slice()))
-            .collect();
-        ids.extend(rt.ingest_text_files_one_batch(&files).with_context(|| {
-            format!("ANN append generation {generation} files {first}..{last}")
-        })?);
-    }
-    Ok(ids)
+        })
+        .collect()
 }
 
-fn semantic_generation_dir(
-    rt: &E2eRuntime,
-    generation: ManifestGeneration,
-) -> Result<PathBuf, Box<dyn Error>> {
-    let semantic_root = std::fs::canonicalize(rt.state_root())?
-        .join("indexes")
-        .join("semantic");
-    Ok(
-        GenerationStorageKeyV1::for_repo_revision(&rt.repo(), &rt.revision())
-            .generation_dir(&semantic_root, generation),
-    )
+fn semantic_generation_dir(root: &Path, pin: &GenerationPin) -> PathBuf {
+    GenerationStorageKeyV1::for_repo_revision(&pin.repo_id, &pin.revision_id)
+        .generation_dir(&root.join("indexes/semantic"), pin.manifest_generation)
 }
 
 /// Bytes of every index file below the generation's `dataset/` tree, keyed
@@ -131,24 +117,25 @@ fn index_bytes_by_inode(generation_dir: &Path) -> Result<BTreeMap<u64, u64>, Box
     Ok(bytes)
 }
 
-fn served(result: &E2eQueryResult, what: &str) -> Result<(), Box<dyn Error>> {
-    result.typed_error.as_ref().map_or_else(
-        || Ok(()),
-        |error| Err(format!("{what} was refused: {error}").into()),
-    )
+fn semantic_request(pin: &GenerationPin, index: u32) -> SemanticQueryRequest {
+    SemanticQueryRequest {
+        query_text: file_content(pin.manifest_generation.get(), index),
+        constraints: QueryConstraintSetV1::unconstrained(),
+        generation: Some(pin.clone()),
+        generation_selector: None,
+        lexical_scope: None,
+        top_k: TOP_K,
+    }
 }
 
 /// The plan-stage trace entry naming the dense lane, if any.
-fn dense_lane_trace(result: &E2eQueryResult) -> Option<String> {
-    result.explanation.as_ref().and_then(|explanation| {
-        explanation
-            .planner_trace
-            .iter()
-            .find(|entry| {
-                entry.stage == PlannerStage::Plan && entry.detail.starts_with("dense.index=")
-            })
-            .map(|entry| entry.detail.clone())
-    })
+fn dense_lane_trace(result: &SemanticQueryResponse) -> Option<&str> {
+    result
+        .explanation
+        .planner_trace
+        .iter()
+        .find(|entry| entry.stage == PlannerStage::Plan && entry.detail.starts_with("dense.index="))
+        .map(|entry| entry.detail.as_str())
 }
 
 #[test]
@@ -157,9 +144,17 @@ fn dense_lane_trace(result: &E2eQueryResult) -> Option<String> {
     reason = "preserve the scenario error while reporting a separate cleanup failure"
 )]
 fn a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let scenario = verify_append_case(&mut rt);
-    let cleanup = rt.stop();
+    let root = private_tempdir()?;
+    let state_root = std::fs::canonicalize(root.path())?;
+    let binary = LegacySearchdBinary::from_environment()?;
+    let process = SearchdBinaryProcess::start_with_pinned_command(
+        &state_root,
+        binary.benchmark_command(&state_root, DEFAULT_HISTORY_MAX_GENERATIONS)?,
+    )?;
+    let scenario = process
+        .connect()
+        .and_then(|client| verify_append_case(&client, &state_root));
+    let cleanup = process.stop();
     if let Err(primary) = scenario {
         if let Err(secondary) = cleanup {
             eprintln!("ANN append cleanup also failed: {secondary:#}");
@@ -167,27 +162,31 @@ fn a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so() -> Te
         return Err(primary);
     }
     cleanup?;
-    Ok(())
+    binary.verify()
 }
 
 #[expect(
     clippy::print_stdout,
     reason = "the independently counted ANN append evidence belongs in the test output"
 )]
-fn verify_append_case(rt: &mut E2eRuntime) -> TestResult {
+fn verify_append_case(client: &QuantaIndex, state_root: &Path) -> TestResult {
+    let repo = RepoId::new("repo-e2e")?;
+    let revision = RevisionId::new("rev-e2e")?;
     // g1: past the floor, so the seal trains the policy index.
-    let base_ids = ingest_files(rt, 1, BASE_FILES)?;
-    if base_ids.len() != usize::try_from(BASE_FILES)? {
-        return Err(format!(
-            "base ingest returned {} ids for {BASE_FILES} files",
-            base_ids.len()
-        )
-        .into());
-    }
-    let base = rt.seal().context("ANN append base seal")?;
-    rt.activate_last_sealed_generation()?;
-    let base_query = rt.query_semantic(&file_content(1, 17), TOP_K, None);
-    served(&base_query, "semantic query pinned to the base")?;
+    let base_batch = legacy_source_replacement_from_chunks(
+        &repo,
+        &revision,
+        1,
+        fixture_chunks(1, 1, BASE_FILES)?,
+    )?;
+    let (base_head, _) = publish_legacy_source_batch(client, &base_batch, None)?;
+    let base = base_head.generation.semantic.manifest_generation;
+    let base_pin = GenerationPin::new(repo.clone(), revision.clone(), base);
+    let base_query = request_when_ready(|| {
+        client
+            .semantic()
+            .query_request(semantic_request(&base_pin, 17))
+    })?;
     let base_trace =
         dense_lane_trace(&base_query).ok_or("the base query has no dense-lane trace")?;
     // The trained segment carries the policy's recipe and no segment was
@@ -204,34 +203,41 @@ fn verify_append_case(rt: &mut E2eRuntime) -> TestResult {
         )
         .into());
     }
-    let base_index_bytes = index_bytes_by_inode(&semantic_generation_dir(rt, base)?)?;
+    let base_index_bytes = index_bytes_by_inode(&semantic_generation_dir(state_root, &base_pin))?;
     let base_bytes: u64 = base_index_bytes.values().sum();
     if base_bytes == 0 {
         return Err("the base seal wrote no index files; the fixture is below the floor".into());
     }
 
     // g2: a delta inside the append budget.
-    let delta_ids = ingest_files(rt, 2, DELTA_FILES)?;
-    let delta = rt.seal().context("ANN append delta seal")?;
-    rt.activate_last_sealed_generation()?;
+    let probe = 9_u32;
+    let delta_chunks = fixture_chunks(2, FIRST_DELTA_CHUNK_ID, DELTA_FILES)?;
+    let probe_id = delta_chunks
+        .get(usize::try_from(probe)?)
+        .ok_or("delta fixture returned too few chunks")?
+        .chunk_id
+        .clone();
+    let delta_batch = legacy_source_delta_from_chunks(&repo, &revision, 2, &[], &[], delta_chunks)?;
+    let (delta_head, _) = publish_legacy_source_batch(client, &delta_batch, Some(base_head))?;
+    let delta = delta_head.generation.semantic.manifest_generation;
+    let delta_pin = GenerationPin::new(repo, revision, delta);
     if delta.get() != base.get().saturating_add(1) {
         return Err(format!("the delta must follow the base: {base:?} -> {delta:?}").into());
     }
 
     // A query pinned to the delta serves a delta-only row first, through
     // an index the trace reports as appended to the base's train.
-    let probe = 9_u32;
-    let probe_id = delta_ids
-        .get(usize::try_from(probe)?)
-        .ok_or("delta ingest returned too few ids")?;
-    let delta_query = rt.query_semantic(&file_content(2, probe), TOP_K, None);
-    served(&delta_query, "semantic query pinned to the delta")?;
-    let top = delta_query.candidates.first();
+    let delta_query = request_when_ready(|| {
+        client
+            .semantic()
+            .query_request(semantic_request(&delta_pin, probe))
+    })?;
+    let top = delta_query.results.first();
     if top.map(|candidate| candidate.candidate_id.as_str()) != Some(probe_id.as_str())
         || top.is_none_or(|candidate| (candidate.score - 1.0).abs() > 1e-5)
     {
         let ranked: Vec<(String, f32)> = delta_query
-            .candidates
+            .results
             .iter()
             .map(|candidate| (candidate.candidate_id.clone(), candidate.score))
             .collect();
@@ -260,47 +266,40 @@ fn verify_append_case(rt: &mut E2eRuntime) -> TestResult {
 
     // An explicit bounded exact scan must not claim that this ANN generation
     // sealed an exact index, or mutate the next ordinary query's lane.
-    let bounded = rt.query_once(|pin| {
-        quanta_index_contract::SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(
-            quanta_index_contract::SemanticWorkBoundedQueryRequestV1 {
-                query: quanta_index_contract::SemanticQueryRequest {
-                    query_text: file_content(2, probe),
-                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-                    generation: pin,
-                    generation_selector: None,
-                    lexical_scope: None,
-                    top_k: TOP_K,
-                },
+    let bounded = request_when_ready(|| {
+        client
+            .semantic()
+            .query_work_bounded_v1(SemanticWorkBoundedQueryRequestV1 {
+                query: semantic_request(&delta_pin, probe),
                 max_work_units: 1_000_000,
                 canonical_ties: false,
-            },
-        )
+            })
     })?;
-    let quanta_index_contract::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(bounded) =
-        bounded
-    else {
-        return Err(format!("bounded ANN query failed: {bounded:?}").into());
-    };
     if !bounded.query.explanation.planner_trace.iter().any(|entry| {
         entry.detail == "dense.index=exact; dense.attestation=exact_scan_of_sealed_rows"
-    }) || bounded.query.results.first().map(|row| &row.candidate_id) != Some(probe_id)
+    }) || bounded
+        .query
+        .results
+        .first()
+        .map(|row| row.candidate_id.as_str())
+        != Some(probe_id.as_str())
     {
         return Err(
             format!("exact bypass misreported its sealed ANN authority: {bounded:?}").into(),
         );
     }
-    let ordinary_after = rt.query_semantic(&file_content(2, probe), TOP_K, None);
-    served(
-        &ordinary_after,
-        "ordinary semantic query after bounded exact scan",
-    )?;
-    if dense_lane_trace(&ordinary_after).as_deref() != Some(delta_trace.as_str()) {
+    let ordinary_after = request_when_ready(|| {
+        client
+            .semantic()
+            .query_request(semantic_request(&delta_pin, probe))
+    })?;
+    if dense_lane_trace(&ordinary_after) != Some(delta_trace) {
         return Err("bounded exact scan changed the next ordinary ANN contract".into());
     }
 
     // Cost oracle: the delta shares every base index file by inode and
     // its own new index bytes are a fraction of the base's.
-    let delta_index_bytes = index_bytes_by_inode(&semantic_generation_dir(rt, delta)?)?;
+    let delta_index_bytes = index_bytes_by_inode(&semantic_generation_dir(state_root, &delta_pin))?;
     let shared_inodes = delta_index_bytes
         .keys()
         .filter(|inode| base_index_bytes.contains_key(*inode))

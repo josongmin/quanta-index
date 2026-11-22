@@ -69,6 +69,46 @@ def test_package_inherits_fails_when_missing(tmp_path: Path):
     assert "version" in findings[0].message
 
 
+def test_shared_package_exception_preserves_its_actual_license_and_edition():
+    path = REPO_ROOT / "shared/quanta-installed-artifact-trust/Cargo.toml"
+    data = _toml(
+        """
+        [package]
+        name = "quanta-installed-artifact-trust"
+        version = "0.1.0"
+        edition = "2021"
+        license = "MIT OR Apache-2.0"
+        publish = false
+        """
+    )
+    assert MODULE.check_package_metadata(path, data) == []
+    data["package"]["license"] = "UNLICENSED"
+    assert "license" in MODULE.check_package_metadata(path, data)[0].message
+
+
+def test_vendored_ciborium_exception_keeps_version_and_rejects_source_changes():
+    path = REPO_ROOT / "vendor/ciborium-0.2.2/Cargo.toml"
+    data = _toml(
+        """
+        [package]
+        name = "ciborium"
+        version = "0.2.2"
+        edition = "2021"
+        license = "Apache-2.0"
+
+        [dependencies.ciborium-io]
+        version = "0.2.2"
+        features = ["alloc"]
+        """
+    )
+    assert MODULE.check_package_metadata(path, data) == []
+    assert MODULE.check_vendored_dependency_sources(path, data) == []
+    data["package"]["version"] = "0.1.0"
+    assert "version" in MODULE.check_package_metadata(path, data)[0].message
+    data["dependencies"]["ciborium-io"]["git"] = "https://example.com/mirror"
+    assert "changes source" in MODULE.check_vendored_dependency_sources(path, data)[0].message
+
+
 def test_external_dep_must_use_workspace_form(tmp_path: Path):
     findings = MODULE.check_single_dep(
         tmp_path / "Cargo.toml", "dependencies", "serde", "1.0", internal=False

@@ -592,6 +592,11 @@ impl PersistentMapPort for OwnerScope {
             self.read_node(reference, budget)
         })
     }
+    fn last_entry(&self, root: MapRoot, budget: &mut WorkBudget) -> Result<MapPage, IndexError> {
+        FileObjectStore::last_entry_with(root, budget, |reference, budget| {
+            self.read_node(reference, budget)
+        })
+    }
     fn visit_diff(
         &self,
         before: MapRoot,

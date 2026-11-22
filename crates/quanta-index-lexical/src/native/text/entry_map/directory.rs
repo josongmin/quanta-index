@@ -1,6 +1,8 @@
 //! Cold inventory: an immutable map of upper term fences to occurrence blocks.
 //! Only the original ordered SQL edit stream supplies directory entries.
-use super::super::entry_patch::Edits;
+use super::super::entry_edits::Edits;
+use crate::native::text_inventory_descriptor::{LEAF, PACKED, corrupt, decode};
+pub(in crate::native::text) use crate::native::text_inventory_descriptor::descriptor;
 use crate::native::text_memory::{PreparedKey, PreparedRows};
 use crate::native::text_occurrence::{
     OccurrenceReader,
@@ -10,66 +12,13 @@ use crate::native::text_spool::{
     ReadyInventoryCursor, ReadyInventoryReadLease, RootCursor, check_term_key,
 };
 use quanta_index_core::index::{
-    AttemptContext, Digest, IndexError, MapPage, MapRoot, MapValue, MemoryLease, MemoryLifetime,
-    ObjectRef, OrdinalMapEdit, StagedMapRoots, WorkBudget, WorkUsage,
+    AttemptContext, Digest, IndexError, MapPage, MapPageEntry, MapRoot, MapValue, MemoryLease,
+    MemoryLifetime, ObjectRef, OrdinalMapEdit, StagedMapRoots, WorkBudget, WorkUsage,
     ports::{
         ImmutableObjectPort, MapEditCursor, PersistentMapPort, RootPackingMode, RootPackingPlan,
     },
 };
 
-const PACKED: u8 = 1;
-const LEAF: u8 = 2;
-fn corrupt(reason: &str) -> IndexError {
-    IndexError::CorruptObject(format!("inventory directory: {reason}"))
-}
-
-pub(in crate::native::text) fn descriptor(
-    kind: u8,
-    terms: usize,
-    reference: ObjectRef,
-) -> Result<MapValue, IndexError> {
-    if !((kind == PACKED && (2..=MAX_BLOCK_TERMS).contains(&terms)) || (kind == LEAF && terms == 1))
-    {
-        return Err(corrupt("descriptor shape invalid"));
-    }
-    let mut data = [0; 3];
-    data[0] = kind;
-    data[1..].copy_from_slice(
-        &u16::try_from(terms)
-            .map_err(|_| IndexError::ResourceLimited)?
-            .to_be_bytes(),
-    );
-    MapValue::inline(&data, Some(reference))
-}
-pub(in crate::native::text) fn decode(
-    value: MapValue,
-) -> Result<(u8, usize, ObjectRef), IndexError> {
-    let MapValue::Inline(inline) = value else {
-        return Err(corrupt("descriptor not inline"));
-    };
-    let [kind, high, low] = inline.data()? else {
-        return Err(corrupt("descriptor width differs"));
-    };
-    let reference = inline
-        .single_child()?
-        .ok_or_else(|| corrupt("child absent"))?;
-    let terms = usize::from(u16::from_be_bytes([*high, *low]));
-    if !((*kind == PACKED && (2..=MAX_BLOCK_TERMS).contains(&terms))
-        || (*kind == LEAF && terms == 1))
-    {
-        return Err(corrupt("descriptor kind or count invalid"));
-    }
-    Ok((*kind, terms, reference))
-}
-
-/// A disposable inventory value carries either one occurrence or one exact
-/// directory descriptor. Its child is DATA until the install receipt closes.
-pub(in crate::native) fn inventory_reference(value: MapValue) -> Result<ObjectRef, IndexError> {
-    match value {
-        MapValue::Object(reference) => Ok(reference),
-        MapValue::Inline(_) => decode(value).map(|(_, _, reference)| reference),
-    }
-}
 fn packed(
     objects: &dyn ImmutableObjectPort,
     reference: ObjectRef,
@@ -82,7 +31,8 @@ fn packed(
         return Err(corrupt("packed identity differs"));
     }
     let checked = CheckedBlock::parse(stored, budget)?;
-    if checked.term_count() != terms || checked.key(terms - 1)? != fence {
+    let last = terms.checked_sub(1).ok_or(IndexError::ResourceLimited)?;
+    if checked.term_count() != terms || checked.key(last)? != fence {
         return Err(corrupt("packed count or upper fence differs"));
     }
     Ok(checked)
@@ -94,23 +44,24 @@ enum IntervalAnchor<'a> {
     Random,
 }
 
-/// A descriptor's first key must follow its predecessor fence. Sequential
-/// readers already retain that fence; random readers prove it with two bounded
-/// point/seek reads, including equality at the first key.
+/// A descriptor's first key must follow its predecessor fence.
+///
+/// Sequential readers already retain that fence; random readers prove it with
+/// two bounded point/seek reads, including equality at the first key.
 fn checked_packed_interval(
     maps: &dyn PersistentMapPort,
     root: ObjectRef,
     fence: &[u8],
     value: MapValue,
     checked: &CheckedBlock,
-    anchor: IntervalAnchor<'_>,
+    anchor: &IntervalAnchor<'_>,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
     let first = checked.key(0)?;
     match anchor {
         IntervalAnchor::First => return Ok(()),
         IntervalAnchor::Previous(previous) => {
-            if first <= previous {
+            if first <= *previous {
                 return Err(corrupt("packed first key crosses previous fence"));
             }
             return Ok(());
@@ -156,7 +107,7 @@ fn check_next_interval(
                 next_fence,
                 *next_value,
                 &next,
-                IntervalAnchor::Random,
+                &IntervalAnchor::Random,
                 budget,
             )?;
         }
@@ -304,7 +255,7 @@ impl ProducerState {
             if first.key() != checked.key(0)? {
                 return Err(corrupt("packed first key differs"));
             }
-            let mut last = first.clone();
+            let mut last = first;
             for slot in 1..terms {
                 let edit = self
                     .original(input, budget)?
@@ -340,12 +291,21 @@ impl ProducerState {
         .map(Some)
     }
 
-    fn finish(&self) -> Result<Digest, IndexError> {
+    fn finish(&self) -> Result<ProducerReceipt, IndexError> {
         if !self.eof || self.rows != self.expected_rows || self.descriptors == 0 {
             return Err(corrupt("directory producer did not reach complete EOF"));
         }
-        Ok(self.digest.finish().digest)
+        Ok(ProducerReceipt {
+            digest: self.digest.finish().digest,
+            descriptors: self.descriptors,
+        })
     }
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::native::text) struct ProducerReceipt {
+    pub digest: Digest,
+    pub descriptors: u64,
 }
 
 struct Producer<'a> {
@@ -370,7 +330,7 @@ pub(in crate::native::text) fn build(
     input: &mut dyn MapEditCursor,
     count: u64,
     context: &mut AttemptContext<'_>,
-) -> Result<(ObjectRef, Digest), IndexError> {
+) -> Result<(ObjectRef, ProducerReceipt), IndexError> {
     build_inner(input, count, false, context)
 }
 
@@ -378,7 +338,7 @@ pub(in crate::native::text) fn build_anchors(
     input: &mut dyn MapEditCursor,
     count: u64,
     context: &mut AttemptContext<'_>,
-) -> Result<(ObjectRef, Digest), IndexError> {
+) -> Result<(ObjectRef, ProducerReceipt), IndexError> {
     build_inner(input, count, true, context)
 }
 
@@ -387,7 +347,7 @@ fn build_inner(
     count: u64,
     anchored: bool,
     context: &mut AttemptContext<'_>,
-) -> Result<(ObjectRef, Digest), IndexError> {
+) -> Result<(ObjectRef, ProducerReceipt), IndexError> {
     let objects = context.objects;
     let mut producer = Producer {
         input,
@@ -397,7 +357,7 @@ fn build_inner(
     let roots = context.apply_stream(&[MapRoot(None)], &mut producer)?;
     let digest = producer.state.finish()?;
     let root = roots
-        .get(0)
+        .first()
         .and_then(|root| root.0)
         .ok_or_else(|| corrupt("directory map root absent"))?;
     Ok((root, digest))
@@ -417,7 +377,7 @@ struct BatchProducer<'a, 'spool> {
         ReadyInventoryCursor<'a, 'spool, RootCursor<'spool>>,
         ProducerState,
     )>,
-    digests: PreparedRows<Digest>,
+    digests: PreparedRows<ProducerReceipt>,
 }
 
 impl MapEditCursor for BatchProducer<'_, '_> {
@@ -458,7 +418,7 @@ pub(in crate::native::text) fn build_batch(
     requests: &[BuildRequest],
     inventory: &ReadyInventoryReadLease<'_>,
     context: &mut AttemptContext<'_>,
-) -> Result<(StagedMapRoots, PreparedRows<Digest>), IndexError> {
+) -> Result<(StagedMapRoots, PreparedRows<ProducerReceipt>), IndexError> {
     let mut bases = PreparedRows::with_capacity(requests.len(), context.budget)?;
     for _request in requests {
         bases.push(MapRoot(None), context.budget)?;
@@ -500,11 +460,12 @@ pub(super) fn lookup(
             key,
             value,
             &checked,
-            IntervalAnchor::Random,
+            &IntervalAnchor::Random,
             budget,
         )?;
         check_next_interval(objects, maps, root, key, budget)?;
-        return Ok((checked.key(terms - 1)? == key).then_some(reference));
+        let last = terms.checked_sub(1).ok_or(IndexError::ResourceLimited)?;
+        return Ok((checked.key(last)? == key).then_some(reference));
     }
     let page = ordered_descriptor_page(
         maps.scan(MapRoot(Some(root)), Some(key), 1, budget)?,
@@ -527,7 +488,7 @@ pub(super) fn lookup(
         fence,
         *value,
         &checked,
-        IntervalAnchor::Random,
+        &IntervalAnchor::Random,
         budget,
     )?;
     let slot = checked.lower_bound(key, budget)?;
@@ -553,7 +514,7 @@ pub(super) fn scan(
     if limit == 0 || limit > 4096 {
         return Err(IndexError::InvalidInput("inventory directory limit".into()));
     }
-    let capacity = usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?;
+    let capacity = usize::try_from(limit).map_err(|_error| IndexError::ResourceLimited)?;
     let allocation = budget.reserve_memory(
         MapPage::allocation_bytes(capacity)?,
         MemoryLifetime::Retained,
@@ -562,10 +523,10 @@ pub(super) fn scan(
     let mut leases: Vec<MemoryLease> = Vec::new();
     entries
         .try_reserve_exact(capacity)
-        .map_err(|_| IndexError::ResourceLimited)?;
+        .map_err(|_error| IndexError::ResourceLimited)?;
     leases
         .try_reserve_exact(capacity)
-        .map_err(|_| IndexError::ResourceLimited)?;
+        .map_err(|_error| IndexError::ResourceLimited)?;
     let mut cursor_after = after
         .map(|key| PreparedKey::copy(key, budget))
         .transpose()?;
@@ -601,7 +562,7 @@ pub(super) fn scan(
                         resume,
                         value,
                         &checked,
-                        IntervalAnchor::Random,
+                        &IntervalAnchor::Random,
                         budget,
                     )?;
                 } else {
@@ -625,7 +586,7 @@ pub(super) fn scan(
             } else {
                 IntervalAnchor::Random
             };
-            checked_packed_interval(maps, root, fence, *value, &checked, anchor, budget)?;
+            checked_packed_interval(maps, root, fence, *value, &checked, &anchor, budget)?;
             for slot in 0..terms {
                 let key = checked.key(slot)?;
                 if after.is_some_and(|prior| key <= prior) {
@@ -635,7 +596,8 @@ pub(super) fn scan(
                     more = true;
                     break;
                 }
-                let bytes = u64::try_from(key.len()).map_err(|_| IndexError::ResourceLimited)?;
+                let bytes =
+                    u64::try_from(key.len()).map_err(|_error| IndexError::ResourceLimited)?;
                 budget.charge(WorkUsage {
                     bytes,
                     ..WorkUsage::default()
@@ -644,23 +606,26 @@ pub(super) fn scan(
                 let mut owned = Vec::new();
                 owned
                     .try_reserve_exact(key.len())
-                    .map_err(|_| IndexError::ResourceLimited)?;
+                    .map_err(|_error| IndexError::ResourceLimited)?;
                 owned.extend_from_slice(key);
                 entries.push((owned, MapValue::Object(reference)));
                 leases.extend(memory);
-                if entries.len() == capacity && (slot + 1 < terms || page.has_more) {
+                if entries.len() == capacity
+                    && (slot.checked_add(1).ok_or(IndexError::ResourceLimited)? < terms
+                        || page.has_more)
+                {
                     more = true;
                     break;
                 }
             }
         } else {
             leaf(objects, reference, fence, budget)?;
-            if !after.is_some_and(|prior| fence.as_slice() <= prior) {
+            if after.is_none_or(|prior| fence.as_slice() > prior) {
                 if entries.len() == capacity {
                     more = true;
                 } else {
                     let bytes =
-                        u64::try_from(fence.len()).map_err(|_| IndexError::ResourceLimited)?;
+                        u64::try_from(fence.len()).map_err(|_error| IndexError::ResourceLimited)?;
                     budget.charge(WorkUsage {
                         bytes,
                         ..WorkUsage::default()
@@ -669,7 +634,7 @@ pub(super) fn scan(
                     let mut owned = Vec::new();
                     owned
                         .try_reserve_exact(fence.len())
-                        .map_err(|_| IndexError::ResourceLimited)?;
+                        .map_err(|_error| IndexError::ResourceLimited)?;
                     owned.extend_from_slice(fence);
                     entries.push((owned, MapValue::Object(reference)));
                     leases.extend(memory);
@@ -689,7 +654,8 @@ pub(super) fn scan(
     Ok(MapPage::new(entries, more, leases, allocation))
 }
 
-/// Retains one authenticated packed block across bounded MapEntries pages.
+/// Retains one authenticated packed block across bounded `MapEntries` pages.
+///
 /// Every continuation crosses the original retained-read and cancellation path.
 pub(in crate::native::text) struct Cursor<'a> {
     objects: &'a dyn ImmutableObjectPort,
@@ -704,6 +670,8 @@ pub(in crate::native::text) struct Cursor<'a> {
     reference: Option<ObjectRef>,
     future_descriptors: bool,
     finished: bool,
+    prefetched: Option<PreparedRows<MapPageEntry>>,
+    prefetched_slot: usize,
 }
 
 /// Keys and counts from one authenticated directory descriptor.
@@ -816,7 +784,96 @@ impl<'a> Cursor<'a> {
             reference: None,
             future_descriptors: false,
             finished: false,
+            prefetched: None,
+            prefetched_slot: 0,
         }
+    }
+
+    /// Retain only bounded, authenticated directory descriptor pages. Child
+    /// DATA is opened later by `visit_next` and never retained by this pass.
+    pub(in crate::native::text) fn prefetch_descriptors(
+        &mut self,
+        bound: usize,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        if bound == 0 || self.prefetched.is_some() || self.descriptor.is_some() || self.finished {
+            return Err(IndexError::InvalidInput(
+                "inventory descriptor prefetch state or bound invalid".into(),
+            ));
+        }
+        let mut entries = PreparedRows::with_capacity(bound, budget)?;
+        let mut started = false;
+        let mut finished = false;
+        let mut promised = false;
+        let usage = budget.usage();
+        let root = MapRoot(Some(self.root));
+        let supported = self
+            .maps
+            .try_visit_scan_pages(root, budget, &mut |page, budget| {
+                if finished {
+                    return Err(IndexError::BackendViolation(
+                        "inventory directory prefetch continued past EOF".into(),
+                    ));
+                }
+                started = true;
+                let more = page.has_more;
+                Self::stage_descriptor_page(page, &mut entries, bound, promised, budget)?;
+                promised = more;
+                finished = !more;
+                Ok(())
+            })?;
+        if supported {
+            if !finished {
+                return Err(IndexError::BackendViolation(
+                    "inventory directory prefetch omitted EOF".into(),
+                ));
+            }
+        } else {
+            if started || budget.usage() != usage {
+                return Err(IndexError::BackendViolation(
+                    "inventory directory prefetch declined after starting".into(),
+                ));
+            }
+            loop {
+                let after = entries
+                    .as_slice()
+                    .last()
+                    .map(MapPageEntry::key)
+                    .transpose()?;
+                let page = self.maps.scan(root, after, 1, budget)?;
+                let more = page.has_more;
+                Self::stage_descriptor_page(page, &mut entries, bound, promised, budget)?;
+                if !more {
+                    break;
+                }
+                promised = true;
+            }
+        }
+        self.prefetched = Some(entries);
+        self.prefetched_slot = 0;
+        Ok(())
+    }
+
+    fn stage_descriptor_page(
+        page: MapPage,
+        entries: &mut PreparedRows<MapPageEntry>,
+        bound: usize,
+        promised: bool,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        let after = entries
+            .as_slice()
+            .last()
+            .map(MapPageEntry::key)
+            .transpose()?;
+        let page = ordered_descriptor_page(page, after, promised)?;
+        let Some(entry) = page.cursor().next() else {
+            return Ok(());
+        };
+        if entries.len() >= bound {
+            return Err(corrupt("inventory descriptor prefetch exceeds bound"));
+        }
+        entries.push(entry, budget)
     }
 
     fn advance(&mut self, budget: &mut WorkBudget) -> Result<bool, IndexError> {
@@ -849,12 +906,26 @@ impl<'a> Cursor<'a> {
         let Some(row) = descriptor.as_ref() else {
             return Ok(false);
         };
-        let (key, value) = row.get()?;
+        self.accept_descriptor(row.clone(), future_descriptors, budget)
+    }
+
+    fn accept_descriptor(
+        &mut self,
+        descriptor: MapPageEntry,
+        future_descriptors: bool,
+        budget: &mut WorkBudget,
+    ) -> Result<bool, IndexError> {
+        let after = self
+            .descriptor
+            .as_ref()
+            .map(MapPageEntry::key)
+            .transpose()?;
+        let (key, value) = descriptor.get()?;
         let (kind, terms, reference) = decode(*value)?;
         let (checked, leaf_count) = if kind == PACKED {
             let checked = packed(self.objects, reference, terms, key, budget)?;
             let anchor = after.map_or(IntervalAnchor::First, IntervalAnchor::Previous);
-            checked_packed_interval(self.maps, self.root, key, *value, &checked, anchor, budget)?;
+            checked_packed_interval(self.maps, self.root, key, *value, &checked, &anchor, budget)?;
             (Some(checked), None)
         } else {
             (
@@ -863,7 +934,7 @@ impl<'a> Cursor<'a> {
             )
         };
         self.future_descriptors = future_descriptors;
-        self.descriptor = descriptor;
+        self.descriptor = Some(descriptor);
         self.checked = checked;
         self.leaf_count = leaf_count;
         self.term_slot = 0;
@@ -871,6 +942,28 @@ impl<'a> Cursor<'a> {
         self.terms = terms;
         self.reference = Some(reference);
         Ok(true)
+    }
+
+    fn advance_prefetched(&mut self, budget: &mut WorkBudget) -> Result<bool, IndexError> {
+        budget.checkpoint()?;
+        let entries = self
+            .prefetched
+            .as_ref()
+            .ok_or(IndexError::ResourceLimited)?;
+        let Some(descriptor) = entries.as_slice().get(self.prefetched_slot).cloned() else {
+            return Ok(false);
+        };
+        let future = self
+            .prefetched_slot
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?
+            < entries.len();
+        let accepted = self.accept_descriptor(descriptor, future, budget)?;
+        self.prefetched_slot = self
+            .prefetched_slot
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok(accepted)
     }
 
     /// Lend the complete next descriptor to the disposable cold alias visitor.
@@ -896,6 +989,11 @@ impl<'a> Cursor<'a> {
     }
 
     fn descriptor_rows(&mut self) -> Result<DescriptorRows<'_>, IndexError> {
+        self.term_slot = self.terms;
+        self.rows_view()
+    }
+
+    fn rows_view(&self) -> Result<DescriptorRows<'_>, IndexError> {
         let fence = self
             .descriptor
             .as_ref()
@@ -904,7 +1002,6 @@ impl<'a> Cursor<'a> {
         let reference = self
             .reference
             .ok_or_else(|| corrupt("directory reference missing"))?;
-        self.term_slot = self.terms;
         Ok(DescriptorRows {
             fence,
             kind: self.kind,
@@ -915,6 +1012,81 @@ impl<'a> Cursor<'a> {
         })
     }
 
+    /// Lend one verified row while retaining only its current descriptor.
+    /// The descriptor callback runs exactly once before any of its rows.
+    pub(in crate::native::text) fn visit_next<T>(
+        &mut self,
+        budget: &mut WorkBudget,
+        mut descriptor: impl FnMut(
+            &[u8],
+            u8,
+            usize,
+            ObjectRef,
+            &mut WorkBudget,
+        ) -> Result<(), IndexError>,
+        row: impl FnOnce(&[u8], ObjectRef, u64, &mut WorkBudget) -> Result<T, IndexError>,
+    ) -> Result<Option<T>, IndexError> {
+        budget.checkpoint()?;
+        if self.finished {
+            return Ok(None);
+        }
+        if self.descriptor.is_none() || self.term_slot == self.terms {
+            drop(self.checked.take());
+            if self.descriptor.is_some() && !self.future_descriptors {
+                self.finished = true;
+                return Ok(None);
+            }
+            if !(if self.prefetched.is_some() {
+                self.advance_prefetched(budget)?
+            } else {
+                self.advance(budget)?
+            }) {
+                self.finished = true;
+                return Ok(None);
+            }
+            let rows = self.rows_view()?;
+            descriptor(rows.fence, rows.kind, rows.terms, rows.reference, budget)?;
+        }
+        let rows = self.rows_view()?;
+        let key = rows.key(self.term_slot)?;
+        let count = rows.position_count(self.term_slot, key, budget)?;
+        let value = row(key, rows.reference, count, budget)?;
+        self.term_slot = self
+            .term_slot
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok(Some(value))
+    }
+
+    /// Borrow the last row visited from the authenticated descriptor or
+    /// packed block. The next visit or EOF invalidates this view.
+    pub(in crate::native::text) fn current(
+        &self,
+    ) -> Result<Option<(&[u8], ObjectRef)>, IndexError> {
+        if self.finished || self.term_slot == 0 || self.descriptor.is_none() {
+            return Ok(None);
+        }
+        let slot = self
+            .term_slot
+            .checked_sub(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        let key = if let Some(checked) = self.checked.as_ref() {
+            checked.key(slot)?
+        } else {
+            if slot != 0 {
+                return Err(corrupt("visited leaf term slot differs"));
+            }
+            self.descriptor
+                .as_ref()
+                .ok_or_else(|| corrupt("visited descriptor absent"))?
+                .key()?
+        };
+        let reference = self
+            .reference
+            .ok_or_else(|| corrupt("visited directory child absent"))?;
+        Ok(Some((key, reference)))
+    }
+
     pub(in crate::native::text) fn next_page(
         &mut self,
         limit: u32,
@@ -922,7 +1094,8 @@ impl<'a> Cursor<'a> {
     ) -> Result<MapPage, IndexError> {
         budget.checkpoint()?;
         if limit == 0
-            || usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)? > MAX_BLOCK_TERMS
+            || usize::try_from(limit).map_err(|_error| IndexError::ResourceLimited)?
+                > MAX_BLOCK_TERMS
         {
             return Err(IndexError::InvalidInput(
                 "inventory directory cursor page exceeds bound".into(),
@@ -950,7 +1123,7 @@ impl<'a> Cursor<'a> {
             0
         } else {
             usize::try_from(limit)
-                .map_err(|_| IndexError::ResourceLimited)?
+                .map_err(|_error| IndexError::ResourceLimited)?
                 .min(remaining)
         };
         let allocation = budget.reserve_memory(
@@ -961,10 +1134,10 @@ impl<'a> Cursor<'a> {
         let mut leases: Vec<MemoryLease> = Vec::new();
         entries
             .try_reserve_exact(capacity)
-            .map_err(|_| IndexError::ResourceLimited)?;
+            .map_err(|_error| IndexError::ResourceLimited)?;
         leases
             .try_reserve_exact(capacity)
-            .map_err(|_| IndexError::ResourceLimited)?;
+            .map_err(|_error| IndexError::ResourceLimited)?;
         if !newly_loaded
             && capacity != 0
             && let Some(checked) = self.checked.as_ref()
@@ -991,7 +1164,7 @@ impl<'a> Cursor<'a> {
                     .ok_or_else(|| corrupt("leaf descriptor absent"))?
                     .key()?
             };
-            let bytes = u64::try_from(key.len()).map_err(|_| IndexError::ResourceLimited)?;
+            let bytes = u64::try_from(key.len()).map_err(|_error| IndexError::ResourceLimited)?;
             budget.charge(WorkUsage {
                 bytes,
                 ..WorkUsage::default()
@@ -1000,7 +1173,7 @@ impl<'a> Cursor<'a> {
             let mut owned = Vec::new();
             owned
                 .try_reserve_exact(key.len())
-                .map_err(|_| IndexError::ResourceLimited)?;
+                .map_err(|_error| IndexError::ResourceLimited)?;
             owned.extend_from_slice(key);
             entries.push((owned, MapValue::Object(reference)));
             leases.extend(memory);
@@ -1035,7 +1208,7 @@ mod tests {
                 || wire[2] != kind
                 || wire[3..5]
                     != u16::try_from(terms)
-                        .map_err(|_| IndexError::ResourceLimited)?
+                        .map_err(|_error| IndexError::ResourceLimited)?
                         .to_be_bytes()
                 || wire[5] != 1
                 || wire[6..] != [7; 32]

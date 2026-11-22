@@ -12,9 +12,9 @@ use quanta_index_contract::{
     },
     native_protocol::{
         MAX_NATIVE_SOURCE_OWNER_LOOKUP, NativeIndexErrorCode, NativeIndexResponse,
-        NativeIndexResponseEnvelope, NativeIndexWireError, NativeProjectionOwnerBinding,
-        NativeProjectionOwnerLookup, NativeProjectionRead, NativeSourceOwnerBinding,
-        NativeSourceOwnerLookup, NativeStubReply,
+        NativeIndexResponseEnvelope, NativeIndexWireError, NativeProducerProjectionOwnerV1,
+        NativeProjectionOwnerBinding, NativeProjectionOwnerLookup, NativeProjectionRead, NativeSourceOwnerBinding,
+        NativeSourceOwnerLookup, NativeStubReply, SourceStageReplayReceiptV1,
     },
 };
 use serde::de::{self, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
@@ -28,16 +28,17 @@ pub(super) const MAX_PUBLICATION_ERROR_MESSAGE_BYTES: usize = 4096;
 // 32 bytes. A longer token is not produced by the canonical wire encoder.
 const MAX_PUBLICATION_IDENTIFIER_BYTES: usize = 32;
 const MAX_PUBLICATION_CBOR_DEPTH: usize = 32;
-// The publication variant list has 22 names and 260 identifier bytes.
-// Its quotes, separators, prefix and one offending known identifier, as well
-// as the smaller wire-error list, fit within 512 diagnostic bytes. No unknown
-// identifier reaches Ciborium after the token preflight.
+// Preflight admits only bounded identifiers. The response variant visitor
+// uses a fixed rejection message so its diagnostic stays bounded as tags grow.
 const MAX_PUBLICATION_DIAGNOSTIC_BYTES: usize = 512;
 const MAX_STUB_REPLY_BODY_BYTES: usize = 1 << 20;
 const MAX_STUB_EDITS: u64 = 64;
 const MAX_STUB_REPLACEMENT_BYTES: u64 = 256 << 10;
 
 pub(super) fn decoded_retained_limit() -> Result<u64, NativeUdsError> {
+    use quanta_index_contract::native_protocol::{
+        NativeProducerProjectionOwnerPageV1, NativeProducerSourceOwner, NativeProducerSourcePage,
+    };
     let references = MAX_PUBLICATION_SOURCE_REFS
         .checked_mul(std::mem::size_of::<ObjectRef>())
         .ok_or_else(|| NativeUdsError::Protocol("publication reply memory overflow".into()))?;
@@ -49,10 +50,24 @@ pub(super) fn decoded_retained_limit() -> Result<u64, NativeUdsError> {
         .and_then(|value| value.checked_mul(2))
         .and_then(|value| value.checked_add(std::mem::size_of::<NativeProjectionOwnerLookup>()))
         .ok_or_else(|| NativeUdsError::Protocol("projection-owner reply memory overflow".into()))?;
+    let owner_page = MAX_NATIVE_SOURCE_OWNER_LOOKUP
+        .checked_mul(
+            std::mem::size_of::<NativeProducerSourceOwner>()
+                .max(std::mem::size_of::<NativeProducerProjectionOwnerV1>()),
+        )
+        .and_then(|value| value.checked_mul(2))
+        .and_then(|value| {
+            value.checked_add(
+                std::mem::size_of::<NativeProducerSourcePage>()
+                    .max(std::mem::size_of::<NativeProducerProjectionOwnerPageV1>()),
+            )
+        })
+        .ok_or_else(|| NativeUdsError::Protocol("producer owner page memory overflow".into()))?;
     u64::try_from(
         references
             .max(owner_rows)
             .max(projection_rows)
+            .max(owner_page)
             .max(MAX_PUBLICATION_ERROR_MESSAGE_BYTES),
     )
     .map_err(|_error| NativeUdsError::Protocol("publication reply memory overflow".into()))
@@ -118,7 +133,12 @@ fn decode_with_mode(
     bytes: &[u8],
     allow_stub: bool,
 ) -> Result<NativeIndexResponseEnvelope, NativeUdsError> {
-    prepare(bytes, allow_stub, false)?.decode()
+    let mode = if allow_stub {
+        ReplyMode::Stub
+    } else {
+        ReplyMode::Publication
+    };
+    prepare(bytes, mode)?.decode()
 }
 
 /// Allocation-free preflight result; it borrows the already admitted raw owner.
@@ -153,11 +173,18 @@ fn read_size(value: usize) -> Result<u64, NativeUdsError> {
         .map_err(|_overflow| NativeUdsError::Protocol("retained read backing overflow".into()))
 }
 
-pub(super) fn prepare(
-    bytes: &[u8],
-    allow_stub: bool,
-    allow_read: bool,
-) -> Result<PreparedReply<'_>, NativeUdsError> {
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum ReplyMode {
+    Publication,
+    Stub,
+    ReadSession,
+    RepoMapPriorFile,
+}
+
+pub(super) fn prepare(bytes: &[u8], mode: ReplyMode) -> Result<PreparedReply<'_>, NativeUdsError> {
+    let allow_stub = mode == ReplyMode::Stub;
+    let allow_read = mode == ReplyMode::ReadSession;
+    let allow_prior_file = mode == ReplyMode::RepoMapPriorFile;
     if allow_stub && bytes.len() > MAX_STUB_REPLY_BODY_BYTES {
         return Err(NativeUdsError::Protocol(
             "Stub reply exceeds admitted body bound".into(),
@@ -168,6 +195,7 @@ pub(super) fn prepare(
         offset: 0,
         allow_stub,
         allow_read,
+        allow_prior_file,
         stub_replacement_bytes: 0,
         read_decoded_bytes: read_size(std::mem::size_of::<NativeIndexResponseEnvelope>())?,
     };
@@ -177,7 +205,7 @@ pub(super) fn prepare(
             "Native publication reply has trailing CBOR".into(),
         ));
     }
-    let decoded_bytes = if allow_read {
+    let decoded_bytes = if allow_read || allow_prior_file {
         // Fixed fields are inline in the envelope. The scan includes every
         // dynamic vector/string, including the canonical Error.message.
         scan.read_decoded_bytes
@@ -194,7 +222,12 @@ pub(super) fn prepare(
 
 #[cfg(test)]
 fn preflight_canonical_cbor(bytes: &[u8], allow_stub: bool) -> Result<(), NativeUdsError> {
-    prepare(bytes, allow_stub, false).map(|_| ())
+    let mode = if allow_stub {
+        ReplyMode::Stub
+    } else {
+        ReplyMode::Publication
+    };
+    prepare(bytes, mode).map(|_| ())
 }
 
 struct CborScan<'a> {
@@ -202,6 +235,7 @@ struct CborScan<'a> {
     offset: usize,
     allow_stub: bool,
     allow_read: bool,
+    allow_prior_file: bool,
     read_decoded_bytes: u64,
     stub_replacement_bytes: u64,
 }
@@ -284,7 +318,7 @@ impl<'a> CborScan<'a> {
         }
         let key = std::str::from_utf8(self.take(length)?)
             .map_err(|_error| NativeUdsError::Protocol("invalid CBOR map key UTF-8".into()))?;
-        if !known_identifier(key) {
+        if !(known_identifier(key) || self.allow_prior_file && prior_file_identifier(key)) {
             return Err(NativeUdsError::Protocol(
                 "unknown Native publication CBOR identifier".into(),
             ));
@@ -322,12 +356,45 @@ impl<'a> CborScan<'a> {
                 "Native publication CBOR byte strings are outside the canonical wire".into(),
             )),
             3 => {
+                let read_text = self.allow_read
+                    && matches!(
+                        field,
+                        Some(
+                            "message"
+                                | "path"
+                                | "repo_id"
+                                | "revision_id"
+                                | "repository"
+                                | "repositories"
+                                | "source_repo_id"
+                                | "candidate_id"
+                                | "metavariable"
+                                | "pattern_kind"
+                                | "matched_node"
+                                | "snippet"
+                        )
+                    )
+                    || self.allow_prior_file
+                        && (field == Some("message") || field.is_some_and(prior_file_text_field));
                 let limit = if field == Some("message") {
                     MAX_PUBLICATION_ERROR_MESSAGE_BYTES
-                } else if self.allow_read && matches!(field, Some("repo_id" | "revision_id")) {
+                } else if self.allow_read
+                    && matches!(
+                        field,
+                        Some(
+                            "repo_id"
+                                | "revision_id"
+                                | "repository"
+                                | "repositories"
+                                | "source_repo_id"
+                        )
+                    )
+                {
                     quanta_index_contract::RepoId::MAX_UTF8_BYTES_V1
                 } else if self.allow_read && field == Some("path") {
                     super::MAX_SOURCE_PATH_BYTES
+                } else if read_text {
+                    self.bytes.len()
                 } else if self.allow_stub && field == Some("language") {
                     64
                 } else {
@@ -341,21 +408,16 @@ impl<'a> CborScan<'a> {
                         "Native publication text exceeds its typed bound".into(),
                     ));
                 }
-                if self.allow_read
-                    && matches!(field, Some("message" | "path" | "repo_id" | "revision_id"))
-                {
+                if read_text {
                     self.charge_read(value.max(8), 1)?;
                 }
                 let text = self.take(value)?;
-                if field != Some("message")
-                    && field != Some("language")
-                    && !(self.allow_read
-                        && matches!(field, Some("path" | "repo_id" | "revision_id")))
-                {
+                if field != Some("message") && field != Some("language") && !read_text {
                     let identifier = std::str::from_utf8(text).map_err(|_error| {
                         NativeUdsError::Protocol("invalid CBOR identifier UTF-8".into())
                     })?;
-                    if !known_identifier(identifier)
+                    if !(known_identifier(identifier)
+                        || self.allow_prior_file && prior_file_identifier(identifier))
                         || (!self.allow_stub && matches!(identifier, "Stub" | "Prepared"))
                         || (!self.allow_read && read_identifier(identifier))
                     {
@@ -367,7 +429,7 @@ impl<'a> CborScan<'a> {
                 Ok(())
             }
             4 => {
-                if self.allow_read {
+                if self.allow_read || self.allow_prior_file {
                     self.read_array(field, value)?;
                 }
                 if self.allow_stub && field == Some("edits") && value > MAX_STUB_EDITS {
@@ -388,7 +450,14 @@ impl<'a> CborScan<'a> {
                     .checked_add(1)
                     .ok_or_else(|| NativeUdsError::Protocol("CBOR depth overflow".into()))?;
                 for _item in 0..value {
-                    self.item(next, None)?;
+                    self.item(
+                        next,
+                        if field == Some("repositories") {
+                            field
+                        } else {
+                            None
+                        },
+                    )?;
                 }
                 Ok(())
             }
@@ -440,11 +509,26 @@ impl<'a> CborScan<'a> {
             index::InstanceSpec,
             native_protocol::{
                 MAX_NATIVE_READ_PROFILE_INSTANCES, MAX_NATIVE_SEMANTIC_TOP_K,
-                MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES, MAX_NATIVE_TEXT_TOP_K, NativeSemanticFileHit,
-                NativeTextHit,
+                MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES, MAX_NATIVE_TEXT_TOP_K, NativeDslRuntimeHitV1,
+                NativeDslStructuralHitV1, NativeSemanticFileHit, NativeTextHit,
             },
         };
         let (limit, size) = match field {
+            Some("nodes") if self.allow_prior_file => (
+                read_size(quanta_index_contract::native_protocol::MAX_NATIVE_GRAPH_ITEMS)?,
+                std::mem::size_of::<quanta_index_contract::RepoMapNode>(),
+            ),
+            Some("edges") if self.allow_prior_file => (
+                read_size(quanta_index_contract::native_protocol::MAX_NATIVE_GRAPH_ITEMS)?,
+                std::mem::size_of::<quanta_index_contract::native_protocol::GraphEdge>(),
+            ),
+            Some("degrees") if self.allow_prior_file => (
+                read_size(quanta_index_contract::native_protocol::MAX_NATIVE_GRAPH_ITEMS)?,
+                std::mem::size_of::<
+                    quanta_index_contract::native_protocol::NativeRepoMapPriorNodeDegreeV1,
+                >(),
+            ),
+            Some("contribution" | "output") if self.allow_prior_file => (32, 0),
             Some("instances") => (
                 read_size(MAX_NATIVE_READ_PROFILE_INSTANCES)?,
                 std::mem::size_of::<InstanceSpec>(),
@@ -461,17 +545,70 @@ impl<'a> CborScan<'a> {
                 u64::from(MAX_NATIVE_SEMANTIC_TOP_K),
                 std::mem::size_of::<NativeSemanticFileHit>(),
             ),
+            Some("Structural") => (
+                u64::from(MAX_NATIVE_TEXT_TOP_K),
+                std::mem::size_of::<NativeDslStructuralHitV1>(),
+            ),
+            Some("RuntimeMetadata") => (
+                u64::from(MAX_NATIVE_TEXT_TOP_K),
+                std::mem::size_of::<NativeDslRuntimeHitV1>(),
+            ),
+            Some("bindings") => (
+                read_size(self.bytes.len())?,
+                std::mem::size_of::<quanta_index_contract::StructuralBinding>(),
+            ),
+            Some("repositories") => (
+                u64::from(MAX_NATIVE_TEXT_TOP_K),
+                std::mem::size_of::<quanta_index_contract::RepoId>(),
+            ),
             Some("vector_id") => (read_size(MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES)?, 1),
             // Canonical fixed-size IDs/roots are inline fields, not heaps.
             Some(
-                "session" | "query" | "tenant" | "collection" | "worktree" | "slot" | "producer"
-                | "stable_id" | "digest" | "profile" | "owners" | "paths" | "frontiers"
-                | "projections" | "members" | "coverage" | "root" | "artifact" | "lexical_artifact"
-                | "source" | "instance" | "text_instance" | "semantic_instance" | "kind" | "group"
-                | "schema" | "policy" | "format" | "projection" | "context" | "id" | "payload"
-                | "input_digest" | "searchable" | "producer_context" | "derivation_policy"
-                | "missing" | "previous_missing" | "member" | "snapshot_digest" | "replay_start"
-                | "source_input" | "original" | "repo_commit_recency" | "file_contributor"
+                "session"
+                | "query"
+                | "tenant"
+                | "collection"
+                | "worktree"
+                | "slot"
+                | "producer"
+                | "stable_id"
+                | "digest"
+                | "profile"
+                | "owners"
+                | "paths"
+                | "frontiers"
+                | "projections"
+                | "members"
+                | "coverage"
+                | "root"
+                | "artifact"
+                | "lexical_artifact"
+                | "source"
+                | "instance"
+                | "text_instance"
+                | "semantic_instance"
+                | "kind"
+                | "group"
+                | "schema"
+                | "policy"
+                | "format"
+                | "projection"
+                | "context"
+                | "id"
+                | "payload"
+                | "input_digest"
+                | "searchable"
+                | "producer_context"
+                | "derivation_policy"
+                | "missing"
+                | "previous_missing"
+                | "member"
+                | "snapshot_digest"
+                | "replay_start"
+                | "source_input"
+                | "original"
+                | "repo_commit_recency"
+                | "file_contributor"
                 | "predecessor_context",
             ) => (32, 0),
             _ => {
@@ -517,15 +654,69 @@ impl<'a> CborScan<'a> {
     }
 }
 
+fn prior_file_text_field(field: &str) -> bool {
+    matches!(
+        field,
+        "file_id"
+            | "module_id"
+            | "symbol_id"
+            | "chunk_id"
+            | "repo_relative_path"
+            | "owner_path"
+            | "local_name"
+            | "qualified_name"
+            | "symbol_kind"
+            | "language"
+            | "preview_text"
+            | "File"
+            | "Module"
+            | "Symbol"
+            | "Chunk"
+    )
+}
+
+fn prior_file_identifier(value: &str) -> bool {
+    prior_file_text_field(value)
+        || matches!(
+            value,
+            "RepoMapPriorFileV1"
+                | "file"
+                | "source_owner"
+                | "output"
+                | "facts"
+                | "nodes"
+                | "edges"
+                | "degrees"
+                | "incoming"
+                | "outgoing"
+                | "target"
+                | "line_count"
+                | "start_byte"
+                | "end_byte"
+                | "token_count"
+                | "exactness"
+                | "Exact"
+                | "Approximate"
+                | "Call"
+                | "Import"
+                | "Contains"
+                | "OwnsChunk"
+                | "DependsOn"
+        )
+}
+
 fn read_identifier(value: &str) -> bool {
     matches!(
         value,
         "ReadSession"
             | "ReadSessionProfile"
+            | "DslPageV1"
             | "HistoryCut"
             | "HistoryGeneration"
             | "TextRanked"
             | "TextRankedPage"
+            | "TextPathRankedV1"
+            | "TextPathPageV1"
             | "HybridFileRanked"
     )
 }
@@ -535,6 +726,30 @@ fn known_identifier(value: &str) -> bool {
         value,
         "ReadSession"
             | "ReadSessionProfile"
+            | "DslPageV1"
+            | "Structural"
+            | "RuntimeMetadata"
+            | "candidate"
+            | "candidate_id"
+            | "bindings"
+            | "metavariable"
+            | "match_range"
+            | "byte_start"
+            | "byte_end"
+            | "line_start"
+            | "line_end"
+            | "start_line"
+            | "end_line"
+            | "pattern_kind"
+            | "matched_node"
+            | "source_repo_id"
+            | "snippet"
+            | "window"
+            | "returned"
+            | "candidate_count"
+            | "value"
+            | "exact"
+            | "at_least"
             | "HistoryCut"
             | "HistoryGeneration"
             | "member"
@@ -553,6 +768,13 @@ fn known_identifier(value: &str) -> bool {
             | "replay_start"
             | "TextRanked"
             | "TextRankedPage"
+            | "TextPathRankedV1"
+            | "TextPathPageV1"
+            | "ranked"
+            | "ranking"
+            | "repositories"
+            | "repository"
+            | "previews"
             | "HybridFileRanked"
             | "Released"
             | "Settlement"
@@ -635,6 +857,12 @@ fn known_identifier(value: &str) -> bool {
             | "View"
             | "PublishedViewMetadata"
             | "RootScopedView"
+            | "CandidateInstallationV1"
+            | "RepoMapGraphInstallationV1"
+            | "RepoMapEventFrontierV1"
+            | "cursor"
+            | "config_sha256"
+            | "descriptor"
             | "ProtectedRepoMapHead"
             | "ImportedRepoMapMember"
             | "member_binding"
@@ -646,16 +874,25 @@ fn known_identifier(value: &str) -> bool {
             | "InputOpened"
             | "MutationPageStaged"
             | "MutationsStaged"
+            | "MutationsSealedForReplayV1"
+            | "SealedMutationsForReplayV1"
             | "InputDiscarded"
             | "StagedSources"
             | "SourceOwners"
             | "Projection"
             | "ProjectionOwners"
+            | "ProducerProjectionOwnersV1"
+            | "ProducerSourceOwners"
+            | "source_epoch"
             | "ProjectionSourceDiff"
             | "expected"
             | "next"
             | "has_more"
             | "contribution"
+            | "source_owner"
+            | "source_records_root"
+            | "dependency_stamp"
+            | "output"
             | "Stub"
             | "Prepared"
             | "document"
@@ -692,6 +929,9 @@ fn known_identifier(value: &str) -> bool {
             | "stream"
             | "stream_epoch"
             | "operation"
+            | "ingress"
+            | "correlation"
+            | "history"
             | "attempt"
             | "fence"
             | "root"
@@ -730,6 +970,7 @@ fn known_identifier(value: &str) -> bool {
             | "ResponseTooLarge"
             | "CapabilityUnavailable"
             | "FocusSubjectNotFound"
+            | "ProcessRssCeilingExceeded"
     )
 }
 
@@ -814,6 +1055,10 @@ enum PublicationVariant {
     View,
     PublishedViewMetadata,
     RootScopedView,
+    CandidateInstallationV1,
+    RepoMapGraphInstallationV1,
+    RepoMapEventFrontierV1,
+    RepoMapPriorFileV1,
     ProtectedRepoMapHead,
     ImportedRepoMapMember,
     Status,
@@ -821,18 +1066,25 @@ enum PublicationVariant {
     InputOpened,
     MutationPageStaged,
     MutationsStaged,
+    MutationsSealedForReplayV1,
+    SealedMutationsForReplayV1,
     InputDiscarded,
     StagedSources,
     SourceOwners,
     Projection,
     ProjectionOwners,
+    ProducerProjectionOwnersV1,
+    ProducerSourceOwners,
     ProjectionSourceDiff,
     ReadSession,
     ReadSessionProfile,
+    DslPageV1,
     HistoryCut,
     HistoryGeneration,
     TextRanked,
     TextRankedPage,
+    TextPathRankedV1,
+    TextPathPageV1,
     HybridFileRanked,
     Stub,
 }
@@ -844,6 +1096,10 @@ const PUBLICATION_VARIANTS: &[&str] = &[
     "View",
     "PublishedViewMetadata",
     "RootScopedView",
+    "CandidateInstallationV1",
+    "RepoMapGraphInstallationV1",
+    "RepoMapEventFrontierV1",
+    "RepoMapPriorFileV1",
     "ProtectedRepoMapHead",
     "ImportedRepoMapMember",
     "Status",
@@ -851,18 +1107,25 @@ const PUBLICATION_VARIANTS: &[&str] = &[
     "InputOpened",
     "MutationPageStaged",
     "MutationsStaged",
+    "MutationsSealedForReplayV1",
+    "SealedMutationsForReplayV1",
     "InputDiscarded",
     "StagedSources",
     "SourceOwners",
     "Projection",
     "ProjectionOwners",
+    "ProducerProjectionOwnersV1",
+    "ProducerSourceOwners",
     "ProjectionSourceDiff",
     "ReadSession",
     "ReadSessionProfile",
+    "DslPageV1",
     "HistoryCut",
     "HistoryGeneration",
     "TextRanked",
     "TextRankedPage",
+    "TextPathRankedV1",
+    "TextPathPageV1",
     "HybridFileRanked",
     "Stub",
 ];
@@ -885,6 +1148,12 @@ impl<'de> serde::Deserialize<'de> for PublicationVariant {
                     "View" => Ok(PublicationVariant::View),
                     "PublishedViewMetadata" => Ok(PublicationVariant::PublishedViewMetadata),
                     "RootScopedView" => Ok(PublicationVariant::RootScopedView),
+                    "CandidateInstallationV1" => Ok(PublicationVariant::CandidateInstallationV1),
+                    "RepoMapGraphInstallationV1" => {
+                        Ok(PublicationVariant::RepoMapGraphInstallationV1)
+                    }
+                    "RepoMapEventFrontierV1" => Ok(PublicationVariant::RepoMapEventFrontierV1),
+                    "RepoMapPriorFileV1" => Ok(PublicationVariant::RepoMapPriorFileV1),
                     "ProtectedRepoMapHead" => Ok(PublicationVariant::ProtectedRepoMapHead),
                     "ImportedRepoMapMember" => Ok(PublicationVariant::ImportedRepoMapMember),
                     "Status" => Ok(PublicationVariant::Status),
@@ -892,21 +1161,34 @@ impl<'de> serde::Deserialize<'de> for PublicationVariant {
                     "InputOpened" => Ok(PublicationVariant::InputOpened),
                     "MutationPageStaged" => Ok(PublicationVariant::MutationPageStaged),
                     "MutationsStaged" => Ok(PublicationVariant::MutationsStaged),
+                    "MutationsSealedForReplayV1" => {
+                        Ok(PublicationVariant::MutationsSealedForReplayV1)
+                    }
+                    "SealedMutationsForReplayV1" => {
+                        Ok(PublicationVariant::SealedMutationsForReplayV1)
+                    }
                     "InputDiscarded" => Ok(PublicationVariant::InputDiscarded),
                     "StagedSources" => Ok(PublicationVariant::StagedSources),
                     "SourceOwners" => Ok(PublicationVariant::SourceOwners),
                     "Projection" => Ok(PublicationVariant::Projection),
                     "ProjectionOwners" => Ok(PublicationVariant::ProjectionOwners),
+                    "ProducerProjectionOwnersV1" => {
+                        Ok(PublicationVariant::ProducerProjectionOwnersV1)
+                    }
+                    "ProducerSourceOwners" => Ok(PublicationVariant::ProducerSourceOwners),
                     "ProjectionSourceDiff" => Ok(PublicationVariant::ProjectionSourceDiff),
                     "ReadSession" => Ok(PublicationVariant::ReadSession),
                     "ReadSessionProfile" => Ok(PublicationVariant::ReadSessionProfile),
+                    "DslPageV1" => Ok(PublicationVariant::DslPageV1),
                     "HistoryCut" => Ok(PublicationVariant::HistoryCut),
                     "HistoryGeneration" => Ok(PublicationVariant::HistoryGeneration),
                     "TextRanked" => Ok(PublicationVariant::TextRanked),
                     "TextRankedPage" => Ok(PublicationVariant::TextRankedPage),
+                    "TextPathRankedV1" => Ok(PublicationVariant::TextPathRankedV1),
+                    "TextPathPageV1" => Ok(PublicationVariant::TextPathPageV1),
                     "HybridFileRanked" => Ok(PublicationVariant::HybridFileRanked),
                     "Stub" => Ok(PublicationVariant::Stub),
-                    _ => Err(E::unknown_variant(value, PUBLICATION_VARIANTS)),
+                    _ => Err(E::custom("unsupported admitted Native reply variant")),
                 }
             }
         }
@@ -942,15 +1224,24 @@ impl<'de> serde::Deserialize<'de> for PublicationPayload {
                     PublicationVariant::ProjectionOwners => NativeIndexResponse::ProjectionOwners(
                         variant.newtype_variant::<NativeProjectionOwnerLookup>()?,
                     ),
+                    PublicationVariant::ProducerProjectionOwnersV1 => NativeIndexResponse::ProducerProjectionOwnersV1(
+                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeProducerProjectionOwnerPageV1>()?,
+                    ),
+                    PublicationVariant::ProducerSourceOwners => NativeIndexResponse::ProducerSourceOwners(
+                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeProducerSourcePage>()?,
+                    ),
                     PublicationVariant::ProjectionSourceDiff => NativeIndexResponse::ProjectionSourceDiff(
                         variant.newtype_variant::<quanta_index_contract::native_protocol::NativeProjectionSourceDiff>()?,
                     ),
                     PublicationVariant::ReadSession => NativeIndexResponse::ReadSession(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeReadSessionReply>()?),
                     PublicationVariant::ReadSessionProfile => NativeIndexResponse::ReadSessionProfile(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeReadSessionProfile>()?),
+                    PublicationVariant::DslPageV1 => NativeIndexResponse::DslPageV1(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeDslPageV1>()?),
                     PublicationVariant::HistoryCut => NativeIndexResponse::HistoryCut(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeReadSessionHistoryCutV1>()?),
                     PublicationVariant::HistoryGeneration => NativeIndexResponse::HistoryGeneration(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeReadSessionHistoryGenerationV1>()?),
                     PublicationVariant::TextRanked => NativeIndexResponse::TextRanked(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeTextResult>()?),
                     PublicationVariant::TextRankedPage => NativeIndexResponse::TextRankedPage(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeTextPage>()?),
+                    PublicationVariant::TextPathRankedV1 => NativeIndexResponse::TextPathRankedV1(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeTextPathResultV1>()?),
+                    PublicationVariant::TextPathPageV1 => NativeIndexResponse::TextPathPageV1(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeTextPathPageV1>()?),
                     PublicationVariant::HybridFileRanked => NativeIndexResponse::HybridFileRanked(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeHybridFileResult>()?),
                     PublicationVariant::Stub => {
                         NativeIndexResponse::Stub(variant.newtype_variant::<NativeStubReply>()?)
@@ -960,6 +1251,18 @@ impl<'de> serde::Deserialize<'de> for PublicationPayload {
                     ),
                     PublicationVariant::RootScopedView => NativeIndexResponse::RootScopedView(
                         variant.newtype_variant::<quanta_index_contract::native_protocol::NativeRootScopedViewV1>()?,
+                    ),
+                    PublicationVariant::CandidateInstallationV1 => NativeIndexResponse::CandidateInstallationV1(
+                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeCandidateInstallationV1>()?,
+                    ),
+                    PublicationVariant::RepoMapGraphInstallationV1 => NativeIndexResponse::RepoMapGraphInstallationV1(
+                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeRepoMapGraphInstallationV1>()?,
+                    ),
+                    PublicationVariant::RepoMapEventFrontierV1 => NativeIndexResponse::RepoMapEventFrontierV1(
+                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeRepoMapEventFrontierV1>()?,
+                    ),
+                    PublicationVariant::RepoMapPriorFileV1 => NativeIndexResponse::RepoMapPriorFileV1(
+                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeRepoMapPriorFileResultV1>()?,
                     ),
                     PublicationVariant::ProtectedRepoMapHead => NativeIndexResponse::ProtectedRepoMapHead(
                         variant.newtype_variant::<quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1>()?,
@@ -987,6 +1290,16 @@ impl<'de> serde::Deserialize<'de> for PublicationPayload {
                     PublicationVariant::MutationsStaged => NativeIndexResponse::MutationsStaged(
                         variant.newtype_variant::<OwnerMutationSet>()?,
                     ),
+                    PublicationVariant::MutationsSealedForReplayV1 => {
+                        NativeIndexResponse::MutationsSealedForReplayV1(
+                            variant.newtype_variant::<SourceStageReplayReceiptV1>()?,
+                        )
+                    }
+                    PublicationVariant::SealedMutationsForReplayV1 => {
+                        NativeIndexResponse::SealedMutationsForReplayV1(
+                            variant.newtype_variant::<Option<SourceStageReplayReceiptV1>>()?,
+                        )
+                    }
                     PublicationVariant::InputDiscarded => NativeIndexResponse::InputDiscarded(
                         variant.newtype_variant::<IngressRef>()?,
                     ),
@@ -1161,6 +1474,7 @@ impl<'de> serde::Deserialize<'de> for BoundedError {
 
 #[cfg(test)]
 mod tests {
+    use ciborium::Value;
     use quanta_index_contract::{
         index::{
             CollectionId, Digest, OperationKey, OwnerKey, OwnerMutationSet, ProducerId,
@@ -1204,6 +1518,23 @@ mod tests {
         let mut bytes = Vec::new();
         ciborium::ser::into_writer(&envelope, &mut bytes)?;
         Ok(bytes)
+    }
+
+    fn cbor_field_mut<'a>(value: &'a mut Value, field: &str) -> Option<&'a mut Value> {
+        value
+            .as_map_mut()?
+            .iter_mut()
+            .find(|(key, _)| key.as_text() == Some(field))
+            .map(|(_, value)| value)
+    }
+
+    fn remove_cbor_field(value: &mut Value, field: &str) -> Option<()> {
+        let fields = value.as_map_mut()?;
+        let index = fields
+            .iter()
+            .position(|(key, _)| key.as_text() == Some(field))?;
+        let _removed = fields.remove(index);
+        Some(())
     }
 
     #[test]
@@ -1272,6 +1603,15 @@ mod tests {
     #[test]
     fn bounded_publication_decodes_canonical_cbor_without_wire_twin()
     -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::{
+            index::{ProjectionBinding, SchemaId, SourceCut},
+            native_protocol::{
+                NativeProducerProjectionOwnerPageV1, NativeProducerProjectionOwnerRowsV1,
+                NativeProducerSourceOwner,
+                NativeProducerSourcePage, NativeProducerSourceRows,
+            },
+        };
+
         let sources: Vec<ObjectRef> = (0..MAX_PUBLICATION_SOURCE_REFS)
             .map(|id| {
                 ObjectRef(Digest(
@@ -1297,6 +1637,22 @@ mod tests {
             }])
             .expect("ordered projection owner row"),
         });
+        let view = ViewRef {
+            workspace: operation().workspace,
+            epoch: operation().epoch,
+            sequence: 1,
+            digest: Digest([7; 32]),
+        };
+        let source = SourceCut {
+            owners: MapRoot(Some(ObjectRef(Digest([10; 32])))),
+            paths: MapRoot(None),
+            frontiers: MapRoot(None),
+        };
+        let owner = OwnerKey {
+            producer: operation().producer,
+            stable_id: StableOwnerId([9; 16]),
+        };
+        let contribution = ObjectRef(Digest([10; 32]));
         let cases = [
             NativeIndexResponse::Staged(ObjectRef(Digest([1; 32]))),
             NativeIndexResponse::StagedSources(sources),
@@ -1305,11 +1661,68 @@ mod tests {
                 count: 0,
                 digest: Digest([2; 32]),
             }),
+            NativeIndexResponse::MutationsSealedForReplayV1(SourceStageReplayReceiptV1 {
+                ingress: IngressRef {
+                    operation: operation(),
+                    fence: 11,
+                },
+                owners: OwnerMutationSet {
+                    root: MapRoot(Some(ObjectRef(Digest([12; 32])))),
+                    count: 1,
+                    digest: Digest([13; 32]),
+                },
+                context: quanta_index_contract::native_protocol::SourceStageReplayContextV1 {
+                    correlation: Digest([14; 32]),
+                    history: Some(
+                        quanta_index_contract::native_protocol::SourceStageHistoryRefsV1 {
+                            profile: ObjectRef(Digest([15; 32])),
+                            root: ObjectRef(Digest([16; 32])),
+                        },
+                    ),
+                },
+            }),
+            NativeIndexResponse::SealedMutationsForReplayV1(None),
             NativeIndexResponse::Submitted(OperationReply {
                 operation: operation(),
                 payload: SubmitOutcome::Unknown(operation()),
             }),
             projection_owner,
+            NativeIndexResponse::ProducerSourceOwners(NativeProducerSourcePage {
+                view,
+                source,
+                producer: owner.producer,
+                source_epoch: Some(1),
+                rows: NativeProducerSourceRows::new(vec![NativeProducerSourceOwner {
+                    owner,
+                    source: contribution,
+                }])?,
+                has_more: false,
+            }),
+            NativeIndexResponse::ProducerProjectionOwnersV1(NativeProducerProjectionOwnerPageV1 {
+                view,
+                binding: ProjectionBinding {
+                    projection: ProjectionId([8; 16]),
+                    producer: owner.producer,
+                    owners: MapRoot(Some(contribution)),
+                    source,
+                    schema: SchemaId([12; 16]),
+                    producer_policy: Digest([13; 32]),
+                    dependency_context: Digest([14; 32]),
+                    certificate: contribution,
+                },
+                source_records_root: source.owners,
+                rows: Some(NativeProducerProjectionOwnerRowsV1::new(vec![
+                    NativeProducerProjectionOwnerV1 {
+                        owner,
+                        contribution,
+                        source_owner: Some(owner),
+                        source: Some(contribution),
+                        dependency_stamp: Digest([15; 32]),
+                        output: Some(contribution),
+                    },
+                ])?),
+                has_more: false,
+            }),
             NativeIndexResponse::ProjectionSourceDiff(
                 quanta_index_contract::native_protocol::NativeProjectionSourceDiff {
                     view: ViewRef {
@@ -1348,10 +1761,44 @@ mod tests {
                 message: "selected focus is absent".into(),
             }),
             NativeIndexResponse::Error(NativeIndexWireError {
+                code: NativeIndexErrorCode::ProcessRssCeilingExceeded,
+                message: "process RSS exceeds the publication ceiling".into(),
+            }),
+            NativeIndexResponse::Error(NativeIndexWireError {
                 code: NativeIndexErrorCode::Storage,
                 message: "x".repeat(MAX_PUBLICATION_ERROR_MESSAGE_BYTES),
             }),
         ];
+        let page_response = cases
+            .iter()
+            .find(|response| matches!(response, NativeIndexResponse::ProducerProjectionOwnersV1(_)))
+            .ok_or("producer projection page fixture missing")?;
+        let mut missing_stamp = Value::serialized(page_response)?;
+        let mut missing_root = missing_stamp.clone();
+        let page = cbor_field_mut(&mut missing_root, "ProducerProjectionOwnersV1")
+            .ok_or("producer projection page missing")?;
+        remove_cbor_field(page, "source_records_root").ok_or("fixture Source root missing")?;
+        if missing_root.deserialized::<NativeIndexResponse>().is_ok() {
+            return Err("producer projection page accepted a missing Source root".into());
+        }
+        let NativeIndexResponse::ProducerProjectionOwnersV1(page) = page_response else {
+            return Err("producer projection page fixture changed".into());
+        };
+        let mut wrong_root = page.clone();
+        wrong_root.source_records_root = MapRoot(None);
+        if wrong_root.matches_request(view, ProjectionId([8; 16]), owner.producer, None, 128) {
+            return Err("producer projection page accepted a wrong Source root".into());
+        }
+        let page = cbor_field_mut(&mut missing_stamp, "ProducerProjectionOwnersV1")
+            .ok_or("producer projection page missing")?;
+        let row = cbor_field_mut(page, "rows")
+            .and_then(Value::as_array_mut)
+            .and_then(|rows| rows.first_mut())
+            .ok_or("producer projection row missing")?;
+        remove_cbor_field(row, "dependency_stamp").ok_or("fixture dependency stamp missing")?;
+        if missing_stamp.deserialized::<NativeIndexResponse>().is_ok() {
+            return Err("producer projection page accepted a missing stamp".into());
+        }
         for response in cases {
             let body = encoded(response.clone())?;
             let parsed = decode(&body)?;
@@ -1363,6 +1810,81 @@ mod tests {
             if parsed != canonical {
                 return Err("canonical and admitted publication decoders disagree".into());
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn predecessor_file_decodes_only_on_its_funded_owner_route()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::{
+            ChunkId, RepoMapChunkExactness, RepoMapChunkNode, RepoMapNode, RepoRelativePath,
+            index::IndexInstanceId,
+            lex::LanguageCode,
+            native_protocol::{
+                MAX_NATIVE_GRAPH_ITEMS, NativeRepoMapFileFactsV1, NativeRepoMapPriorFileResultV1,
+                NativeRepoMapPriorFileV1, NativeRepoMapPriorNodeDegreeV1,
+            },
+        };
+
+        let preview = "retained previous preview".repeat(12);
+        let operation = operation();
+        let owner = OwnerKey {
+            producer: operation.producer,
+            stable_id: StableOwnerId([9; 16]),
+        };
+        let object = ObjectRef(Digest([11; 32]));
+        let degrees = NativeRepoMapPriorNodeDegreeV1 {
+            incoming: 0,
+            outgoing: 0,
+        };
+        let mut prior = NativeRepoMapPriorFileResultV1 {
+            view: ViewRef {
+                workspace: operation.workspace,
+                epoch: operation.epoch,
+                sequence: 1,
+                digest: Digest([7; 32]),
+            },
+            instance: IndexInstanceId([10; 16]),
+            owner,
+            file: Some(NativeRepoMapPriorFileV1 {
+                contribution: object,
+                source_owner: owner,
+                source: object,
+                output: object,
+                facts: NativeRepoMapFileFactsV1 {
+                    owner_path: RepoRelativePath::new("src/example.rs"),
+                    nodes: vec![RepoMapNode::Chunk(RepoMapChunkNode {
+                        chunk_id: ChunkId::new("chunk://example"),
+                        owner_path: RepoRelativePath::new("src/example.rs"),
+                        language: LanguageCode::new("rust")?,
+                        start_byte: 0,
+                        end_byte: 2,
+                        start_line: 1,
+                        end_line: 1,
+                        token_count: 1,
+                        preview_text: preview.clone(),
+                        exactness: RepoMapChunkExactness::Exact,
+                    })],
+                },
+                edges: Vec::new(),
+                degrees: vec![degrees],
+            }),
+        };
+        let response = NativeIndexResponse::RepoMapPriorFileV1(prior.clone());
+        let body = encoded(response.clone())?;
+        let prepared = prepare(&body, ReplyMode::RepoMapPriorFile)?;
+        if decode(&body).is_ok()
+            || prepared.decoded_retained_limit()? < u64::try_from(preview.len())? * 2
+            || prepared.decode()?.payload != response
+        {
+            return Err("predecessor file used the wrong admission or wire shape".into());
+        }
+        prior.file.as_mut().ok_or("test file is missing")?.degrees =
+            vec![degrees; MAX_NATIVE_GRAPH_ITEMS + 1];
+        let body = encoded(NativeIndexResponse::RepoMapPriorFileV1(prior))?;
+        if prepare(&body, ReplyMode::RepoMapPriorFile).is_ok() {
+            return Err("predecessor degree vector exceeded bounded reply admission".into());
         }
         Ok(())
     }
@@ -1397,6 +1919,119 @@ mod tests {
             return Err("trailing CBOR accepted".into());
         }
         Ok(())
+    }
+
+    #[test]
+    fn admitted_path_replies_charge_repository_and_cursor_backing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::{
+            FiniteScore, RepoId,
+            index::IndexInstanceId,
+            native_protocol::{
+                MAX_NATIVE_TEXT_TOP_K, NativeReadSessionId, NativeTextCoverage, NativeTextHit,
+                NativeTextPathCursorV1, NativeTextPathPageV1, NativeTextPathRankingV1,
+                NativeTextPathResultV1, NativeTextResult,
+            },
+        };
+
+        let view = ViewRef {
+            workspace: operation().workspace,
+            epoch: operation().epoch,
+            sequence: 1,
+            digest: Digest([9; 32]),
+        };
+        let instance = IndexInstanceId([11; 16]);
+        let artifact = ObjectRef(Digest([12; 32]));
+        let repository = RepoId::new("a-repository-identifier-longer-than-a-wire-field")?;
+        let score = FiniteScore::new(1.5)?;
+        let path = "src/body.rs";
+        let mut ranked = NativeTextPathRankingV1 {
+            ranking: NativeTextResult {
+                view,
+                instance,
+                artifact,
+                matched: 2,
+                exhaustive: true,
+                coverage: NativeTextCoverage::CoreRequired,
+                hits: vec![NativeTextHit {
+                    owner: OwnerKey {
+                        producer: operation().producer,
+                        stable_id: StableOwnerId([13; 16]),
+                    },
+                    source: ObjectRef(Digest([14; 32])),
+                    score,
+                    path: path.into(),
+                }],
+            },
+            repositories: vec![repository.clone()],
+        };
+        let unpaged = NativeIndexResponse::TextPathRankedV1(NativeTextPathResultV1 {
+            ranked: ranked.clone(),
+            previews: None,
+        });
+        let paged = NativeIndexResponse::TextPathPageV1(NativeTextPathPageV1 {
+            session: NativeReadSessionId([7; 32]),
+            ranked: ranked.clone(),
+            remaining: 2,
+            after: Some(NativeTextPathCursorV1 {
+                view,
+                instance,
+                query: Digest([15; 32]),
+                artifact,
+                score,
+                repository: repository.clone(),
+                path: path.into(),
+            }),
+        });
+        let unpaged_body = encoded(unpaged.clone())?;
+        let paged_body = encoded(paged.clone())?;
+        assert!(prepare(&unpaged_body, ReplyMode::Publication).is_err());
+        let unpaged_reply = prepare(&unpaged_body, ReplyMode::ReadSession)?;
+        let paged_reply = prepare(&paged_body, ReplyMode::ReadSession)?;
+        assert!(
+            unpaged_reply.decoded_retained_limit()?
+                >= u64::try_from(
+                    std::mem::size_of::<NativeIndexResponseEnvelope>()
+                        + std::mem::size_of::<NativeTextHit>()
+                        + std::mem::size_of::<RepoId>()
+                        + repository.as_str().len()
+                        + path.len(),
+                )?
+        );
+        assert!(
+            paged_reply.decoded_retained_limit()?
+                >= unpaged_reply.decoded_retained_limit()?
+                    + u64::try_from(repository.as_str().len() + path.len())?
+        );
+        assert_eq!(unpaged_reply.decode()?.payload, unpaged);
+        assert_eq!(paged_reply.decode()?.payload, paged);
+
+        ranked
+            .repositories
+            .resize(usize::try_from(MAX_NATIVE_TEXT_TOP_K)? + 1, repository);
+        let malformed = encoded(NativeIndexResponse::TextPathRankedV1(
+            NativeTextPathResultV1 {
+                ranked,
+                previews: None,
+            },
+        ))?;
+        assert!(
+            matches!(prepare(&malformed, ReplyMode::ReadSession), Err(NativeUdsError::Protocol(message))
+            if message == "retained read array exceeds typed bound")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn known_field_in_reply_tag_has_a_bounded_diagnostic() {
+        use serde::Deserialize as _;
+        use serde::de::value::{Error, StrDeserializer};
+
+        assert!(known_identifier("ranking"));
+        let tag = PublicationVariant::deserialize(StrDeserializer::<Error>::new("ranking"));
+        assert!(
+            matches!(tag, Err(error) if error.to_string() == "unsupported admitted Native reply variant")
+        );
     }
 
     #[test]

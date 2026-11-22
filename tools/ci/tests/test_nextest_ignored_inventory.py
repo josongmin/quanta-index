@@ -443,6 +443,7 @@ def test_local_scope_frontdoor_admits_inventory_bound_ignored_events(
             scopes=["daemon"],
             lane="test-daemon-lane",
             raw_dir=tmp_path / "raw",
+            targets=[{"owner": SUITE["crate"], "target": SUITE["test_binary"]}],
         )
         == 0
     )

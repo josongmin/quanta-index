@@ -36,13 +36,16 @@ impl ReadinessPace {
     }
 }
 
-/// Test-side cost of the existing read-only readiness calls. The bounded
-/// samples share the caller's progress cadence and never change work funding.
+/// Test-side readiness costs. Poll pauses overlap daemon work. The receipt
+/// timestamp is the first complete public observation, not a worker timestamp.
 pub(super) struct ReadinessCost {
     phase: &'static str,
     started: Instant,
     reads: u64,
     rpc_wall: Duration,
+    poll_pauses: u64,
+    poll_pause_wall: Duration,
+    receipts_elapsed: Option<Duration>,
     sampled_reads: u64,
     sampled_wall: Duration,
     completed: usize,
@@ -57,6 +60,9 @@ impl ReadinessCost {
             started: Instant::now(),
             reads: 0,
             rpc_wall: Duration::ZERO,
+            poll_pauses: 0,
+            poll_pause_wall: Duration::ZERO,
+            receipts_elapsed: None,
             sampled_reads: 0,
             sampled_wall: Duration::ZERO,
             completed: 0,
@@ -68,6 +74,23 @@ impl ReadinessCost {
     pub(super) fn record_rpc(&mut self, elapsed: Duration) {
         self.reads = self.reads.saturating_add(1);
         self.rpc_wall = self.rpc_wall.saturating_add(elapsed);
+    }
+
+    pub(super) fn pause_before_receipts(&mut self, delay: Duration) {
+        let started = Instant::now();
+        std::thread::sleep(delay);
+        self.record_poll_pause(started.elapsed());
+    }
+
+    fn record_poll_pause(&mut self, elapsed: Duration) {
+        self.poll_pauses = self.poll_pauses.saturating_add(1);
+        self.poll_pause_wall = self.poll_pause_wall.saturating_add(elapsed);
+    }
+
+    pub(super) fn observe_receipts_complete(&mut self, observed_at: Instant) {
+        let _first = self
+            .receipts_elapsed
+            .get_or_insert(observed_at.saturating_duration_since(self.started));
     }
 
     pub(super) fn observe_completed(&mut self, completed: usize) {
@@ -99,12 +122,18 @@ impl ReadinessCost {
             self.reads.saturating_sub(self.sampled_reads),
             self.rpc_wall.saturating_sub(self.sampled_wall).as_millis(),
         );
+        let receipts_elapsed_ms = self.receipts_elapsed.map(|receipt| receipt.as_millis());
+        let post_receipt_ms = self
+            .receipts_elapsed
+            .map(|receipt| elapsed.saturating_sub(receipt).as_millis());
         format!(
-            "native-ann-work-status phase={:?} success={} reads={} rpc_wall_ms={} elapsed_ms={} samples=(elapsed_s,completed,reads,rpc_wall_ms){:?} tail={tail:?}",
+            "native-ann-work-status phase={:?} success={} reads={} rpc_wall_ms={} poll_pauses={} poll_pause_wall_ms={} receipts_elapsed_ms={receipts_elapsed_ms:?} post_receipt_ms={post_receipt_ms:?} elapsed_ms={} samples=(elapsed_s,completed,reads,rpc_wall_ms){:?} tail={tail:?}",
             self.phase,
             self.succeeded,
             self.reads,
             self.rpc_wall.as_millis(),
+            self.poll_pauses,
+            self.poll_pause_wall.as_millis(),
             elapsed.as_millis(),
             self.samples,
         )
@@ -229,6 +258,9 @@ impl<'a> CompletionProgress<'a> {
         &mut self,
         mut read: impl FnMut(WorkIntent) -> TestResult<WorkStatus>,
     ) -> TestResult<bool> {
+        if self.completed_count == self.sources.len() {
+            return Ok(true);
+        }
         let mut visited = 0_usize;
         let mut reads = 0_usize;
         let mut unready = 0_usize;
@@ -439,18 +471,34 @@ mod tests {
     #[test]
     fn readiness_cost_keeps_bounded_windows_and_unsampled_tail() -> TestResult {
         let mut cost = ReadinessCost::new("unit");
+        require(
+            cost.report(Duration::ZERO)
+                .contains("receipts_elapsed_ms=None post_receipt_ms=None"),
+            "unfinished receipt census acquired an observation time",
+        )?;
         cost.record_rpc(Duration::from_millis(2));
         cost.record_rpc(Duration::from_millis(3));
+        cost.record_poll_pause(Duration::from_millis(500));
+        cost.record_poll_pause(Duration::from_millis(1_050));
         cost.observe_completed(1);
         cost.sample(Duration::from_secs(60));
         cost.record_rpc(Duration::from_millis(7));
         cost.observe_completed(2);
+        for second in [65, 68] {
+            let observed_at = cost
+                .started
+                .checked_add(Duration::from_secs(second))
+                .ok_or("test receipt observation overflow")?;
+            cost.observe_receipts_complete(observed_at);
+        }
         let report = cost.report(Duration::from_secs(70));
         require(
             report.contains("reads=3 rpc_wall_ms=12")
+                && report.contains("poll_pauses=2 poll_pause_wall_ms=1550")
+                && report.contains("receipts_elapsed_ms=Some(65000) post_receipt_ms=Some(5000)")
                 && report.contains("(60, 1, 2, 5)")
                 && report.contains("tail=(70, 2, 1, 7)"),
-            "ANN readiness cost lost a sampled or final RPC",
+            "ANN readiness report lost a poll cost, receipt time or RPC window",
         )?;
         for minute in 2..=10 {
             cost.sample(Duration::from_secs(minute * 60));

@@ -7,11 +7,14 @@ use quanta_index_core::index::{IndexError, MemoryLease, MemoryLifetime, WorkBudg
 use quanta_index_lq_text_normalizer::{CaseMode, TokenCursor, case_chars};
 use serde::ser::{SerializeSeq, SerializeStruct};
 use std::cmp::Ordering;
+use std::sync::Arc;
 
+#[cfg(test)]
+use super::TokenBatch;
 use super::{
-    MAX_POSITIONS_PER_TERM, MAX_TERM_KEY_BYTES, PreparedKey, PreparedPositions, TOKEN_RUN_BATCH,
-    TokenBatch, check_term_key,
+    MAX_POSITIONS_PER_TERM, MAX_TERM_KEY_BYTES, PreparedKey, PreparedPositions, check_term_key,
 };
+pub(super) use crate::native::text_memory::append_canonical_case_key;
 use crate::native::text_memory::measured_encoded_len;
 use crate::native::text_occurrence::block::{
     HEADER_BYTES, MAX_BLOCK_BYTES, MAX_BLOCK_TERMS, PackedBlockView, VectorIndex, next_block_len,
@@ -96,60 +99,6 @@ fn position_capacity(len: usize) -> Result<usize, IndexError> {
         .ok_or(IndexError::ResourceLimited)
 }
 
-/// Append one canonical case surface to already funded key backing.
-pub(super) fn append_canonical_case_key(
-    keys: &mut Vec<u8>,
-    text: &str,
-    case: CaseMode,
-    limit: usize,
-) -> Result<(), IndexError> {
-    let start = keys.len();
-    let capacity = keys.capacity().min(limit);
-    let append = |keys: &mut Vec<u8>, bytes: &[u8]| -> Result<(), IndexError> {
-        let end = keys
-            .len()
-            .checked_add(bytes.len())
-            .ok_or(IndexError::ResourceLimited)?;
-        if end > capacity {
-            return Err(IndexError::BackendViolation(
-                "canonical case key exceeded its funded census".into(),
-            ));
-        }
-        keys.extend_from_slice(bytes);
-        Ok(())
-    };
-    append(
-        keys,
-        &[match case {
-            CaseMode::Sensitive => 0,
-            CaseMode::Folded => 1,
-        }],
-    )?;
-    if text.is_ascii() {
-        match case {
-            CaseMode::Sensitive => append(keys, text.as_bytes())?,
-            CaseMode::Folded => {
-                let end = keys
-                    .len()
-                    .checked_add(text.len())
-                    .ok_or(IndexError::ResourceLimited)?;
-                if end > capacity {
-                    return Err(IndexError::BackendViolation(
-                        "canonical folded key exceeded its funded census".into(),
-                    ));
-                }
-                keys.extend(text.bytes().map(|byte| byte.to_ascii_lowercase()));
-            }
-        }
-    } else {
-        let mut encoded = [0; 4];
-        for ch in case_chars(text, case) {
-            append(keys, ch.encode_utf8(&mut encoded).as_bytes())?;
-        }
-    }
-    check_term_key(keys.get(start..).ok_or(IndexError::ResourceLimited)?)
-}
-
 impl ColdBlockShape {
     fn record(&mut self, payload_bytes: usize) -> Result<(), IndexError> {
         self.object_count = self
@@ -162,6 +111,41 @@ impl ColdBlockShape {
             .ok_or(IndexError::ResourceLimited)?;
         self.maximum_payload_bytes = self.maximum_payload_bytes.max(payload_bytes);
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct AliasFootprint {
+    terms: usize,
+    term_bytes: usize,
+    largest_vector: usize,
+}
+
+impl AliasFootprint {
+    fn add_key(&mut self, key: &[u8]) -> Result<(), IndexError> {
+        self.terms = self
+            .terms
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        self.term_bytes = self
+            .term_bytes
+            .checked_add(key.len())
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok(())
+    }
+
+    fn can_fit(&self) -> bool {
+        // Every term needs its own row. Even with perfect vector reuse,
+        // the largest vector must be present at least once.
+        self.terms <= MAX_BLOCK_TERMS
+            && u64::try_from(self.terms).is_ok_and(|terms| terms >= COLD_ALIAS_MIN_TERMS)
+            && self
+                .terms
+                .checked_mul(4)
+                .and_then(|bytes| bytes.checked_add(self.term_bytes))
+                .and_then(|bytes| bytes.checked_add(HEADER_BYTES + 2))
+                .and_then(|bytes| bytes.checked_add(self.largest_vector.checked_mul(4)?))
+                .is_some_and(|minimum| minimum <= MAX_BLOCK_BYTES)
     }
 }
 
@@ -191,11 +175,14 @@ impl serde::Serialize for BorrowedOccurrence<'_> {
 pub(super) struct CanonicalTokenCensus {
     rows: usize,
     key_bytes: usize,
-    packet_key_bytes: usize,
     exact: bool,
 }
 
 impl CanonicalTokenCensus {
+    pub(super) fn row_bound(&self) -> usize {
+        self.rows
+    }
+
     /// Bound the physical arena from the already admitted NFC byte length.
     /// Token runs are separated by at least one byte, so at most ceil(N/2)
     /// runs emit two case rows. On the pinned Rust toolchain, one lowercase
@@ -211,19 +198,11 @@ impl CanonicalTokenCensus {
         let runs = normalized_bytes
             .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?
-            / 2;
+            .div_euclid(2);
         let rows = runs.checked_mul(2).ok_or(IndexError::ResourceLimited)?;
         let key_bytes = normalized_bytes
             .checked_mul(13)
             .and_then(|bytes| bytes.checked_add(rows))
-            .ok_or(IndexError::ResourceLimited)?;
-        let packet_key_limit = TOKEN_RUN_BATCH
-            .checked_mul(2)
-            .and_then(|rows| {
-                usize::try_from(MAX_TERM_KEY_BYTES)
-                    .ok()
-                    .and_then(|maximum| rows.checked_mul(maximum))
-            })
             .ok_or(IndexError::ResourceLimited)?;
         if u32::try_from(rows).is_err() || u32::try_from(key_bytes).is_err() {
             return Err(IndexError::ResourceLimited);
@@ -231,7 +210,6 @@ impl CanonicalTokenCensus {
         Ok(Some(Self {
             rows,
             key_bytes,
-            packet_key_bytes: key_bytes.min(packet_key_limit),
             exact: false,
         }))
     }
@@ -254,9 +232,6 @@ impl CanonicalTokenCensus {
         })?;
         let mut rows = 0usize;
         let mut key_bytes = 0usize;
-        let mut packet_key_bytes = 0usize;
-        let mut current_packet = 0usize;
-        let mut packet_runs = 0usize;
         let maximum =
             usize::try_from(MAX_TERM_KEY_BYTES).map_err(|_error| IndexError::ResourceLimited)?;
         while let Some(run) = cursor.next_run() {
@@ -287,17 +262,6 @@ impl CanonicalTokenCensus {
             key_bytes = key_bytes
                 .checked_add(run_key_bytes)
                 .ok_or(IndexError::ResourceLimited)?;
-            current_packet = current_packet
-                .checked_add(run_key_bytes)
-                .ok_or(IndexError::ResourceLimited)?;
-            packet_runs = packet_runs
-                .checked_add(1)
-                .ok_or(IndexError::ResourceLimited)?;
-            if packet_runs == TOKEN_RUN_BATCH {
-                packet_key_bytes = packet_key_bytes.max(current_packet);
-                current_packet = 0;
-                packet_runs = 0;
-            }
         }
         cursor.rewind();
         if rows == 0 {
@@ -311,13 +275,8 @@ impl CanonicalTokenCensus {
         Ok(Some(Self {
             rows,
             key_bytes,
-            packet_key_bytes: packet_key_bytes.max(current_packet),
             exact: true,
         }))
-    }
-
-    pub(super) fn packet_key_bytes(&self) -> usize {
-        self.packet_key_bytes
     }
 
     pub(super) fn arena_bytes(&self) -> Result<usize, IndexError> {
@@ -355,6 +314,7 @@ impl ColdPackedAlias<'_> {
         self.encoded_len
     }
 
+    #[cfg(test)]
     pub(super) fn first_key(&self) -> Result<&[u8], IndexError> {
         self.term(0).map(|(key, _vector)| key)
     }
@@ -425,31 +385,44 @@ pub(super) struct ColdTokens {
     rows: Vec<Row>,
     max_rows: usize,
     max_key_bytes: usize,
-    term_count: usize,
+    alias_can_fit: bool,
     exact: bool,
     ready: bool,
     // Both Vec backings die before their one owner-local optional grant.
     _memory: MemoryLease,
+    // The Arc header is funded independently when this arena joins a program.
+    shared_memory: Option<MemoryLease>,
 }
 
 impl ColdTokens {
-    /// Encode the existing normalized cursor directly into the exact-funded
-    /// cold arena. The fallback packet retains its mandatory row backing but
-    /// never materializes keys on this successful path.
+    pub(super) fn into_shared_with_memory(
+        mut self,
+        memory: MemoryLease,
+    ) -> Result<Arc<Self>, IndexError> {
+        if memory.bytes()
+            < u64::try_from(
+                MemoryLease::shared_allocation_backing_layout(std::alloc::Layout::new::<Self>())?
+                    .size(),
+            )
+            .map_err(|_error| IndexError::ResourceLimited)?
+        {
+            return Err(IndexError::BackendViolation(
+                "cold token shared backing exceeds grant".into(),
+            ));
+        }
+        self.shared_memory = Some(memory);
+        Ok(Arc::new(self))
+    }
+
+    /// Encode the remaining normalized runs directly into the admitted arena.
     pub(super) fn fill_from_cursor(
         &mut self,
         cursor: &mut TokenCursor<'_, Option<MemoryLease>>,
-        fallback_packet: &mut TokenBatch,
         budget: &mut WorkBudget,
     ) -> Result<u64, IndexError> {
-        if self.ready
-            || !self.rows.is_empty()
-            || !self.keys.is_empty()
-            || !fallback_packet.rows.is_empty()
-            || !fallback_packet.keys.is_empty()
-        {
+        if self.ready || !self.rows.is_empty() || !self.keys.is_empty() {
             return Err(IndexError::BackendViolation(
-                "cold direct source or fallback packet was already used".into(),
+                "cold direct source was already used".into(),
             ));
         }
         let mut indexed = 0u64;
@@ -512,7 +485,7 @@ impl ColdTokens {
     }
 
     /// Optional one-block alias preparation. A shape miss has no SQL or object
-    /// effect and must use the original grouped BlockDraft path.
+    /// effect and must use the original grouped `BlockDraft` path.
     pub(super) fn try_packed_alias(
         &self,
         budget: &mut WorkBudget,
@@ -523,9 +496,7 @@ impl ColdTokens {
                 "cold token groups were not ordered".into(),
             ));
         }
-        // The ordered stream already proved its exact group count. An
-        // oversized owner cannot use a single alias block.
-        if self.term_count > MAX_BLOCK_TERMS {
+        if !self.alias_can_fit {
             return Ok(None);
         }
         let metadata_bytes = std::mem::size_of::<ColdPackedAlias<'_>>();
@@ -655,7 +626,7 @@ impl ColdTokens {
                     .get_mut(candidate.vector_count)
                     .ok_or(IndexError::ResourceLimited)? =
                     u16::try_from(term_ordinal).map_err(|_error| IndexError::ResourceLimited)?;
-                candidate.index.insert(insertion, vector);
+                candidate.index.insert(insertion, vector)?;
                 candidate.vector_count = candidate
                     .vector_count
                     .checked_add(1)
@@ -672,7 +643,7 @@ impl ColdTokens {
     }
 
     pub(super) fn try_new(
-        census: CanonicalTokenCensus,
+        census: &CanonicalTokenCensus,
         budget: &WorkBudget,
     ) -> Result<Option<Self>, IndexError> {
         if !u32::try_from(census.key_bytes).is_ok_and(|bytes| bytes <= ROW_START_MASK) {
@@ -711,10 +682,11 @@ impl ColdTokens {
             rows,
             max_rows: census.rows,
             max_key_bytes: census.key_bytes,
-            term_count: 0,
+            alias_can_fit: false,
             exact: census.exact,
             ready: false,
             _memory: memory,
+            shared_memory: None,
         }))
     }
 
@@ -788,8 +760,12 @@ impl ColdTokens {
     }
 
     fn key<'a>(keys: &'a [u8], row: &Row) -> Option<&'a [u8]> {
-        let start = usize::try_from(row.start()).ok()?;
-        let end = usize::try_from(row.end()?).ok()?;
+        let Ok(start) = usize::try_from(row.start()) else {
+            return None;
+        };
+        let Ok(end) = usize::try_from(row.end()?) else {
+            return None;
+        };
         keys.get(start..end)
     }
 
@@ -806,7 +782,7 @@ impl ColdTokens {
         *comparisons = comparisons
             .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?;
-        if *comparisons % 1_024 == 0 {
+        if (*comparisons).is_multiple_of(1_024) {
             checkpoint()?;
         }
         Ok(())
@@ -870,7 +846,7 @@ impl ColdTokens {
         }
         let mut comparisons = 0usize;
         let len = rows.len();
-        for root in (0..len / 2).rev() {
+        for root in (0..len.div_euclid(2)).rev() {
             Self::sift_down(rows, keys, root, len, &mut comparisons, &mut checkpoint)?;
         }
         for end in (1..rows.len()).rev() {
@@ -884,13 +860,21 @@ impl ColdTokens {
     /// can be installed. Duplicate `(key,position)` has the same refusal as the
     /// SQL token table's primary key.
     pub(super) fn sort_and_validate(&mut self, budget: &WorkBudget) -> Result<(), IndexError> {
+        self.sort_and_validate_positions(budget, |_slot, _position| Ok(()))
+    }
+
+    fn sort_and_validate_positions(
+        &mut self,
+        budget: &WorkBudget,
+        mut visit: impl FnMut(usize, u32) -> Result<(), IndexError>,
+    ) -> Result<(), IndexError> {
         budget.checkpoint()?;
         let keys = self.keys.as_slice();
         Self::sort_rows(&mut self.rows, keys, || budget.checkpoint())?;
         let mut prior: Option<&Row> = None;
         let mut positions = 0usize;
-        let mut term_count = 0usize;
-        for row in &self.rows {
+        let mut alias = AliasFootprint::default();
+        for (slot, row) in self.rows.iter().enumerate() {
             budget.checkpoint()?;
             let key = Self::key(keys, row).ok_or(IndexError::ResourceLimited)?;
             check_term_key(key)?;
@@ -906,20 +890,21 @@ impl ColdTokens {
                     .checked_add(1)
                     .ok_or(IndexError::ResourceLimited)?;
             } else {
+                alias.largest_vector = alias.largest_vector.max(positions);
                 positions = 1;
-                term_count = term_count
-                    .checked_add(1)
-                    .ok_or(IndexError::ResourceLimited)?;
+                alias.add_key(key)?;
             }
             if u64::try_from(positions).map_err(|_error| IndexError::ResourceLimited)?
                 > MAX_POSITIONS_PER_TERM
             {
                 return Err(IndexError::ResourceLimited);
             }
+            visit(slot, row.position())?;
             prior = Some(row);
         }
         budget.checkpoint()?;
-        self.term_count = term_count;
+        alias.largest_vector = alias.largest_vector.max(positions);
+        self.alias_can_fit = alias.can_fit();
         self.ready = true;
         Ok(())
     }
@@ -978,7 +963,7 @@ impl ColdTokens {
             loop {
                 let capacity = position_capacity(positions.len())?;
                 let group_growth_bytes = capacity
-                    .checked_add(capacity / 2)
+                    .checked_add(capacity.div_euclid(2))
                     .and_then(|positions| positions.checked_mul(std::mem::size_of::<u32>()))
                     .ok_or(IndexError::ResourceLimited)?;
                 let live = block_key_bytes
@@ -1042,9 +1027,13 @@ impl ColdTokens {
                             .ok_or(IndexError::ResourceLimited)?;
                         index.insert(
                             insertion,
-                            u16::try_from(vector_count - 1)
-                                .map_err(|_error| IndexError::ResourceLimited)?,
-                        );
+                            u16::try_from(
+                                vector_count
+                                    .checked_sub(1)
+                                    .ok_or(IndexError::ResourceLimited)?,
+                            )
+                            .map_err(|_error| IndexError::ResourceLimited)?,
+                        )?;
                     }
                     break;
                 }
@@ -1141,6 +1130,9 @@ impl ColdTokens {
         budget.checkpoint()
     }
 }
+
+mod program;
+pub(super) use program::{ColdTokenProgram, ColdTokenProgramView};
 
 #[cfg(test)]
 mod tests {
@@ -1303,13 +1295,7 @@ mod tests {
             ));
         }
         let one = CanonicalTokenCensus::upper_bound(1)?.ok_or(IndexError::ResourceLimited)?;
-        if (
-            one.rows,
-            one.key_bytes,
-            one.packet_key_bytes,
-            one.arena_bytes()?,
-        ) != (2, 15, 15, 31)
-        {
+        if (one.rows, one.key_bytes, one.arena_bytes()?) != (2, 15, 31) {
             return Err(IndexError::BackendViolation(
                 "one-byte Unicode upper census changed".into(),
             ));
@@ -1318,12 +1304,8 @@ mod tests {
             .map_err(|_error| IndexError::ResourceLimited)?;
         let largest =
             CanonicalTokenCensus::upper_bound(maximum)?.ok_or(IndexError::ResourceLimited)?;
-        if (
-            largest.rows,
-            largest.key_bytes,
-            largest.packet_key_bytes,
-            largest.arena_bytes()?,
-        ) != (maximum, 14 * maximum, 64 * 1_024, 22 * maximum)
+        if (largest.rows, largest.key_bytes, largest.arena_bytes()?)
+            != (maximum, 14 * maximum, 22 * maximum)
         {
             return Err(IndexError::BackendViolation(
                 "maximum Unicode upper census changed".into(),
@@ -1340,7 +1322,6 @@ mod tests {
                 || !exact.exact
                 || bound.rows < exact.rows
                 || bound.key_bytes < exact.key_bytes
-                || bound.packet_key_bytes < exact.packet_key_bytes
                 || bound.arena_bytes()? < exact.arena_bytes()?
             {
                 return Err(IndexError::BackendViolation(format!(
@@ -1356,16 +1337,12 @@ mod tests {
         use std::collections::BTreeMap;
 
         let (mut work, meter) = budget()?;
-        let (mut cursor, mut packet) =
-            super::super::prepare_indexed_token_input("A a İ", &mut work)?;
+        let mut cursor = super::super::prepare_indexed_token_cursor("A a İ", &mut work)?;
         let bound = CanonicalTokenCensus::upper_bound(cursor.text().len())?
             .ok_or(IndexError::ResourceLimited)?;
-        if !packet.try_prepare_cold_keys(bound.packet_key_bytes(), &work)? {
-            return Err(IndexError::ResourceLimited);
-        }
-        let mut tokens = ColdTokens::try_new(bound, &work)?.ok_or(IndexError::ResourceLimited)?;
+        let mut tokens = ColdTokens::try_new(&bound, &work)?.ok_or(IndexError::ResourceLimited)?;
         let before = work.usage();
-        if tokens.fill_from_cursor(&mut cursor, &mut packet, &mut work)? != 3 {
+        if tokens.fill_from_cursor(&mut cursor, &mut work)? != 3 {
             return Err(IndexError::BackendViolation(
                 "upper census changed indexed run count".into(),
             ));
@@ -1404,7 +1381,7 @@ mod tests {
                 "upper census changed canonical case groups".into(),
             ));
         }
-        drop((tokens, packet, cursor));
+        drop((tokens, cursor));
         if meter.live.load(Ordering::Relaxed) != 0 || work.first_denial().is_some() {
             return Err(IndexError::BackendViolation(
                 "upper census retained a grant or recorded a denial".into(),
@@ -1423,7 +1400,7 @@ mod tests {
                 .map_err(|_error| IndexError::ResourceLimited)?,
             Ordering::Relaxed,
         );
-        if ColdTokens::try_new(bound, &work)?.is_some()
+        if ColdTokens::try_new(&bound, &work)?.is_some()
             || meter.live.load(Ordering::Relaxed) != 0
             || work.first_denial().is_some()
         {
@@ -1432,7 +1409,7 @@ mod tests {
             ));
         }
         let exact = exact_census("Ab aB", &mut work)?;
-        let tokens = ColdTokens::try_new(exact, &work)?.ok_or(IndexError::ResourceLimited)?;
+        let tokens = ColdTokens::try_new(&exact, &work)?.ok_or(IndexError::ResourceLimited)?;
         drop(tokens);
         if meter.live.load(Ordering::Relaxed) != 0 || work.first_denial().is_some() {
             return Err(IndexError::BackendViolation(
@@ -1453,15 +1430,15 @@ mod tests {
             direct: bool,
         ) -> Result<(BTreeMap<Vec<u8>, Vec<u32>>, u64, u64), IndexError> {
             let (mut work, meter) = budget()?;
-            let (mut cursor, mut packet) =
-                super::super::prepare_indexed_token_input(source, &mut work)?;
+            let mut cursor = super::super::prepare_indexed_token_cursor(source, &mut work)?;
             let census = CanonicalTokenCensus::count(&mut cursor, source.len(), &mut work)?
                 .ok_or(IndexError::ResourceLimited)?;
             let mut tokens =
-                ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+                ColdTokens::try_new(&census, &work)?.ok_or(IndexError::ResourceLimited)?;
             let indexed = if direct {
-                tokens.fill_from_cursor(&mut cursor, &mut packet, &mut work)?
+                tokens.fill_from_cursor(&mut cursor, &mut work)?
             } else {
+                let mut packet = TokenBatch::new(&work)?;
                 super::super::visit_prepared_token_batches(
                     &mut cursor,
                     &mut packet,
@@ -1490,7 +1467,6 @@ mod tests {
                 ));
             }
             drop(tokens);
-            drop(packet);
             drop(cursor);
             if meter.live.load(Ordering::Relaxed) != 0 {
                 return Err(IndexError::BackendViolation(
@@ -1543,17 +1519,16 @@ mod tests {
     fn direct_cold_emission_refuses_census_drift_without_unfunded_growth() -> Result<(), IndexError>
     {
         let (mut work, meter) = budget()?;
-        let (mut cursor, mut packet) =
-            super::super::prepare_indexed_token_input("Ab aB", &mut work)?;
+        let mut cursor = super::super::prepare_indexed_token_cursor("Ab aB", &mut work)?;
         let mut census = CanonicalTokenCensus::count(&mut cursor, 5, &mut work)?
             .ok_or(IndexError::ResourceLimited)?;
         census.key_bytes = census
             .key_bytes
             .checked_sub(1)
             .ok_or(IndexError::ResourceLimited)?;
-        let mut tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+        let mut tokens = ColdTokens::try_new(&census, &work)?.ok_or(IndexError::ResourceLimited)?;
         if !matches!(
-            tokens.fill_from_cursor(&mut cursor, &mut packet, &mut work),
+            tokens.fill_from_cursor(&mut cursor, &mut work),
             Err(IndexError::BackendViolation(_))
         ) {
             return Err(IndexError::BackendViolation(
@@ -1561,7 +1536,6 @@ mod tests {
             ));
         }
         drop(tokens);
-        drop(packet);
         drop(cursor);
         if meter.live.load(Ordering::Relaxed) != 0 {
             return Err(IndexError::BackendViolation(
@@ -1574,14 +1548,13 @@ mod tests {
     #[test]
     fn direct_cold_emission_observes_original_cancellation_and_refunds() -> Result<(), IndexError> {
         let (mut work, meter) = budget()?;
-        let (mut cursor, mut packet) =
-            super::super::prepare_indexed_token_input("cafe\u{301} Ab", &mut work)?;
+        let mut cursor = super::super::prepare_indexed_token_cursor("cafe\u{301} Ab", &mut work)?;
         let census = CanonicalTokenCensus::count(&mut cursor, 9, &mut work)?
             .ok_or(IndexError::ResourceLimited)?;
-        let mut tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+        let mut tokens = ColdTokens::try_new(&census, &work)?.ok_or(IndexError::ResourceLimited)?;
         work.request().cancel_handle().cancel();
         if !matches!(
-            tokens.fill_from_cursor(&mut cursor, &mut packet, &mut work),
+            tokens.fill_from_cursor(&mut cursor, &mut work),
             Err(IndexError::Cancelled)
         ) {
             return Err(IndexError::BackendViolation(
@@ -1589,7 +1562,6 @@ mod tests {
             ));
         }
         drop(tokens);
-        drop(packet);
         drop(cursor);
         if meter.live.load(Ordering::Relaxed) != 0 {
             return Err(IndexError::BackendViolation(
@@ -1615,7 +1587,7 @@ mod tests {
             ));
         }
         meter.ceiling.store(EXACT_ARENA_BYTES, Ordering::Relaxed);
-        let tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+        let tokens = ColdTokens::try_new(&census, &work)?.ok_or(IndexError::ResourceLimited)?;
         if meter.live.load(Ordering::Relaxed) != EXACT_ARENA_BYTES {
             return Err(IndexError::BackendViolation(
                 "exact ASCII arena charged a different layout".into(),
@@ -1631,10 +1603,10 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_unicode_census_releases_funded_nfc_and_row_packet() -> Result<(), IndexError> {
+    fn cancelled_unicode_census_releases_funded_nfc() -> Result<(), IndexError> {
         let (mut work, meter) = budget()?;
         let source = "cafe\u{301} ".repeat(1_000);
-        let (mut cursor, packet) = super::super::prepare_indexed_token_input(&source, &mut work)?;
+        let mut cursor = super::super::prepare_indexed_token_cursor(&source, &mut work)?;
         if cursor.text() != "café ".repeat(1_000) || meter.live.load(Ordering::Relaxed) == 0 {
             return Err(IndexError::BackendViolation(
                 "funded Unicode NFC cursor was not retained".into(),
@@ -1649,7 +1621,6 @@ mod tests {
                 "Unicode census ignored cancellation".into(),
             ));
         }
-        drop(packet);
         drop(cursor);
         if meter.live.load(Ordering::Relaxed) != 0 {
             return Err(IndexError::BackendViolation(
@@ -1690,7 +1661,7 @@ mod tests {
             }
             let census = exact_census(&source, &mut work)?;
             let mut tokens =
-                ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+                ColdTokens::try_new(&census, &work)?.ok_or(IndexError::ResourceLimited)?;
             let mut canonical = BTreeMap::<Vec<u8>, Vec<u32>>::new();
             let indexed =
                 super::super::visit_indexed_token_batches(&source, &mut work, |batch, budget| {
@@ -1739,7 +1710,7 @@ mod tests {
         let (mut work, meter) = budget()?;
         let source = "j i h g f e d c b a ".repeat(1_024);
         let census = exact_census(&source, &mut work)?;
-        let mut tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+        let mut tokens = ColdTokens::try_new(&census, &work)?.ok_or(IndexError::ResourceLimited)?;
         let indexed =
             super::super::visit_indexed_token_batches(&source, &mut work, |batch, budget| {
                 tokens.push_batch(batch, budget)
@@ -1781,7 +1752,7 @@ mod tests {
         let mut batch = TokenBatch::new(&work)?;
         batch.prepare(source, &source_runs(), &work)?;
         let census = exact_census(source, &mut work)?;
-        let mut tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+        let mut tokens = ColdTokens::try_new(&census, &work)?.ok_or(IndexError::ResourceLimited)?;
         tokens.push_batch(&batch, &mut work)?;
         tokens.sort_and_validate(&work)?;
         drop(batch);
@@ -1881,7 +1852,7 @@ mod tests {
             &work,
         )?;
         let census = exact_census("a b c d", &mut work)?;
-        let mut tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+        let mut tokens = ColdTokens::try_new(&census, &work)?.ok_or(IndexError::ResourceLimited)?;
         tokens.push_batch(&batch, &mut work)?;
         tokens.sort_and_validate(&work)?;
         if tokens.try_packed_alias(&mut work)?.is_some() {
@@ -1922,7 +1893,7 @@ mod tests {
             }
         }
         let census = exact_census(&source, &mut work)?;
-        let mut tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+        let mut tokens = ColdTokens::try_new(&census, &work)?.ok_or(IndexError::ResourceLimited)?;
         let indexed =
             super::super::visit_indexed_token_batches(&source, &mut work, |batch, budget| {
                 tokens.push_batch(batch, budget)
@@ -1944,7 +1915,7 @@ mod tests {
             match sealed {
                 SealedBlock::Leaf { positions, .. } => {
                     let payload =
-                        crate::native::text_memory::encode(&positions.occurrence, budget)?;
+                        crate::native::text_memory::encode(positions.as_occurrence(), budget)?;
                     actual.record(payload.as_slice().len())?;
                 }
                 SealedBlock::Packed { payload, .. } => actual.record(payload.bytes.len())?,
@@ -1970,8 +1941,9 @@ mod tests {
                     match draft.try_push(term, positions, budget)? {
                         BlockPush::Added => Ok(()),
                         BlockPush::Full { term: _, positions } => {
-                            let payload =
-                                crate::native::text_memory::encode(&positions.occurrence, budget)?;
+                            let payload = crate::native::text_memory::encode(
+                                positions.as_occurrence(), budget,
+                            )?;
                             actual.record(payload.as_slice().len())
                         }
                     }
@@ -2013,7 +1985,7 @@ mod tests {
             }
             let census = exact_census(&source, &mut work)?;
             let mut tokens =
-                ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+                ColdTokens::try_new(&census, &work)?.ok_or(IndexError::ResourceLimited)?;
             let indexed =
                 super::super::visit_indexed_token_batches(&source, &mut work, |batch, budget| {
                     tokens.push_batch(batch, budget)
@@ -2099,6 +2071,60 @@ mod tests {
                     "alias boundary source leaked memory".into(),
                 ));
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn impossible_alias_footprint_skips_paid_probe_for_direct_and_flat_programs()
+    -> Result<(), IndexError> {
+        for source_terms in [4_u16, 80] {
+            let (mut work, meter) = budget()?;
+            let mut source = String::from("a ");
+            let long_prefix = "z".repeat(60);
+            for ordinal in 1..source_terms {
+                source.push_str(&format!("{long_prefix}t{ordinal:03} "));
+            }
+            let census = exact_census(&source, &mut work)?;
+            let mut tokens =
+                ColdTokens::try_new(&census, &work)?.ok_or(IndexError::ResourceLimited)?;
+            let indexed =
+                super::super::visit_indexed_token_batches(&source, &mut work, |batch, budget| {
+                    tokens.push_batch(batch, budget)
+                })?;
+            assert_eq!(indexed, u64::from(source_terms));
+            tokens.sort_and_validate(&work)?;
+            let tokens = Arc::new(tokens);
+            let direct = ColdTokenProgram::from_suffix(Some(Arc::clone(&tokens)), None, &mut work)?
+                .ok_or(IndexError::ResourceLimited)?;
+            let flat = ColdTokenProgram::from_suffix(
+                None,
+                Some((&direct, u32::from(source_terms))),
+                &mut work,
+            )?
+            .ok_or(IndexError::ResourceLimited)?;
+            for view in [&direct, &flat] {
+                let view = ColdTokenProgramView::from_program(view)?;
+                let before = work.usage();
+                let reservations = meter.reservations.load(Ordering::Relaxed);
+                assert!(view.try_packed_alias(&mut work)?.is_none());
+                assert_eq!(work.usage(), before);
+                assert_eq!(meter.reservations.load(Ordering::Relaxed), reservations);
+                let shape = view.block_shape(&mut work)?;
+                let expected_terms = usize::from(source_terms)
+                    .checked_mul(2)
+                    .ok_or(IndexError::ResourceLimited)?;
+                assert_eq!(shape.term_count, expected_terms);
+                if source_terms == 4 {
+                    assert_eq!(shape.object_count, 1);
+                } else {
+                    assert!(shape.object_count > 1);
+                }
+            }
+            drop(flat);
+            drop(direct);
+            drop(tokens);
+            assert_eq!(meter.live.load(Ordering::Relaxed), 0);
         }
         Ok(())
     }

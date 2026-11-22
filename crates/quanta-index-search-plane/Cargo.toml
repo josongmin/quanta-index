@@ -6,14 +6,16 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# Only runtime process fixtures install this barrier. Normal runtime builds
-# never enable it through their regular search-plane dependency.
+# Only runtime process fixtures install this barrier and the guarded activation
+# fixture writer. Normal runtime builds never enable it through their regular
+# search-plane dependency.
 test-runtime-barriers = []
 
 [lints]
 workspace = true
 
 [dependencies]
+ciborium.workspace = true
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
@@ -29,5 +31,4 @@ sha2.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
-quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical", default-features = false }
 tempfile.workspace = true

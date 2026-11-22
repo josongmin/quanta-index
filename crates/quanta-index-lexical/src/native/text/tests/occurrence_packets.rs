@@ -32,22 +32,16 @@ fn cold_sql_replay_matches_canonical_unicode_and_repeated_positions() -> Result<
         ))));
         let spool = TextSpool::new(&scratch, &mut work)?;
         if replay {
-            let (mut cursor, mut source_packet) = prepare_indexed_token_input(&body, &mut work)?;
+            let mut cursor = prepare_indexed_token_cursor(&body, &mut work)?;
             let census = super::super::cold_tokens::CanonicalTokenCensus::count(
                 &mut cursor,
                 body.len(),
                 &mut work,
             )?
             .ok_or(IndexError::ResourceLimited)?;
-            check!(source_packet.try_prepare_cold_keys(census.packet_key_bytes(), &work)?);
-            let mut cold = super::super::cold_tokens::ColdTokens::try_new(census, &work)?
+            let mut cold = super::super::cold_tokens::ColdTokens::try_new(&census, &work)?
                 .ok_or(IndexError::ResourceLimited)?;
-            let _indexed = visit_prepared_token_batches(
-                &mut cursor,
-                &mut source_packet,
-                &mut work,
-                |batch, budget| cold.push_batch(batch, budget),
-            )?;
+            let _indexed = cold.fill_from_cursor(&mut cursor, &mut work)?;
             cold.sort_and_validate(&work)?;
             let mut cancelled = budget()?;
             cancelled.request().cancel_handle().cancel();
@@ -64,7 +58,7 @@ fn cold_sql_replay_matches_canonical_unicode_and_repeated_positions() -> Result<
             cold.replay_borrowed_pages(&mut work, |rows, budget| {
                 spool.token_batch_borrowed(rows, budget)
             })?;
-            drop((cold, source_packet));
+            drop(cold);
         } else {
             spool.reset_tokens(&mut work)?;
             let _indexed = visit_indexed_token_batches(&body, &mut work, |batch, budget| {

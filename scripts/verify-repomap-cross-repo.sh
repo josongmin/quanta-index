@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The registered producer alone receives its dedicated signing agent.
+paired_signer_socket="${QUANTA_P11_SIGNER_SOCKET:-}"
+export -n paired_signer_socket
+unset QUANTA_P11_SIGNER_SOCKET
+if [[ -n "$paired_signer_socket" && -n "${SSH_AUTH_SOCK:-}" ]] &&
+   [[ ! -S "$paired_signer_socket" || ! -S "$SSH_AUTH_SOCK" ||
+      "$SSH_AUTH_SOCK" -ef "$paired_signer_socket" ]]; then
+  unset SSH_AUTH_SOCK
+fi
+
 quanta_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 semantica_root="${1:?Semantica checkout path is required}"
 semantica_root="$(cd -- "$semantica_root" && pwd -P)"
@@ -10,9 +20,9 @@ semantica_root="$(cd -- "$semantica_root" && pwd -P)"
 # shellcheck source=/dev/null
 source "$semantica_root/scripts/lib/python-env.sh"
 paired_python="$(cg_resolve_python_bin "$semantica_root")"
-provided_binary="${QUANTA_INDEX_SEARCHD_BIN:?QUANTA_INDEX_SEARCHD_BIN is required}"
+provided_binary="${QUANTA_INDEX_SEARCHD_BIN:-}"
 r5_lane="${QUANTA_P11_R5_QBC_LANE:?registered QBC lane is required}"
-if [[ "$provided_binary" != /* ]]; then
+if [[ -n "$provided_binary" && "$provided_binary" != /* ]]; then
   provided_binary="$(pwd -P)/$provided_binary"
 fi
 
@@ -45,25 +55,60 @@ resolved_pair() {
 # Check the actual Cargo resolver before the expensive build, not the spelling
 # of declared relative paths. Both selected feature profiles must use this
 # exact Quanta checkout and the nested workspace's actual lockfile.
-# The caller target's Cargo required-features lists both index-sdk-ingress and
-# retrieval-authority-contract-surface. Resolve and execute that same minimal
-# feature pair; index-sdk-ingress alone does not admit this target.
-runtime_resolution="$(resolved_pair quanta-runtime index-sdk-ingress,retrieval-authority-contract-surface)"
-kernel_resolution="$(resolved_pair quanta-runtime-retrieval-kernel index-sdk-ingress-surface)"
+paired_consumers="$("$paired_python" -I -c '
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from tools.ci.daemon_execution_evidence import R5_PROOF, live_proof, r5_cases
+
+for _, package, features, _, _, _ in r5_cases(live_proof(Path(sys.argv[1]), R5_PROOF)):
+    print(package, features, sep="\t")
+' "$quanta_root")"
+IFS=$'\t' read -r runtime_package runtime_features <<< "${paired_consumers%%$'\n'*}"
+IFS=$'\t' read -r kernel_package kernel_features <<< "${paired_consumers#*$'\n'}"
+runtime_resolution="$(resolved_pair "$runtime_package" "$runtime_features")"
+kernel_resolution="$(resolved_pair "$kernel_package" "$kernel_features")"
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
 
-PYTHONPATH="$quanta_root${PYTHONPATH:+:$PYTHONPATH}" "$paired_python" "$quanta_root/tools/ci/paired_r5_result.py" \
+release_binary="$(PYTHONPATH="$quanta_root${PYTHONPATH:+:$PYTHONPATH}" "$paired_python" "$quanta_root/tools/ci/paired_r5_result.py" \
   --verify-resolution-only --quanta-root "$quanta_root" --semantica-root "$semantica_root" \
-  --runtime-resolution "$runtime_resolution" --kernel-resolution "$kernel_resolution"
+  --runtime-resolution "$runtime_resolution" --kernel-resolution "$kernel_resolution")"
+require_frozen_source "$quanta_root" "$quanta_head"
+require_frozen_source "$semantica_root" "$semantica_head"
 
 cd -- "$quanta_root"
-just rust-build-release-daemon-fresh
-target_dir="$(./scripts/cargow --lane release-daemon-bin-lane metadata --format-version 1 --no-deps | "$paired_python" -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
-built_binary="$target_dir/release/quanta-index-searchd"
-if [[ ! -x "$built_binary" || ! -x "$provided_binary" ]]; then
-  printf 'fresh release daemon and QUANTA_INDEX_SEARCHD_BIN must both be executable\n' >&2
-  exit 1
+pin_archive_option=""
+verify_archive_option=""
+if [[ -n "$release_binary" ]]; then
+  # The formal path uses the exact P10 content archive. Execute only its private copy.
+  built_binary="$release_binary"
+  provided_binary="${provided_binary:-$release_binary}"
+  pin_archive_option="--archive-sha256=${release_binary##*/}"
+  verify_archive_option="--archive=$release_binary"
+elif [[ -n "${QUANTA_RETIREMENT_DAEMON_BUILD:-}${QUANTA_RETIREMENT_DAEMON_RECEIPT_SHA256:-}" ]]; then
+  selection="$("$paired_python" "$quanta_root/tools/ci/check-tantivy-retirement.py" \
+    --select-captured-daemon \
+    --release-build "${QUANTA_RETIREMENT_DAEMON_BUILD:?recorded daemon build directory is required}" \
+    --expected-build-receipt-sha256 "${QUANTA_RETIREMENT_DAEMON_RECEIPT_SHA256:?recorded build receipt digest is required}")"
+  selected_digest="${selection%%$'\n'*}"
+  built_binary="${selection#*$'\n'}"
+  if [[ ! "$selected_digest" =~ ^[0-9a-f]{64}$ || "$built_binary" != /* || "$built_binary" == *$'\n'* ]]; then
+    printf 'Recorded Native release selector did not return a daemon digest and path\n' >&2
+    exit 1
+  fi
+  provided_binary="${provided_binary:-$built_binary}"
+  pin_archive_option="--archive-sha256=$selected_digest"
+else
+  : "${provided_binary:?QUANTA_INDEX_SEARCHD_BIN is required for staged R5}"
+  native_build="$(just rust-build-release-native-daemon)"
+  printf '%s\n' "$native_build"
+  built_binary="$(sed -n 's/^Verified Native daemon //p' <<< "$native_build")"
+  if [[ "$built_binary" != /* || "$built_binary" == *$'\n'* ]]; then
+    printf 'Native release producer did not select one absolute daemon path\n' >&2
+    exit 1
+  fi
 fi
 custody_directory="$(mktemp -d)"
 custody_directory="$(cd -- "$custody_directory" && pwd -P)"
@@ -76,11 +121,10 @@ trap cleanup_custody EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 binary_digest="$("$paired_python" "$quanta_root/tools/ci/binary_custody.py" pin \
-  "$built_binary" "$provided_binary" "$custody_binary")"
-export QUANTA_INDEX_SEARCHD_BIN="$custody_binary"
+  "$built_binary" "$provided_binary" "$custody_binary" ${pin_archive_option:+"$pin_archive_option"})"
 require_binary_custody() {
   "$paired_python" "$quanta_root/tools/ci/binary_custody.py" verify "$binary_digest" \
-    "$built_binary" "$provided_binary" "$custody_binary"
+    "$built_binary" "$provided_binary" "$custody_binary" ${verify_archive_option:+"$verify_archive_option"}
 }
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
@@ -93,7 +137,9 @@ else
   evidence_parent="$(mktemp -d "$temporary_root/quanta-paired-r5-XXXXXX")"
   evidence_root="$evidence_parent/result"
 fi
+# The typed runner owns the final resolver, source and daemon checks before signing.
 require_binary_custody
+QUANTA_P11_SIGNER_SOCKET="$paired_signer_socket" \
 PYTHONPATH="$quanta_root${PYTHONPATH:+:$PYTHONPATH}" "$paired_python" "$quanta_root/tools/ci/paired_r5_result.py" \
   --quanta-root "$quanta_root" --semantica-root "$semantica_root" \
   --evidence-root "$evidence_root" --qbc-lane "$r5_lane" \
@@ -101,18 +147,6 @@ PYTHONPATH="$quanta_root${PYTHONPATH:+:$PYTHONPATH}" "$paired_python" "$quanta_r
   --daemon-digest "$binary_digest" --built-binary "$built_binary" \
   --provided-binary "$provided_binary" --custody-binary "$custody_binary" \
   --runtime-resolution "$runtime_resolution" --kernel-resolution "$kernel_resolution"
-require_frozen_source "$quanta_root" "$quanta_head"
-require_frozen_source "$semantica_root" "$semantica_head"
-require_binary_custody
-runtime_resolution_after="$(resolved_pair quanta-runtime index-sdk-ingress,retrieval-authority-contract-surface)"
-kernel_resolution_after="$(resolved_pair quanta-runtime-retrieval-kernel index-sdk-ingress-surface)"
-if [[ "$runtime_resolution_after" != "$runtime_resolution" || "$kernel_resolution_after" != "$kernel_resolution" ]]; then
-  printf 'resolved cross-repo dependency identities changed during proof\n' >&2
-  exit 1
-fi
-require_frozen_source "$quanta_root" "$quanta_head"
-require_frozen_source "$semantica_root" "$semantica_head"
-require_binary_custody
 printf 'paired-daemon-sha256: %s\n' "$binary_digest"
 printf 'paired-cargo-resolution-runtime: %s\n' "$runtime_resolution"
 printf 'paired-cargo-resolution-kernel: %s\n' "$kernel_resolution"

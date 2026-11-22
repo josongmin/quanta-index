@@ -2,18 +2,23 @@
 
 use quanta_index_core::index::ports::ObjectMapBatchPort;
 use quanta_index_core::index::{
-    AttemptContext, CoverageBinding, IndexError, InputDomain, InstanceSpec, MapRoot,
+    AttemptContext, CoverageBinding, Digest, IndexError, InputDomain, InstanceSpec, MapRoot,
     MemoryLifetime, ObjectRef, OwnerKey, OwnerMemberBinding, owner_map_key, read_owner_coverage,
 };
 use std::sync::Arc;
 
 use super::ann_directory::{
-    AnnDirectory, MAX_DELTA_OWNERS, RegionDescriptor, ValidatedDeltaMember, load_member,
-    validate_coverage_layout,
+    AnnBackend, AnnDirectory, MAX_DELTA_OWNERS, RegionDescriptor, ValidatedDeltaMember,
+    load_member, validate_coverage_layout,
 };
 use super::native_graph;
 use super::selected_owner::scan_ordered_page;
 use super::{EmbeddingRecipe, ReadContext};
+use crate::native::{
+    ann_files, ann_lance, ann_region_policy,
+    ann_session::{ANN_TABLE_NAME, AnnLanceSession},
+    ann_store::AnnStoreLimits,
+};
 
 fn limited<T>(_error: T) -> IndexError {
     IndexError::ResourceLimited
@@ -57,6 +62,7 @@ fn load_materialized_member(
 pub(super) async fn prepare(
     instance: &InstanceSpec,
     recipe: &EmbeddingRecipe,
+    backend: AnnBackend,
     prior: Option<&CoverageBinding>,
     owners: MapRoot,
     materialized: Option<(OwnerKey, ObjectRef)>,
@@ -91,15 +97,19 @@ pub(super) async fn prepare(
         // With no prior directory there is no complete reverse index. Build it
         // from the whole selected owner root, including unchanged prior
         // coverage, before this new directory can become a Catalog child.
-        AnnDirectory::empty(
+        AnnDirectory::empty_with_backend(
             recipe.fingerprint(),
             if projected {
                 MapRoot(None)
             } else {
                 prior.map_or(owners, |coverage| coverage.owners)
             },
+            backend,
         )
     };
+    if directory.backend()? != backend {
+        return Err(IndexError::RebuildRequired);
+    }
     if prior_directory.is_some()
         && prior.is_some_and(|coverage| coverage.owners != directory.owners)
     {
@@ -152,11 +162,11 @@ pub(super) async fn prepare(
             directory.remove_delta(owner, recipe, context)?;
             return directory.prepare_searchable(context);
         }
-        let row_limit = u32::try_from(native_graph::MAX_REGION_CELLS)
+        let row_limit = u32::try_from(ann_region_policy::MAX_REGION_CELLS)
             .map_err(limited)?
             .checked_div(recipe.dimension)
             .ok_or(IndexError::ResourceLimited)?
-            .min(u32::try_from(native_graph::MAX_REGION_ROWS).map_err(limited)?);
+            .min(u32::try_from(ann_region_policy::MAX_REGION_ROWS).map_err(limited)?);
         // Seal before adding an owner that would exceed the region envelope.
         // Replacements are conservatively sealed rather than undercounted.
         if directory.delta_owners != 0
@@ -182,7 +192,7 @@ pub(super) async fn prepare(
             }
         }
         if let Some(prepared) = directory.prepare_validated_delta(validated, recipe, context)? {
-            // A sealed delta must be readable by the native graph builder. Only the
+            // A sealed delta must be readable by its selected region builder. Only the
             // non-seal edit may remain resident until its descriptor and
             // coverage parent join the original child-first installation.
             let will_seal = prepared.next_owners == MAX_DELTA_OWNERS || prepared.next_rows >= 256;
@@ -225,7 +235,7 @@ async fn seal_delta(
         return Ok(());
     }
     // Coalesce small runs in this same COW attempt before checking net capacity.
-    // Failed staging never publishes these removals. No intermediate graph build.
+    // Failed staging never publishes these removals or an intermediate region.
     let members = directory.consolidated_members(recipe, context)?;
     if members.rows == 0 {
         directory.delta = MapRoot(None);
@@ -237,8 +247,13 @@ async fn seal_delta(
     let max_owners = usize::try_from(members.owners).map_err(limited)?;
     let row_count = usize::try_from(members.rows).map_err(limited)?;
     let dimension = usize::try_from(recipe.dimension).map_err(limited)?;
+    let backend = directory.backend()?;
+    let row_bytes = match backend {
+        AnnBackend::Graph => std::mem::size_of::<native_graph::RegionRow<'_>>(),
+        AnnBackend::LanceDb => std::mem::size_of::<ann_lance::RegionRow<'_>>(),
+    };
     let backing = row_count
-        .checked_mul(std::mem::size_of::<native_graph::RegionRow<'_>>())
+        .checked_mul(row_bytes)
         .and_then(|bytes| bytes.checked_add(dimension.checked_mul(4)?))
         .ok_or(IndexError::ResourceLimited)?;
     let _memory = context.budget.reserve_memory(
@@ -304,14 +319,22 @@ async fn seal_delta(
             "ANN region owner count mismatch".into(),
         ));
     }
-    let mut rows = Vec::new();
-    rows.try_reserve_exact(row_count).map_err(limited)?;
+    let mut graph_rows = Vec::new();
+    let mut lance_rows = Vec::new();
+    match backend {
+        AnnBackend::Graph => graph_rows.try_reserve_exact(row_count).map_err(limited)?,
+        AnnBackend::LanceDb => lance_rows.try_reserve_exact(row_count).map_err(limited)?,
+    }
     let mut center = Vec::new();
     center.try_reserve_exact(dimension).map_err(limited)?;
     center.resize(dimension, 0.0f32);
     for selected in artifacts {
         for vector in &selected.artifact.vectors {
-            if rows.len() == row_count {
+            let seen = match backend {
+                AnnBackend::Graph => graph_rows.len(),
+                AnnBackend::LanceDb => lance_rows.len(),
+            };
+            if seen == row_count {
                 return Err(IndexError::CorruptObject(
                     "ANN delta row count exceeded".into(),
                 ));
@@ -319,48 +342,74 @@ async fn seal_delta(
             for (sum, value) in center.iter_mut().zip(&vector.values) {
                 *sum += *value;
             }
-            rows.push(native_graph::RegionRow {
-                owner: selected.binding.owner,
-                member: selected.binding.logical_commitment,
-                vector_id: &vector.id,
-                vector: &vector.values,
-            });
+            match backend {
+                AnnBackend::Graph => graph_rows.push(native_graph::RegionRow {
+                    owner: selected.binding.owner,
+                    member: selected.binding.logical_commitment,
+                    vector_id: &vector.id,
+                    vector: &vector.values,
+                }),
+                AnnBackend::LanceDb => lance_rows.push(ann_lance::RegionRow {
+                    owner: selected.binding.owner,
+                    member: selected.binding.logical_commitment,
+                    vector_id: &vector.id,
+                    input: selected.binding.input,
+                    vector: &vector.values,
+                }),
+            }
         }
     }
-    if rows.len() != row_count {
+    if graph_rows.len() + lance_rows.len() != row_count {
         return Err(IndexError::CorruptObject(
             "ANN delta row count differs".into(),
         ));
     }
     if center.iter().any(|value| !value.is_finite()) || center.iter().all(|value| *value == 0.0) {
-        let first = rows
+        let first = artifacts
             .first()
+            .and_then(|selected| selected.artifact.vectors.first())
             .ok_or_else(|| IndexError::CorruptObject("ANN delta unexpectedly empty".into()))?;
-        center.copy_from_slice(first.vector);
+        center.copy_from_slice(&first.values);
     }
     // Each authenticated owner has unique vector IDs. The canonical tuple
     // therefore needs no stable sort or unadmitted auxiliary row buffer.
-    rows.sort_unstable_by(|a, b| {
+    graph_rows.sort_unstable_by(|a, b| {
+        (a.owner, a.member, a.vector_id).cmp(&(b.owner, b.member, b.vector_id))
+    });
+    lance_rows.sort_unstable_by(|a, b| {
         (a.owner, a.member, a.vector_id).cmp(&(b.owner, b.member, b.vector_id))
     });
     let generation = directory
         .next_region
         .checked_add(1)
         .ok_or(IndexError::ResourceLimited)?;
-    let build_span = crate::build_diagnostic::begin_build_stage(
-        context.budget.request().diagnostic_context(),
-        quanta_index_core::DiagnosticStageV1::SemanticBuild,
-    );
-    let built = native_graph::install(&rows, recipe.fingerprint(), generation, dimension, context);
-    let succeeded = built.is_ok();
-    let fileset = match built {
-        Ok(reference) => reference,
-        Err(error) => {
-            crate::build_diagnostic::finish_build_stage(build_span, false);
-            return Err(error);
+    let fileset = match backend {
+        AnnBackend::Graph => {
+            let build_span = crate::build_diagnostic::begin_build_stage(
+                context.budget.request().diagnostic_context(),
+                quanta_index_core::DiagnosticStageV1::SemanticBuild,
+            );
+            let built = native_graph::install(
+                &graph_rows,
+                recipe.fingerprint(),
+                generation,
+                dimension,
+                context,
+            );
+            crate::build_diagnostic::finish_build_stage(build_span, built.is_ok());
+            built?
+        }
+        AnnBackend::LanceDb => {
+            install_lance_region(
+                &lance_rows,
+                recipe.fingerprint(),
+                generation,
+                dimension,
+                context,
+            )
+            .await?
         }
     };
-    crate::build_diagnostic::finish_build_stage(build_span, succeeded);
     let _region = directory.append_region(
         &RegionDescriptor {
             fileset,
@@ -374,4 +423,86 @@ async fn seal_delta(
     directory.delta_owners = 0;
     directory.delta_rows = 0;
     Ok(())
+}
+
+/// Build one selected region in a private admitted Lance session, then install
+/// its immutable file set under the caller's existing attempt custody.
+pub(super) async fn install_lance_region(
+    rows: &[ann_lance::RegionRow<'_>],
+    recipe: Digest,
+    generation: u64,
+    dimension: usize,
+    context: &mut AttemptContext<'_>,
+) -> Result<ObjectRef, IndexError> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return Err(IndexError::BackendViolation(
+            "ANN Lance runtime is unavailable".into(),
+        ));
+    }
+    // Use the Native Lance per-region staging quota. Reserving the store's
+    // absolute maximum would exceed a 64 MiB worker grant on every seal.
+    let row_bytes = rows.iter().try_fold(0u64, |total, row| {
+        let vector_bytes = u64::try_from(row.vector.len())
+            .map_err(limited)?
+            .checked_mul(4)
+            .ok_or(IndexError::ResourceLimited)?;
+        let id_bytes = u64::try_from(row.vector_id.len()).map_err(limited)?;
+        total
+            .checked_add(vector_bytes)
+            .and_then(|bytes| bytes.checked_add(id_bytes))
+            .and_then(|bytes| bytes.checked_add(256))
+            .ok_or(IndexError::ResourceLimited)
+    })?;
+    let limits = AnnStoreLimits::default();
+    let max_write_bytes = row_bytes
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(1_048_576))
+        .ok_or(IndexError::ResourceLimited)?
+        .min(limits.max_write_bytes);
+    let limits = AnnStoreLimits {
+        max_write_bytes,
+        max_read_bytes: max_write_bytes.saturating_mul(4).min(limits.max_read_bytes),
+        ..limits
+    };
+    let session = AnnLanceSession::new(limits, context.budget)?;
+    let connection = session.connect().await?;
+    let build_span = crate::build_diagnostic::begin_build_stage(
+        context.budget.request().diagnostic_context(),
+        quanta_index_core::DiagnosticStageV1::SemanticBuild,
+    );
+    let built = ann_lance::build_region(
+        &connection,
+        ANN_TABLE_NAME,
+        rows,
+        recipe,
+        generation,
+        dimension,
+        context.budget,
+    )
+    .await;
+    let resolved = session.resolve(built);
+    crate::build_diagnostic::finish_build_stage(build_span, resolved.is_ok());
+    let (table, seal) = resolved?;
+    drop(table);
+    drop(connection);
+    let files = session.freeze_and_snapshot().await?;
+    let _inputs_memory = context.budget.reserve_memory(
+        u64::try_from(
+            files
+                .len()
+                .checked_mul(std::mem::size_of::<ann_files::AnnFileInput<'_>>())
+                .ok_or(IndexError::ResourceLimited)?,
+        )
+        .map_err(limited)?,
+        MemoryLifetime::Temporary,
+    )?;
+    let mut inputs = Vec::new();
+    inputs.try_reserve_exact(files.len()).map_err(limited)?;
+    for file in &files {
+        inputs.push(ann_files::AnnFileInput {
+            path: &file.path,
+            bytes: &file.bytes,
+        });
+    }
+    ann_files::install_fileset_for_directory(context, seal, &inputs)
 }

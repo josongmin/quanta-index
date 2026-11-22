@@ -115,15 +115,10 @@ pub(super) fn identify(
 ) -> Result<RegisteredObject, IndexError> {
     let (_, wire_len) = header(payload, children)?;
     let bytes = charge(wire_len, budget)?;
-    let reference = native_immutable_object_ref_v1(payload, children)
-        .ok_or(IndexError::ResourceLimited)?;
+    let reference =
+        native_immutable_object_ref_v1(payload, children).ok_or(IndexError::ResourceLimited)?;
     budget.checkpoint()?;
-    registration(
-        reference,
-        bytes,
-        children,
-        budget,
-    )
+    registration(reference, bytes, children, budget)
 }
 
 pub(super) fn prepare(

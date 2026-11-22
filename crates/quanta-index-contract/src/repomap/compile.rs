@@ -666,6 +666,16 @@ impl CompiledRepoMapCandidateV1 {
     }
 
     #[must_use]
+    pub fn into_graph_and_projection(
+        self,
+    ) -> (
+        CompiledRepoMapGraphV1,
+        Vec<CompiledRepoMapProjectionEntryV1>,
+    ) {
+        (self.graph, self.projection)
+    }
+
+    #[must_use]
     pub const fn commitments(&self) -> RepoMapCandidateCommitmentsV1 {
         self.commitments
     }

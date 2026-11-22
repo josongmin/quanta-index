@@ -1979,6 +1979,54 @@ mod tests {
     }
 
     #[test]
+    fn staged_full_publication_rejects_trailing_cbor_before_decode_reservation() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let store = SourcePublicationUploadStore::open(
+            root.path().join("uploads"),
+            SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+        )?;
+        let mut full = batch();
+        full.bundle_payload = None;
+        let encoded = crate::encode_cbor_payload(&full)?;
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+
+        for (bytes, has_trailing_value) in [(encoded, false), (trailing, true)] {
+            let identity = SourcePublicationUploadIdentity {
+                body_sha256: Sha256::digest(&bytes).into(),
+                body_bytes: u64::try_from(bytes.len())?,
+            };
+            let _ack = store.stage(
+                &SourcePublicationUploadPart {
+                    identity,
+                    offset: 0,
+                    bytes,
+                },
+                &budget(),
+            )?;
+            let mut reservations = 0;
+            let loaded = store.load(identity, &budget(), &mut |_| {
+                reservations += 1;
+                Ok(())
+            });
+            if has_trailing_value {
+                assert!(
+                    matches!(loaded, Err(CoreError::InvalidContract(ref message))
+                    if message.contains("trailing bytes")),
+                    "{loaded:?}"
+                );
+                assert_eq!(reservations, 0);
+            } else {
+                assert_eq!(loaded?, full);
+                assert_eq!(reservations, 1);
+            }
+            store.discard(identity)?;
+        }
+        assert_eq!(store.inventory(&budget())?.0, 0);
+        Ok(())
+    }
+
+    #[test]
     fn staged_publication_disk_admission_does_not_leave_an_empty_slot() {
         let root = tempfile::tempdir().expect("tempdir");
         let store = SourcePublicationUploadStore::open(

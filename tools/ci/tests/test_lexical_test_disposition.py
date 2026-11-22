@@ -1,0 +1,768 @@
+"""Regressions for the Legacy lexical disposition gate after source deletion."""
+
+import hashlib
+import importlib.util
+import json
+import os
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from tools.ci import retirement_nextest
+
+
+@pytest.fixture
+def project_checker(tmp_path, monkeypatch):
+    path = Path(__file__).resolve().parents[1] / "lint/check-lexical-test-disposition.py"
+    spec = importlib.util.spec_from_file_location("lexical_test_disposition", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    roster = module.tomllib.loads(module.MANIFEST.read_text(encoding="utf-8"))
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    manifest = tmp_path / "tools/ci/inventory/lexical-test-disposition.toml"
+    manifest.parent.mkdir(parents=True)
+    monkeypatch.setattr(module, "MANIFEST", manifest)
+    monkeypatch.setattr(module, "LEXICAL_CARGO_MANIFEST", tmp_path / "Cargo.toml")
+    module.LEXICAL_CARGO_MANIFEST.write_text("[package]\n", encoding="utf-8")
+    sections = ["version = 1\n"]
+    for target in roster["targets"]:
+        source = target["path"]
+        feature = target.get("required_feature")
+        tests = [name for group in target["dispositions"] for name in group["tests"]]
+        lines = ["[[targets]]", f"path = {json.dumps(source)}"]
+        if feature is not None:
+            lines.append(f"required_feature = {json.dumps(feature)}")
+        lines.extend([
+            "[[targets.dispositions]]",
+            'disposition = "retire"' if feature else 'disposition = "retain"',
+            'proof = "NOT_APPLICABLE"' if feature else 'proof = "NOT_RUN"',
+            'replacement = "fixture for checker behavior"',
+            f"tests = {json.dumps(tests)}",
+        ])
+        sections.append("\n".join(lines))
+        if feature is not None:
+            continue
+        retained = tmp_path / source
+        retained.parent.mkdir(parents=True)
+        retained.write_text(
+            "".join(f"#[test]\nfn {name}() {{}}\n" for name in tests),
+            encoding="utf-8",
+        )
+    module.MANIFEST.write_text("\n\n".join(sections) + "\n", encoding="utf-8")
+    return module
+
+
+@pytest.fixture
+def checker(project_checker, monkeypatch):
+    # Other cases isolate one gate at a time using a synthetic retired roster.
+    targets = project_checker.tomllib.loads(project_checker.MANIFEST.read_text(encoding="utf-8"))["targets"]
+    monkeypatch.setattr(project_checker, "ENGINE_ONLY_RETIREMENTS", frozenset(
+        (target["path"], test)
+        for target in targets if "required_feature" in target
+        for group in target["dispositions"]
+        for test in group["tests"]
+    ))
+    return project_checker
+
+
+@pytest.mark.parametrize("inventory_only", [True, False])
+def test_engine_removal_does_not_waive_public_and_data_contracts(project_checker, capsys, inventory_only):
+    assert project_checker.main(inventory_only=inventory_only) == 1
+    errors = capsys.readouterr().err
+    assert "engine-only retirement is not recorded" in errors
+    assert "point_inventory_reports_control_file_read_failures" in errors
+    assert "tantivy_select_file_collapses_multiple_chunks_per_path" in errors
+    assert "point_inventory_matches_full_inventory_for_digest_and_family_symlink" not in errors
+
+
+def test_deleting_targets_and_their_manifest_rows_does_not_erase_obligations(checker, capsys):
+    inventory = checker.MANIFEST.read_text(encoding="utf-8")
+    retained = next(
+        section
+        for section in inventory.split("[[targets]]")[1:]
+        if "sealed_commitment_cost.rs" in section
+    )
+    checker.MANIFEST.write_text(f"version = 1\n[[targets]]{retained}", encoding="utf-8")
+
+    assert checker.main() == 1
+    errors = capsys.readouterr().err
+    for target in ("sealed_manifest.rs", "text_authority_shards.rs", "tantivy_smoke.rs"):
+        assert f"{target}: missing frozen target" in errors
+
+
+def test_removed_source_requires_each_archived_id_to_be_disposed(checker, capsys):
+    inventory = checker.MANIFEST.read_text(encoding="utf-8")
+    checker.MANIFEST.write_text(
+        inventory.replace('disposition = "retire"', 'disposition = "migrate"').replace(
+            'proof = "NOT_APPLICABLE"', 'proof = "NOT_RUN"'
+        ),
+        encoding="utf-8",
+    )
+    assert checker.main() == 1
+    errors = capsys.readouterr().err
+    for target, count in (
+        ("sealed_manifest", 43),
+        ("text_authority_shards", 7),
+        ("tantivy_smoke", 41),
+    ):
+        assert f"{target}.rs: source was removed with {count} test IDs" in errors
+    assert "[NOT_RUN]" in errors
+    assert "shared_file_body_fault_fences_every_referencing_generation" in errors
+
+
+def test_inventory_only_accepts_pending_bodies_but_requires_the_frozen_ids(checker, capsys):
+    inventory = checker.MANIFEST.read_text(encoding="utf-8")
+    pending = inventory.replace('disposition = "retire"', 'disposition = "migrate"').replace(
+        'proof = "NOT_APPLICABLE"', 'proof = "NOT_RUN"'
+    )
+    checker.MANIFEST.write_text(pending, encoding="utf-8")
+    assert checker.main(inventory_only=True) == 0
+    assert "inventory only: 93 IDs across 4 targets" in capsys.readouterr().out
+    assert checker.main() == 1
+    assert "lacking VERIFIED migrate/retire proof" in capsys.readouterr().err
+
+    checker.MANIFEST.write_text(
+        pending.replace('"tantivy_applies_query_boost_to_scores"', '"unrelated_same_count_test"'),
+        encoding="utf-8",
+    )
+    assert checker.main(inventory_only=True) == 1
+    assert "mapped test IDs differ from the frozen census" in capsys.readouterr().err
+
+
+def test_pending_candidate_source_is_checked_without_execution(checker, capsys):
+    candidate = "crates/quanta-index-lexical/tests/replacement.rs"
+    source = checker.ROOT / candidate
+    source.write_text("#[test]\nfn replacement() {}\n", encoding="utf-8")
+    inventory = checker.MANIFEST.read_text(encoding="utf-8")
+    checker.MANIFEST.write_text(
+        inventory.replace(
+            'disposition = "retire"\nproof = "NOT_APPLICABLE"',
+            'disposition = "migrate"\nproof = "NOT_RUN"\n'
+            f'candidates = [{{path = "{candidate}", tests = ["replacement"]}}]',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    assert checker.main(inventory_only=True) == 0
+    source.write_text("#[test]\nfn renamed() {}\n", encoding="utf-8")
+    assert checker.main(inventory_only=True) == 1
+    assert f"replacement test 'replacement' is absent from {candidate}" in capsys.readouterr().err
+
+
+def test_missing_assertion_blocks_proof_promotion(checker, capsys):
+    inventory = checker.MANIFEST.read_text(encoding="utf-8")
+    pending = inventory.replace(
+        'disposition = "retire"\nproof = "NOT_APPLICABLE"',
+        'disposition = "migrate"\nproof = "NOT_RUN"\n'
+        'remaining_assertions = ["Reopen the original exact view"]',
+        1,
+    )
+    checker.MANIFEST.write_text(pending, encoding="utf-8")
+    assert checker.main(inventory_only=True) == 0
+    checker.MANIFEST.write_text(
+        pending.replace(
+            'proof = "NOT_RUN"\nremaining_assertions',
+            'proof = "VERIFIED"\nremaining_assertions',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    assert checker.main(inventory_only=True) == 1
+    assert "verified disposition still has missing assertions" in capsys.readouterr().err
+
+
+def test_migration_cannot_claim_it_has_no_applicable_body(checker, capsys):
+    inventory = checker.MANIFEST.read_text(encoding="utf-8")
+    checker.MANIFEST.write_text(
+        inventory.replace('disposition = "retire"', 'disposition = "migrate"'),
+        encoding="utf-8",
+    )
+    assert checker.main(inventory_only=True) == 1
+    assert "migration requires a body outcome" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected_error"),
+    [
+        ("missing", "requires at least one Nextest body observation"),
+        ("stale", "observation source changed since"),
+        ("wrong_case", "is absent from"),
+        ("valid", None),
+    ],
+)
+def test_verified_migration_requires_current_named_nextest_observation(
+    checker, capsys, evidence, expected_error,
+):
+    source = "crates/quanta-index-lexical/tests/replacement.rs"
+    path = checker.ROOT / source
+    body = b"#[test]\nfn replacement() {}\n"
+    path.write_bytes(body)
+    inventory = checker.MANIFEST.read_text(encoding="utf-8")
+    retired = 'disposition = "retire"\nproof = "NOT_APPLICABLE"'
+    verified = (
+        'disposition = "migrate"\nproof = "VERIFIED"\n'
+        f'candidates = [{{path = "{source}", tests = ["replacement"]}}]'
+    )
+    if evidence != "missing":
+        case = "different_test" if evidence == "wrong_case" else "replacement"
+        digest = hashlib.sha256(body).hexdigest()
+        verified += (
+            f'\nobservations = [{{source = "{source}", case = "{case}", '
+            f'source_sha256 = "{digest}", run_id = "3739620b-a0ff-451d-897f-e5a32fc146eb"}}]'
+        )
+    checker.MANIFEST.write_text(inventory.replace(retired, verified, 1), encoding="utf-8")
+
+    if evidence == "stale":
+        path.write_bytes(body.replace(b"{}", b"{ changed(); }"))
+    assert checker.main(inventory_only=True) == (0 if expected_error is None else 1)
+    if expected_error is not None:
+        assert expected_error in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected_error"),
+    [
+        ("uuid_only", "lacks an exact Nextest event"),
+        ("events_only", "lacks the Nextest inventory SHA-256"),
+        ("absent", "cannot read nextest evidence"),
+        ("wrong_binary", "differs from"),
+        ("same_leaf_different_target", "differs from"),
+        ("same_leaf_different_module", "differs from"),
+        ("same_leaf_different_library_module", "differs from"),
+        ("valid_library_module", None),
+        ("wrong_inventory", "inventory SHA-256 differs"),
+        ("wrong_digest", "terminal SHA-256 differs"),
+        ("different_pass", "has no PASS"),
+        ("unrelated_valid_case", "terminal observations differ from declared replacement tests"),
+        ("unobserved_required_case", "terminal observations differ from declared replacement tests"),
+        ("no_declared_cases", "requires explicit replacement tests"),
+        ("truncated", "incomplete suite events"),
+        ("valid", None),
+        ("release_missing_manifest", "lacks the frozen source manifest SHA-256"),
+        ("release_stale_lock", "frozen source tree differs from the release candidate"),
+        ("release_stale_implementation", "frozen source tree differs from the release candidate"),
+        ("release_wrong_tree", "frozen source tree SHA-256 differs"),
+        ("release_unbound_terminal", "source manifest events_sha256 differs from the observation"),
+        ("release_unbound_binary", "lacks its revision and terminal binding"),
+        ("release_swapped_binary", "Nextest collection differs from the built executable inventory"),
+        ("release_changed_binary", "retained Nextest executable bytes differ"),
+        ("release_wrong_feature_command", "retained Nextest commands differ from the recorded selection"),
+        ("release_wrong_selection", "Nextest collection contains a target outside the recorded selection"),
+        ("release_missing_test_target", "Nextest collection lacks recorded test targets"),
+        ("release_missing_lib_target", "Nextest collection lacks the recorded library target"),
+        ("release_wrong_workspace", "Nextest build metadata differs from the workspace or its Cargo target"),
+        ("release_changed_legacy_binary", "old-Q executable SHA-256 differs"),
+        ("release_valid", None),
+    ],
+)
+def test_retirement_requires_complete_nextest_evidence(checker, capsys, evidence, expected_error):
+    crate = "quanta-index-lexical"
+    test_source = f"crates/{crate}/tests/replacement.rs"
+    library_event = evidence in {"same_leaf_different_library_module", "valid_library_module"}
+    source = (
+        f"crates/{crate}/src/required_contract.rs"
+        if library_event or evidence == "same_leaf_different_target"
+        else test_source
+    )
+    body = b"#[test]\nfn replacement() {}\n"
+    if evidence in {"unrelated_valid_case", "unobserved_required_case"}:
+        body += b"#[test]\nfn required_behavior() {}\n"
+    if library_event:
+        body = b"mod required {\n#[test]\nfn replacement() {}\n}\n"
+    (checker.ROOT / source).parent.mkdir(parents=True, exist_ok=True)
+    (checker.ROOT / source).write_bytes(body)
+    if source != test_source:
+        (checker.ROOT / test_source).write_bytes(body)
+        (checker.ROOT / f"crates/{crate}/Cargo.toml").write_text("[package]\n", encoding="utf-8")
+    catalog = checker.ROOT / "tools/ci/test-authority.toml"
+    catalog.write_text(
+        f'[[integration_targets]]\npath = "{test_source}"\nowner = "{crate}"\n',
+        encoding="utf-8",
+    )
+    run_id = "3739620b-a0ff-451d-897f-e5a32fc146eb"
+    target = crate.replace("-", "_") if library_event else "replacement"
+    kind = "lib" if library_event else "test"
+    case = {
+        "same_leaf_different_module": "other_module::replacement",
+        "same_leaf_different_library_module": "required_contract::unrelated::replacement",
+        "valid_library_module": "required_contract::required::replacement",
+    }.get(evidence, "replacement")
+    event = f"{crate}::{target}${case}"
+    recorded = event.replace("$replacement", "$other") if evidence == "different_pass" else event
+    meta = {"crate": crate, "test_binary": target, "kind": kind}
+    binary_id = f"{crate}::{target}"
+    target_dir = checker.ROOT / f"{run_id}-target"
+    binary = {
+        "binary-id": binary_id, "binary-path": str(target_dir / "replacement"),
+        "binary-name": target, "kind": kind,
+    }
+    inventory = {
+        "test-count": 1,
+        "rust-suites": {
+            binary_id: {
+                **binary,
+                "package-name": crate,
+                "status": "listed",
+                "testcases": {
+                    recorded.partition("$")[2]: {
+                        "ignored": False,
+                        "filter-match": {"status": "matches"},
+                    }
+                },
+            }
+        },
+    }
+    inventory_bytes = json.dumps(inventory).encode()
+    (checker.ROOT / f"{run_id}-inventory.json").write_bytes(inventory_bytes)
+    inventory_digest = (
+        "e" * 64 if evidence == "wrong_inventory" else hashlib.sha256(inventory_bytes).hexdigest()
+    )
+    rows = [
+        {"type": "suite", "event": "started", "test_count": 1, "nextest": meta},
+        {"type": "test", "event": "started", "name": recorded},
+        {"type": "test", "event": "ok", "name": recorded},
+        {"type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "nextest": meta},
+    ]
+    if evidence == "truncated":
+        rows.pop()
+    raw = "".join(json.dumps(row) + "\n" for row in rows).encode()
+    if evidence != "absent":
+        (checker.ROOT / f"{run_id}-nextest.jsonl").write_bytes(raw)
+    sha256 = hashlib.sha256(raw).hexdigest() if evidence != "wrong_digest" else "f" * 64
+    if evidence == "wrong_binary":
+        event = event.replace("::replacement", "::other")
+    receipt_fields = ""
+    if evidence != "uuid_only":
+        receipt_fields = f', event = "{event}", events_sha256 = "{sha256}"'
+        if evidence != "events_only":
+            receipt_fields += f', inventory_sha256 = "{inventory_digest}"'
+    release = evidence.startswith("release_")
+    candidate_lock = b'version = 4\n# candidate lock\n'
+    stale_lock = b'version = 4\n# previous lock\n'
+    lock = checker.ROOT / "Cargo.lock"
+    implementation = checker.ROOT / "crates/quanta-index-lexical/src/lib.rs"
+    manifest_path = str(checker.MANIFEST.relative_to(checker.ROOT))
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", *args],
+            cwd=checker.ROOT, text=True,
+        ).strip()
+
+    if release:
+        lock.write_bytes(stale_lock if evidence == "release_stale_lock" else candidate_lock)
+        implementation.parent.mkdir()
+        implementation.write_text("fn before() {}\n", encoding="utf-8")
+        git("init", "-q")
+        (checker.ROOT / ".git/info/exclude").write_text("/*-inventory.json\n/*-nextest.jsonl\n", encoding="utf-8")
+        git("add", manifest_path, "Cargo.toml", "Cargo.lock", "crates", "tools/ci/test-authority.toml")
+        git("commit", "-qm", "executed source")
+        run_revision = git("rev-parse", "HEAD")
+
+    if release and evidence != "release_missing_manifest":
+        source_binding = retirement_nextest.release_source_manifest(
+            checker.ROOT,
+            run_revision,
+            checker.ROOT / f"{run_id}-inventory.json",
+            checker.ROOT / f"{run_id}-nextest.jsonl",
+        )
+        if evidence == "release_wrong_tree":
+            source_binding["source_tree_sha256"] = "f" * 64
+        if evidence == "release_unbound_terminal":
+            source_binding["events_sha256"] = "f" * 64
+        if evidence != "release_unbound_binary":
+            built = dict(binary)
+            if evidence == "release_swapped_binary":
+                built["binary-path"] = str(target_dir / "different-replacement")
+            binaries_bytes = json.dumps({
+                "rust-build-meta": {"target-directory": str(target_dir)},
+                "rust-binaries": {binary_id: built},
+            }).encode()
+            cargo_bytes = json.dumps({
+                "target_directory": str(target_dir),
+                "workspace_root": str(
+                    checker.ROOT / "unrelated-source" if evidence == "release_wrong_workspace" else checker.ROOT
+                ),
+            }).encode()
+            (checker.ROOT / f"{run_id}-binaries.json").write_bytes(binaries_bytes)
+            (checker.ROOT / f"{run_id}-cargo.json").write_bytes(cargo_bytes)
+            target_dir.mkdir()
+            executable = target_dir / "replacement"
+            executable.write_bytes(b"changed binary" if evidence == "release_changed_binary" else b"test binary")
+            selection = {
+                "lane": "test-integration-lane", "package": crate,
+                "include_lib": evidence == "release_missing_lib_target",
+                "test_targets": ["unrelated" if evidence == "release_wrong_selection" else target],
+                "filterset": "test(=replacement)", "features": [],
+            }
+            if evidence == "release_missing_test_target":
+                selection["test_targets"].append("uncollected")
+            commands = retirement_nextest._execution_commands(
+                selection, checker.ROOT / f"{run_id}-binaries.json", checker.ROOT / f"{run_id}-cargo.json",
+            )
+            if evidence == "release_wrong_feature_command":
+                commands["cargo.json"].extend(["--features", f"{crate}/different"])
+            legacy = None
+            if evidence == "release_changed_legacy_binary":
+                binary_path = checker.ROOT / "old-searchd"
+                (target_dir / "legacy-searchd").write_bytes(b"replacement old daemon")
+                legacy = {"path": str(binary_path), "sha256": hashlib.sha256(b"old daemon").hexdigest()}
+            source_binding["execution"] = {
+                "workspace_root": str(checker.ROOT),
+                "binaries_sha256": "sha256:" + hashlib.sha256(binaries_bytes).hexdigest(),
+                "cargo_sha256": "sha256:" + hashlib.sha256(cargo_bytes).hexdigest(),
+                "executables": {binary_id: hashlib.sha256(b"test binary").hexdigest()},
+                "selection": selection,
+                "commands": commands,
+                "legacy_searchd": legacy,
+            }
+        source_manifest = json.dumps(source_binding).encode()
+        (checker.ROOT / f"{run_id}-source-manifest.json").write_bytes(source_manifest)
+        receipt_fields += f', source_manifest_sha256 = "{hashlib.sha256(source_manifest).hexdigest()}"'
+    observation = (
+        f'observations = [{{source = "{source}", case = "replacement", '
+        f'source_sha256 = "{hashlib.sha256(body).hexdigest()}", run_id = "{run_id}"{receipt_fields}}}]'
+    )
+    cases = ["replacement"]
+    if evidence == "unrelated_valid_case":
+        cases = ["required_behavior"]
+    elif evidence == "unobserved_required_case":
+        cases.append("required_behavior")
+    candidates = (
+        f'candidates = [{{path = "{source}", tests = {json.dumps(cases)}}}]\n'
+        if evidence != "no_declared_cases" else ""
+    )
+    roster = checker.MANIFEST.read_text(encoding="utf-8").replace(
+        'disposition = "retire"\nproof = "NOT_APPLICABLE"',
+        f'disposition = "migrate"\nproof = "VERIFIED"\n{candidates}{observation}',
+        1,
+    )
+    checker.MANIFEST.write_text(roster, encoding="utf-8")
+
+    revision = None
+    if release:
+        lock.write_bytes(candidate_lock)
+        if evidence == "release_stale_implementation":
+            implementation.write_text("fn after() {}\n", encoding="utf-8")
+        git("add", manifest_path, "Cargo.lock", "crates", "tools/ci/test-authority.toml")
+        git("commit", "-qm", "candidate")
+        revision = git("rev-parse", "HEAD")
+        lock.write_bytes(stale_lock)
+    if evidence == "events_only":
+        assert checker.main(inventory_only=True) == 0
+    assert checker.main(revision=revision, evidence_dir=checker.ROOT) == (0 if expected_error is None else 1)
+    if expected_error is not None:
+        errors = capsys.readouterr().err
+        assert expected_error in errors
+        assert "sealed_manifest.rs: source was removed with 43 test IDs still lacking VERIFIED" in errors
+        assert "sealed_manifest.rs [BLOCKED]" in errors
+
+
+@pytest.mark.parametrize(
+    ("state", "message"),
+    [
+        ("dirty", "refusing dirty retirement checkout"),
+        ("during-capture", "refusing dirty retirement checkout"),
+        ("git-normalized", "differs from committed HEAD: Cargo.lock"),
+        ("restored-during-capture", "release source changed during execution: Cargo.lock"),
+        ("new-head", "differs from retirement checkout HEAD"),
+        ("assume-unchanged", "refusing hidden or unresolved tracked retirement source: Cargo.lock"),
+        ("skip-worktree", "refusing hidden or unresolved tracked retirement source: Cargo.lock"),
+    ],
+)
+def test_release_source_manifest_rejects_checkout_drift(tmp_path, monkeypatch, state, message):
+    checkout = tmp_path / "source"
+    checkout.mkdir()
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", *args],
+            cwd=checkout, text=True,
+        ).strip()
+
+    git("init", "-q")
+    source = checkout / "Cargo.lock"
+    source.write_text("version = 4\n", encoding="utf-8")
+    if state == "git-normalized":
+        (checkout / ".gitattributes").write_text("Cargo.lock text eol=crlf\n", encoding="utf-8")
+        git("add", ".gitattributes")
+    git("add", "Cargo.lock")
+    git("commit", "-qm", "executed source")
+    revision = git("rev-parse", "HEAD")
+    if state in {"assume-unchanged", "skip-worktree"}:
+        git("update-index", f"--{state}", "Cargo.lock")
+    if state == "git-normalized":
+        source.unlink()
+        git("checkout-index", "--force", "--index", "--", "Cargo.lock")
+        assert source.read_bytes() == b"version = 4\r\n"
+        assert git("status", "--porcelain") == ""
+    elif state not in {"during-capture", "restored-during-capture"}:
+        source.write_text("version = 4\n# drift\n", encoding="utf-8")
+    if state in {"assume-unchanged", "skip-worktree"}:
+        assert git("status", "--porcelain") == ""
+    if state == "new-head":
+        git("commit", "-qam", "new candidate")
+
+    inventory, events = tmp_path / "inventory.json", tmp_path / "events.jsonl"
+    inventory.write_bytes(b"fixture inventory")
+
+    def parse_terminal(*_):
+        if state == "during-capture":
+            source.write_text("version = 4\n# drift\n", encoding="utf-8")
+        if state == "restored-during-capture":
+            original = source.read_bytes()
+            source.write_bytes(original + b"# drift\n")
+            source.write_bytes(original)
+        return SimpleNamespace(sha256="a" * 64)
+
+    monkeypatch.setattr(retirement_nextest, "parse_nextest_inventory", lambda _: {})
+    monkeypatch.setattr(retirement_nextest, "parse_nextest", parse_terminal)
+    with pytest.raises(ValueError, match=message):
+        retirement_nextest.release_source_manifest(checkout, revision, inventory, events)
+
+
+@pytest.mark.parametrize("changed", [None, "test", "old-q"])
+def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, monkeypatch, changed):
+    checkout = tmp_path / "source"
+    checkout.mkdir()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    binary_id = "quanta-index-lexical::replacement"
+    extra_targets = {"quanta_index_lexical": "lib", "additional": "test"}
+    event = binary_id + "$passes"
+    meta = {"crate": "quanta-index-lexical", "test_binary": "replacement", "kind": "test"}
+    calls = []
+    monkeypatch.setenv("QUANTA_INDEX_RESOURCE_ADMISSION", "0")
+    monkeypatch.setenv("QUANTA_INDEX_CACHE_ROOT", str(tmp_path / "foreign-cache"))
+    monkeypatch.setenv("CI", "true")
+    legacy_path = tmp_path / "old-searchd"
+    legacy_path.write_bytes(b"old daemon")
+    legacy_sha = hashlib.sha256(b"old daemon").hexdigest()
+    monkeypatch.setenv(retirement_nextest.LEGACY_BINARY_ENV, str(legacy_path))
+    monkeypatch.setenv(retirement_nextest.LEGACY_SHA_ENV, legacy_sha)
+
+    def run(argv, *, cwd, env, stdout, check):
+        assert cwd == checkout and check is True
+        assert argv[:3] == [str(checkout / "scripts/cargow"), "--lane", "test-integration-lane"]
+        target = Path(env["CARGO_TARGET_DIR"])
+        assert target.parent == evidence and env["QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR"] == "1"
+        assert env["QUANTA_INDEX_RESOURCE_ADMISSION"] == "1"
+        assert "QUANTA_INDEX_CACHE_ROOT" not in env
+        assert env[retirement_nextest.LEGACY_BINARY_ENV] == str(legacy_path)
+        executable = target / "replacement"
+        row = {"binary-id": binary_id, "binary-path": str(executable), "binary-name": "replacement", "kind": "test"}
+        rows = {binary_id: row}
+        for name, kind in extra_targets.items():
+            extra_id = f"quanta-index-lexical::{name}"
+            rows[extra_id] = {
+                "binary-id": extra_id, "binary-path": str(target / name),
+                "binary-name": name, "kind": kind,
+            }
+        args = argv[3:]
+        calls.append(args)
+        if "binaries-only" in args:
+            for built in rows.values():
+                Path(built["binary-path"]).write_bytes(b"test binary")
+            stdout.write(json.dumps({
+                "rust-build-meta": {"target-directory": str(target)}, "rust-binaries": rows,
+            }).encode())
+        elif args[0] == "metadata":
+            stdout.write(json.dumps({"workspace_root": str(checkout), "target_directory": str(target)}).encode())
+        elif args[1] == "list":
+            stdout.write(json.dumps({
+                "test-count": 1,
+                "rust-suites": {
+                    name: {
+                        **built, "package-name": "quanta-index-lexical", "status": "listed",
+                        "testcases": {"passes": {"ignored": False, "filter-match": {"status": "matches"}}}
+                        if name == binary_id else {},
+                    }
+                    for name, built in rows.items()
+                },
+            }).encode())
+        else:
+            assert args[1] == "run" and env["NEXTEST_EXPERIMENTAL_LIBTEST_JSON"] == "1"
+            if changed == "test":
+                executable.write_bytes(b"other binary")
+            if changed == "old-q":
+                legacy_path.write_bytes(b"other old daemon")
+            for line in (
+                {"type": "suite", "event": "started", "test_count": 1, "nextest": meta},
+                {"type": "test", "event": "started", "name": event},
+                {"type": "test", "event": "ok", "name": event},
+                {"type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "nextest": meta},
+            ):
+                stdout.write((json.dumps(line) + "\n").encode())
+
+    monkeypatch.setattr(retirement_nextest, "_require_frozen_checkout", lambda *_: None)
+    monkeypatch.setattr(retirement_nextest, "_capture_frozen_checkout", lambda *_: {})
+    monkeypatch.setattr(retirement_nextest, "release_tree_sha256", lambda *_: "a" * 64)
+    monkeypatch.setattr(retirement_nextest, "subprocess", SimpleNamespace(run=run))
+    args = dict(
+        lane="test-integration-lane", package="quanta-index-lexical",
+        include_lib=True, test_targets=["replacement", "additional"],
+        filterset="test(=passes)", features=["native-one, native-two"],
+    )
+    if changed is not None:
+        with pytest.raises(ValueError, match="build inputs or evidence changed"):
+            retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
+        assert not list(evidence.glob("*-source-manifest.json"))
+    else:
+        path = retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
+        manifest = json.loads(path.read_bytes())
+        assert manifest["execution"]["workspace_root"] == str(checkout)
+        assert manifest["execution"]["executables"] == {
+            f"quanta-index-lexical::{name}": hashlib.sha256(b"test binary").hexdigest()
+            for name in ("replacement", *extra_targets)
+        }
+        assert manifest["execution"]["legacy_searchd"] == {"path": str(legacy_path), "sha256": legacy_sha}
+        assert list(manifest["execution"]["commands"].values()) == [
+            ["--lane", args["lane"], *cmd]
+            for cmd in (calls[0], calls[1], calls[2], calls[3])
+        ]
+        relocated = evidence.rename(tmp_path / "relocated")
+        legacy_path.unlink()
+        artifact = retirement_nextest.RawFile.capture(relocated / path.name)
+        run_id = path.name.removesuffix("-source-manifest.json")
+        retirement_nextest.check_frozen_inputs(
+            artifact,
+            {
+                "run_id": run_id,
+                "source_manifest_sha256": artifact.sha256.removeprefix("sha256:"),
+                "inventory_sha256": manifest["inventory_sha256"],
+                "events_sha256": manifest["events_sha256"],
+            },
+            checkout,
+            "b" * 40,
+        )
+    assert len(calls) == 4
+    resolution = ["--locked", "--offline", "--no-default-features", "--features",
+                  "quanta-index-lexical/native-one,quanta-index-lexical/native-two"]
+    assert calls[0][2:] == [
+        *resolution, "-p", "quanta-index-lexical", "--lib", "--test", "replacement",
+        "--test", "additional", "--list-type", "binaries-only", "--message-format", "json",
+    ]
+    assert calls[1] == ["metadata", "--format-version", "1", *resolution]
+    assert calls[2][:2] == ["nextest", "list"] and calls[3][:2] == ["nextest", "run"]
+    assert calls[2][2:8] == calls[3][2:8]
+
+
+def test_retained_executable_digest_reuses_only_unchanged_bytes(tmp_path, monkeypatch):
+    archive = tmp_path / "retained-binary"
+    archive.write_bytes(b"first executable")
+    before = archive.stat()
+    captured = []
+    capture = retirement_nextest.RawFile.capture
+
+    def hash_once(path):
+        captured.append(path)
+        return capture(path)
+
+    monkeypatch.setattr(retirement_nextest, "RawFile", SimpleNamespace(capture=hash_once))
+    digest = retirement_nextest.retained_executable_digests()
+    assert digest(archive) == digest(archive) == hashlib.sha256(b"first executable").hexdigest()
+    assert len(captured) == 1
+    archive.write_bytes(b"other executable")
+    os.utime(archive, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert digest(archive) == hashlib.sha256(b"other executable").hexdigest()
+    assert len(captured) == 2
+    archive.rename(tmp_path / "original")
+    archive.symlink_to("original")
+    with pytest.raises(ValueError, match="invalid retained Nextest executable"):
+        digest(archive)
+
+
+def test_removed_source_with_dispositions_keeps_frozen_identities(checker, capsys):
+    inventory = checker.MANIFEST.read_text(encoding="utf-8")
+    assert checker.main() == 0
+    assert "93 IDs across 4 targets" in capsys.readouterr().out
+
+    checker.MANIFEST.write_text(
+        inventory.replace('"tantivy_applies_query_boost_to_scores"', '"unrelated_same_count_test"'),
+        encoding="utf-8",
+    )
+    assert checker.main() == 1
+    assert (
+        "tantivy_smoke.rs: mapped test IDs differ from the frozen census" in capsys.readouterr().err
+    )
+
+
+def test_shipment_checks_committed_roster_not_working_tree(checker, capsys):
+    inventory = checker.MANIFEST.read_text(encoding="utf-8")
+    unresolved = inventory.replace('disposition = "retire"', 'disposition = "migrate"').replace(
+        'proof = "NOT_APPLICABLE"', 'proof = "NOT_RUN"'
+    )
+    checker.MANIFEST.write_text(unresolved, encoding="utf-8")
+    for args in (
+        ("init", "-q"),
+        ("add", "."),
+        (
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-qm",
+            "candidate",
+        ),
+    ):
+        subprocess.run(["git", *args], cwd=checker.ROOT, check=True)
+    revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=checker.ROOT, text=True
+    ).strip()
+
+    checker.MANIFEST.write_text(inventory, encoding="utf-8")
+    assert checker.main() == 0
+    assert checker.main(revision=revision, inventory_only=True) == 1
+    assert "committed retirement checks require migration dispositions" in capsys.readouterr().err
+    assert checker.main(revision=revision) == 1
+    assert "source was removed with 43 test IDs" in capsys.readouterr().err
+
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-qam",
+            "retire removed engine",
+        ],
+        cwd=checker.ROOT,
+        check=True,
+    )
+    approved_revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=checker.ROOT, text=True
+    ).strip()
+    assert checker.main(revision=approved_revision) == 0
+
+
+def test_retirement_without_body_proof_requires_the_feature_to_be_gone(checker, capsys):
+    checker.LEXICAL_CARGO_MANIFEST.write_text("[features]\nlegacy-tantivy = []\n", encoding="utf-8")
+    assert checker.main() == 1
+    assert (
+        "retirement requires VERIFIED proof or a removed frozen engine target"
+        in capsys.readouterr().err
+    )
+
+
+def test_retirement_without_body_proof_requires_the_source_to_be_gone(checker, capsys):
+    target = checker.tomllib.loads(checker.MANIFEST.read_text(encoding="utf-8"))["targets"][1]
+    source = checker.ROOT / target["path"]
+    source.write_text(
+        "".join(
+            f"#[test]\nfn {name}() {{}}\n"
+            for group in target["dispositions"]
+            for name in group["tests"]
+        ),
+        encoding="utf-8",
+    )
+    assert checker.main() == 1
+    assert (
+        "retirement requires VERIFIED proof or a removed frozen engine target"
+        in capsys.readouterr().err
+    )

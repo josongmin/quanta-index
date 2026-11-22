@@ -745,6 +745,8 @@ def test_exact_clone_is_refused_after_repeated_development_revisions():
         ("one_side_only", "development and holdout"),
         ("policy", "identity, policy"),
         ("unsorted_families", "entry is malformed"),
+        ("object_family", "entry is malformed"),
+        ("mixed_family_types", "entry is malformed"),
         ("extra_release_path", "release paths differ"),
     ],
 )
@@ -779,6 +781,10 @@ def test_split_manifest_refuses_forged_assignment(split_releases, mutation, erro
         }
     elif mutation == "unsorted_families":
         rows["alpha"]["query_family_ids"].reverse()
+    elif mutation == "object_family":
+        rows["alpha"]["query_family_ids"] = [{"family": "dev-alpha-1"}]
+    elif mutation == "mixed_family_types":
+        rows["alpha"]["query_family_ids"] = ["dev-alpha-1", 2]
     else:
         releases = {**releases, "sha256:" + "1" * 64: Path("/nonexistent")}
     with pytest.raises(EvidenceError, match=error):

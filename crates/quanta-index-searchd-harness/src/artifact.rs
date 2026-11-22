@@ -631,6 +631,35 @@ impl ResourceUsageV1 {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_child_peak_rss_bytes(child: &std::process::Child) -> anyhow::Result<u64> {
+    // The caller owns the unreaped child, so its PID cannot identify a successor.
+    let status = std::fs::read_to_string(format!("/proc/{}/status", child.id()))?;
+    parse_linux_peak_rss_bytes(&status)
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn parse_linux_peak_rss_bytes(status: &str) -> anyhow::Result<u64> {
+    let mut high_water = status
+        .lines()
+        .filter_map(|line| line.strip_prefix("VmHWM:"));
+    let field = high_water
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("daemon process status has no VmHWM field"))?;
+    let mut parts = field.split_whitespace();
+    let (Some(value), Some("kB"), None) = (parts.next(), parts.next(), parts.next()) else {
+        anyhow::bail!("daemon VmHWM has invalid units or size");
+    };
+    if high_water.next().is_some() {
+        anyhow::bail!("daemon process status has duplicate VmHWM fields");
+    }
+    value
+        .parse::<u64>()?
+        .checked_mul(1024)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| anyhow::anyhow!("daemon VmHWM is zero or overflows bytes"))
+}
+
 impl Serialize for ResourceUsageV1 {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut state = serializer.serialize_struct("ResourceUsageV1", 1)?;

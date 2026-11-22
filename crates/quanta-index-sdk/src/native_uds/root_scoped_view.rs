@@ -30,6 +30,31 @@ impl AdmittedNativeRootScopedViewReplyV1 {
     }
 }
 
+/// A validated installation observation and the kernel peer from its exact
+/// response connection. The caller still authenticates the installation.
+#[derive(Debug)]
+pub struct AdmittedNativeCandidateInstallationReplyV1 {
+    reply: AdmittedNativeRootScopedViewReplyV1,
+}
+
+impl AdmittedNativeCandidateInstallationReplyV1 {
+    #[must_use]
+    pub fn observation_v1(
+        &self,
+    ) -> &quanta_index_contract::native_protocol::NativeCandidateInstallationV1 {
+        let NativeIndexResponse::CandidateInstallationV1(observation) = self.reply.response()
+        else {
+            unreachable!("candidate installation reply was validated before construction")
+        };
+        observation
+    }
+
+    #[must_use]
+    pub fn peer_process_v1(&self) -> &quanta_index_ipc::KernelConnectedPeerProcessV1 {
+        self.reply.peer_process_v1()
+    }
+}
+
 impl<P: AsRef<Path>> NativeUdsClient<P> {
     /// Resolve a preserved RepoMap pair to the exact pinned view, member and
     /// instance selected by the installed BOOT route.
@@ -137,6 +162,61 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         budget: &RequestBudgetV1,
         memory: &MemoryScope,
     ) -> Result<AdmittedNativeRootScopedViewReplyV1, NativeUdsError> {
+        self.observe_on_admitted_peer(
+            NativeIndexRequest::ObserveRootView(selection),
+            budget,
+            memory,
+        )
+    }
+
+    /// Read the config SHA and exact Graph descriptor from the same connected
+    /// peer that reports the selected root. The installation owner must
+    /// compare the measured SHA, peer image and root against its trusted inputs.
+    pub fn observe_repomap_graph_installation_admitted_v1(
+        &self,
+        selection: ViewSelection,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativeRootScopedViewReplyV1, NativeUdsError> {
+        self.observe_on_admitted_peer(
+            NativeIndexRequest::ObserveRepoMapGraphInstallationV1(selection),
+            budget,
+            memory,
+        )
+    }
+
+    /// Observe the candidate Q installation before its first workspace write.
+    /// This reply retains the same-connection peer; it grants no write authority.
+    pub fn observe_candidate_installation_admitted_v1(
+        &self,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativeCandidateInstallationReplyV1, NativeUdsError> {
+        let reply = self.observe_on_admitted_peer(
+            NativeIndexRequest::ObserveCandidateInstallationV1,
+            budget,
+            memory,
+        )?;
+        if matches!(
+            reply.response(),
+            NativeIndexResponse::CandidateInstallationV1(_)
+        ) {
+            return Ok(AdmittedNativeCandidateInstallationReplyV1 { reply });
+        }
+        if let NativeIndexResponse::Error(error) = reply.response() {
+            return Err(NativeUdsError::Refused(error.clone()));
+        }
+        Err(NativeUdsError::Protocol(
+            "unexpected candidate installation reply".into(),
+        ))
+    }
+
+    fn observe_on_admitted_peer(
+        &self,
+        payload: NativeIndexRequest,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativeRootScopedViewReplyV1, NativeUdsError> {
         if self.observed_query_peer_v1.is_some() {
             return Err(NativeUdsError::PeerBindingRefused(
                 quanta_index_ipc::PeerBindingRefusalV1::UnsupportedRoute,
@@ -146,7 +226,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         let request_id = allocate_request_id(&self.next_request_id)?;
         let envelope = NativeIndexRequestEnvelope {
             request_id,
-            payload: NativeIndexRequest::ObserveRootView(selection),
+            payload,
         };
         let (body, peer) = quanta_index_ipc::send_request_body_with_budget_admitted_peer_v1(
             self.socket.as_ref(),
@@ -161,8 +241,13 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             _ if budget.is_cancelled() => cancelled_error(),
             error => NativeUdsError::Transport(error.to_string()),
         })?;
-        let reply =
-            decode_admitted_publication_reply_v1(request_id, body, budget, memory, false, false)?;
+        let reply = decode_admitted_publication_reply_v1(
+            request_id,
+            body,
+            budget,
+            memory,
+            super::admitted_reply_v1::ReplyMode::Publication,
+        )?;
         if !publication_response_matches_request(&envelope.payload, reply.response()) {
             return Err(NativeUdsError::Protocol(
                 "unexpected root-scoped view reply".into(),
@@ -171,6 +256,33 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         read_session::admitted_budget_checkpoint(budget)?;
         Ok(AdmittedNativeRootScopedViewReplyV1 { reply, peer })
     }
+}
+
+pub(super) fn validate_repomap_graph_installation(
+    selection: ViewSelection,
+    observed: &quanta_index_contract::native_protocol::NativeRepoMapGraphInstallationV1,
+) -> Result<(), NativeUdsError> {
+    validate_reply(selection, &observed.root)?;
+    if observed.config_sha256 == Digest([0; 32]) {
+        return Err(NativeUdsError::Protocol(
+            "RepoMap installation config SHA is zero".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_candidate_installation(
+    observed: &quanta_index_contract::native_protocol::NativeCandidateInstallationV1,
+) -> Result<(), NativeUdsError> {
+    if observed.config_sha256 == Digest([0; 32])
+        || observed.root_nonce == Digest([0; 32])
+        || observed.root_inode == 0
+    {
+        return Err(NativeUdsError::Protocol(
+            "candidate installation observation has invalid identity".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn validate_reply(

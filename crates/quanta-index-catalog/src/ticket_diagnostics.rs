@@ -8,7 +8,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use quanta_index_core::index::{IndexError, WorkBudget};
+
 use crate::SqliteCatalog;
+use crate::io_admission::CatalogConnectionGuard;
 
 const FIRST_LANE: u16 = 200;
 const LANE_COUNT: usize = 6;
@@ -189,7 +192,7 @@ pub(crate) fn observe<T, E>(
 
 /// Counts a bounded Catalog mutex retry and measures its actual sleep wall time.
 /// Off and foreign Catalog work performs the same sleep without reading a clock.
-pub(crate) fn retry_sleep(catalog: &SqliteCatalog, duration: Duration) {
+fn retry_sleep(catalog: &SqliteCatalog, duration: Duration) {
     let catalog_ptr = std::ptr::from_ref(catalog).addr();
     let owner = STATE.with(|slot| {
         slot.get()
@@ -220,6 +223,15 @@ pub(crate) fn retry_sleep(catalog: &SqliteCatalog, duration: Duration) {
             slot.set(state);
         }
     });
+}
+
+impl SqliteCatalog {
+    pub(crate) fn lock_native_budget(
+        &self,
+        budget: &WorkBudget,
+    ) -> Result<CatalogConnectionGuard<'_>, IndexError> {
+        self.lock_native_budget_with_retry(budget, |duration| retry_sleep(self, duration))
+    }
 }
 
 #[cfg(test)]

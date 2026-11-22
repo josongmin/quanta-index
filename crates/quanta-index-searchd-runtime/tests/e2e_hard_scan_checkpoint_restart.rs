@@ -8,7 +8,7 @@ use std::error::Error;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::searchd_binary_process::{SearchdBinaryProcess, searchd_command};
+use crate::searchd_binary_process::CrashDaemon;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, DiagnosticAttemptFieldV1, GenerationPin,
     ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusActiveHeadV1,
@@ -23,6 +23,7 @@ use quanta_index_ipc::{
     source_publication_upload_identity, stamp_batch_digest_v1,
 };
 use quanta_index_sdk::{BatchMode, LanguageCode, QuantaIndex, SdkError, SearchCorpusBatch};
+use quanta_index_search_plane::crash_point::CRASH_POINT_ENV;
 use quanta_index_searchd_harness::{
     fixture_source_scope_v1, semantic_source_scopes_for_chunk_records,
 };
@@ -474,39 +475,45 @@ fn check_new_doc(client: &QuantaIndex, generation: u64, present: bool) -> TestRe
     Ok(())
 }
 
-fn configured_command(root: &Path) -> std::process::Command {
-    let mut command = searchd_command(root, RETAINED_GENERATIONS);
-    let _configured = command
-        .env("QUANTA_INDEX_LEXICAL_MERGE_SOFT_RUNS", "34")
-        .env("QUANTA_INDEX_LEXICAL_MERGE_HARD_RUNS", "34")
-        .env(
+fn hard_scan_environment() -> [(&'static str, String); 8] {
+    [
+        ("QUANTA_INDEX_LEXICAL_MERGE_SOFT_RUNS", "34".to_owned()),
+        ("QUANTA_INDEX_LEXICAL_MERGE_HARD_RUNS", "34".to_owned()),
+        (
             "QUANTA_INDEX_LEXICAL_MERGE_SOFT_INDEX_BYTES",
             (u64::MAX - 1).to_string(),
-        )
-        .env(
+        ),
+        (
             "QUANTA_INDEX_LEXICAL_MERGE_HARD_INDEX_BYTES",
             u64::MAX.to_string(),
-        )
-        .env("QUANTA_INDEX_LEXICAL_MERGE_MAX_FAN_IN", "2")
-        .env("QUANTA_INDEX_LEXICAL_MERGE_MAX_INPUT_INDEX_BYTES", "8192")
-        .env(
+        ),
+        ("QUANTA_INDEX_LEXICAL_MERGE_MAX_FAN_IN", "2".to_owned()),
+        (
+            "QUANTA_INDEX_LEXICAL_MERGE_MAX_INPUT_INDEX_BYTES",
+            "8192".to_owned(),
+        ),
+        (
             "QUANTA_INDEX_LEXICAL_STAGING_MAX_BYTES",
             (64 * 1024 * 1024).to_string(),
-        )
-        .env("QUANTA_INDEX_LEXICAL_STAGING_MAX_AGE_MS", "60000");
-    command
+        ),
+        (
+            "QUANTA_INDEX_LEXICAL_STAGING_MAX_AGE_MS",
+            "60000".to_owned(),
+        ),
+    ]
 }
 
 #[test]
+#[ignore = "requires a pinned old-Q debug binary with QUANTA_INDEX_CRASH_POINT"]
 fn staged_target_resumes_first_hard_scan_window_after_daemon_crash() -> TestResult {
     use std::os::unix::fs::PermissionsExt as _;
 
+    let daemon = CrashDaemon::new()?;
     let directory = tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir()?;
     let root = directory.path();
-    let seed =
-        SearchdBinaryProcess::start_with_history_max_generations(root, RETAINED_GENERATIONS)?;
+    let seed = daemon.start(root, RETAINED_GENERATIONS, [])?;
     let client = seed.connect()?;
     let mut active: Option<SearchCorpusActiveHeadV1> = None;
     for generation in 1..=BASE_GENERATION {
@@ -518,13 +525,17 @@ fn staged_target_resumes_first_hard_scan_window_after_daemon_crash() -> TestResu
     }
     serves(&client, BASE_GENERATION)?;
     check_new_doc(&client, BASE_GENERATION, false)?;
-    seed.stop()?;
+    seed.kill_and_wait()?;
 
     let target = wire_batch(&batch(TARGET_GENERATION)?)?;
     let request = reservation_request(&target);
-    let mut crashing = configured_command(root);
-    let _configured = crashing.env("QUANTA_INDEX_CRASH_POINT", "after_hard_scan_first_window");
-    let crashing = SearchdBinaryProcess::start_with_command(root, crashing)?;
+    let crashing = daemon.start(
+        root,
+        RETAINED_GENERATIONS,
+        hard_scan_environment()
+            .into_iter()
+            .chain([(CRASH_POINT_ENV, "after_hard_scan_first_window".to_owned())]),
+    )?;
     let crash_client = crashing.connect()?;
     let original = crash_client.search_corpus().reserve_generation(&request)?;
     if original.generation != target.generation {
@@ -546,7 +557,7 @@ fn staged_target_resumes_first_hard_scan_window_after_daemon_crash() -> TestResu
     check_first_window(&first_window_bytes, &target, &original)?;
     check_staged_body(&upload, &target)?;
 
-    let resumed = SearchdBinaryProcess::start_with_command(root, configured_command(root))?;
+    let resumed = daemon.start(root, RETAINED_GENERATIONS, hard_scan_environment())?;
     let client = resumed.connect()?;
     let replay = client.search_corpus().reserve_generation(&request)?;
     if replay != original {
@@ -610,6 +621,6 @@ fn staged_target_resumes_first_hard_scan_window_after_daemon_crash() -> TestResu
     }
     serves(&client, TARGET_GENERATION)?;
     check_new_doc(&client, TARGET_GENERATION, true)?;
-    resumed.stop()?;
+    resumed.kill_and_wait()?;
     Ok(())
 }

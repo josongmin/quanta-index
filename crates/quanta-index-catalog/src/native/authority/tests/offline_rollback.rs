@@ -73,7 +73,7 @@ fn offline_rollback_refuses_publication_after_baseline_without_mutation() -> Tes
         Err(IndexError::Conflict)
     ));
     check_eq!(current_view(&guard, later.identity.workspace)?, Some(later));
-    check_eq!(boot_manifest::read_stored(&guard)?, Some(baseline));
+    check_eq!(boot_record::read_stored(&guard)?, Some(baseline));
     Ok(())
 }
 
@@ -99,7 +99,7 @@ fn offline_rollback_refuses_pending_work_and_corrupt_terminal_shadow() -> TestRe
         current_view(&guard, published.identity.workspace)?,
         Some(published)
     );
-    check_eq!(boot_manifest::read_stored(&guard)?, Some(baseline));
+    check_eq!(boot_record::read_stored(&guard)?, Some(baseline));
     Ok(())
 }
 
@@ -116,7 +116,7 @@ fn offline_rollback_keeps_original_baseline_after_boot_reissue() -> TestResult {
         read_only::check_rollback(&guard, &original, &mut admission_budget()),
         Err(IndexError::Conflict)
     ));
-    check_eq!(boot_manifest::read_stored(&guard)?, Some(reissued));
+    check_eq!(boot_record::read_stored(&guard)?, Some(reissued));
     check_eq!(current_view(&guard, later.identity.workspace)?, Some(later));
     Ok(())
 }
@@ -132,7 +132,7 @@ fn offline_rollback_preserves_original_cancellation_without_mutation() -> TestRe
         read_only::check_rollback(&guard, &baseline, &mut budget),
         Err(IndexError::Cancelled)
     ));
-    check_eq!(boot_manifest::read_stored(&guard)?, Some(baseline.clone()));
+    check_eq!(boot_record::read_stored(&guard)?, Some(baseline.clone()));
     check_eq!(
         current_view(&guard, baseline.publication.identity.workspace)?,
         Some(baseline.publication)
@@ -169,7 +169,7 @@ fn offline_published_full_relation_survives_retired_view_and_request_object() ->
         1
     );
     check!(matches!(
-        boot_manifest::load_publication(&guard, full.publication.identity, &mut admission_budget()),
+        boot_record::load_publication(&guard, full.publication.identity, &mut admission_budget()),
         Err(IndexError::SnapshotUnavailable)
     ));
     check_eq!(
@@ -208,6 +208,6 @@ fn offline_published_relation_refuses_pending_unknown_and_original_cancellation(
         read_only::read_published_operation(&guard, full.operation.key, &mut budget),
         Err(IndexError::Cancelled)
     ));
-    check_eq!(boot_manifest::read_stored(&guard)?, Some(full));
+    check_eq!(boot_record::read_stored(&guard)?, Some(full));
     Ok(())
 }

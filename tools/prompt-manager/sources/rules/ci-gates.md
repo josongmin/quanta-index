@@ -22,7 +22,7 @@
 ### Heavy rail (CircleCI `run_heavy=true`, explicit dispatch)
 
 - Miri, cargo-careful, TSan, ASan, cargo-mutants, cargo-udeps remain local `just` rails; they are not part of the current CircleCI heavy job.
-- real-engine full corpus: `just rust-test-full-corpus`
+- Legacy restart compatibility with a pinned debug daemon: `just rust-test-legacy-crash-compat`
 - Monomorphization budget: `python3 tools/ci/lint/check-llvm-lines.py`
 - Contract surface diff: `python3 tools/ci/lint/check-public-api.py`
 - Module-tree snapshot: `python3 tools/ci/lint/check-cargo-modules-snapshot.py`

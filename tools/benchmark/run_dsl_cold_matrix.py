@@ -28,8 +28,8 @@ The harness binary contract (built elsewhere; this script only orchestrates):
   <bin-cmd> --assemble --out <path> --samples <n>
       reads a JSON array of samples on stdin and writes the artifact to <path>.
 
-The default prebuilds the workspace harness. For a frozen Legacy release,
-pass its prebuilt binary, checkout, commit and binary SHA-256 together.
+For a frozen Legacy reference, pass its prebuilt binary, checkout, commit
+and binary SHA-256 together.
 With ``--bin-mode warm``, the pinned warm binary takes ``--out`` directly.
 Native SDK diagnostics use a pinned runner, daemon and reopened History
 fixture. Their raw scenario reports have a separate schema from the DSL
@@ -42,6 +42,7 @@ import argparse
 import json
 import math
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -51,16 +52,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 DEFAULT_SAMPLES = 20
-DEFAULT_OUT = Path("artifacts/dsl-bench/cold-matrix.json")
-DEFAULT_BUILD_CMD = (
-    "env CARGO_NET_OFFLINE=true ./scripts/cargow --lane bench-lane build -p quanta-index-searchd-harness "
-    "--bin dsl_cold_matrix --features legacy-bench --profile bench --quiet --locked"
-)
-TARGET_DIR_CMD = (
-    "export QUANTA_INDEX_BUILD_LANE=bench-lane; "
-    "source scripts/quanta-index-env.sh; "
-    'printf "%s" "$CARGO_TARGET_DIR"'
-)
 BinRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -74,17 +65,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out",
         type=Path,
-        help=f"output artifact path (workspace default: {DEFAULT_OUT})",
+        help="explicit output artifact path",
     )
     parser.add_argument(
         "--bin-cmd",
         default=None,
-        help=(
-            "shell-splittable command prefix for the harness binary; when omitted, "
-            "the script prebuilds dsl_cold_matrix once and invokes the binary directly"
-        ),
+        help="one absolute path to a prebuilt, pinned harness binary",
     )
-    parser.add_argument("--bin-cwd", type=Path, help="frozen Legacy producer checkout")
+    parser.add_argument("--bin-cwd", type=Path, help="frozen producer checkout")
     parser.add_argument("--bin-head", help="expected full commit at --bin-cwd")
     parser.add_argument("--bin-sha256", help="expected sha256:<hex> of the absolute producer binary")
     parser.add_argument(
@@ -96,39 +84,15 @@ def parse_args() -> argparse.Namespace:
         "--native-artifact", action="store_true",
         help="assemble the captured Native samples with the pinned Rust BenchArtifactV1 writer",
     )
+    parser.add_argument(
+        "--native-authority", action="store_true",
+        help="require a frozen Linux Native capture with measured daemon RSS",
+    )
     parser.add_argument("--native-daemon", type=Path)
     parser.add_argument("--native-daemon-sha256")
     parser.add_argument("--native-history-fixture", type=Path)
     parser.add_argument("--native-history-sha256")
     return parser.parse_args()
-
-
-def resolve_default_bin_cmd() -> list[str]:
-    build = subprocess.run(
-        shlex.split(DEFAULT_BUILD_CMD),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if build.returncode != 0:
-        raise RuntimeError(
-            f"cold-matrix build failed (exit {build.returncode}):\n{build.stderr or build.stdout}"
-        )
-    target_dir = subprocess.run(
-        ["bash", "-lc", TARGET_DIR_CMD],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if target_dir.returncode != 0:
-        raise RuntimeError(
-            "cold-matrix target-dir probe failed "
-            f"(exit {target_dir.returncode}):\n{target_dir.stderr or target_dir.stdout}"
-        )
-    path = Path(target_dir.stdout.strip()) / "release" / "dsl_cold_matrix"
-    if not path.is_file():
-        raise RuntimeError(f"cold-matrix binary missing after build: {path}")
-    return [str(path)]
 
 
 def run_bin(
@@ -210,19 +174,30 @@ def collect_samples(run: BinRunner, scenario_id: str, samples: int) -> list[dict
 def assemble(
     run: BinRunner, out: Path, samples: int, collected: list[dict[str, object]]
 ) -> None:
+    from compare_dsl_bench import ArtifactRefused, load_artifact
+
     out.parent.mkdir(parents=True, exist_ok=True)
-    completed = run(
-        "--assemble",
-        "--out",
-        str(out),
-        "--samples",
-        str(samples),
-        stdin=json.dumps(collected),
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(f"--assemble failed (exit {completed.returncode}):\n{completed.stderr}")
-    if not out.is_file():
-        raise RuntimeError(f"--assemble exited 0 but wrote no artifact at {out}")
+    with TemporaryDirectory(dir=out.parent) as scratch:
+        staged = Path(scratch) / out.name
+        completed = run(
+            "--assemble",
+            "--out",
+            str(staged),
+            "--samples",
+            str(samples),
+            stdin=json.dumps(collected),
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(f"--assemble failed (exit {completed.returncode}):\n{completed.stderr}")
+        try:
+            artifact = load_artifact(staged, role="cold DSL artifact")
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"--assemble exited 0 but wrote no artifact for {out}") from exc
+        except ArtifactRefused as exc:
+            raise RuntimeError(f"cold DSL artifact refused: {exc}") from exc
+        if artifact.mode != "cold":
+            raise RuntimeError(f"cold DSL assembler emitted {artifact.mode} artifact")
+        staged.replace(out)
 
 
 def measure(run: BinRunner, samples: int, out: Path) -> int:
@@ -252,17 +227,26 @@ def measure_frozen(args: argparse.Namespace, bin_cmd: list[str]) -> int:
     out = args.out.absolute()
     if out.resolve().is_relative_to(checkout):
         raise RuntimeError("frozen capture output must stay outside the producer checkout")
+    if out.resolve() == Path(bin_cmd[0]).resolve():
+        raise RuntimeError("frozen capture output overlaps the frozen producer")
     require_frozen_source(checkout, args.bin_head)
 
     try:
         binary = RawFile.capture(Path(bin_cmd[0]))
         if binary.sha256 != args.bin_sha256:
             raise RuntimeError("frozen producer binary SHA-256 differs")
+        if not os.access(binary.path, os.X_OK):
+            raise RuntimeError("frozen producer is not executable")
         out.parent.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(dir=out.parent) as scratch:
-            staged = Path(scratch) / out.name
+            stage = Path(scratch)
+            private = stage / "bin"
+            private.mkdir()
+            runner = binary.copy_to(private / binary.path.name)
+            runner.path.chmod(0o500)
+            staged = stage / "artifact.json"
             env = dict(os.environ, QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS="1")
-            run = partial(run_bin, bin_cmd, cwd=checkout, env=env)
+            run = partial(run_bin, [str(runner.path)], cwd=checkout, env=env)
             sample_count = None
             if args.bin_mode == "warm":
                 completed = run("--out", str(staged))
@@ -278,6 +262,8 @@ def measure_frozen(args: argparse.Namespace, bin_cmd: list[str]) -> int:
             require_frozen_source(checkout, args.bin_head)
             if RawFile.capture(binary.path) != binary:
                 raise RuntimeError("frozen producer binary changed during capture")
+            if RawFile.capture(runner.path) != runner:
+                raise RuntimeError("private frozen producer changed during capture")
             staged.replace(out)
             return len(artifact.rows) if sample_count is None else sample_count
     except (ArtifactRefused, EvidenceError) as exc:
@@ -299,7 +285,8 @@ def native_json(run: BinRunner, description: str, *argv: str) -> dict:
 
 
 def validate_native_report(
-    payload: dict, kind: str, scenario: str, mode: str, daemon_sha: str, history_config_sha: str,
+    payload: dict, kind: str, scenario: str, mode: str, daemon_sha: str,
+    history_config_sha: str, history_target: dict,
 ) -> None:
     if kind == "history":
         report = payload.get("history")
@@ -311,12 +298,41 @@ def validate_native_report(
         report = payload
     if payload.get("daemon_sha256") != daemon_sha.removeprefix("sha256:"):
         raise RuntimeError(f"Native DSL daemon SHA-256 differs for {scenario}")
+    expected_schema = f"native-dsl-{kind}-samples-v{2 if kind == 'history' else 1}"
     if (
         not isinstance(report, dict)
-        or report.get("schema") != f"native-dsl-{kind}-samples-v1"
+        or report.get("schema") != expected_schema
         or report.get("scenario_id") != scenario
     ):
         raise RuntimeError(f"wrong Native SDK scenario report for {scenario}")
+    if kind == "history":
+        witness = report.get("published")
+        if not isinstance(witness, dict) or any(
+            witness.get(part) != history_target[part] for part in ("view", "cut", "instance")
+        ):
+            raise RuntimeError(f"Native History publication differs from the pinned fixture for {scenario}")
+        page = report.get("observed_page")
+        if (
+            not isinstance(page, dict)
+            or any(
+                witness.get(part) is None or page.get(part) != witness[part]
+                for part in ("session", "view", "instance", "member")
+            )
+            or page.get("read_epoch") != history_target["cut"]["durable_epoch"]
+            or any(type(page.get(count)) is not int or page[count] != 1 for count in ("matched", "remaining"))
+            or page.get("after") is not None
+        ):
+            raise RuntimeError(f"Native History observed page differs for {scenario}")
+    if kind == "error" and (
+        report.get("result_shape") != "typed_error"
+        or report.get("typed_error_code") != "PARSE_FAIL"
+        or type(report.get("error_count")) is not int
+        or report.get("engine_touched") != []
+        or report.get("measurement_scope") != "client_preflight"
+        or "matched_files" in report
+        or "result_unit" in report
+    ):
+        raise RuntimeError(f"Native SDK parse error oracle or client preflight scope differs for {scenario}")
     passes, per_pass, prime = (report.get(key) for key in ("passes", "samples_per_pass", "prime_queries"))
     samples = report.get("samples_ms")
     if (
@@ -328,9 +344,31 @@ def validate_native_report(
         raise RuntimeError(f"invalid Native SDK samples for {scenario}")
     if mode == "cold" and (passes, per_pass, prime) != (1, 1, 0):
         raise RuntimeError(f"cold sample must contain one unprimed SDK query for {scenario}")
+    if kind == "error" and report["error_count"] != passes * per_pass:
+        raise RuntimeError(f"Native SDK parse error count differs for {scenario}")
+    if kind == "retained":
+        query = report.get("query")
+        fixture = report.get("fixture_sha256")
+        config = report.get("config_template_sha256")
+        published = report.get("published")
+        if (
+            not isinstance(query, dict) or not query
+            or not isinstance(fixture, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", fixture)
+            or not isinstance(config, str) or not re.fullmatch(r"[0-9a-f]{64}", config)
+            or not isinstance(published, list) or len(published) != passes
+        ):
+            raise RuntimeError(f"Native DSL retained witness is incomplete for {scenario}")
+        for observation in published:
+            view = observation.get("view") if isinstance(observation, dict) else None
+            page = observation.get("page") if isinstance(observation, dict) else None
+            if not isinstance(view, dict) or not view or not isinstance(page, dict) or page.get("view") != view:
+                raise RuntimeError(f"Native DSL retained observation differs for {scenario}")
 
 
-def assemble_native(run: BinRunner, matrix: Path, out: Path, mode: str, head: str) -> None:
+def assemble_native(
+    run: BinRunner, matrix: Path, out: Path, mode: str, head: str,
+    qualification: str = "diagnostic",
+) -> None:
     from compare_dsl_bench import ArtifactRefused, load_artifact
     from evidence import RawFile, _read_control_file, parse_json
 
@@ -346,17 +384,42 @@ def assemble_native(run: BinRunner, matrix: Path, out: Path, mode: str, head: st
         raise RuntimeError(f"Native DSL artifact refused: {exc}") from exc
     if (
         artifact.mode != mode or artifact.git_head != head
-        or artifact.qualification != "diagnostic"
+        or artifact.qualification != qualification
         or payload["detail"].get("native_matrix_sha256") != commitment.sha256
         or RawFile.capture(matrix) != commitment
     ):
         raise RuntimeError("Native DSL artifact differs from the collected source, mode or matrix")
 
 
+def require_native_authority(args: argparse.Namespace) -> bool:
+    authority = bool(getattr(args, "native_authority", False))
+    if authority:
+        if not getattr(args, "native_artifact", False):
+            raise RuntimeError("Native DSL authority requires --native-artifact")
+        if not getattr(args, "bin_cwd", None) or not getattr(args, "bin_head", None):
+            raise RuntimeError("Native DSL authority requires a frozen --bin-cwd and --bin-head")
+        if args.bin_mode == "cold" and args.samples < 20:
+            raise RuntimeError("Native DSL authority requires at least 20 cold samples per scenario")
+        if not sys.platform.startswith("linux"):
+            raise RuntimeError("Native DSL authority requires a Linux host")
+    return authority
+
+
+def require_native_authority_rss(payload: dict, kind: str, scenario: str) -> None:
+    rss = payload.get("daemon_peak_rss_bytes")
+    if kind == "error":
+        if rss is not None:
+            raise RuntimeError(f"Native DSL client error has daemon RSS for {scenario}")
+        return
+    if type(rss) is not int or rss <= 0:
+        raise RuntimeError(f"Native DSL authority requires measured daemon RSS for {scenario}")
+
+
 def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
     from benchctl import require_frozen_source
     from evidence import CONTROL_DOCUMENT_BYTES, DIGEST_RE, RawFile, parse_json
 
+    authority = require_native_authority(args)
     if len(bin_cmd) != 1 or args.out is None:
         raise RuntimeError("Native DSL requires one --bin-cmd executable and an explicit --out")
     if bool(args.bin_cwd) != bool(args.bin_head):
@@ -389,6 +452,8 @@ def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
     fixture = history.consume_seekable(lambda stream: parse_json(stream.read().decode("utf-8")))
     if not isinstance(fixture, dict):
         raise RuntimeError("Native DSL History fixture must be a JSON object")
+    if authority and fixture.get("source_git_head") != args.bin_head:
+        raise RuntimeError("Native DSL History fixture source HEAD differs from the frozen checkout")
     history_daemon = fixture.get("daemon")
     if (
         not isinstance(history_daemon, str)
@@ -400,27 +465,52 @@ def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
     history_config_sha = fixture.get("config_sha256")
     if not isinstance(history_config_sha, str) or not DIGEST_RE.fullmatch(f"sha256:{history_config_sha}"):
         raise RuntimeError("Native DSL History fixture requires a config SHA-256")
+    published_history = fixture.get("history")
+    if (
+        not isinstance(published_history, dict)
+        or not isinstance(published_history.get("view"), dict)
+        or not isinstance(published_history.get("cut"), dict)
+        or type(published_history["cut"].get("durable_epoch")) is not int
+        or published_history["cut"]["durable_epoch"] < 0
+        or not isinstance(published_history.get("instance"), dict)
+        or published_history["instance"].get("instance") is None
+    ):
+        raise RuntimeError("Native DSL History fixture requires a published view, cut and instance")
+    history_target = {
+        "view": published_history["view"],
+        "cut": published_history["cut"],
+        "instance": published_history["instance"]["instance"],
+    }
 
     run = partial(run_bin, [str(runner.path)], cwd=cwd, env=dict(os.environ, QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS="1"))
     roster = native_json(run, "Native DSL roster", "--list-native")
-    if set(roster) != {"text", "history"}:
-        raise RuntimeError("Native DSL roster requires exactly Text and History")
+    if set(roster) != {"text", "error", "history", "retained"}:
+        raise RuntimeError("Native DSL roster requires Text, error, History and retained scenarios")
 
     seen = set()
-    for kind in ("text", "history"):
+    for kind, label, expected_count in (("text", "Text", 14), ("history", "History", 7), ("retained", "retained", 12)):
         scenarios = roster[kind]
-        if not isinstance(scenarios, list) or len(scenarios) != 7:
-            raise RuntimeError(f"Native DSL {kind.title()} roster requires exactly 7 scenarios")
+        if not isinstance(scenarios, list) or len(scenarios) != expected_count:
+            raise RuntimeError(f"Native DSL {label} roster requires exactly {expected_count} scenarios")
         for scenario in scenarios:
             if not isinstance(scenario, str) or not scenario or scenario in seen:
                 raise RuntimeError(f"invalid or duplicate Native DSL scenario {scenario!r}")
             seen.add(scenario)
+    errors = roster["error"]
+    if (
+        not isinstance(errors, list) or len(errors) != 5
+        or any(not isinstance(scenario, str) or scenario not in roster["text"] for scenario in errors)
+        or len(set(errors)) != 5
+    ):
+        raise RuntimeError("Native DSL error roster requires five distinct Text SDK scenarios")
+    error_set = set(errors)
 
     mode = args.bin_mode
     cold = mode == "cold"
     routes = {
         "text": ("--native-text", daemon.path),
         "history": ("--native-history" if cold else "--native-history-reopen", history.path),
+        "retained": ("--native-retained", daemon.path),
     }
     rows = []
     for kind, (flag, source) in routes.items():
@@ -428,9 +518,15 @@ def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
             reports = []
             for _ in range(args.samples if cold else 1):
                 report = native_json(run, f"SDK report for {scenario}", flag, str(source), scenario)
-                validate_native_report(report, kind, scenario, mode, daemon.sha256, history_config_sha)
+                report_kind = "error" if scenario in error_set else kind
+                validate_native_report(
+                    report, report_kind, scenario, mode, daemon.sha256,
+                    history_config_sha, history_target,
+                )
+                if authority:
+                    require_native_authority_rss(report, report_kind, scenario)
                 reports.append(report)
-            rows.append({"scenario_id": scenario, "kind": kind, "reports": reports})
+            rows.append({"scenario_id": scenario, "kind": report_kind, "reports": reports})
 
     if cwd is not None:
         require_frozen_source(cwd, args.bin_head)
@@ -439,7 +535,7 @@ def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
             raise RuntimeError(f"Native DSL {name} changed during capture")
     artifact = {
         "schema": "native-dsl-matrix-v1",
-        "qualification": "diagnostic",
+        "qualification": "authority" if authority else "diagnostic",
         "mode": mode,
         "git_head": args.bin_head,
         "runner_sha256": runner.sha256,
@@ -453,7 +549,9 @@ def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
         staged.write_text(json.dumps(artifact, allow_nan=False) + "\n", encoding="utf-8")
         if args.native_artifact:
             assembled = Path(scratch) / "assembled.json"
-            assemble_native(run, staged, assembled, mode, args.bin_head)
+            assemble_native(
+                run, staged, assembled, mode, args.bin_head, artifact["qualification"],
+            )
             require_frozen_source(cwd, args.bin_head)
             for name, pinned in (("runner", runner), ("daemon", daemon), ("History fixture", history)):
                 if RawFile.capture(pinned.path) != pinned:
@@ -479,7 +577,7 @@ def main() -> int:
         bin_cmd = shlex.split(args.bin_cmd) if args.bin_cmd is not None else []
         native_inputs = (
             args.native_runner, args.native_artifact, args.native_daemon, args.native_daemon_sha256,
-            args.native_history_fixture, args.native_history_sha256,
+            args.native_history_fixture, args.native_history_sha256, args.native_authority,
         )
         if any(native_inputs):
             if args.native_runner is not None:
@@ -489,12 +587,7 @@ def main() -> int:
             count = measure_native(args, bin_cmd)
             print(f"wrote {count} Native SDK scenarios to {args.out}", file=sys.stderr)
             return 0
-        if args.bin_mode == "warm" or any((args.bin_cwd, args.bin_head, args.bin_sha256)):
-            count = measure_frozen(args, bin_cmd)
-        else:
-            args.out = args.out or DEFAULT_OUT
-            run = partial(run_bin, bin_cmd or resolve_default_bin_cmd())
-            count = measure(run, args.samples, args.out)
+        count = measure_frozen(args, bin_cmd)
     except (RuntimeError, OSError, ValueError, KeyError) as exc:
         print(f"ERROR: {args.bin_mode}-matrix measurement failed: {exc}", file=sys.stderr)
         return 2

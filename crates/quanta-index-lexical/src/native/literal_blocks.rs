@@ -1,7 +1,7 @@
 //! Immutable, bounded membership blocks for the native byte-literal index.
 //!
 //! Directory map keys are the last `(gram, owner)` key in each block. Values
-//! are dependency-free ObjectRefs; the object port authenticates block bytes.
+//! are dependency-free `ObjectRef`s; the object port authenticates block bytes.
 //! This module does not grant publication authority or replace transition seal.
 
 use quanta_index_core::index::{
@@ -27,13 +27,13 @@ const RESTART_INTERVAL: usize = 16;
 const RESTART_BYTES: usize = 2;
 pub(super) const KEY_BYTES: usize = 35;
 pub(super) const MAX_BLOCK_BYTES: usize = 32 * 1024;
-const MAX_V1_KEYS: usize = (MAX_BLOCK_BYTES - V1_HEADER_BYTES) / KEY_BYTES;
+const MAX_V1_KEYS: usize = (MAX_BLOCK_BYTES - V1_HEADER_BYTES).div_euclid(KEY_BYTES);
 // With the entire owner omitted, a restart still has its flag, gram and offset.
 // Every other distinct logical key requires a flag and at least one suffix byte.
 const MIN_RESTART_BYTES: usize = 1 + PRODUCER_START + RESTART_BYTES;
 const MIN_RESTART_GROUP_BYTES: usize = MIN_RESTART_BYTES + (RESTART_INTERVAL - 1) * 2;
 const MAX_RESTARTS: usize =
-    1 + (MAX_BLOCK_BYTES - V2_HEADER_BYTES - MIN_RESTART_BYTES) / MIN_RESTART_GROUP_BYTES;
+    1 + (MAX_BLOCK_BYTES - V2_HEADER_BYTES - MIN_RESTART_BYTES).div_euclid(MIN_RESTART_GROUP_BYTES);
 
 pub(super) fn literal_key(gram: [u8; 3], owner: [u8; 32]) -> [u8; KEY_BYTES] {
     let mut key = [0; KEY_BYTES];
@@ -53,7 +53,7 @@ pub(super) enum PushResult {
 }
 
 /// Prefix shared by every owner in a strictly sorted cold input.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ColdOwnerPrefix {
     first: [u8; OWNER_BYTES],
     width: usize,
@@ -65,10 +65,18 @@ impl ColdOwnerPrefix {
         let width = common_prefix(&first, owners.last()?);
         (width > PRODUCER_BYTES).then_some(Self { first, width })
     }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the private constructor bounds width by the two fixed 32-byte owners"
+    )]
+    pub(super) fn parts(&self) -> (usize, &[u8]) {
+        (self.width, &self.first[..self.width])
+    }
 }
 
 /// One bounded staging buffer. Its allocation lease must be kept with the
-/// resulting ObjectBatchInput until installation returns.
+/// resulting `ObjectBatchInput` until installation returns.
 pub(super) struct LiteralBlockBuilder {
     bytes: Vec<u8>,
     header: FrontHeader,
@@ -326,7 +334,7 @@ impl PreparedLiteralBlock {
     }
 }
 
-/// StoredObject retains the object-port read allocation grant.
+/// `StoredObject` retains the object-port read allocation grant.
 pub(super) struct LiteralBlock {
     stored: StoredObject,
     count: usize,
@@ -663,6 +671,26 @@ impl LiteralBlock {
         self.count
     }
 
+    pub(super) fn require_cold_owner_prefix(
+        &self,
+        expected: ColdOwnerPrefix,
+    ) -> Result<(), IndexError> {
+        let BlockWire::Front { header, .. } = &self.wire else {
+            return Err(corrupt("cold literal block version differs"));
+        };
+        let (width, prefix) = expected.parts();
+        let owner_end = PRODUCER_START
+            .checked_add(width)
+            .ok_or(IndexError::ResourceLimited)?;
+        if !header.is_cold()
+            || header.key_owner_end != owner_end
+            || header.owner_prefix(&self.stored.payload)? != prefix
+        {
+            return Err(corrupt("cold literal owner header differs from source"));
+        }
+        Ok(())
+    }
+
     fn state_at_restart(&self, group: usize) -> Result<KeyState, IndexError> {
         let BlockWire::Front { restarts, .. } = &self.wire else {
             return Err(corrupt("flat block has no restart"));
@@ -703,7 +731,7 @@ impl LiteralBlock {
             } => {
                 let restart = state.index.is_multiple_of(RESTART_INTERVAL);
                 if restart {
-                    let group = state.index / RESTART_INTERVAL;
+                    let group = state.index.div_euclid(RESTART_INTERVAL);
                     let expected = restarts
                         .get(group)
                         .ok_or_else(|| corrupt("literal restart index absent"))?;
@@ -743,7 +771,7 @@ impl LiteralBlock {
                 return Err(corrupt("literal front-coded body extent differs"));
             }
             if state.index.is_multiple_of(RESTART_INTERVAL) && state.index < self.count {
-                let group = state.index / RESTART_INTERVAL;
+                let group = state.index.div_euclid(RESTART_INTERVAL);
                 let next = restarts
                     .get(group)
                     .ok_or_else(|| corrupt("next literal restart absent"))?;
@@ -764,7 +792,7 @@ impl LiteralBlock {
                 .map(Some)
                 .ok_or_else(|| corrupt("flat literal key absent"));
         }
-        let mut state = self.state_at_restart(index / RESTART_INTERVAL)?;
+        let mut state = self.state_at_restart(index.div_euclid(RESTART_INTERVAL))?;
         while state.index <= index {
             let key = self
                 .next_key(&mut state)?
@@ -889,7 +917,7 @@ impl LiteralBlock {
                 previous: None,
             });
         }
-        let mut state = self.state_at_restart(index / RESTART_INTERVAL)?;
+        let mut state = self.state_at_restart(index.div_euclid(RESTART_INTERVAL))?;
         while state.index < index {
             let _prior = self
                 .next_key(&mut state)?
@@ -930,7 +958,7 @@ impl Iterator for LiteralKeyIter<'_> {
 fn flat_key_at(bytes: &[u8], index: usize) -> Option<[u8; KEY_BYTES]> {
     let start = V1_HEADER_BYTES.checked_add(index.checked_mul(KEY_BYTES)?)?;
     let end = start.checked_add(KEY_BYTES)?;
-    bytes.get(start..end)?.try_into().ok()
+    bytes.get(start..end)?.first_chunk::<KEY_BYTES>().copied()
 }
 
 fn corrupt(reason: &str) -> IndexError {
@@ -952,12 +980,24 @@ fn predecessor(mut key: [u8; KEY_BYTES]) -> Option<[u8; KEY_BYTES]> {
     None
 }
 
-fn lower_bound_page(
+pub(super) fn lower_bound_page(
     maps: &dyn PersistentMapPort,
     root: MapRoot,
     target: &[u8; KEY_BYTES],
     budget: &mut WorkBudget,
 ) -> Result<Option<([u8; KEY_BYTES], ObjectRef)>, IndexError> {
+    lower_bound_page_with_end(maps, root, target, budget)
+        .map(|entry| entry.map(|(entry, _is_last)| entry))
+}
+
+/// The page's continuation bit identifies the final descriptor without an
+/// unrelated rightmost-path read for an interior change.
+pub(super) fn lower_bound_page_with_end(
+    maps: &dyn PersistentMapPort,
+    root: MapRoot,
+    target: &[u8; KEY_BYTES],
+    budget: &mut WorkBudget,
+) -> Result<Option<(([u8; KEY_BYTES], ObjectRef), bool)>, IndexError> {
     let after = predecessor(*target);
     let page = maps.scan(
         root,
@@ -985,6 +1025,33 @@ fn lower_bound_page(
     if last < *target {
         return Err(corrupt("literal directory lower bound regressed"));
     }
+    let reference = match value {
+        MapValue::Object(reference) => *reference,
+        MapValue::Inline(_) => return Err(corrupt("literal directory value is inline")),
+    };
+    Ok(Some(((last, reference), !page.has_more)))
+}
+
+/// The final descriptor is resolved by a backend rightmost-path seek. It is
+/// never found by paging the entire directory from its first key.
+pub(super) fn last_entry_page(
+    maps: &dyn PersistentMapPort,
+    root: MapRoot,
+    budget: &mut WorkBudget,
+) -> Result<Option<([u8; KEY_BYTES], ObjectRef)>, IndexError> {
+    let page = maps.last_entry(root, budget)?;
+    if page.has_more || page.entries.len() > 1 {
+        return Err(IndexError::BackendViolation(
+            "literal directory last-entry seek is not terminal".into(),
+        ));
+    }
+    let Some((key, value)) = page.entries.first() else {
+        return Ok(None);
+    };
+    let last: [u8; KEY_BYTES] = key
+        .as_slice()
+        .try_into()
+        .map_err(|_width| corrupt("literal directory key width differs"))?;
     let reference = match value {
         MapValue::Object(reference) => *reference,
         MapValue::Inline(_) => return Err(corrupt("literal directory value is inline")),
@@ -1397,6 +1464,16 @@ mod tests {
         let first = owner_bytes(expected.first().expect("first key"));
         let last = owner_bytes(expected.last().expect("last key"));
         let shared = ColdOwnerPrefix::from_sorted(&[first, last]).expect("cold prefix");
+        block
+            .require_cold_owner_prefix(shared)
+            .expect("persisted prefix");
+        let mut wrong_first = first;
+        let mut wrong_last = last;
+        wrong_first[0] ^= 1;
+        wrong_last[0] ^= 1;
+        let wrong = ColdOwnerPrefix::from_sorted(&[wrong_first, wrong_last])
+            .expect("different cold prefix");
+        assert!(block.require_cold_owner_prefix(wrong).is_err());
         let mut builder = LiteralBlockBuilder::new(&budget, Some(shared)).expect("builder");
         let before = budget.usage();
         assert!(
@@ -1425,6 +1502,55 @@ mod tests {
 
         *payload.get_mut(13).expect("prefix length") = 33;
         assert!(LiteralBlock::decode(stored(payload), &mut budget).is_err());
+    }
+
+    #[test]
+    fn cold_prefix_rejects_foreign_middle_owner_even_when_endpoints_match() {
+        let owner = [0x11_u8; OWNER_BYTES];
+        let mut foreign = owner;
+        foreign[0] = 0x22;
+        let shared = ColdOwnerPrefix::from_sorted(&[owner, owner]).expect("shared owner");
+        let mut budget = budget();
+        let mut builder = LiteralBlockBuilder::new(&budget, Some(shared)).expect("builder");
+        assert_eq!(
+            builder
+                .try_push(literal_key(*b"aaa", owner), &mut budget)
+                .expect("first"),
+            PushResult::Added
+        );
+        let before = budget.usage();
+        assert!(
+            builder
+                .try_push(literal_key(*b"aab", foreign), &mut budget)
+                .is_err()
+        );
+        assert_eq!(budget.usage(), before);
+        assert_eq!(
+            builder
+                .try_push(literal_key(*b"aac", owner), &mut budget)
+                .expect("last"),
+            PushResult::Added
+        );
+
+        // A forged V4 packet can carry an uncompressed foreign middle key.
+        // The header and endpoint keys alone cannot authenticate that row.
+        let mut payload = b"QILB".to_vec();
+        payload.push(VERSION_V4);
+        payload.extend_from_slice(&3_u16.to_be_bytes());
+        payload.extend_from_slice(&1_u16.to_be_bytes());
+        payload.extend_from_slice(&44_u32.to_be_bytes());
+        payload.push(32);
+        payload.extend_from_slice(&owner);
+        payload.extend_from_slice(b"\x80aaa");
+        payload.push(0);
+        payload.extend_from_slice(&literal_key(*b"aab", foreign));
+        payload.extend_from_slice(b"\x80aac");
+        payload.extend_from_slice(&0_u16.to_be_bytes());
+        let block = LiteralBlock::decode(stored(payload), &mut budget).expect("forged header");
+        block
+            .require_cold_owner_prefix(shared)
+            .expect("same endpoint header");
+        assert!(block.keys().collect::<Result<Vec<_>, _>>().is_err());
     }
 
     #[test]
@@ -1485,6 +1611,9 @@ mod tests {
     #[test]
     fn fixed_width_predecessor_is_immediate() {
         assert_eq!(predecessor([0; 35]), None);
+        let mut exact = [0; 35];
+        *exact.get_mut(34).expect("last byte") = 1;
+        assert_eq!(predecessor(exact), Some([0; 35]));
         let mut key = [0; 35];
         *key.get_mut(3).expect("byte") = 1;
         let prior = predecessor(key).expect("predecessor");

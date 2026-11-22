@@ -9,11 +9,8 @@ use quanta_index_core::index::{
     IndexError, MemoryLease, MemoryLifetime, StagedPayload, StoredObject, WorkBudget,
 };
 
-use super::super::{
-    text::{MAX_POSITIONS_PER_TERM, PreparedPositions},
-    text_memory::{PreparedKey, PreparedRows},
-    text_spool::check_term_key,
-};
+use super::positions::{MAX_POSITIONS_PER_TERM, PreparedPositions};
+use crate::native::text_memory::{PreparedKey, PreparedRows, check_term_key};
 
 pub(in crate::native) const MAX_BLOCK_BYTES: usize = 8_192;
 pub(in crate::native) const MAX_BLOCK_TERMS: usize = 512;
@@ -68,13 +65,19 @@ impl VectorIndex {
 
     fn new(budget: &WorkBudget) -> Result<Self, IndexError> {
         let memory = budget.reserve_memory(
-            u64::try_from(MAX_BLOCK_TERMS * std::mem::size_of::<u16>())
-                .map_err(|_error| IndexError::ResourceLimited)?,
+            u64::try_from(
+                MAX_BLOCK_TERMS
+                    .checked_mul(std::mem::size_of::<u16>())
+                    .ok_or(IndexError::ResourceLimited)?,
+            )
+            .map_err(|_error| IndexError::ResourceLimited)?,
             MemoryLifetime::Temporary,
         )?;
-        let mut index = Self::within_owner_grant();
-        index._memory = memory;
-        Ok(index)
+        Ok(Self {
+            slots: [0; MAX_BLOCK_TERMS],
+            len: 0,
+            _memory: memory,
+        })
     }
 
     pub(in crate::native) fn locate(
@@ -86,10 +89,19 @@ impl VectorIndex {
         let mut upper = self.len;
         while lower < upper {
             budget.checkpoint()?;
-            let middle = lower + (upper - lower) / 2;
+            let middle = lower
+                .checked_add(
+                    upper
+                        .checked_sub(lower)
+                        .ok_or(IndexError::ResourceLimited)?
+                        .div_euclid(2),
+                )
+                .ok_or(IndexError::ResourceLimited)?;
             let ordinal = usize::from(*self.slots.get(middle).ok_or(IndexError::ResourceLimited)?);
             match compare(ordinal)? {
-                Ordering::Less => lower = middle + 1,
+                Ordering::Less => {
+                    lower = middle.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                }
                 Ordering::Greater => upper = middle,
                 Ordering::Equal => return Ok((Some(ordinal), middle)),
             }
@@ -97,16 +109,25 @@ impl VectorIndex {
         Ok((None, lower))
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the bounded vector count and search insertion position establish the slot"
-    )]
-    pub(in crate::native) fn insert(&mut self, slot: usize, ordinal: u16) {
-        // Caller proved the insertion slot and the 512-vector cap. Shifting
-        // compact ordinals does not move or rewrite the original vectors.
-        self.slots.copy_within(slot..self.len, slot + 1);
-        self.slots[slot] = ordinal;
-        self.len += 1;
+    pub(in crate::native) fn insert(
+        &mut self,
+        slot: usize,
+        ordinal: u16,
+    ) -> Result<(), IndexError> {
+        let next_len = self.len.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        if slot > self.len || next_len > self.slots.len() || usize::from(ordinal) >= MAX_BLOCK_TERMS
+        {
+            return Err(IndexError::ResourceLimited);
+        }
+        let destination = slot.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        // Both source range and destination are inside the fixed slot array.
+        self.slots.copy_within(slot..self.len, destination);
+        *self
+            .slots
+            .get_mut(slot)
+            .ok_or(IndexError::ResourceLimited)? = ordinal;
+        self.len = next_len;
+        Ok(())
     }
 }
 
@@ -335,8 +356,7 @@ impl BlockDraft {
                 "text block positions must be nonempty and strictly increasing".into(),
             ));
         }
-        let mut new_index = None;
-        if self.vector_index.is_none() && self.vectors.len() >= 2 {
+        let mut new_index = if self.vector_index.is_none() && self.vectors.len() >= 2 {
             let mut index = VectorIndex::new(budget)?;
             for ordinal in 0..self.vectors.len() {
                 let candidate = self
@@ -362,10 +382,12 @@ impl BlockDraft {
                 index.insert(
                     slot,
                     u16::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?,
-                );
+                )?;
             }
-            new_index = Some(index);
-        }
+            Some(index)
+        } else {
+            None
+        };
         let (same, insertion_slot) =
             if let Some(index) = self.vector_index.as_ref().or(new_index.as_ref()) {
                 index.locate(budget, |ordinal| {
@@ -413,9 +435,9 @@ impl BlockDraft {
         }
         if same.is_none() {
             if let Some(index) = &mut self.vector_index {
-                index.insert(insertion_slot, vector);
+                index.insert(insertion_slot, vector)?;
             } else if let Some(index) = &mut new_index {
-                index.insert(insertion_slot, vector);
+                index.insert(insertion_slot, vector)?;
             }
         }
         if let Some(index) = new_index {
@@ -601,7 +623,7 @@ impl CheckedBlock {
             }
             if index == 1 {
                 let mut ready = VectorIndex::new(budget)?;
-                ready.insert(0, 0);
+                ready.insert(0, 0)?;
                 vector_index = Some(ready);
             }
             let (same, insertion_slot) = if let Some(index) = &vector_index {
@@ -630,7 +652,7 @@ impl CheckedBlock {
                 lookup.insert(
                     insertion_slot,
                     u16::try_from(index).map_err(|_error| IndexError::ResourceLimited)?,
-                );
+                )?;
             }
         }
         if offset != payload.len() {
@@ -825,6 +847,37 @@ fn corrupt(message: &str) -> IndexError {
 
 fn layout_invariant() -> IndexError {
     IndexError::BackendViolation("checked text block layout exceeds its owned payload".into())
+}
+
+#[cfg(test)]
+#[test]
+fn vector_index_rejects_invalid_insert_before_changing_slots() -> Result<(), IndexError> {
+    let mut index = VectorIndex::within_owner_grant();
+    let empty = index.slots;
+    assert!(matches!(
+        index.insert(1, 0),
+        Err(IndexError::ResourceLimited)
+    ));
+    assert!(matches!(
+        index.insert(0, 512),
+        Err(IndexError::ResourceLimited)
+    ));
+    assert_eq!(index.len, 0);
+    assert_eq!(index.slots, empty);
+
+    for ordinal in 0..MAX_BLOCK_TERMS {
+        let ordinal = u16::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?;
+        index.insert(usize::from(ordinal), ordinal)?;
+    }
+    let full = index.slots;
+    assert_eq!(index.len, MAX_BLOCK_TERMS);
+    assert!(matches!(
+        index.insert(MAX_BLOCK_TERMS, 0),
+        Err(IndexError::ResourceLimited)
+    ));
+    assert_eq!(index.len, MAX_BLOCK_TERMS);
+    assert_eq!(index.slots, full);
+    Ok(())
 }
 
 #[cfg(test)]

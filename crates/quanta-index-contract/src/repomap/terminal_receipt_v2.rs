@@ -15,7 +15,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     CandidateCommitmentV1, ManifestGeneration, RepoId, RepoMapMutationAck, RepoMapSourceBundle,
-    RevisionId, admitted_v3::KnownKeySeed,
+    RevisionId, decode::KnownKeySeed,
 };
 
 const SOURCE_BUNDLE_DIGEST_DOMAIN_V2: &[u8] = b"quanta-index/repomap-source-bundle/v2\0";

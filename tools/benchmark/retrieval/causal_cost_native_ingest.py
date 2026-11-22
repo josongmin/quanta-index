@@ -6,6 +6,8 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from tools.benchmark.retrieval.causal_cost_timeline import (
+    MANAGED_INSTALL_CUSTODY_STAGES,
+    managed_install_census,
     MANAGED_CROSS_GROUP_CHILD_COUNTERS,
     MANAGED_EXTERNAL_CHILD_COUNTERS,
     MANAGED_REUSED_EXTERNAL_CHILD_COUNTER,
@@ -256,6 +258,16 @@ def build_native_ingest_report(capture: dict[str, Any], *, limit: int = 32) -> d
                 "stages": {
                     _key(kind): _group(rows, kind) for kind, rows in sorted(groups[key].items())
                 },
+                "install_census": managed_install_census(
+                    capture,
+                    [
+                        span["span_id"]
+                        for (stage, _), rows in groups[key].items()
+                        if stage in MANAGED_INSTALL_CUSTODY_STAGES
+                        for span, _ in rows
+                        if span["outcome"] == "ok" and spans[key]["outcome"] == "ok"
+                    ],
+                ),
             }
             for key in selected
         ],
@@ -266,6 +278,7 @@ def build_native_ingest_report(capture: dict[str, Any], *, limit: int = 32) -> d
             "reads": "object-port route counts and successful wire bytes; null when incomplete, not physical disk reads",
             "work_usage": "logical WorkBudget usage from direct counters when every span in the group is measured",
             "external_children": "closed ManagedObjectInstall/3 spans only; planned counts and distinct full references belong to one physical group, and group uniques must not be summed into run-wide distinct references; actual reused validations are an independent reached count, including a failed group's prefix; missing values are not zero",
+            "install_census": "unique committed managed Catalog registrations and edges, and verified Storage CAS reuse confirmed by Catalog, across custody spans belonging to this request",
             "partial": "observed spans only; open prefix is elapsed until the last capture event, not a completed duration",
             "qualification": "standalone diagnostic; no source/build binding or Off/Record qualification",
         },

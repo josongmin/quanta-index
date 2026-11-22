@@ -1,20 +1,24 @@
 //! Borrowed Original Source associations and Host facts remain data until the
 //! receiver joins them with its live Q authority and retained descriptors.
 
+use std::cmp::Ordering;
+
 use anyhow::{Result, anyhow, ensure};
 use quanta_index_contract::{
     native_cutover_evidence_v1::{
         NativeCutoverEvidenceFreshSdkV1, NativeCutoverEvidenceHostFactsV1,
         NativeCutoverEvidenceHostRecoveryReceiptV1,
-        NativeCutoverEvidenceOrdinalV1, NativeCutoverEvidenceSourcePublicationBindingV1,
+        NativeCutoverEvidenceOrdinalV1, NativeCutoverEvidenceSdkBindingV1,
+        NativeCutoverEvidenceSourcePublicationBindingV1,
         NativeCutoverEvidenceSourceFactV1, NativeCutoverEvidenceV1,
     },
     native_cutover_source_join_v1::{
         NativeCutoverJoinedSourceFactsV1, NativeCutoverSourceJoinErrorV1,
+        NativeCutoverSourceEventMatchV1, NativeCutoverSourceEventMatchesV1,
         join_native_cutover_source_facts_v1,
     },
 };
-use quanta_index_core::index::{MemoryLifetime, WorkBudget, WorkUsage};
+use quanta_index_core::index::{MemoryLease, MemoryLifetime, WorkBudget, WorkUsage};
 
 #[derive(Debug)]
 pub(super) enum FreshSourceParityRefusalV1 {
@@ -100,6 +104,31 @@ fn require_ordinary_source_binding_v1(
     Ok(())
 }
 
+fn require_sdk_source_binding_v1(
+    binding: &NativeCutoverEvidenceSdkBindingV1,
+    fresh: &NativeCutoverEvidenceFreshSdkV1,
+    budget: &mut WorkBudget,
+) -> Result<()> {
+    budget.charge(WorkUsage {
+        bytes: u64::try_from(
+            binding
+                .target_source_digest
+                .len()
+                .saturating_add(binding.transition_digest.len())
+                .saturating_add(binding.completion_pointer_digest.len()),
+        )?,
+        ..WorkUsage::default()
+    })?;
+    if binding.target_snapshot != fresh.target_snapshot_id
+        || binding.target_source_digest.as_bytes() != fresh.physical_target_source_digest.0
+        || binding.transition_digest.as_bytes() != fresh.source_manifest_digest.0
+        || binding.completion_pointer_digest.as_bytes() != fresh.source_pointer_digest.0
+    {
+        return Err(FreshSourceParityRefusalV1::SdkTargetMismatch.into());
+    }
+    Ok(())
+}
+
 /// The canonical Source join binds the required live committed closure seal
 /// to the independent fresh physical target and exact original V5/V9 facts.
 /// The selected ordinary or change-event Source binding must describe that
@@ -142,32 +171,8 @@ pub(super) fn require_fresh_source_parity_v1(
     } else {
         joined.current_legacy_sdk_ack.or(joined.sdk_acked_binding)
     };
-    let selected_sdk_binding = match sdk_fact {
-        Some(NativeCutoverEvidenceSourceFactV1::PendingStoreSdkAck { binding, .. }) => {
-            Some(binding)
-        }
-        _ => None,
-    };
-    if let Some(binding) = selected_sdk_binding {
-        budget.charge(WorkUsage {
-            bytes: u64::try_from(
-                binding
-                    .target_source_digest
-                    .len()
-                    .saturating_add(binding.transition_digest.len())
-                    .saturating_add(binding.completion_pointer_digest.len()),
-            )?,
-            ..WorkUsage::default()
-        })?;
-        if binding.target_snapshot != fresh.target_snapshot_id
-            || binding.target_source_digest.as_bytes()
-                != fresh.physical_target_source_digest.0.as_slice()
-            || binding.transition_digest.as_bytes() != fresh.source_manifest_digest.0.as_slice()
-            || binding.completion_pointer_digest.as_bytes()
-                != fresh.source_pointer_digest.0.as_slice()
-        {
-            return Err(FreshSourceParityRefusalV1::SdkTargetMismatch.into());
-        }
+    if let Some(NativeCutoverEvidenceSourceFactV1::PendingStoreSdkAck { binding, .. }) = sdk_fact {
+        require_sdk_source_binding_v1(binding, fresh, budget)?;
     }
     // S's retained Original reader compares its closed physical scan with the
     // durable pointer before reading the manifest/heads and both finishers.
@@ -192,21 +197,86 @@ fn canonical_host_digest_v1(value: &str) -> bool {
     })
 }
 
-fn recovery_receipt_for_digest_v1<'a>(
-    host: &'a NativeCutoverEvidenceHostFactsV1,
-    request_digest: &str,
-    budget: &mut WorkBudget,
-) -> Result<&'a NativeCutoverEvidenceHostRecoveryReceiptV1> {
-    let mut found = None;
-    for receipt in &host.recovery_receipts {
-        charge_host_v1(budget, receipt.request_identity_digest.len())?;
-        if receipt.request_identity_digest == request_digest {
-            if found.replace(receipt).is_some() {
-                return Err(RetainedHostRefusalV1::DuplicateRecoveryReceipt.into());
-            }
+struct RetainedHostRecoveryReceiptV1<'a> {
+    receipt: &'a NativeCutoverEvidenceHostRecoveryReceiptV1,
+    verified: bool,
+}
+
+impl RetainedHostRecoveryReceiptV1<'_> {
+    fn require_event(
+        &mut self,
+        event_id: u128,
+        verify: &mut impl FnMut(
+            &NativeCutoverEvidenceHostRecoveryReceiptV1,
+            &mut WorkBudget,
+        ) -> Result<()>,
+        budget: &mut WorkBudget,
+    ) -> Result<()> {
+        if !self.verified {
+            verify(self.receipt, budget)?;
+            self.verified = true;
+        }
+        if find_host_item_v1(&self.receipt.tail_event_ids, |actual| {
+            charge_host_v1(budget, std::mem::size_of::<u128>())?;
+            Ok(actual.cmp(&event_id))
+        })?
+        .is_none()
+        {
+            return Err(RetainedHostRefusalV1::InvalidRecoveryReceipt.into());
+        }
+        Ok(())
+    }
+}
+
+fn compare_host_digests_v1(left: &str, right: &str, budget: &mut WorkBudget) -> Result<Ordering> {
+    charge_host_v1(budget, left.len().saturating_add(right.len()))?;
+    Ok(left.cmp(right))
+}
+
+fn find_host_item_v1<T>(
+    items: &[T],
+    mut compare: impl FnMut(&T) -> Result<Ordering>,
+) -> Result<Option<usize>> {
+    let mut lower = 0;
+    let mut upper = items.len();
+    while lower < upper {
+        let middle = lower + (upper - lower) / 2;
+        if compare(&items[middle])? == Ordering::Less {
+            lower = middle + 1;
+        } else {
+            upper = middle;
         }
     }
-    found.ok_or_else(|| RetainedHostRefusalV1::MissingRecoveryReceipt.into())
+    if let Some(item) = items.get(lower)
+        && compare(item)? == Ordering::Equal
+    {
+        return Ok(Some(lower));
+    }
+    Ok(None)
+}
+
+fn recovery_receipt_for_digest_v1<'rows, 'evidence>(
+    rows: &'rows mut [RetainedHostRecoveryReceiptV1<'evidence>],
+    request_digest: &str,
+    budget: &mut WorkBudget,
+) -> Result<&'rows mut RetainedHostRecoveryReceiptV1<'evidence>> {
+    let index = find_host_item_v1(rows, |row| {
+        compare_host_digests_v1(&row.receipt.request_identity_digest, request_digest, budget)
+    })?
+    .ok_or(RetainedHostRefusalV1::MissingRecoveryReceipt)?;
+    // Reject a duplicate when its digest is referenced. Unreferenced rows are
+    // still rejected by the same orphan check as a lone unreferenced receipt.
+    if !rows[index].verified
+        && let Some(next) = rows.get(index + 1)
+        && compare_host_digests_v1(
+            &next.receipt.request_identity_digest,
+            request_digest,
+            budget,
+        )? == Ordering::Equal
+    {
+        return Err(RetainedHostRefusalV1::DuplicateRecoveryReceipt.into());
+    }
+    Ok(&mut rows[index])
 }
 
 /// This is a comparison of the checkpoint owner's re-read receipt DATA. The
@@ -217,8 +287,6 @@ fn recovery_receipt_for_digest_v1<'a>(
 /// proof. Its events need not have an earlier completed Watch request.
 fn require_recovery_receipt_v1(
     receipt: &NativeCutoverEvidenceHostRecoveryReceiptV1,
-    request_digest: &str,
-    event_id: u128,
     workspace_root: &str,
     host_workspace_root: &str,
     fresh: &NativeCutoverEvidenceFreshSdkV1,
@@ -257,8 +325,6 @@ fn require_recovery_receipt_v1(
     if text.iter().any(|value| value.trim().is_empty())
         || receipt.canonical_workspace_root != workspace_root
         || receipt.canonical_workspace_root != host_workspace_root
-        || !canonical_host_digest_v1(request_digest)
-        || receipt.request_identity_digest != request_digest
         || receipt.operation_id != receipt.applied_operation_id
         || receipt.request_identity_digest != receipt.applied_request_identity_digest
         || !canonical_host_digest_v1(&receipt.tail_custody_digest)
@@ -274,8 +340,6 @@ fn require_recovery_receipt_v1(
         || receipt.applied_source_view_digest.as_bytes()
             != fresh.committed_source_snapshot_digest.0.as_slice()
         || receipt.tail_event_ids.is_empty()
-        || receipt.tail_event_ids.windows(2).any(|pair| pair[0] >= pair[1])
-        || receipt.tail_event_ids.binary_search(&event_id).is_err()
     {
         return Err(RetainedHostRefusalV1::InvalidRecoveryReceipt.into());
     }
@@ -288,11 +352,11 @@ fn require_recovery_receipt_v1(
 /// Source-only None operation. Event IDs are globally unique across both.
 /// A missing completed request is a refusal, never an inferred publication.
 fn completed_source_for_event_v1<'a>(
-    joined: &NativeCutoverJoinedSourceFactsV1<'a>,
+    matched_events: &NativeCutoverSourceEventMatchesV1<'a, '_>,
     event_id: u128,
     budget: &mut WorkBudget,
 ) -> Result<&'a NativeCutoverEvidenceSourcePublicationBindingV1> {
-    let (binding, _, _) = joined.completed_source_request_for_event_v1(event_id, &mut |units| {
+    let binding = matched_events.source_for_event_v1(event_id, &mut |units| {
         budget.charge(WorkUsage { reads: 1, bytes: units, ..WorkUsage::default() })
     })?
         .ok_or(RetainedHostRefusalV1::SourceOnlyOrUnmatched)?;
@@ -300,6 +364,62 @@ fn completed_source_for_event_v1<'a>(
     // current manifest/pointer ancestry under one retained Source/Output loan.
     // An older Source-only step need not equal the fresh pointer's four axes.
     Ok(binding)
+}
+
+fn host_ordinal_needs_recovery_v1(ordinal: &NativeCutoverEvidenceOrdinalV1) -> bool {
+    ordinal.recovery_request_digest.is_some()
+        || ordinal.terminal.as_deref() == Some("RecoverySubsumed")
+}
+
+fn ordinary_host_event_id_v1(ordinal: &NativeCutoverEvidenceOrdinalV1) -> Option<u128> {
+    if ordinal.filtered_no_semantic_work || ordinal.reconciliation_event_id.is_some()
+        || host_ordinal_needs_recovery_v1(ordinal) {
+        return None;
+    }
+    ordinal.emitted_event_id
+}
+
+struct RetainedHostSourceMatchesV1<'a> {
+    // Field order releases the backing allocation before its grant on every exit.
+    slots: Vec<NativeCutoverSourceEventMatchV1<'a>>,
+    _lease: Option<MemoryLease>,
+}
+
+fn prepare_host_event_matches_v1<'a>(
+    host: &'a NativeCutoverEvidenceHostFactsV1,
+    budget: &mut WorkBudget,
+) -> Result<RetainedHostSourceMatchesV1<'a>> {
+    let ordinals = host.deliveries.iter().flat_map(|delivery| &delivery.ordinals);
+    let mut count = 0_usize;
+    for ordinal in ordinals.clone() {
+        charge_host_v1(budget, std::mem::size_of_val(ordinal))?;
+        if ordinary_host_event_id_v1(ordinal).is_some() {
+            count = count.checked_add(1)
+                .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
+        }
+    }
+    if count == 0 {
+        return Ok(RetainedHostSourceMatchesV1 { slots: Vec::new(), _lease: None });
+    }
+    let bytes = count.checked_mul(std::mem::size_of::<NativeCutoverSourceEventMatchV1<'_>>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
+    let lease = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?
+        .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
+    let mut slots = Vec::new();
+    slots.try_reserve_exact(count)?;
+    ensure!(slots.capacity() <= count, "Host event match scratch exceeded its memory grant");
+    for ordinal in ordinals {
+        charge_host_v1(budget, std::mem::size_of_val(ordinal))?;
+        if let Some(event_id) = ordinary_host_event_id_v1(ordinal) {
+            slots.push(NativeCutoverSourceEventMatchV1::new(event_id));
+        }
+    }
+    sort_host_items_v1(&mut slots, |left, right| {
+        charge_host_v1(budget, 2 * std::mem::size_of::<u128>())?;
+        Ok(left.event_id_v1().cmp(&right.event_id_v1()))
+    })?;
+    Ok(RetainedHostSourceMatchesV1 { slots, _lease: Some(lease) })
 }
 
 /// Pure ordinal shape. `source` is supplied only after the authenticated
@@ -354,11 +474,11 @@ fn require_settled_host_ordinal_v1(
     Ok(Some(event_id))
 }
 
-fn sift_host_event_heap_v1(
-    ids: &mut [u128],
+fn sift_host_heap_v1<T>(
+    items: &mut [T],
     mut root: usize,
     end: usize,
-    budget: &mut WorkBudget,
+    compare: &mut impl FnMut(&T, &T) -> Result<Ordering>,
 ) -> Result<()> {
     loop {
         let left = root.checked_mul(2).and_then(|value| value.checked_add(1))
@@ -366,27 +486,38 @@ fn sift_host_event_heap_v1(
         if left >= end { return Ok(()) }
         let right = left + 1;
         let mut largest = root;
-        charge_host_v1(budget, 2 * std::mem::size_of::<u128>())?;
-        if ids[largest] < ids[left] { largest = left; }
-        if right < end {
-            charge_host_v1(budget, 2 * std::mem::size_of::<u128>())?;
-            if ids[largest] < ids[right] { largest = right; }
+        if compare(&items[largest], &items[left])? == Ordering::Less {
+            largest = left;
+        }
+        if right < end && compare(&items[largest], &items[right])? == Ordering::Less {
+            largest = right;
         }
         if largest == root { return Ok(()) }
-        ids.swap(root, largest);
+        items.swap(root, largest);
         root = largest;
     }
 }
 
-fn reject_duplicate_host_event_ids_v1(ids: &mut [u128], budget: &mut WorkBudget) -> Result<()> {
-    let length = ids.len();
+fn sort_host_items_v1<T>(
+    items: &mut [T],
+    mut compare: impl FnMut(&T, &T) -> Result<Ordering>,
+) -> Result<()> {
+    let length = items.len();
     for root in (0..length / 2).rev() {
-        sift_host_event_heap_v1(ids, root, length, budget)?;
+        sift_host_heap_v1(items, root, length, &mut compare)?;
     }
     for end in (1..length).rev() {
-        ids.swap(0, end);
-        sift_host_event_heap_v1(ids, 0, end, budget)?;
+        items.swap(0, end);
+        sift_host_heap_v1(items, 0, end, &mut compare)?;
     }
+    Ok(())
+}
+
+fn reject_duplicate_host_event_ids_v1(ids: &mut [u128], budget: &mut WorkBudget) -> Result<()> {
+    sort_host_items_v1(ids, |left, right| {
+        charge_host_v1(budget, 2 * std::mem::size_of::<u128>())?;
+        Ok(left.cmp(right))
+    })?;
     for pair in ids.windows(2) {
         charge_host_v1(budget, 2 * std::mem::size_of::<u128>())?;
         if pair[0] == pair[1] {
@@ -403,8 +534,7 @@ fn require_settled_retained_host_inventory_v1<'a>(
         u128,
         &mut WorkBudget,
     ) -> Result<&'a NativeCutoverEvidenceSourcePublicationBindingV1>,
-    mut recovery_for_event: impl FnMut(
-        u128,
+    mut verify_recovery_receipt: impl FnMut(
         &NativeCutoverEvidenceHostRecoveryReceiptV1,
         &mut WorkBudget,
     ) -> Result<()>,
@@ -428,7 +558,15 @@ fn require_settled_retained_host_inventory_v1<'a>(
     if occupied_units != host.active_units || occupied_units > host.capacity {
         return Err(RetainedHostRefusalV1::PendingApplyOrOccupancy.into());
     }
-    let reserved_bytes = ordinal_count.checked_mul(std::mem::size_of::<u128>())
+    let receipt_count = host.recovery_receipts.len();
+    let receipt_row_bytes = std::mem::size_of::<RetainedHostRecoveryReceiptV1<'_>>();
+    let reserved_bytes = receipt_count
+        .checked_mul(receipt_row_bytes)
+        .and_then(|receipt_bytes| {
+            ordinal_count
+                .checked_mul(std::mem::size_of::<u128>())
+                .and_then(|ordinal_bytes| ordinal_bytes.checked_add(receipt_bytes))
+        })
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
     let scratch_lease = if reserved_bytes == 0 { None } else {
@@ -437,9 +575,26 @@ fn require_settled_retained_host_inventory_v1<'a>(
     };
     let mut emitted_ids = Vec::<u128>::new();
     emitted_ids.try_reserve_exact(ordinal_count)?;
-    ensure!(emitted_ids.capacity().checked_mul(std::mem::size_of::<u128>())
-        .is_some_and(|actual| u64::try_from(actual).ok().is_some_and(|actual| actual <= reserved_bytes)),
-        "Host emitted event scratch exceeded its memory grant");
+    let mut recovery_receipts = Vec::new();
+    recovery_receipts.try_reserve_exact(receipt_count)?;
+    ensure!(
+        emitted_ids.capacity() <= ordinal_count && recovery_receipts.capacity() <= receipt_count,
+        "Host inventory scratch exceeded its memory grant"
+    );
+    for receipt in &host.recovery_receipts {
+        charge_host_v1(budget, receipt_row_bytes)?;
+        recovery_receipts.push(RetainedHostRecoveryReceiptV1 {
+            receipt,
+            verified: false,
+        });
+    }
+    sort_host_items_v1(&mut recovery_receipts, |left, right| {
+        compare_host_digests_v1(
+            &left.receipt.request_identity_digest,
+            &right.receipt.request_identity_digest,
+            budget,
+        )
+    })?;
     for delivery in &host.deliveries {
         charge_host_v1(budget, delivery.delivery_id.len()
             .saturating_add(delivery.record_digest.len())
@@ -505,9 +660,7 @@ fn require_settled_retained_host_inventory_v1<'a>(
                 }
                 no_cursor_recovery_digest = Some(digest);
             }
-            if ordinal.recovery_request_digest.is_some()
-                || ordinal.terminal.as_deref() == Some("RecoverySubsumed")
-            {
+            if host_ordinal_needs_recovery_v1(ordinal) {
                 let event_id = match (ordinal.emitted_event_id, ordinal.reconciliation_event_id) {
                     (Some(event_id), None) if !ordinal.filtered_no_semantic_work => event_id,
                     (None, Some(event_id)) if !ordinal.filtered_no_semantic_work => event_id,
@@ -515,9 +668,10 @@ fn require_settled_retained_host_inventory_v1<'a>(
                 };
                 let request_digest = ordinal.recovery_request_digest.as_deref()
                     .ok_or(RetainedHostRefusalV1::MissingRecoveryReceipt)?;
-                let receipt = recovery_receipt_for_digest_v1(host, request_digest, budget)?;
+                let row =
+                    recovery_receipt_for_digest_v1(&mut recovery_receipts, request_digest, budget)?;
                 if ordinal.terminal.is_none() {
-                    recovery_for_event(event_id, receipt, budget)?;
+                    row.require_event(event_id, &mut verify_recovery_receipt, budget)?;
                     return Err(RetainedHostRefusalV1::PendingRecoveryOrdinal.into());
                 }
                 // A later genuine full receipt may cover an already completed
@@ -542,13 +696,14 @@ fn require_settled_retained_host_inventory_v1<'a>(
                             (Some(transition), Some(target), Some(snapshot))
                                 if canonical_host_digest_v1(transition)
                                     && canonical_host_digest_v1(target)
-                                    && snapshot > 0 && snapshot <= receipt.published_snapshot_id => {}
+                                    && snapshot > 0
+                                    && snapshot <= row.receipt.published_snapshot_id => {}
                             _ => return Err(RetainedHostRefusalV1::ConflictingSourceEcho.into()),
                         }
                     }
                     _ => return Err(RetainedHostRefusalV1::InvalidOrdinal.into()),
                 }
-                recovery_for_event(event_id, receipt, budget)?;
+                row.require_event(event_id, &mut verify_recovery_receipt, budget)?;
                 emitted_ids.push(event_id);
                 recovered_in_delivery = true;
                 continue;
@@ -556,12 +711,8 @@ fn require_settled_retained_host_inventory_v1<'a>(
             if delivery.cursor_receipt_digest.is_none() && !ordinal.filtered_no_semantic_work {
                 return Err(RetainedHostRefusalV1::IncompleteDelivery.into());
             }
-            let source = match ordinal.emitted_event_id {
-                Some(event_id) if !ordinal.filtered_no_semantic_work
-                    && ordinal.reconciliation_event_id.is_none() =>
-                    Some(source_for_event(event_id, budget)?),
-                _ => None,
-            };
+            let source = ordinary_host_event_id_v1(ordinal)
+                .map(|event_id| source_for_event(event_id, budget)).transpose()?;
             if let Some(event_id) = require_settled_host_ordinal_v1(ordinal, source, budget)? {
                 emitted_ids.push(event_id);
             }
@@ -570,23 +721,14 @@ fn require_settled_retained_host_inventory_v1<'a>(
             return Err(RetainedHostRefusalV1::IncompleteDelivery.into());
         }
     }
-    for receipt in &host.recovery_receipts {
-        let mut referenced = false;
-        for delivery in &host.deliveries {
-            for ordinal in &delivery.ordinals {
-                charge_host_v1(budget, receipt.request_identity_digest.len())?;
-                if ordinal.recovery_request_digest.as_deref()
-                        == Some(receipt.request_identity_digest.as_str())
-                {
-                    referenced = true;
-                }
-            }
-        }
-        if !referenced {
+    for row in &recovery_receipts {
+        charge_host_v1(budget, std::mem::size_of::<bool>())?;
+        if !row.verified {
             return Err(RetainedHostRefusalV1::MissingRecoveryReceipt.into());
         }
     }
     reject_duplicate_host_event_ids_v1(&mut emitted_ids, budget)?;
+    drop(recovery_receipts);
     drop(emitted_ids);
     drop(scratch_lease);
     budget.checkpoint()?;
@@ -596,15 +738,14 @@ fn require_settled_retained_host_inventory_v1<'a>(
 fn require_settled_retained_host_v1<'a>(
     evidence: &'a NativeCutoverEvidenceV1,
     joined: &NativeCutoverJoinedSourceFactsV1<'a>,
+    matched_events: &NativeCutoverSourceEventMatchesV1<'a, '_>,
     budget: &mut WorkBudget,
 ) -> Result<()> {
     require_settled_retained_host_inventory_v1(&evidence.host_facts, budget,
-        |event_id, budget| completed_source_for_event_v1(joined, event_id, budget),
-        |event_id, receipt, budget| {
+        |event_id, budget| completed_source_for_event_v1(matched_events, event_id, budget),
+        |receipt, budget| {
             require_recovery_receipt_v1(
                 receipt,
-                &receipt.request_identity_digest,
-                event_id,
                 &evidence.header.canonical_workspace_root,
                 &evidence.header.host.canonical_workspace_root,
                 joined.fresh_sdk,
@@ -619,6 +760,7 @@ pub(super) fn join_source_and_host_v1<'a>(
 ) -> Result<NativeCutoverJoinedSourceFactsV1<'a>> {
     budget.checkpoint()?;
     evidence.validate_structure_v1()?;
+    let mut event_matches = prepare_host_event_matches_v1(&evidence.host_facts, budget)?;
     let row_count = evidence.source_facts.len();
     let bytes = row_count
         .checked_mul(2)
@@ -632,10 +774,11 @@ pub(super) fn join_source_and_host_v1<'a>(
     reservation_rows.try_reserve_exact(row_count)?;
     let mut replay_rows = Vec::new();
     replay_rows.try_reserve_exact(row_count)?;
-    let joined = join_native_cutover_source_facts_v1(
+    let (joined, matched_events) = join_native_cutover_source_facts_v1(
         evidence,
         &mut reservation_rows,
         &mut replay_rows,
+        &mut event_matches.slots,
         &mut |units| {
             budget.charge(WorkUsage {
                 reads: 1,
@@ -665,7 +808,8 @@ pub(super) fn join_source_and_host_v1<'a>(
         joined.baseline.text_admission == evidence.header.selected_source.text_admission,
         "initial FULL text admission differs from selected Source"
     );
-    require_settled_retained_host_v1(evidence, &joined, budget)?;
+    require_settled_retained_host_v1(evidence, &joined, &matched_events, budget)?;
+    drop(event_matches);
     // Empty Host inventory alone is never interpreted as a high-water mark.
     // Source's independent complete inventory and its original ACK joins above
     // remain necessary; the producer must finish every bounded cursor.
@@ -747,46 +891,40 @@ mod tests {
     #[test]
     fn recovery_receipt_consumer_rejects_foreign_request_tail_cut_checkpoint_and_source() {
         let (receipt, fresh) = recovery_receipt_shape_fixture_v1();
-        require_recovery_receipt_v1(
-            &receipt, &receipt.request_identity_digest, 19, "/workspace", "/workspace",
-            &fresh, &mut budget(),
-        ).expect("fixed receipt projection shape; real S readback is a separate prerequisite");
+        let verify = |receipt: &NativeCutoverEvidenceHostRecoveryReceiptV1| {
+            require_recovery_receipt_v1(receipt, "/workspace", "/workspace", &fresh, &mut budget())
+        };
+        verify(&receipt)
+            .expect("fixed receipt projection shape; real S readback is a separate prerequisite");
         let mut foreign = receipt.clone();
         foreign.applied_operation_id = "foreign-op".into();
-        assert!(require_recovery_receipt_v1(&foreign, &receipt.request_identity_digest,
-            19, "/workspace", "/workspace", &fresh, &mut budget()).is_err());
+        assert!(verify(&foreign).is_err());
         let mut foreign = receipt.clone();
         foreign.tail_event_ids[0] = 17;
-        assert!(require_recovery_receipt_v1(&foreign, &receipt.request_identity_digest,
-            19, "/workspace", "/workspace", &fresh, &mut budget()).is_err());
+        assert!(verify(&foreign).is_err());
         let mut foreign = receipt.clone();
         foreign.observation_cut_digest = Some("3".repeat(64));
-        assert!(require_recovery_receipt_v1(&foreign, &receipt.request_identity_digest,
-            19, "/workspace", "/workspace", &fresh, &mut budget()).is_err());
+        assert!(verify(&foreign).is_err());
         let mut foreign = receipt.clone();
         foreign.checkpoint_generation = 0;
-        assert!(require_recovery_receipt_v1(&foreign, &receipt.request_identity_digest,
-            19, "/workspace", "/workspace", &fresh, &mut budget()).is_err());
+        assert!(verify(&foreign).is_err());
         let mut foreign = receipt.clone();
         foreign.checkpoint_payload_digest = "not-a-digest".into();
-        assert!(require_recovery_receipt_v1(&foreign, &receipt.request_identity_digest,
-            19, "/workspace", "/workspace", &fresh, &mut budget()).is_err());
+        assert!(verify(&foreign).is_err());
         let mut foreign = receipt.clone();
         foreign.applied_source_view_digest = "c".repeat(64);
-        assert!(require_recovery_receipt_v1(&foreign, &receipt.request_identity_digest,
-            19, "/workspace", "/workspace", &fresh, &mut budget()).is_err());
+        assert!(verify(&foreign).is_err());
         let mut foreign_fresh = fresh.clone();
         foreign_fresh.committed_source_snapshot_id = 42;
-        assert!(require_recovery_receipt_v1(&receipt, &receipt.request_identity_digest,
-            19, "/workspace", "/workspace", &foreign_fresh, &mut budget()).is_err());
-        assert!(require_recovery_receipt_v1(&receipt, &receipt.request_identity_digest,
-            19, "/foreign", "/workspace", &fresh, &mut budget()).is_err());
-        assert!(require_recovery_receipt_v1(&receipt, &receipt.request_identity_digest,
-            19, "/workspace", "/foreign", &fresh, &mut budget()).is_err());
-        assert!(require_recovery_receipt_v1(&receipt, &"f".repeat(64),
-            19, "/workspace", "/workspace", &fresh, &mut budget()).is_err());
-        assert!(require_recovery_receipt_v1(&receipt, &receipt.request_identity_digest,
-            30, "/workspace", "/workspace", &fresh, &mut budget()).is_err());
+        assert!(require_recovery_receipt_v1(
+            &receipt, "/workspace", "/workspace", &foreign_fresh, &mut budget(),
+        ).is_err());
+        assert!(require_recovery_receipt_v1(
+            &receipt, "/foreign", "/workspace", &fresh, &mut budget(),
+        ).is_err());
+        assert!(require_recovery_receipt_v1(
+            &receipt, "/workspace", "/foreign", &fresh, &mut budget(),
+        ).is_err());
     }
 
     #[test]
@@ -829,6 +967,51 @@ mod tests {
         let mut foreign = binding;
         foreign.target_snapshot_id += 1;
         assert!(require_ordinary_source_binding_v1(&foreign, &fresh, &mut budget()).is_err());
+    }
+
+    #[test]
+    fn change_event_sdk_ack_binds_source_target_even_when_committed_head_has_advanced() -> Result<()> {
+        let (_, fresh) = recovery_receipt_shape_fixture_v1();
+        let binding = NativeCutoverEvidenceSdkBindingV1 {
+            source_intent_digest: "3".repeat(64),
+            completion_pointer_digest: "f".repeat(64),
+            transition_digest: "1".repeat(64),
+            target_source_digest: "2".repeat(64),
+            target_snapshot: 40,
+            ingress_kind: "Watch".into(),
+            workspace_identity_digest: "4".repeat(64),
+            request_fingerprint_digest: "5".repeat(64),
+            client_idempotency_digest: None,
+        };
+        let mut charged = budget();
+        require_sdk_source_binding_v1(&binding, &fresh, &mut charged)?;
+        assert_eq!(charged.usage().bytes, 3 * 64);
+        for foreign in [
+            NativeCutoverEvidenceSdkBindingV1 {
+                target_snapshot: fresh.committed_source_snapshot_id,
+                ..binding.clone()
+            },
+            NativeCutoverEvidenceSdkBindingV1 {
+                target_source_digest: "d".repeat(64),
+                ..binding.clone()
+            },
+            NativeCutoverEvidenceSdkBindingV1 {
+                transition_digest: "3".repeat(64),
+                ..binding.clone()
+            },
+            NativeCutoverEvidenceSdkBindingV1 {
+                completion_pointer_digest: "4".repeat(64),
+                ..binding
+            },
+        ] {
+            assert!(matches!(
+                require_sdk_source_binding_v1(&foreign, &fresh, &mut budget())
+                    .unwrap_err()
+                    .downcast_ref::<FreshSourceParityRefusalV1>(),
+                Some(FreshSourceParityRefusalV1::SdkTargetMismatch)
+            ));
+        }
+        Ok(())
     }
 
     #[test]
@@ -957,15 +1140,39 @@ mod tests {
         host: &NativeCutoverEvidenceHostFactsV1,
         check: impl FnOnce(&mut WorkBudget) -> Result<()>,
     ) -> Result<()> {
+        with_host_inventory_limits_v1(
+            host,
+            WorkLimits {
+                reads: 256,
+                writes: 0,
+                bytes: 32 * 1024,
+                mutations: 0,
+            },
+            check,
+        )
+    }
+
+    fn with_host_inventory_limits_v1(
+        host: &NativeCutoverEvidenceHostFactsV1,
+        limits: WorkLimits,
+        check: impl FnOnce(&mut WorkBudget) -> Result<()>,
+    ) -> Result<()> {
         // Fixed scalar-shape tests retain their own scratch grant. They do
         // not issue a Source, Host, or checkpoint-owner publication proof.
         let ordinal_count = host.deliveries.iter().try_fold(0_usize, |sum, delivery| {
             sum.checked_add(delivery.ordinals.len())
                 .ok_or(quanta_index_core::index::IndexError::ResourceLimited)
         })?;
-        let memory_bytes = u64::try_from(ordinal_count.max(1)
+        let scratch_bytes = ordinal_count
             .checked_mul(std::mem::size_of::<u128>())
-            .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?)?;
+            .and_then(|bytes| {
+                host.recovery_receipts
+                    .len()
+                    .checked_mul(std::mem::size_of::<RetainedHostRecoveryReceiptV1<'_>>())
+                    .and_then(|receipt_bytes| bytes.checked_add(receipt_bytes))
+            })
+            .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
+        let memory_bytes = u64::try_from(scratch_bytes.max(1))?;
         let need = ResourceNeed {
             cpu_units: 1,
             io_bytes: 1,
@@ -989,21 +1196,87 @@ mod tests {
         ).ok_or_else(|| anyhow!("Core fixture reservation unavailable"))?;
         let scope = guard.memory_scope()
             .ok_or_else(|| anyhow!("Core fixture memory scope unavailable"))?;
-        let mut charged = WorkBudget::new(
-            WorkLimits { reads: 256, writes: 0, bytes: 32 * 1024, mutations: 0 },
-            Instant::now() + Duration::from_secs(10),
-        );
+        let mut charged = WorkBudget::new(limits, Instant::now() + Duration::from_secs(10));
         charged.bind_memory_scope(Some(scope));
         let result = check(&mut charged);
+        let refunded = charged
+            .reserve_memory(memory_bytes, MemoryLifetime::Temporary)?
+            .ok_or_else(|| anyhow!("Host inventory scratch grant leaked"))?;
+        drop(refunded);
         drop(charged);
         drop(guard);
         result
     }
 
     fn check_filtered_host_fixture_v1(host: &NativeCutoverEvidenceHostFactsV1) -> Result<()> {
-        with_host_inventory_budget_v1(host, |charged| require_settled_retained_host_inventory_v1(host, charged, |_, _| {
-            Err(anyhow!("filtered fixture must not request Source membership"))
-        }, |_, _, _| Err(anyhow!("filtered fixture must not request recovery receipt"))))
+        with_host_inventory_budget_v1(host, |charged| {
+            require_settled_retained_host_inventory_v1(
+                host,
+                charged,
+                |_, _| {
+                    Err(anyhow!(
+                        "filtered fixture must not request Source membership"
+                    ))
+                },
+                |_, _| {
+                    Err(anyhow!(
+                        "filtered fixture must not request recovery receipt"
+                    ))
+                },
+            )
+        })
+    }
+
+    #[test]
+    fn retained_host_source_slots_include_only_ordinary_emissions() {
+        let mut host = retained_filtered_host_fixture_v1();
+        let delivery = &mut host.deliveries[0];
+        let ordinary = NativeCutoverEvidenceOrdinalV1 {
+            admitted: true,
+            terminal: Some("Applied".into()),
+            emitted_event_id: Some(42),
+            filtered_no_semantic_work: false,
+            ..delivery.ordinals[0].clone()
+        };
+        delivery.ordinals.extend([
+            ordinary.clone(),
+            NativeCutoverEvidenceOrdinalV1 {
+                emitted_event_id: Some(7),
+                ..ordinary.clone()
+            },
+            NativeCutoverEvidenceOrdinalV1 {
+                terminal: Some("RecoverySubsumed".into()),
+                ..ordinary.clone()
+            },
+            NativeCutoverEvidenceOrdinalV1 {
+                recovery_request_digest: Some("a".repeat(64)),
+                ..ordinary.clone()
+            },
+            NativeCutoverEvidenceOrdinalV1 {
+                reconciliation_event_id: Some(99),
+                ..ordinary
+            },
+        ]);
+        with_host_inventory_budget_v1(&host, |budget| {
+            let matches = prepare_host_event_matches_v1(&host, budget)?;
+            let ids: Vec<_> = matches.slots.iter()
+                .map(NativeCutoverSourceEventMatchV1::event_id_v1).collect();
+            assert_eq!(ids, [7, 42]);
+            assert!(matches._lease.is_some());
+            Ok(())
+        }).expect("ordinary probes fit the granted scratch and refund it");
+        with_host_inventory_limits_v1(&host, WorkLimits {
+            reads: host.deliveries[0].ordinals.len() as u64 + 1,
+            writes: 0,
+            bytes: 32 * 1024,
+            mutations: 0,
+        }, |budget| {
+            let result = prepare_host_event_matches_v1(&host, budget);
+            assert!(matches!(result, Err(ref error)
+                if error.downcast_ref::<quanta_index_core::index::IndexError>()
+                    == Some(&quanta_index_core::index::IndexError::ResourceLimited)));
+            Ok(())
+        }).expect("failure during slot collection refunds the grant");
     }
 
     fn retained_recovery_host_fixture_v1() -> (
@@ -1027,12 +1300,17 @@ mod tests {
         fresh: &NativeCutoverEvidenceFreshSdkV1,
     ) -> Result<()> {
         with_host_inventory_budget_v1(host, |charged| {
-            require_settled_retained_host_inventory_v1(host, charged,
-                |_, _| Err(anyhow!("full-only recovery must not require a Watch request")),
-                |event_id, receipt, charged| require_recovery_receipt_v1(
-                    receipt, &receipt.request_identity_digest, event_id,
-                    "/workspace", "/workspace", fresh, charged,
-                ),
+            require_settled_retained_host_inventory_v1(
+                host,
+                charged,
+                |_, _| {
+                    Err(anyhow!(
+                        "full-only recovery must not require a Watch request"
+                    ))
+                },
+                |receipt, charged| {
+                    require_recovery_receipt_v1(receipt, "/workspace", "/workspace", fresh, charged)
+                },
             )
         })
     }
@@ -1044,6 +1322,220 @@ mod tests {
         let (host, fresh) = retained_recovery_host_fixture_v1();
         check_recovery_host_fixture_v1(&host, &fresh)
             .expect("full receipt covers a no-cursor event without Watch Source request");
+    }
+
+    #[test]
+    fn shared_retained_host_receipt_is_verified_once_with_exact_tail_membership() {
+        let (mut host, fresh) = retained_recovery_host_fixture_v1();
+        let mut second = host.deliveries[0].ordinals[0].clone();
+        second.source_ordinal = 1;
+        second.emitted_event_id = Some(29);
+        host.deliveries[0].ordinals.push(second);
+        host.deliveries[0].input_count = 2;
+        host.active_units = 2;
+        host.capacity = 2;
+
+        let mut validations = 0;
+        with_host_inventory_budget_v1(&host, |charged| {
+            require_settled_retained_host_inventory_v1(
+                &host,
+                charged,
+                |_, _| {
+                    Err(anyhow!(
+                        "full-only recovery must not require a Watch request"
+                    ))
+                },
+                |receipt, charged| {
+                    validations += 1;
+                    require_recovery_receipt_v1(
+                        receipt,
+                        "/workspace",
+                        "/workspace",
+                        &fresh,
+                        charged,
+                    )
+                },
+            )
+        })
+        .expect("both ordinals are covered by the same full receipt");
+        assert_eq!(validations, 1, "verify the full receipt once per inventory");
+
+        // A prior ordinal having validated the receipt cannot admit a new event.
+        host.deliveries[0].ordinals[1].emitted_event_id = Some(30);
+        assert_eq!(
+            check_recovery_host_fixture_v1(&host, &fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::InvalidRecoveryReceipt)
+        );
+
+        host.deliveries[0].ordinals[1].terminal = None;
+        assert_eq!(
+            check_recovery_host_fixture_v1(&host, &fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::InvalidRecoveryReceipt)
+        );
+        host.deliveries[0].ordinals[1].emitted_event_id = Some(29);
+        assert_eq!(
+            check_recovery_host_fixture_v1(&host, &fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::PendingRecoveryOrdinal)
+        );
+    }
+
+    #[test]
+    fn retained_host_receipt_index_rejects_duplicates_orphans_and_missing_keys() {
+        let (mut host, fresh) = retained_recovery_host_fixture_v1();
+        let receipt = host.recovery_receipts[0].clone();
+        host.recovery_receipts.push(receipt.clone());
+        assert_eq!(
+            check_recovery_host_fixture_v1(&host, &fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::DuplicateRecoveryReceipt)
+        );
+
+        let mut orphan = receipt;
+        orphan.request_identity_digest = "1".repeat(64);
+        // Distinct lower-sort key forces lookup of the second row. The
+        // unreferenced receipt is rejected even when the real receipt passed.
+        host.recovery_receipts[1] = orphan.clone();
+        assert_eq!(
+            check_recovery_host_fixture_v1(&host, &fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::MissingRecoveryReceipt)
+        );
+
+        // Isolate lookup refusal. An orphan could produce the same error even
+        // if a missing key had fallen through to the valid receipt.
+        host.recovery_receipts.truncate(1);
+        for missing in ["0".repeat(64), "f".repeat(64)] {
+            host.deliveries[0].ordinals[0].recovery_request_digest = Some(missing);
+            assert_eq!(
+                check_recovery_host_fixture_v1(&host, &fresh)
+                    .unwrap_err()
+                    .downcast_ref::<RetainedHostRefusalV1>(),
+                Some(&RetainedHostRefusalV1::MissingRecoveryReceipt)
+            );
+        }
+
+        // Unreferenced duplicate keys retain the existing orphan refusal.
+        let mut filtered = retained_filtered_host_fixture_v1();
+        filtered.recovery_receipts.extend([orphan.clone(), orphan]);
+        assert_eq!(
+            check_filtered_host_fixture_v1(&filtered)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::MissingRecoveryReceipt)
+        );
+    }
+
+    #[test]
+    fn shared_retained_host_tail_fits_bounded_work() {
+        let (mut host, fresh) = retained_recovery_host_fixture_v1();
+        let receipt = &mut host.recovery_receipts[0];
+        receipt.tail_event_ids = (1_000..1_128).collect();
+        // Fixed goldens from the S V2 request and tail framing for these IDs.
+        receipt.tail_custody_digest =
+            "d9e13bc4e7866dbbf6cbe54c3601a3138ec6b83ed00b503ec4bd1ee829551de9".into();
+        receipt.request_identity_digest =
+            "b004baaef6bfa8319cd41b95339929f46e22654a1cf7f6c13da5d08df346c005".into();
+        receipt.applied_request_identity_digest = receipt.request_identity_digest.clone();
+        let delivery = &mut host.deliveries[0];
+        let mut ordinal = delivery.ordinals[0].clone();
+        ordinal.recovery_request_digest = Some(receipt.request_identity_digest.clone());
+        delivery.ordinals = receipt
+            .tail_event_ids
+            .iter()
+            .enumerate()
+            .map(|(index, &event_id)| NativeCutoverEvidenceOrdinalV1 {
+                source_ordinal: u64::try_from(index).unwrap(),
+                emitted_event_id: Some(event_id),
+                ..ordinal.clone()
+            })
+            .collect();
+        delivery.input_count = 128;
+        host.active_units = 128;
+        host.capacity = 128;
+        // The old repeat path charged 256 KiB for tail bytes alone.
+        with_host_inventory_limits_v1(
+            &host,
+            WorkLimits {
+                reads: 8_192,
+                writes: 0,
+                bytes: 192 * 1024,
+                mutations: 0,
+            },
+            |charged| {
+                require_settled_retained_host_inventory_v1(
+                    &host,
+                    charged,
+                    |_, _| {
+                        Err(anyhow!(
+                            "full-only recovery must not require a Watch request"
+                        ))
+                    },
+                    |receipt, charged| {
+                        require_recovery_receipt_v1(
+                            receipt,
+                            "/workspace",
+                            "/workspace",
+                            &fresh,
+                            charged,
+                        )
+                    },
+                )
+            },
+        )
+        .expect("128 covered ordinals fit the metered budget without rehashing the tail");
+    }
+
+    #[test]
+    fn retained_host_receipt_index_fits_bounded_lookup_work() {
+        let (receipt, _) = recovery_receipt_shape_fixture_v1();
+        let receipts: Vec<_> = (0..128)
+            .rev()
+            .map(|key| NativeCutoverEvidenceHostRecoveryReceiptV1 {
+                request_identity_digest: format!("{key:064x}"),
+                ..receipt.clone()
+            })
+            .collect();
+        let mut rows: Vec<_> = receipts
+            .iter()
+            .map(|receipt| RetainedHostRecoveryReceiptV1 {
+                receipt,
+                verified: false,
+            })
+            .collect();
+        let mut charged = WorkBudget::new(
+            WorkLimits {
+                reads: 4_096,
+                writes: 0,
+                bytes: 512 * 1024,
+                mutations: 0,
+            },
+            Instant::now() + Duration::from_secs(10),
+        );
+        sort_host_items_v1(&mut rows, |left, right| {
+            compare_host_digests_v1(
+                &left.receipt.request_identity_digest,
+                &right.receipt.request_identity_digest,
+                &mut charged,
+            )
+        })
+        .expect("receipt ordering fits the metered budget");
+        for receipt in &receipts {
+            let actual = recovery_receipt_for_digest_v1(
+                &mut rows,
+                &receipt.request_identity_digest,
+                &mut charged,
+            )
+            .expect("128 exact lookups fit the metered budget");
+            assert!(std::ptr::eq(actual.receipt, receipt));
+        }
     }
 
     #[test]
@@ -1155,11 +1647,25 @@ mod tests {
     #[test]
     fn retained_filtered_host_inventory_checks_occupancy_authority_and_cursor() {
         let valid = retained_filtered_host_fixture_v1();
-        let no_scope = require_settled_retained_host_inventory_v1(&valid, &mut budget(), |_, _| {
-            Err(anyhow!("filtered fixture must not request Source membership"))
-        }, |_, _, _| Err(anyhow!("filtered fixture must not request recovery receipt"))).unwrap_err();
-        assert!(matches!(no_scope.downcast_ref::<quanta_index_core::index::IndexError>(),
-            Some(quanta_index_core::index::IndexError::ResourceLimited)));
+        let no_scope = require_settled_retained_host_inventory_v1(
+            &valid,
+            &mut budget(),
+            |_, _| {
+                Err(anyhow!(
+                    "filtered fixture must not request Source membership"
+                ))
+            },
+            |_, _| {
+                Err(anyhow!(
+                    "filtered fixture must not request recovery receipt"
+                ))
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            no_scope.downcast_ref::<quanta_index_core::index::IndexError>(),
+            Some(quanta_index_core::index::IndexError::ResourceLimited)
+        ));
         check_filtered_host_fixture_v1(&valid).expect("retained filtered Host shape");
 
         let mut wrong_occupancy = valid.clone();

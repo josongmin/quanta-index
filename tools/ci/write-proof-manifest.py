@@ -12,6 +12,9 @@ import os
 import platform
 import subprocess
 import sys
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -210,6 +213,7 @@ def _publish_content_archive(
             if hashlib.sha256(existing).hexdigest() != digest:
                 raise ManifestRefused(f"immutable {kind} archive collision: {relative}")
             _require_parent_identity(root, relative, parent_fd, checker=checker)
+            os.fsync(parent_fd)
             return relative
         if hashlib.sha256(content).hexdigest() != digest:
             raise ManifestRefused(f"{kind} source changed during archival")
@@ -365,8 +369,43 @@ def _resolve_dependencies(
             raise ManifestRefused(
                 f"dependency {proof_id} current alias differs from its immutable archive"
             )
+        try:
+            checker.require_current_release(root, payload, manifest_digest)
+        except (OSError, TypeError, KeyError, ValueError) as error:
+            raise ManifestRefused(f"invalid selected receipt for {proof_id}: {error}") from error
         receipts.append({"proof_id": proof_id, "path": archive_relative, "sha256": manifest_digest})
     return receipts
+
+
+def _release_terminal_source(
+    root: Path, proof: dict[str, Any], terminal: dict[str, Any], payload: dict, checker: ModuleType
+) -> dict:
+    """Keep the original signed provenance when resuming the same release."""
+    recorded = terminal.get("source_binding")
+    if "source_binding" in terminal:
+        if not isinstance(recorded, dict) or set(recorded) != {"source", "source_pair"}:
+            raise ManifestRefused("terminal.source_binding must contain source and source_pair")
+    elif proof.get("execution_mode") == "operational-action":
+        # Operational terminals predating the envelope already carry this in signed events.
+        result = terminal.get("execution_result")
+        if isinstance(result, dict):
+            for item in payload["artifacts"]:
+                if item["source_path"] == result.get("events"):
+                    _, raw = _repo_bytes(root, item["path"], label="operational events", checker=checker)
+                    record = _json_object_bytes(raw, label="operational events")
+                    try:
+                        recorded = {key: record["binding"][key] for key in ("source", "source_pair")}
+                    except (KeyError, TypeError) as error:
+                        raise ManifestRefused("operational events lack a source binding") from error
+                    break
+    if recorded is None:
+        return payload
+    try:
+        if checker.release_source_identity(recorded) != checker.release_source_identity(payload):
+            raise ManifestRefused("terminal source content differs from the current checkout pair")
+    except (KeyError, TypeError) as error:
+        raise ManifestRefused("invalid terminal source binding") from error
+    return {**payload, **recorded}
 
 
 def build_manifest(
@@ -390,7 +429,11 @@ def build_manifest(
         "artifacts",
     }
     missing = required_terminal_keys - set(terminal)
-    extra = set(terminal) - required_terminal_keys - {"execution_result"}
+    optional = {"execution_result"}
+    signed_release = proof["id"] in checker.P11_RELEASE_PROOFS and terminal.get("status") == "passed"
+    if signed_release:
+        optional.add("source_binding")
+    extra = set(terminal) - required_terminal_keys - optional
     if missing or extra:
         raise ManifestRefused(
             f"terminal input keys differ: missing={sorted(missing)} extra={sorted(extra)}"
@@ -491,6 +534,8 @@ def build_manifest(
     }
     if "execution_result" in terminal:
         payload["execution_result"] = terminal["execution_result"]
+    if signed_release:
+        payload = _release_terminal_source(root, proof, terminal, payload, checker)
     return payload, output_path
 
 
@@ -545,7 +590,9 @@ def _proof_lock_path(root: Path) -> Path:
 
 def _open_output_parent(root: Path, relative: str, *, checker: ModuleType) -> int:
     try:
-        return checker.HANDOFF_VALIDATION._open_repo_output_parent(root, relative)
+        return checker.HANDOFF_VALIDATION._open_repo_output_parent(
+            root, relative, sync_ancestors=True
+        )
     except (OSError, ValueError) as error:
         raise ManifestRefused(f"proof output parent is unsafe: {error}") from error
 
@@ -566,13 +613,15 @@ def _require_parent_identity(
         raise ManifestRefused(f"proof output parent changed or is unsafe: {error}") from error
 
 
-def _publish_immutable_archive(
+@contextmanager
+def _stage_immutable_archive(
     *,
     root: Path,
     payload: dict[str, Any],
     serialized: bytes,
     checker: ModuleType,
-) -> tuple[Path, str]:
+) -> Iterator[tuple[Path, str, Callable[[], None]]]:
+    """Make an immutable leaf durable and prepare the atomic index update."""
     manifest_digest = hashlib.sha256(serialized).hexdigest()
     try:
         relative = checker.proof_archive_relative_path(payload, manifest_digest)
@@ -581,6 +630,8 @@ def _publish_immutable_archive(
     archive_path = root / relative
     parent_fd = _open_output_parent(root, relative, checker=checker)
     leaf_name = archive_path.name
+    is_release = payload["proof_id"] in checker.P11_RELEASE_PROOFS
+    index_temporary: str | None = None
     try:
         index_bytes = _read_output(parent_fd, "index.json", checker=checker)
         source_binding = archive_path.parent.name
@@ -593,28 +644,12 @@ def _publish_immutable_archive(
             }
         else:
             index_payload = _json_object_bytes(index_bytes, label="proof archive index")
-            expected_index_keys = {
-                "schema_version",
-                "proof_id",
-                "source_binding_digest",
-                "manifest_digests",
-            }
-            _require_exact_keys(index_payload, expected_index_keys, label="proof archive index")
-            if (
-                index_payload["schema_version"] != 1
-                or index_payload["proof_id"] != payload["proof_id"]
-                or index_payload["source_binding_digest"] != source_binding
-                or not isinstance(index_payload["manifest_digests"], list)
-                or any(
-                    not isinstance(item, str) or len(item) != 64
-                    for item in index_payload["manifest_digests"]
-                )
-                or len(index_payload["manifest_digests"])
-                != len(set(index_payload["manifest_digests"]))
-            ):
-                raise ManifestRefused("immutable proof archive index authority is invalid")
-
-        indexed_digests = index_payload["manifest_digests"]
+        try:
+            indexed_digests = checker.archive_index_digests(
+                index_payload, payload["proof_id"], source_binding
+            )
+        except ValueError as error:
+            raise ManifestRefused(str(error)) from error
         for indexed_digest in indexed_digests:
             indexed_name = f"{indexed_digest}.json"
             indexed_bytes = _read_output(parent_fd, indexed_name, checker=checker)
@@ -627,27 +662,33 @@ def _publish_immutable_archive(
                     f"immutable proof archive leaf was modified: {archive_path.parent / indexed_name}"
                 )
 
-        existing = _read_output(parent_fd, leaf_name, checker=checker)
-        if existing is not None:
-            if existing != serialized:
-                raise ManifestRefused(
-                    f"immutable proof archive collision or overwrite attempt: {relative}"
-                )
-            if manifest_digest not in indexed_digests:
-                raise ManifestRefused(f"immutable proof archive leaf is not indexed: {relative}")
-            _require_parent_identity(root, relative, parent_fd, checker=checker)
-            return archive_path, manifest_digest
-        if manifest_digest in indexed_digests:
-            raise ManifestRefused(f"immutable proof archive leaf was deleted: {relative}")
-
-        temporary_name = checker.HANDOFF_VALIDATION._write_output_temporary(
-            parent_fd, leaf_name, serialized
-        )
-        linked = False
-        index_published = False
-        try:
-            _require_parent_identity(root, relative, parent_fd, checker=checker)
+        if is_release:
             try:
+                latest = checker.latest_indexed_release(root, payload["proof_id"])
+            except (OSError, KeyError, TypeError, ValueError) as error:
+                raise ManifestRefused(
+                    f"cannot select the current release receipt: {error}"
+                ) from error
+            if (
+                latest is not None
+                and latest.digest != manifest_digest
+                and checker._parse_time(payload["ended_at"]) <= latest.ended_at
+            ):
+                raise ManifestRefused("release receipt must advance the current execution window")
+
+        existing = _read_output(parent_fd, leaf_name, checker=checker)
+        if existing is not None and existing != serialized:
+            raise ManifestRefused(
+                f"immutable proof archive collision or overwrite attempt: {relative}"
+            )
+        if existing is None:
+            # Indexed leaves were checked above, including absence. An unindexed leaf
+            # can survive a crash and is reused only if it matches the validated bytes.
+            temporary_name = checker.HANDOFF_VALIDATION._write_output_temporary(
+                parent_fd, leaf_name, serialized
+            )
+            try:
+                _require_parent_identity(root, relative, parent_fd, checker=checker)
                 os.link(
                     temporary_name,
                     leaf_name,
@@ -659,43 +700,51 @@ def _publish_immutable_archive(
                 raise ManifestRefused(
                     f"immutable proof archive collision or overwrite attempt: {relative}"
                 ) from error
-            linked = True
+            finally:
+                os.unlink(temporary_name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+        if manifest_digest not in indexed_digests:
             next_index = dict(index_payload)
             next_index["manifest_digests"] = [*indexed_digests, manifest_digest]
             serialized_index = (json.dumps(next_index, sort_keys=True, indent=2) + "\n").encode()
             index_temporary = checker.HANDOFF_VALIDATION._write_output_temporary(
                 parent_fd, "index.json", serialized_index
             )
-            try:
-                os.replace(
-                    index_temporary,
-                    "index.json",
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                )
-                index_published = True
-            finally:
-                if not index_published:
-                    os.unlink(index_temporary, dir_fd=parent_fd)
-            os.fsync(parent_fd)
+
+        def commit() -> None:
+            nonlocal index_temporary
             _require_parent_identity(root, relative, parent_fd, checker=checker)
-        except BaseException:
-            if linked and not index_published:
-                os.unlink(leaf_name, dir_fd=parent_fd)
-                os.fsync(parent_fd)
-            raise
-        finally:
-            os.unlink(temporary_name, dir_fd=parent_fd)
+            if _read_output(parent_fd, leaf_name, checker=checker) != serialized:
+                raise ManifestRefused("validated proof archive leaf changed")
+            if _read_output(parent_fd, "index.json", checker=checker) != index_bytes:
+                raise ManifestRefused("proof archive index changed before publication")
+            if index_temporary is not None:
+                os.replace(
+                    index_temporary, "index.json", src_dir_fd=parent_fd, dst_dir_fd=parent_fd
+                )
+                index_temporary = None
+
+        if not is_release:
+            commit()
+            os.fsync(parent_fd)
+        yield archive_path, manifest_digest, commit
+        if is_release:
+            # The commit may already be visible if sync fails. An exact retry syncs again.
+            os.fsync(parent_fd)
     finally:
-        os.close(parent_fd)
-    return archive_path, manifest_digest
+        try:
+            if index_temporary is not None:
+                with suppress(FileNotFoundError):
+                    os.unlink(index_temporary, dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
 
 
 def _publish_manifest_locked(
     *,
     root: Path,
     registry_path: Path,
-    schema_path: Path,
+    schema_path: Path | None,
     proof_id: str,
     terminal_input_path: Path,
     paired_checkout: Path | None = None,
@@ -728,7 +777,7 @@ def _publish_manifest_locked(
             f"proof_id {proof_id!r} is staged and cannot issue an authoritative manifest"
         )
     expected_schema_path = root / proof["artifact_schema"]
-    if schema_path != expected_schema_path:
+    if schema_path is not None and schema_path != expected_schema_path:
         raise ManifestRefused(f"schema override is forbidden: expected {expected_schema_path}")
     _, schema_bytes = _repo_bytes(
         root, proof["artifact_schema"], label="manifest schema", checker=checker
@@ -748,22 +797,17 @@ def _publish_manifest_locked(
     )
     serialized = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode()
     output_relative = output_path.relative_to(root).as_posix()
-    parent_fd = _open_output_parent(root, output_relative, checker=checker)
-    temporary_name: str | None = None
-    try:
-        prior_bytes = _read_output(parent_fd, output_path.name, checker=checker)
-        temporary_name = checker.HANDOFF_VALIDATION._write_output_temporary(
-            parent_fd, output_path.name, serialized
-        )
-        temporary_path = output_path.parent / temporary_name
-        _validate_p00_issuance(root=root, proof=proof, payload=payload, checker=checker)
+    is_release = proof_id in checker.P11_RELEASE_PROOFS
+
+    def validate(path: Path, *, failure: str) -> None:
         findings = checker.check_manifest(
             payload,
-            manifest_path=temporary_path,
+            manifest_path=path,
             proof=proof,
             schema=schema,
             root=root,
             bind_source=True,
+            require_current_dependencies=is_release and payload["status"] == "passed",
             allow_non_passed=True,
             paired_checkouts=(
                 {proof["paired_repository"]: paired_checkout}
@@ -774,102 +818,118 @@ def _publish_manifest_locked(
         )
         if findings:
             rendered = "; ".join(finding.render() for finding in findings)
-            raise ManifestRefused(f"semantic manifest validation failed: {rendered}")
+            raise ManifestRefused(f"{failure}: {rendered}")
+
+    parent_fd = _open_output_parent(root, output_relative, checker=checker)
+    temporary_name: str | None = None
+    rollback_name: str | None = None
+    try:
+        prior_bytes = _read_output(parent_fd, output_path.name, checker=checker)
+        temporary_name = checker.HANDOFF_VALIDATION._write_output_temporary(
+            parent_fd, output_path.name, serialized
+        )
+        temporary_path = output_path.parent / temporary_name
+        _validate_p00_issuance(root=root, proof=proof, payload=payload, checker=checker)
+        validate(temporary_path, failure="semantic manifest validation failed")
         _require_parent_identity(root, output_relative, parent_fd, checker=checker)
         if _read_output(parent_fd, temporary_name, checker=checker) != serialized:
             raise ManifestRefused("validated proof manifest temporary changed")
-        archive_path, manifest_digest = _publish_immutable_archive(
+        if (
+            is_release
+            and payload["status"] != "passed"
+            and checker._parse_time(payload["ended_at"]) > datetime.now(timezone.utc)
+        ):
+            raise ManifestRefused("release diagnostic cannot advance the receipt into the future")
+        if is_release and prior_bytes is not None and prior_bytes != serialized:
+            # Allocate the previous alias before either rename can fail for lack of space.
+            rollback_name = checker.HANDOFF_VALIDATION._write_output_temporary(
+                parent_fd, output_path.name, prior_bytes
+            )
+        with _stage_immutable_archive(
             root=root,
             payload=payload,
             serialized=serialized,
             checker=checker,
-        )
-        if _read_output(parent_fd, output_path.name, checker=checker) != prior_bytes:
-            raise ManifestRefused("proof current alias changed before publication")
-        _require_parent_identity(root, output_relative, parent_fd, checker=checker)
-        os.replace(
-            temporary_name,
-            output_path.name,
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
-        )
-        temporary_name = None
-        try:
-            installed_bytes = _read_output(parent_fd, output_path.name, checker=checker)
-            if installed_bytes != serialized:
-                raise ManifestRefused(
-                    "published proof manifest bytes differ from validated payload"
+        ) as (archive_path, manifest_digest, commit_index):
+            if _read_output(parent_fd, output_path.name, checker=checker) != prior_bytes:
+                raise ManifestRefused("proof current alias changed before publication")
+            _require_parent_identity(root, output_relative, parent_fd, checker=checker)
+            replaced = False
+            try:
+                if prior_bytes != serialized:
+                    os.replace(
+                        temporary_name, output_path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd
+                    )
+                    replaced = True
+                    temporary_name = None
+                # An operational action may start only after the index commits. Validate
+                # the candidate as evidence here, before it becomes the current receipt.
+                validate(
+                    archive_path if is_release else output_path,
+                    failure="proof inputs changed at publication",
                 )
-            if (
-                _repo_bytes(
-                    root, output_relative, label="published proof manifest", checker=checker
-                )[1]
-                != serialized
-            ):
-                raise ManifestRefused("published proof manifest path changed")
-            installed_payload = _json_object_bytes(
-                installed_bytes, label="published proof manifest"
-            )
-            if installed_payload != payload:
-                raise ManifestRefused(
-                    "published proof manifest bytes differ from validated payload"
-                )
-            if (
-                installed_bytes
-                != _repo_bytes(
+                _require_parent_identity(root, output_relative, parent_fd, checker=checker)
+                if _read_output(parent_fd, output_path.name, checker=checker) != serialized:
+                    raise ManifestRefused(
+                        "published proof manifest bytes differ from validated payload"
+                    )
+                _, archived_bytes = _repo_bytes(
                     root,
                     archive_path.relative_to(root).as_posix(),
                     label="immutable proof archive",
                     checker=checker,
-                )[1]
-            ):
-                raise ManifestRefused("published current alias differs from immutable archive")
-            published_findings = checker.check_manifest(
-                installed_payload,
-                manifest_path=output_path,
-                proof=proof,
-                schema=schema,
-                root=root,
-                bind_source=True,
-                allow_non_passed=True,
-                paired_checkouts=(
-                    {proof["paired_repository"]: paired_checkout}
-                    if paired_checkout is not None
-                    else None
-                ),
-                proof_by_id=proof_by_id,
-            )
-            if published_findings:
-                rendered = "; ".join(finding.render() for finding in published_findings)
-                raise ManifestRefused(f"proof inputs changed at publication: {rendered}")
-            _require_parent_identity(root, output_relative, parent_fd, checker=checker)
-        except BaseException:
-            checker.HANDOFF_VALIDATION._restore_prior_output(
-                parent_fd, output_path.name, prior_bytes
-            )
-            raise
-        os.fsync(parent_fd)
+                )
+                if archived_bytes != serialized:
+                    raise ManifestRefused("published current alias differs from immutable archive")
+                os.fsync(parent_fd)
+                if is_release:
+                    commit_index()
+            except (OSError, ValueError, RuntimeError):
+                if replaced:
+                    if rollback_name is None:
+                        checker.HANDOFF_VALIDATION._restore_prior_output(
+                            parent_fd, output_path.name, prior_bytes
+                        )
+                    else:
+                        os.replace(
+                            rollback_name, output_path.name,
+                            src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+                        )
+                        rollback_name = None
+                        os.fsync(parent_fd)
+                raise
     finally:
-        if temporary_name is not None:
-            os.unlink(temporary_name, dir_fd=parent_fd)
-        os.close(parent_fd)
+        try:
+            for name in (temporary_name, rollback_name):
+                if name is not None:
+                    with suppress(FileNotFoundError):
+                        os.unlink(name, dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
     return archive_path, manifest_digest, payload["status"]
+
+
+@contextmanager
+def proof_write_lock(root: Path) -> Iterator[None]:
+    """Serialize proof custody and publication at the canonical proof store."""
+    lock_path = _proof_lock_path(root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        yield
 
 
 def publish_manifest(
     *,
     root: Path,
     registry_path: Path,
-    schema_path: Path,
+    schema_path: Path | None = None,
     proof_id: str,
     terminal_input_path: Path,
     paired_checkout: Path | None = None,
 ) -> tuple[Path, str, str]:
     root = root.resolve()
-    lock_path = _proof_lock_path(root)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+b") as lock_handle:
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+    with proof_write_lock(root):
         return _publish_manifest_locked(
             root=root,
             registry_path=registry_path,
@@ -895,12 +955,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = args.root.resolve()
     registry_path = args.registry or root / "tools/ci/proof-authority.toml"
-    schema_path = args.schema or root / "tools/ci/proof-manifest.schema.json"
     try:
         output_path, digest, status = publish_manifest(
             root=root,
             registry_path=registry_path,
-            schema_path=schema_path,
+            schema_path=args.schema,
             proof_id=args.proof_id,
             terminal_input_path=args.terminal_input,
             paired_checkout=args.paired_checkout,

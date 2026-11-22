@@ -6,10 +6,11 @@ use quanta_index_core::index::{
     OwnerMemberBinding, WorkBudget, WorkUsage, owner_from_map_key,
 };
 
+use super::super::super::ann_region_policy;
 use super::super::{LoadedOwnerArtifact, load_query_owner_artifact};
 use super::{
     AnnDirectory, EmbeddingRecipe, MAX_DELTA_OWNERS, MAX_REGIONS, ReadContext, corrupt,
-    load_member, maintenance, native_graph, require_changed_map_root, scan_ordered_page,
+    load_member, maintenance, require_changed_map_root, scan_ordered_page,
 };
 
 const MAX_MERGED_REGIONS: u32 = 8;
@@ -33,32 +34,55 @@ pub(in super::super) struct SelectedRegionMember {
 }
 
 impl RegionMembers {
-    fn reserve_artifacts(
-        &mut self,
-        additional: usize,
-        budget: &WorkBudget,
-    ) -> Result<(), IndexError> {
+    fn reserve_artifact(&mut self, maximum: usize, budget: &WorkBudget) -> Result<(), IndexError> {
         let needed = self
             .artifacts
             .len()
-            .checked_add(additional)
+            .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?;
         if needed <= self.artifacts.capacity() {
             return Ok(());
         }
-        let bytes = needed
-            .checked_mul(std::mem::size_of::<SelectedRegionMember>())
-            .ok_or(IndexError::ResourceLimited)?;
+        if needed > maximum {
+            return Err(IndexError::ResourceLimited);
+        }
+        let preferred = needed
+            .checked_next_power_of_two()
+            .ok_or(IndexError::ResourceLimited)?
+            .min(maximum);
+        let allocation_bytes = |capacity: usize| {
+            let bytes = capacity
+                .checked_mul(std::mem::size_of::<SelectedRegionMember>())
+                .ok_or(IndexError::ResourceLimited)?;
+            u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)
+        };
         // A reallocation temporarily owns both buffers. Keep the previous
         // grant until the new reservation and allocation have succeeded.
-        let memory = budget.reserve_memory(
-            u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
-            MemoryLifetime::Temporary,
-        )?;
+        let preferred_memory = if preferred > needed {
+            budget.try_reserve_memory_for_optimization(
+                allocation_bytes(preferred)?,
+                MemoryLifetime::Temporary,
+            )?
+        } else {
+            None
+        };
+        // Excess capacity amortizes copies when the scope has room. Fund the
+        // required slot exactly when that optional reservation is refused.
+        let (capacity, memory) = if let Some(memory) = preferred_memory {
+            (preferred, Some(memory))
+        } else {
+            let memory =
+                budget.reserve_memory(allocation_bytes(needed)?, MemoryLifetime::Temporary)?;
+            let capacity = if memory.is_some() { needed } else { preferred };
+            (capacity, memory)
+        };
+        let additional = capacity
+            .checked_sub(self.artifacts.len())
+            .ok_or(IndexError::ResourceLimited)?;
         self.artifacts
             .try_reserve_exact(additional)
             .map_err(|_error| IndexError::ResourceLimited)?;
-        if self.artifacts.capacity() > needed {
+        if self.artifacts.capacity() > capacity {
             return Err(IndexError::ResourceLimited);
         }
         self.artifacts_memory = memory;
@@ -67,9 +91,9 @@ impl RegionMembers {
 }
 
 fn row_limit(recipe: &EmbeddingRecipe) -> Result<u32, IndexError> {
-    let cells = u32::try_from(native_graph::MAX_REGION_CELLS)
+    let cells = u32::try_from(ann_region_policy::MAX_REGION_CELLS)
         .map_err(|_error| IndexError::ResourceLimited)?;
-    let rows = u32::try_from(native_graph::MAX_REGION_ROWS)
+    let rows = u32::try_from(ann_region_policy::MAX_REGION_ROWS)
         .map_err(|_error| IndexError::ResourceLimited)?;
     Ok(cells
         .checked_div(recipe.dimension)
@@ -90,10 +114,11 @@ fn include(
     // Prior sources are sorted at the end of each include. A source map itself
     // has unique, ordered owner keys, so only the prior prefix can duplicate.
     let prior_owners = result.artifacts.len();
-    result.reserve_artifacts(
-        usize::try_from(maximum_rows).map_err(|_error| IndexError::ResourceLimited)?,
-        context.budget,
-    )?;
+    let region_rows = row_limit(recipe)?;
+    let maximum_artifacts = prior_owners
+        .checked_add(usize::try_from(maximum_rows).map_err(|_| IndexError::ResourceLimited)?)
+        .ok_or(IndexError::ResourceLimited)?
+        .min(usize::try_from(region_rows).map_err(|_| IndexError::ResourceLimited)?);
     let mut after: Option<[u8; 38]> = None;
     let mut inspected = 0u32;
     let mut source_rows = 0u32;
@@ -128,11 +153,43 @@ fn include(
                 ));
             }
             let owner = owner_from_map_key(key)?;
-            let binding = load_member(*reference, owner, context.objects, context.budget)?;
-            let artifact =
-                load_query_owner_artifact(context.objects, context.budget, &binding, recipe)?;
-            let rows = u32::try_from(artifact.vectors.len())
-                .map_err(|_error| IndexError::ResourceLimited)?;
+            let prior_members = result.artifacts.get(..prior_owners).ok_or_else(|| {
+                IndexError::BackendViolation("ANN consolidation prior owners differ".into())
+            })?;
+            let prior =
+                match prior_members.binary_search_by_key(&owner, |entry| entry.binding.owner) {
+                    Ok(index) => Some(prior_members.get(index).ok_or_else(|| {
+                        IndexError::BackendViolation("ANN consolidation prior member absent".into())
+                    })?),
+                    Err(_) => None,
+                };
+            // The exact immutable member is already authenticated in this
+            // attempt. Its rows still count toward every source that lists it.
+            let (artifact_rows, loaded) = match prior {
+                Some(prior) if prior.reference == *reference => {
+                    (prior.artifact.vectors.len(), None)
+                }
+                _ => {
+                    let binding = load_member(*reference, owner, context.objects, context.budget)?;
+                    let artifact = load_query_owner_artifact(
+                        context.objects,
+                        context.budget,
+                        &binding,
+                        recipe,
+                    )?;
+                    let rows = artifact.vectors.len();
+                    (
+                        rows,
+                        Some(SelectedRegionMember {
+                            reference: *reference,
+                            binding,
+                            artifact,
+                        }),
+                    )
+                }
+            };
+            let rows =
+                u32::try_from(artifact_rows).map_err(|_error| IndexError::ResourceLimited)?;
             source_rows = source_rows
                 .checked_add(rows)
                 .ok_or(IndexError::ResourceLimited)?;
@@ -155,37 +212,27 @@ fn include(
             exact_matches = exact_matches
                 .checked_add(1)
                 .ok_or(IndexError::ResourceLimited)?;
-            let prior_members = result.artifacts.get(..prior_owners).ok_or_else(|| {
-                IndexError::BackendViolation("ANN consolidation prior owners differ".into())
-            })?;
-            if let Ok(index) =
-                prior_members.binary_search_by_key(&owner, |entry| entry.binding.owner)
-            {
-                let prior = prior_members.get(index).ok_or_else(|| {
-                    IndexError::BackendViolation("ANN consolidation prior member absent".into())
-                })?;
-                if prior.reference != *reference {
+            let member = match (prior, loaded) {
+                (_, None) => continue,
+                (Some(_), Some(_)) => {
                     return Err(corrupt("ANN consolidation selected member conflicts"));
                 }
-                continue;
-            }
+                (None, Some(member)) => member,
+            };
             let next_rows = result
                 .rows
                 .checked_add(rows)
                 .ok_or(IndexError::ResourceLimited)?;
-            if next_rows > row_limit(recipe)? {
+            if next_rows > region_rows {
                 return Err(IndexError::ResourceLimited);
             }
+            result.reserve_artifact(maximum_artifacts, context.budget)?;
             result.rows = next_rows;
             result.owners = result
                 .owners
                 .checked_add(1)
                 .ok_or(IndexError::ResourceLimited)?;
-            result.artifacts.push(SelectedRegionMember {
-                reference: *reference,
-                binding,
-                artifact,
-            });
+            result.artifacts.push(member);
         }
         if !page.has_more {
             break;
@@ -227,7 +274,7 @@ fn install_selected_members(
     }
     if (base.root.0.is_none() != (base.owners == 0))
         || base.owners
-            > u32::try_from(native_graph::MAX_REGION_ROWS)
+            > u32::try_from(ann_region_policy::MAX_REGION_ROWS)
                 .map_err(|_error| IndexError::ResourceLimited)?
     {
         return Err(corrupt("ANN consolidation base member count differs"));
@@ -466,15 +513,20 @@ struct MergeCandidate {
     dimension: usize,
 }
 
-/// Scan once, starting at the existing persistent maintenance cursor. Keep
-/// candidate metadata for all carry rounds instead of repeatedly reading it.
+/// Keep candidate metadata for all carry rounds. Only a partial window needs
+/// the maintenance cursor; a full set can be counted from the map's start.
 fn load_candidates(
     directory: &AnnDirectory,
     candidates: &mut Vec<MergeCandidate>,
     limit: u32,
     context: &mut AttemptContext<'_>,
 ) -> Result<(), IndexError> {
-    let start = directory.maintenance_after;
+    let full_scan = limit == directory.region_count;
+    let start = if full_scan {
+        None
+    } else {
+        directory.maintenance_after
+    };
     let mut after = start;
     let mut wrapped = false;
     let mut inspected = 0u32;
@@ -533,6 +585,9 @@ fn load_candidates(
             after = Some(id);
         }
         continuation = page.has_more;
+        if full_scan && inspected == limit && continuation {
+            return Err(corrupt("ANN consolidation region count differs"));
+        }
         if !continuation {
             if start.is_some() && !wrapped {
                 after = None;
@@ -640,7 +695,8 @@ pub(super) fn prepare(
         {
             break;
         }
-        let seal = native_graph::load_seal(context.objects, selected.fileset, context.budget)?;
+        let seal =
+            directory.inspect_region_metadata(selected.fileset, context.objects, context.budget)?;
         if seal.recipe != directory.recipe
             || seal.generation
                 != selected

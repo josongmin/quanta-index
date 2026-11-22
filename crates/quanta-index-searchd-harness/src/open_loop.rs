@@ -4,40 +4,54 @@
 //! fixed before dispatch; queueing and scheduler lag remain in end-to-end
 //! latency, so a slow daemon cannot silently reduce the offered load.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::AtomicBool};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result as AnyResult, ensure};
 use quanta_index_contract::{
-    GenerationPin, QueryConstraintSetV1, SearchPlaneErrorCodeV2, SearchPlaneQueryIpcRequest,
+    ChunkId, ChunkRecord, GenerationPin, QueryConstraintSetV1, RepoId, RepoRelativePath,
+    RevisionId, SearchPlaneErrorCodeV2, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest, TextQuerySyntax, TextRankUnit,
+    lex::LanguageCode,
 };
 use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
+use quanta_index_sdk::{ConnectOptions, QuantaIndex, SearchCorpusBatch};
+use quanta_index_searchd_harness::ScaleStageError;
 use quanta_index_searchd_harness::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
-    LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest,
-    corpus_digest, model_revision_of,
+    PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest, corpus_digest,
+    model_revision_of,
+};
+use quanta_index_searchd_harness::legacy_reference::{
+    LegacySearchdBinary, SearchdBinaryProcess, daemon_socket_paths, legacy_source_batch,
+    legacy_source_replacement_from_chunks, publish_legacy_source_batch, request_when_ready,
 };
 use quanta_index_searchd_harness::offered_load::{
     self, MAX_TOTAL_REQUESTS, OfferedConfig, OfferedTask, scheduled_count,
 };
-use quanta_index_searchd_harness::scale::{
-    DiskObservationMode, ScaleRuntimeConfig, ScaleStageError, ScaleTier, ScopedOracle,
-    generate_corpus, generate_scoped_corpus, params_for, preflight_scoped_corpus, repo_query_token,
-    scoped_corpus_digest,
+use quanta_index_searchd_harness::open_loop_accounting::{
+    Completion, LoadPoint, Outcome, summarize,
 };
-use quanta_index_searchd_harness::{
-    DEFAULT_HISTORY_MAX_GENERATIONS, E2eTextChunkSpec, HARNESS_HISTORY_MAX_REVISION_PAIRS,
+use quanta_index_searchd_harness::private_tempdir;
+use quanta_index_searchd_harness::scale_disk_census::DiskObservationMode;
+use quanta_index_searchd_harness::scale_provenance::scoped_corpus_digest;
+use quanta_index_searchd_harness::scale_runtime_policy::{
+    DEFAULT_HISTORY_MAX_GENERATIONS, HARNESS_HISTORY_MAX_REVISION_PAIRS, ScaleRuntimeConfig,
+    daemon_scale_capacity_environment,
+};
+use quanta_index_searchd_harness::source_fixture::{
+    ScaleTier, ScopedFile, ScopedOracle, generate_corpus, generate_scoped_corpus, params_for,
+    preflight_scoped_corpus, repo_query_token,
 };
 use serde_json::{Value, json};
 
 pub(crate) const DIMENSION: &str = "open-loop";
+const BACKEND: &str = "legacy-reference";
 const QUERY: &str = "scale_needle_token";
 const TOP_K: u32 = 10;
-const MIN_DELIVERY_RATIO: f64 = 0.95;
 
 pub(crate) use quanta_index_searchd_harness::offered_load::ArrivalModel;
 #[cfg(test)]
@@ -230,84 +244,20 @@ fn matches_expected_rows<'a>(
     }) && rows.next().is_none()
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum Outcome {
-    Served { result_count: u64 },
-    InvalidResult,
-    TypedError { code: SearchPlaneErrorCodeV2 },
-    Timeout,
-    TransportError { kind: String },
-    QueueDeadline,
-}
-
-#[derive(Clone, Debug)]
-struct Completion {
-    outcome: Outcome,
-    elapsed_ms: Option<f64>,
-    dispatch_lag_ms: f64,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct LoadPoint {
-    pub target_qps: u32,
-    pub offered: u64,
-    pub served: u64,
-    pub typed_errors: u64,
-    pub unexpected_typed_errors: u64,
-    pub timeouts: u64,
-    pub transport_errors: u64,
-    pub transport_error_kinds: BTreeMap<String, u64>,
-    pub invalid_results: u64,
-    pub dropped_queue_full: u64,
-    pub dropped_scheduler_late: u64,
-    pub dropped_deadline: u64,
-    pub offered_qps: f64,
-    pub achieved_qps: f64,
-    pub drain_secs: f64,
-    /// Scheduled arrival to response; includes scheduler lag, queue wait and IPC.
-    pub latency: Option<LatencySummary>,
-    pub max_dispatch_lag_ms: f64,
-    pub last_result_count: Option<u64>,
-    pub error_codes: Vec<String>,
-    pub saturated: bool,
-}
-
-impl LoadPoint {
-    fn detail(&self) -> Value {
-        json!({
-            "target_qps": self.target_qps,
-            "offered": self.offered,
-            "served": self.served,
-            "typed_errors": self.typed_errors,
-            "unexpected_typed_errors": self.unexpected_typed_errors,
-            "timeouts": self.timeouts,
-            "transport_errors": self.transport_errors,
-            "transport_error_kinds": self.transport_error_kinds,
-            "invalid_results": self.invalid_results,
-            "dropped_queue_full": self.dropped_queue_full,
-            "dropped_scheduler_late": self.dropped_scheduler_late,
-            "dropped_deadline": self.dropped_deadline,
-            "offered_qps": self.offered_qps,
-            "achieved_qps": self.achieved_qps,
-            "drain_secs": self.drain_secs,
-            "latency": self.latency,
-            "max_dispatch_lag_ms": self.max_dispatch_lag_ms,
-            "error_codes": self.error_codes,
-            "saturated": self.saturated,
-        })
-    }
-}
-
 fn request(pin: &GenerationPin) -> SearchPlaneQueryIpcRequest {
-    SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+    SearchPlaneQueryIpcRequest::Text(text_request(QUERY, pin))
+}
+
+fn text_request(query: &str, pin: &GenerationPin) -> TextQueryRequest {
+    TextQueryRequest {
         syntax: TextQuerySyntax::Native,
-        query_text: QUERY.to_string(),
+        query_text: query.to_string(),
         constraints: QueryConstraintSetV1::unconstrained(),
         generation: Some(pin.clone()),
         generation_selector: None,
         top_k: TOP_K,
         cursor: None,
-    })
+    }
 }
 
 fn transport_kind(error: &IpcError) -> String {
@@ -385,7 +335,16 @@ fn dispatch(
                     Outcome::Served { result_count }
                 })
             }
-            SearchPlaneQueryIpcResponse::Error(error) => Outcome::TypedError { code: error.code },
+            SearchPlaneQueryIpcResponse::Error(error)
+                if error.code == SearchPlaneErrorCodeV2::ServerOverloaded =>
+            {
+                Outcome::Overloaded {
+                    code: error.code.as_wire_str().to_string(),
+                }
+            }
+            SearchPlaneQueryIpcResponse::Error(error) => Outcome::TypedError {
+                code: error.code.as_wire_str().to_string(),
+            },
             SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
             | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
             | SearchPlaneQueryIpcResponse::Text(_)
@@ -413,128 +372,6 @@ fn dispatch(
         elapsed_ms: Some(task.scheduled.elapsed().as_secs_f64() * 1000.0),
         dispatch_lag_ms: lag_ms,
     }
-}
-
-fn increment_count(counter: &mut u64, label: &str) -> AnyResult<()> {
-    *counter = counter
-        .checked_add(1)
-        .with_context(|| format!("{label} overflow"))?;
-    Ok(())
-}
-
-fn summarize(
-    rate: u32,
-    duration: Duration,
-    offered: u64,
-    dropped_queue_full: u64,
-    dropped_scheduler_late: u64,
-    completions: Vec<Completion>,
-    drain_secs: f64,
-) -> AnyResult<LoadPoint> {
-    ensure!(offered > 0, "open-loop load point offered no requests");
-    ensure!(
-        drain_secs.is_finite() && drain_secs > 0.0,
-        "measurement window must be finite and positive"
-    );
-    let accounted = u64::try_from(completions.len())?
-        .checked_add(dropped_queue_full)
-        .and_then(|count| count.checked_add(dropped_scheduler_late))
-        .context("offered request accounting overflow")?;
-    ensure!(
-        accounted == offered,
-        "offered requests were lost before accounting"
-    );
-    let mut served = 0_u64;
-    let mut typed_errors = 0_u64;
-    let mut unexpected_typed_errors = 0_u64;
-    let mut timeouts = 0_u64;
-    let mut transport_errors = 0_u64;
-    let mut transport_error_kinds = BTreeMap::<String, u64>::new();
-    let mut invalid_results = 0_u64;
-    let mut dropped_deadline = 0_u64;
-    let mut last_result_count = None;
-    let mut codes = Vec::new();
-    let mut elapsed = Vec::new();
-    let mut max_dispatch_lag_ms = 0.0_f64;
-    for completion in completions {
-        ensure!(
-            completion.dispatch_lag_ms.is_finite() && completion.dispatch_lag_ms >= 0.0,
-            "dispatch lag must be finite and nonnegative"
-        );
-        max_dispatch_lag_ms = max_dispatch_lag_ms.max(completion.dispatch_lag_ms);
-        if let Some(ms) = completion.elapsed_ms {
-            ensure!(
-                ms.is_finite() && ms >= 0.0,
-                "completion latency must be finite and nonnegative"
-            );
-            elapsed.push(ms);
-        }
-        match completion.outcome {
-            Outcome::Served { result_count } => {
-                increment_count(&mut served, "served count")?;
-                last_result_count = Some(result_count);
-            }
-            Outcome::TypedError { code } => {
-                increment_count(&mut typed_errors, "typed error count")?;
-                if code != SearchPlaneErrorCodeV2::ServerOverloaded {
-                    increment_count(&mut unexpected_typed_errors, "unexpected typed error count")?;
-                }
-                codes.push(code.as_wire_str().to_string());
-            }
-            Outcome::Timeout => increment_count(&mut timeouts, "timeout count")?,
-            Outcome::TransportError { kind } => {
-                increment_count(&mut transport_errors, "transport error count")?;
-                increment_count(
-                    transport_error_kinds.entry(kind).or_default(),
-                    "transport error kind count",
-                )?;
-            }
-            Outcome::InvalidResult => {
-                increment_count(&mut invalid_results, "invalid result count")?;
-            }
-            Outcome::QueueDeadline => {
-                increment_count(&mut dropped_deadline, "queue deadline count")?;
-            }
-        }
-    }
-    codes.sort();
-    codes.dedup();
-    let offered_qps = f64::from(u32::try_from(offered)?) / duration.as_secs_f64();
-    let achieved_qps = f64::from(u32::try_from(served)?) / drain_secs.max(duration.as_secs_f64());
-    ensure!(
-        offered_qps.is_finite() && offered_qps > 0.0 && achieved_qps.is_finite(),
-        "open-loop throughput is not finite"
-    );
-    let saturated = dropped_queue_full > 0
-        || dropped_scheduler_late > 0
-        || dropped_deadline > 0
-        || typed_errors > 0
-        || timeouts > 0
-        || transport_errors > 0
-        || invalid_results > 0
-        || achieved_qps / offered_qps < MIN_DELIVERY_RATIO;
-    Ok(LoadPoint {
-        target_qps: rate,
-        offered,
-        served,
-        typed_errors,
-        unexpected_typed_errors,
-        timeouts,
-        transport_errors,
-        transport_error_kinds,
-        invalid_results,
-        dropped_queue_full,
-        dropped_scheduler_late,
-        dropped_deadline,
-        offered_qps,
-        achieved_qps,
-        drain_secs,
-        latency: LatencySummary::from_samples_ms(&elapsed),
-        max_dispatch_lag_ms,
-        last_result_count,
-        error_codes: codes,
-        saturated,
-    })
 }
 
 fn measure_point(
@@ -572,6 +409,8 @@ pub(crate) struct Report {
     pub config: Config,
     pub corpus_digest: String,
     pub model_revision: Option<String>,
+    pub daemon_sha256: String,
+    pub resources: ResourceUsageV1,
     pub points: Vec<LoadPoint>,
 }
 
@@ -596,25 +435,57 @@ impl Report {
     }
 }
 
+fn scoped_batch(
+    repo: &RepoId,
+    revision: &RevisionId,
+    files: &[ScopedFile],
+) -> AnyResult<SearchCorpusBatch> {
+    let language = LanguageCode::new("rust").map_err(anyhow::Error::msg)?;
+    let chunks = (1_u64..)
+        .zip(files)
+        .map(|(id, file)| {
+            let path = &file.repo_relative_path;
+            Ok(ChunkRecord {
+                chunk_id: ChunkId::new(format!("e2e-{id}-{path}")),
+                repo_relative_path: RepoRelativePath::new(path.as_str()),
+                language: language.clone(),
+                start_byte: 0,
+                end_byte: u32::try_from(file.content.len())?,
+                start_line: 1,
+                end_line: 2,
+                text: file.content.to_owned().into_boxed_str(),
+                structural: None,
+                parent_chunk_id: None,
+                source_repo_id: Some(RepoId::new(file.source_repo_id.as_str())?),
+            })
+        })
+        .collect::<AnyResult<_>>()?;
+    legacy_source_replacement_from_chunks(repo, revision, 1, chunks)
+        .map_err(|error| anyhow::anyhow!("prepare scoped Source: {error}"))
+}
+
 pub(crate) fn run(config: Config) -> AnyResult<Report> {
     config.validate()?;
-    let legacy =
-        (config.tier == ScaleTier::Small).then(|| generate_corpus(ScaleTier::Small, config.seed));
-    let scoped = if config.tier == ScaleTier::Small {
-        None
+    let binary = LegacySearchdBinary::from_environment()
+        .map_err(|error| anyhow::anyhow!("select pinned old-Q open-loop daemon: {error}"))?;
+    let repo = RepoId::new("repo-e2e")?;
+    let revision = RevisionId::new("rev-e2e")?;
+    let (batch, source_paths, corpus_digest, scoped_oracle) = if config.tier == ScaleTier::Small {
+        let corpus = generate_corpus(ScaleTier::Small, config.seed);
+        let source_paths = source_fixture_paths(&corpus)?;
+        let digest = corpus_digest(DIMENSION, &corpus);
+        let files = (1_u64..)
+            .zip(&corpus)
+            .map(|(id, (path, content))| (path.as_str(), content.as_str(), id))
+            .collect::<Vec<_>>();
+        let batch = legacy_source_batch(&repo, &revision, 1, None, &files)
+            .map_err(|error| anyhow::anyhow!("prepare small Source: {error}"))?;
+        (batch, source_paths, digest, None)
     } else {
         let files = generate_scoped_corpus(config.tier, config.seed)?;
         let oracle = ScopedOracle::from_source(&files, config.tier)?;
         let _admission = preflight_scoped_corpus(&files)
             .map_err(|error| ScaleStageError::source_admission(&error))?;
-        Some((files, oracle))
-    };
-    let (source_paths, corpus_digest) = if let Some(corpus) = &legacy {
-        (
-            source_fixture_paths(corpus)?,
-            corpus_digest(DIMENSION, corpus),
-        )
-    } else if let Some((files, _)) = &scoped {
         let source_paths = files
             .iter()
             .map(|file| format!("{}/{}", file.source_repo_id, file.repo_relative_path))
@@ -623,152 +494,125 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
             source_paths.len() == files.len(),
             "open-loop scoped source identity repeats"
         );
-        let digest = scoped_corpus_digest(DIMENSION, files);
-        (source_paths, digest)
-    } else {
-        anyhow::bail!("open-loop has no prepared source fixture");
+        let digest = scoped_corpus_digest(DIMENSION, &files);
+        let batch = scoped_batch(&repo, &revision, &files)?;
+        (batch, source_paths, digest, Some(oracle))
     };
 
-    let mut runtime = config
-        .history_config()
-        .boot_runtime()
-        .map_err(|error| ScaleStageError::operation("runtime_boot", &error))?
-        .with_history_max_generations(DEFAULT_HISTORY_MAX_GENERATIONS);
-    let model_revision = model_revision_of(runtime.embedder_profile());
-    if let Some(corpus) = &legacy {
-        let serving_owner = runtime.repo();
-        for (path, content) in corpus {
-            runtime.ingest_text(serving_owner.as_str(), path, content)?;
+    let root = private_tempdir()?;
+    let policy = config.history_config();
+    let client_timeout = Duration::from_millis(policy.effective_timeout_ms()?);
+    let model = quanta_index_searchd::app::SemanticEmbedderProfile::hash_dev();
+    let mut command = binary
+        .benchmark_command(root.path(), DEFAULT_HISTORY_MAX_GENERATIONS)
+        .map_err(|error| anyhow::anyhow!("prepare pinned old-Q open-loop daemon: {error}"))?;
+    let _configured = command
+        .envs(policy.daemon_history_environment()?)
+        .envs(daemon_scale_capacity_environment());
+    let process = SearchdBinaryProcess::start_with_pinned_command(root.path(), command)
+        .map_err(|error| ScaleStageError::operation("runtime_boot", &anyhow::anyhow!("{error}")))?;
+    let observation = (|| -> AnyResult<_> {
+        let client = QuantaIndex::connect_legacy(
+            ConnectOptions::from_state_root(root.path()).with_request_io_timeout(client_timeout),
+        )?;
+        // The SDK applies its exact encoded upload admission before sampling.
+        let (head, _receipt) =
+            publish_legacy_source_batch(&client, &batch, None).map_err(|error| {
+                ScaleStageError::operation("build_seal", &anyhow::anyhow!("{error}"))
+            })?;
+        let pin = GenerationPin::new(repo, revision, head.generation.lexical.manifest_generation);
+        let primed =
+            request_when_ready(|| client.lexical().query_request(text_request(QUERY, &pin)))?;
+        ensure!(
+            primed.generation == pin && !primed.results.is_empty(),
+            "fixture must serve a nonempty pinned lexical answer before timing"
+        );
+        if let Some(oracle) = &scoped_oracle {
+            for repo_index in 0..params_for(config.tier).repo_count {
+                let source_repo_id = format!("repo{repo_index}");
+                let response = client
+                    .lexical()
+                    .query_request(text_request(&repo_query_token(repo_index), &pin))?;
+                ensure!(
+                    response.generation == pin,
+                    "open-loop scoped probe generation changed"
+                );
+                let _result_count = oracle.verify_page(Some(&source_repo_id), &response.results)?;
+            }
         }
-    } else if let Some((files, _)) = &scoped {
-        let chunks = files
+        let page = client.lexical().query_request(text_request(QUERY, &pin))?;
+        ensure!(
+            page.generation == pin && page.rank_unit == TextRankUnit::Chunk,
+            "pinned IPC query failed correctness preflight"
+        );
+        if config.tier == ScaleTier::Small {
+            ensure!(
+                page.results
+                    .iter()
+                    .all(|row| row.source_repo_id == pin.repo_id),
+                "open-loop baseline returned a foreign source repository"
+            );
+        }
+        let observed = page
+            .results
             .iter()
-            .map(|file| {
-                [E2eTextChunkSpec {
-                    content: &file.content,
-                    start_line: 1,
-                    end_line: 2,
-                    source_repo_id: Some(&file.source_repo_id),
-                }]
+            .map(|row| {
+                let path = if config.tier == ScaleTier::Small {
+                    row.repo_relative_path.as_str().to_string()
+                } else {
+                    format!(
+                        "{}/{}",
+                        row.source_repo_id.as_str(),
+                        row.repo_relative_path.as_str()
+                    )
+                };
+                (row.candidate_id.as_str(), path)
             })
             .collect::<Vec<_>>();
-        let batch_files = files
-            .iter()
-            .zip(&chunks)
-            .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
+        let _validated_ids = fixture_candidate_ids(
+            &source_paths,
+            observed.iter().map(|(id, path)| (*id, path.as_str())),
+        )?;
+        let expected_rows = page
+            .results
+            .into_iter()
+            .map(|row| ExpectedRow {
+                candidate_id: row.candidate_id,
+                source_repo_id: row.source_repo_id.as_str().to_string(),
+                repo_relative_path: row.repo_relative_path.as_str().to_string(),
+            })
             .collect::<Vec<_>>();
-        let _ids = runtime.ingest_text_files_one_batch(&batch_files)?;
-        let _wire = runtime
-            .preview_pending_search_corpus_wire_bytes()
-            .map_err(|error| ScaleStageError::wire_admission(&error))?;
-    }
-    let sealed = runtime
-        .seal()
-        .map_err(|error| ScaleStageError::operation("build_seal", &error))?;
-    runtime.activate_last_sealed_generation()?;
-    let pin = GenerationPin::new(runtime.repo(), runtime.revision(), sealed);
-    let primed = runtime.query_text(TextQuerySyntax::Native, QUERY, TOP_K);
-    ensure!(
-        primed.typed_error.is_none() && !primed.candidates.is_empty(),
-        "fixture must serve a nonempty lexical answer before timing"
-    );
-    if let Some((_, oracle)) = &scoped {
-        for repo_index in 0..params_for(config.tier).repo_count {
-            let source_repo_id = format!("repo{repo_index}");
-            let response = runtime.query_text(
-                TextQuerySyntax::Native,
-                &repo_query_token(repo_index),
-                TOP_K,
-            );
-            ensure!(
-                response.typed_error.is_none(),
-                "open-loop source-repository probe returned a typed error: {source_repo_id}"
-            );
-            let _result_count = oracle.verify_page(Some(&source_repo_id), &response.candidates)?;
+        let [socket, _, _] = daemon_socket_paths(root.path());
+        let mut points = Vec::with_capacity(config.rates_qps.len());
+        for rate in &config.rates_qps {
+            points.push(measure_point(
+                &socket,
+                &pin,
+                &expected_rows,
+                &config,
+                *rate,
+            )?);
         }
-    }
-    let preflight = runtime.query_once(|_| request(&pin))?;
-    let expected_rows = match preflight {
-        SearchPlaneQueryIpcResponse::Text(page)
-            if page.generation == pin && page.rank_unit == TextRankUnit::Chunk =>
-        {
-            let observed = page
-                .results
-                .iter()
-                .map(|row| {
-                    let path = if config.tier == ScaleTier::Small {
-                        row.repo_relative_path.as_str().to_string()
-                    } else {
-                        format!(
-                            "{}/{}",
-                            row.source_repo_id.as_str(),
-                            row.repo_relative_path.as_str()
-                        )
-                    };
-                    (row.candidate_id.clone(), path)
-                })
-                .collect::<Vec<_>>();
-            if config.tier == ScaleTier::Small {
-                ensure!(
-                    page.results
-                        .iter()
-                        .all(|row| row.source_repo_id.as_str() == pin.repo_id.as_str()),
-                    "open-loop baseline returned a foreign source repository"
-                );
-            }
-            let _validated_ids = fixture_candidate_ids(
-                &source_paths,
-                observed
-                    .iter()
-                    .map(|(id, path)| (id.as_str(), path.as_str())),
-            )?;
-            page.results
-                .iter()
-                .map(|row| ExpectedRow {
-                    candidate_id: row.candidate_id.clone(),
-                    source_repo_id: row.source_repo_id.as_str().to_string(),
-                    repo_relative_path: row.repo_relative_path.as_str().to_string(),
-                })
-                .collect::<Vec<_>>()
-        }
-        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
-        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
-        | SearchPlaneQueryIpcResponse::Text(_)
-        | SearchPlaneQueryIpcResponse::Symbol(_)
-        | SearchPlaneQueryIpcResponse::Semantic(_)
-        | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
-        | SearchPlaneQueryIpcResponse::Hybrid(_)
-        | SearchPlaneQueryIpcResponse::HybridSeed(_)
-        | SearchPlaneQueryIpcResponse::HybridFileV1(_)
-        | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
-        | SearchPlaneQueryIpcResponse::History(_)
-        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-        | SearchPlaneQueryIpcResponse::Explain(_)
-        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
-        | SearchPlaneQueryIpcResponse::Error(_) => {
-            anyhow::bail!("pinned IPC query failed correctness preflight")
-        }
+        let peak_rss_bytes = process.observe_peak_rss(&client)?;
+        Ok((points, ResourceUsageV1 { peak_rss_bytes }))
+    })();
+    let stopped = process
+        .stop()
+        .map_err(|error| anyhow::anyhow!("stop pinned old-Q open-loop daemon: {error}"));
+    let (points, resources) = match (observation, stopped) {
+        (Ok(value), Ok(())) => value,
+        (Err(primary), Ok(())) | (Ok(_), Err(primary)) => return Err(primary),
+        (Err(primary), Err(cleanup)) => return Err(primary.context(format!("{cleanup:#}"))),
     };
-    let (socket, _, _) = runtime
-        .socket_paths()
-        .context("query socket is not running")?;
-    let socket = socket.to_path_buf();
-    let mut points = Vec::with_capacity(config.rates_qps.len());
-    for rate in &config.rates_qps {
-        points.push(measure_point(
-            &socket,
-            &pin,
-            &expected_rows,
-            &config,
-            *rate,
-        )?);
-    }
+    binary
+        .verify()
+        .map_err(|error| anyhow::anyhow!("verify pinned old-Q open-loop daemon: {error}"))?;
     Ok(Report {
         config,
         corpus_digest,
-        model_revision,
+        model_revision: model_revision_of(&model),
+        daemon_sha256: binary.sha256().to_owned(),
+        resources,
         points,
     })
 }
@@ -778,7 +622,6 @@ pub(crate) fn artifact(
     git_head: GitHeadV1,
     host: HostV1,
 ) -> AnyResult<BenchArtifactV1> {
-    let resources = ResourceUsageV1::observe_self()?;
     let config = &report.config;
     let history_policy = config.history_policy_json()?;
     let rows = report
@@ -819,6 +662,8 @@ pub(crate) fn artifact(
             config_digest: config_digest(
                 DIMENSION,
                 &[
+                    ("backend", BACKEND.to_owned()),
+                    ("daemon_sha256", report.daemon_sha256.clone()),
                     ("seed", config.seed.to_string()),
                     ("arrival_model", config.arrival_model.as_str().to_string()),
                     (
@@ -877,11 +722,14 @@ pub(crate) fn artifact(
             model_revision: report.model_revision.clone(),
         },
         host,
-        resources,
+        resources: report.resources,
         phases: PhaseDurationsV1::default(),
         disk_amplification: None,
         rows,
         detail: json!({
+            "backend": BACKEND,
+            "daemon_sha256": report.daemon_sha256,
+            "peak_rss_scope": "daemon_process",
             "passed": report.passed(),
             "arrival_model": config.arrival_model.as_str(),
             "latency_origin": "scheduled_arrival",
@@ -894,7 +742,7 @@ pub(crate) fn artifact(
             "history_policy": history_policy,
             "runtime_policy": config.runtime_policy_json()?,
             "serving_owner_count": 1,
-            "source_repo_count": quanta_index_searchd_harness::scale::params_for(config.tier).repo_count,
+            "source_repo_count": params_for(config.tier).repo_count,
             "saturation_onset_qps": report.saturation_onset_qps(),
             "points": report.points.iter().map(LoadPoint::detail).collect::<Vec<_>>(),
         }),
@@ -918,9 +766,12 @@ mod tests {
     #[test]
     fn zero_request_id_keeps_its_protocol_failure_kind() {
         assert_eq!(transport_kind(&IpcError::ZeroRequestId), "zero_request_id");
-        assert_eq!(transport_kind(&IpcError::PeerBindingRefused(
-            quanta_index_ipc::PeerBindingRefusalV1::ForeignProcess,
-        )), "peer_binding_refused");
+        assert_eq!(
+            transport_kind(&IpcError::PeerBindingRefused(
+                quanta_index_ipc::PeerBindingRefusalV1::ForeignProcess,
+            )),
+            "peer_binding_refused"
+        );
     }
 
     #[test]
@@ -1137,126 +988,6 @@ mod tests {
     }
 
     #[test]
-    fn nonfinite_completed_samples_cannot_enter_latency_summary() {
-        assert!(
-            summarize(
-                1,
-                Duration::from_secs(1),
-                1,
-                0,
-                0,
-                vec![Completion {
-                    outcome: Outcome::Served { result_count: 1 },
-                    elapsed_ms: Some(f64::NAN),
-                    dispatch_lag_ms: 0.0,
-                }],
-                1.0,
-            )
-            .is_err()
-        );
-        assert!(
-            summarize(
-                1,
-                Duration::from_secs(1),
-                1,
-                0,
-                0,
-                vec![Completion {
-                    outcome: Outcome::Served { result_count: 1 },
-                    elapsed_ms: Some(1.0),
-                    dispatch_lag_ms: f64::INFINITY,
-                }],
-                1.0,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn slow_answers_keep_the_original_arrival_in_the_tail() -> AnyResult<()> {
-        let point = summarize(
-            10,
-            Duration::from_secs(1),
-            2,
-            0,
-            0,
-            vec![
-                Completion {
-                    outcome: Outcome::Served { result_count: 2 },
-                    elapsed_ms: Some(5.0),
-                    dispatch_lag_ms: 0.0,
-                },
-                Completion {
-                    outcome: Outcome::Served { result_count: 2 },
-                    elapsed_ms: Some(700.0),
-                    dispatch_lag_ms: 600.0,
-                },
-            ],
-            1.0,
-        )?;
-        assert_eq!(
-            point.latency.context("latency missing")?.p99_ms.to_bits(),
-            700.0_f64.to_bits()
-        );
-        assert_eq!(point.max_dispatch_lag_ms.to_bits(), 600.0_f64.to_bits());
-        assert!(!point.saturated);
-        Ok(())
-    }
-
-    #[test]
-    fn every_offered_request_must_be_accounted() {
-        assert!(
-            summarize(
-                10,
-                Duration::from_secs(1),
-                2,
-                0,
-                0,
-                vec![Completion {
-                    outcome: Outcome::Timeout,
-                    elapsed_ms: Some(10.0),
-                    dispatch_lag_ms: 0.0
-                },],
-                1.0
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn overload_is_saturation_but_other_typed_errors_are_correctness_failures() -> AnyResult<()> {
-        let point = summarize(
-            3,
-            Duration::from_secs(1),
-            3,
-            1,
-            0,
-            vec![
-                Completion {
-                    outcome: Outcome::TypedError {
-                        code: SearchPlaneErrorCodeV2::ServerOverloaded,
-                    },
-                    elapsed_ms: Some(5.0),
-                    dispatch_lag_ms: 0.0,
-                },
-                Completion {
-                    outcome: Outcome::TypedError {
-                        code: SearchPlaneErrorCodeV2::CatalogBusy,
-                    },
-                    elapsed_ms: Some(6.0),
-                    dispatch_lag_ms: 0.0,
-                },
-            ],
-            1.0,
-        )?;
-        assert_eq!(point.typed_errors, 2);
-        assert_eq!(point.unexpected_typed_errors, 1);
-        assert_eq!(point.dropped_queue_full, 1);
-        assert!(point.saturated);
-        Ok(())
-    }
-
-    #[test]
     fn transport_failures_keep_their_kind() -> AnyResult<()> {
         let point = summarize(
             1,
@@ -1294,6 +1025,10 @@ mod tests {
                 },
                 corpus_digest: String::new(),
                 model_revision: None,
+                daemon_sha256: "a".repeat(64),
+                resources: ResourceUsageV1 {
+                    peak_rss_bytes: 16_384
+                },
                 points: vec![point],
             }
             .passed()
@@ -1353,6 +1088,10 @@ mod tests {
             },
             corpus_digest: String::new(),
             model_revision: None,
+            daemon_sha256: "a".repeat(64),
+            resources: ResourceUsageV1 {
+                peak_rss_bytes: 16_384,
+            },
             points: vec![healthy, overloaded],
         };
         assert!(report.passed());
@@ -1388,6 +1127,7 @@ mod tests {
         assert_eq!(report.points.len(), 1);
         let point = report.points.first().context("missing load point")?;
         assert_eq!(point.offered, 2);
+        assert_eq!(point.served, 2);
         assert_eq!(
             point.served
                 + point.typed_errors
@@ -1486,6 +1226,10 @@ mod tests {
             },
             corpus_digest: "sha256:fixed-source".to_string(),
             model_revision: None,
+            daemon_sha256: "a".repeat(64),
+            resources: ResourceUsageV1 {
+                peak_rss_bytes: 16_384,
+            },
             points: vec![point],
         };
         let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567")?;
@@ -1497,6 +1241,18 @@ mod tests {
             hostname_hash: "sha256:host".to_string(),
         };
         let default = artifact(&report, head.clone(), host.clone())?.to_json()?;
+        assert_eq!(
+            required_json(&default, "/detail/backend")?,
+            &json!("legacy-reference")
+        );
+        assert_eq!(
+            required_json(&default, "/detail/daemon_sha256")?,
+            &json!("a".repeat(64))
+        );
+        assert_eq!(
+            required_json(&default, "/resources/peak_rss_bytes")?,
+            &json!(16_384)
+        );
         for (name, expected) in [
             ("query_dispatch_budget_ms", json!(600_000)),
             ("client_request_timeout_ms", json!(600_000)),

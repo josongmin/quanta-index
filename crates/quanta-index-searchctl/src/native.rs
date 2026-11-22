@@ -1,5 +1,6 @@
 //! Explicit native CLI route. It never opens a legacy `SearchPlane` client.
 
+mod dsl;
 mod history;
 mod read_session;
 
@@ -13,7 +14,7 @@ use std::{
 };
 
 use quanta_index_contract::{
-    QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
+    LqFilter, LqSelect, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
     index::{
         CollectionId, IndexInstanceId, SlotId, TenantId, ViewSelection, WorkspaceKey, WorktreeId,
     },
@@ -74,6 +75,28 @@ fn text_syntax(raw: &str) -> CliResult<TextQuerySyntax> {
             "unsupported native text syntax {other}"
         ))),
     }
+}
+
+fn selects_path(query: &TextQueryRequest) -> bool {
+    let parsed = match query.syntax {
+        TextQuerySyntax::Native => {
+            quanta_index_contract::parse_native_content_query(&query.query_text).ok()
+        }
+        TextQuerySyntax::Sourcegraph => {
+            quanta_index_contract::parse_sourcegraph_content_query(&query.query_text).ok()
+        }
+        TextQuerySyntax::CodeSearch => None,
+    };
+    parsed.is_some_and(|query| {
+        query.filters.iter().any(|filter| {
+            matches!(
+                filter,
+                LqFilter::Select {
+                    dim: LqSelect::Path
+                }
+            )
+        })
+    })
 }
 
 fn bytes<const N: usize>(text: &str, name: &str) -> CliResult<[u8; N]> {
@@ -161,16 +184,6 @@ fn parse(args: &[String]) -> CliResult<NativeOptions> {
         Some("repomap-query") => {
             return Err(CliError::unsupported(
                 quanta_index_sdk::LegacyQueryCapabilityV1::RepoMapQuery,
-            ));
-        }
-        Some("runtime-metadata") => {
-            return Err(CliError::unsupported(
-                quanta_index_sdk::LegacyQueryCapabilityV1::RuntimeMetadata,
-            ));
-        }
-        Some("structural") => {
-            return Err(CliError::unsupported(
-                quanta_index_sdk::LegacyQueryCapabilityV1::Structural,
             ));
         }
         Some(other) => {
@@ -358,7 +371,7 @@ fn map_error(error: &NativeUdsError, socket: &Path) -> CliError {
             CliError::transport(detail)
         }
         NativeUdsError::Protocol(_) => CliError::protocol(detail),
-        NativeUdsError::Refused(_) => CliError::remote(detail),
+        NativeUdsError::Refused(_) | NativeUdsError::QueryRejected { .. } => CliError::remote(detail),
         NativeUdsError::Unknown(_) => CliError {
             exit_code: EXIT_TRANSPORT,
             message: detail,
@@ -368,6 +381,9 @@ fn map_error(error: &NativeUdsError, socket: &Path) -> CliError {
 }
 
 pub(super) fn run(args: &[String], stdout: &mut dyn Write) -> CliResult<ExitCode> {
+    if args.first().is_some_and(|command| dsl::handles(command)) {
+        return dsl::run(args, stdout);
+    }
     if args.first().is_some_and(|command| command == "history") {
         return history::run(args, stdout);
     }
@@ -418,6 +434,43 @@ pub(super) fn run(args: &[String], stdout: &mut dyn Write) -> CliResult<ExitCode
                 top_k,
                 cursor: None,
             };
+            if selects_path(&request) {
+                let projected = client
+                    .search_text_paths(selection, instance, request, &budget)
+                    .map_err(|error| map_error(&error, &parsed.socket))?;
+                let ranked = &projected.ranked.ranking;
+                let rendered = match parsed.output {
+                    NativeOutput::Json => {
+                        serde_json::to_string_pretty(&projected).map_err(|error| {
+                            CliError::protocol(format!("native text path encoding: {error}"))
+                        })?
+                    }
+                    NativeOutput::Pretty => {
+                        let mut value = format!(
+                            "view: {:?}\nmatched: {}\nexhaustive: {}\n",
+                            ranked.view, ranked.matched, ranked.exhaustive,
+                        );
+                        for (hit, repository) in
+                            ranked.hits.iter().zip(&projected.ranked.repositories)
+                        {
+                            writeln!(
+                                value,
+                                "{} {} {:?} {:?}",
+                                repository.as_str(),
+                                hit.path,
+                                hit.owner,
+                                hit.score
+                            )
+                            .map_err(|error| {
+                                CliError::protocol(format!("native text path rendering: {error}"))
+                            })?;
+                        }
+                        value
+                    }
+                };
+                write_stdout(stdout, &rendered)?;
+                return Ok(ExitCode::SUCCESS);
+            }
             let ranked = client
                 .search_text(selection, instance, request, &budget)
                 .map_err(|error| map_error(&error, &parsed.socket))?;
@@ -548,6 +601,22 @@ mod tests {
         args[6] = "2".into();
         assert!(parse(&args).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn native_parse_refusal_keeps_semantic_exit_and_public_code() {
+        let error = map_error(
+            &NativeUdsError::QueryRejected {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::ParseFail,
+                ),
+                message: "unterminated phrase".into(),
+            },
+            Path::new("/tmp/native-query.sock"),
+        );
+        assert_eq!(error.exit_code, crate::EXIT_REMOTE);
+        assert!(error.message.contains("PARSE_FAIL"));
+        assert!(error.message.contains("unterminated phrase"));
     }
 
     #[test]

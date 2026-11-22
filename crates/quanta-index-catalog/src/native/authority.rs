@@ -11,51 +11,62 @@
 
 use std::{path::Path, time::Duration};
 
+use quanta_index_contract::{
+    index::ProjectionReplayStamp, native_protocol::NATIVE_DSL_PRODUCER_V1,
+};
+
 mod boot_manifest;
+mod boot_quiescence;
+mod boot_record;
 mod read_only;
 mod read_settlement;
 pub use read_only::{
-    LegacyActiveCatalogCensusV1, LegacyCatalogQuiescenceV1, LegacyHistoryProducerScopeV1,
-    LegacyHistorySnapshotObservationV1, LegacyHistorySourceProofV1, NativeBootCatalogCandidate,
-    NativeBootCatalogSnapshot, NativeBootPublishedOperation, NativeBootQuiescentCatalogV1,
-    NativeProtectedSnapshotWitnessV1, TerminalBatchReadError, VerifiedLegacyTerminalBatch, lookup_native_protected_source_head_v1,
-    read_native_protected_snapshot_witness_v1, visit_native_protected_snapshot_rows_v1,
-    verify_native_protected_snapshot_install_v1,
-    observe_legacy_history_snapshot_v1, resolve_native_protected_source_head_if_current_v1,
-    require_legacy_repomap_inapplicable_v1,
+    LegacyActiveCatalogCensusV1, LegacyCatalogQuiescenceV1, LegacyHistoryCheckpointPageV1,
+    LegacyHistoryProducerScopeV1, LegacyHistorySnapshotObservationV1, LegacyHistorySourceProofV1,
+    NativeBootCatalogCandidate, NativeBootCatalogSnapshot, NativeBootPublicationReader,
+    NativeBootPublishedOperation, NativeBootQuiescentCatalogV1, NativeProtectedSnapshotWitnessV1,
+    TerminalBatchReadError, VerifiedLegacyTerminalBatch, lookup_native_protected_source_head_v1,
+    observe_legacy_history_snapshot_v1, read_native_protected_snapshot_witness_v1,
+    require_legacy_repomap_inapplicable_v1, resolve_native_protected_source_head_if_current_v1,
     verify_legacy_active_repomap_receipts_with_siblings_v1, verify_legacy_catalog_quiescence_v1,
-    with_legacy_active_repomap_receipts_with_siblings_v1,
     verify_legacy_history_source_inventory_v1, verify_legacy_history_sources_v1,
     verify_legacy_terminal_batch_receipt, verify_native_boot_candidate, verify_native_boot_catalog,
     verify_native_boot_current_candidate, verify_native_legacy_history_recovery_publications_v1,
     verify_native_legacy_history_recovery_publications_with_routes_v1,
+    verify_native_protected_snapshot_install_v1,
+    verify_native_protected_source_routes_for_candidate_resume_v1,
     verify_native_protected_source_routes_if_current_v1, verify_native_protected_source_routes_v1,
     verify_native_published_operation, verify_native_published_view_v1,
     verify_native_published_view_with_routes_v1,
     verify_native_recovery_publications_with_routes_v1, verify_native_rollback_catalog,
     verify_native_rollback_with_source_publications, verify_native_source_root_publications_v1,
-    verify_native_source_root_publications_with_routes_v1,
-    verify_native_source_root_quiescence_v1, verify_native_source_root_quiescence_with_routes_v1,
-    visit_legacy_active_catalog_heads_v1,
+    verify_native_source_root_publications_with_routes_v1, verify_native_source_root_quiescence_v1,
+    verify_native_source_root_quiescence_with_routes_v1, visit_legacy_active_catalog_heads_v1,
     visit_legacy_history_checkpoint_pages_v1, visit_legacy_history_checkpoint_rows_v1,
     visit_legacy_history_generation_keys_v1, visit_legacy_history_snapshot_rows_v1,
+    visit_native_protected_snapshot_rows_v1, with_legacy_active_repomap_receipts_with_siblings_v1,
 };
 mod bootstrap;
 mod capture_format;
 mod fence_counter;
 mod lifetime;
+pub(crate) use lifetime::certify_open_pin_rows;
+mod body_incidents;
 mod managed_install;
 mod object_install;
 mod owned_work;
-mod publication_result;
 mod protected_native_import;
+mod publication_result;
 mod reclaim;
 mod registration_codec;
 mod renewal_diagnostic;
 mod retention;
 mod source_authority;
+mod source_stage_replay_receipt;
 mod terminal_custody;
 mod terminal_work;
+mod view_quarantine;
+mod workspace_integrity;
 
 use quanta_index_core::index::ports::{
     CatalogGenesisPort, CatalogPublicationPort, CatalogReclaimPort, ImmutableObjectPort,
@@ -64,13 +75,13 @@ use quanta_index_core::index::ports::{
 };
 use quanta_index_core::index::{
     AdmissionOutcome, AttemptId, AttemptRef, BootstrapRef, CatalogView, ImmutableOperation,
-    IndexError, IngressRef, OWNED_WORK_PRODUCER, ObjectInstallScope, ObjectNamespaceBinding,
-    ObjectRef, OperationKey, OperationStatus, OwnedWorkAssignment, OwnerMemberBinding,
-    PreparedPublication, ProducerId, ReclaimCandidate, ReclaimDrainPage, ReclaimPermit,
-    ReclaimTarget, ReclaimWorkPage, Refusal, RegisteredObject, RetiringRef, SourceEvent,
-    SourceOperationMode, StreamId, TicketId, UpdateKind, UpdateRequest, ViewRef, WorkAction,
-    WorkActionDigest, WorkBudget, WorkClaim, WorkIntent, WorkScope, WorkStatus, WorkUsage,
-    WorkspaceKey,
+    IndexError, IngressRef, MemoryLifetime, OWNED_WORK_PRODUCER, ObjectInstallScope,
+    ObjectNamespaceBinding, ObjectRef, OperationKey, OperationStatus, OwnedWorkAssignment,
+    OwnerMemberBinding, PreparedPublication, ProducerId, ReclaimCandidate, ReclaimDrainPage,
+    ReclaimPermit, ReclaimTarget, ReclaimWorkPage, Refusal, RegisteredObject, RetiringRef,
+    SourceEvent, SourceOperationMode, StreamId, TicketId, UpdateKind, UpdateRequest, ViewRef,
+    WorkAction, WorkActionDigest, WorkBudget, WorkClaim, WorkIntent, WorkScope, WorkStatus,
+    WorkUsage, WorkspaceKey,
 };
 use quanta_index_core::{CoreError, DiagnosticOwnedRenewalRefusalReasonV1};
 use renewal_diagnostic::fence_lost;
@@ -80,7 +91,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::connection::{SqliteCatalog, engine_error};
 
-pub use boot_manifest::{NativeBootManifest, NativeBootSourceRouteRefV1};
+pub use boot_record::{NativeBootManifest, NativeBootSourceRouteRefV1};
 
 /// Only native tables are added here; no competing `SQLite` file or head.
 const SCHEMA: &str = "
@@ -401,6 +412,44 @@ CREATE INDEX IF NOT EXISTS native_object_install_edge_child_idx_v1
     ON native_object_install_edge_v1(child, parent);
 ";
 
+// The original v20 base schema remains readable. The first quarantine
+// operation installs this extension in the same transaction as its semantic
+// stamp; an ordinary v20 root therefore remains readable by the pinned v20
+// offline tool.
+const VIEW_QUARANTINE_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS native_view_source_body_quarantine_v1 (
+    workspace BLOB NOT NULL,
+    epoch INTEGER NOT NULL CHECK(epoch >= 0),
+    sequence INTEGER NOT NULL CHECK(sequence >= 0),
+    identity_digest BLOB NOT NULL CHECK(typeof(identity_digest) = 'blob' AND length(identity_digest) = 32),
+    object BLOB NOT NULL CHECK(typeof(object) = 'blob' AND length(object) = 32),
+    row_digest BLOB NOT NULL CHECK(typeof(row_digest) = 'blob' AND length(row_digest) = 32),
+    PRIMARY KEY(workspace, epoch, sequence),
+    FOREIGN KEY(workspace, epoch, sequence) REFERENCES native_view_v1(workspace, epoch, sequence) ON DELETE CASCADE
+) WITHOUT ROWID;
+";
+const VIEW_QUARANTINE_OBJECTS: &[(&str, &str, &str)] = &[(
+    "table",
+    "native_view_source_body_quarantine_v1",
+    "native view source body quarantine",
+)];
+
+// A body can be shared across views, and a view can contain multiple damaged
+// bodies. Keep the durable incidents independent of the first view receipt.
+const SOURCE_BODY_INCIDENT_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS native_source_body_incident_v1 (
+    object BLOB PRIMARY KEY NOT NULL CHECK(typeof(object) = 'blob' AND length(object) = 32),
+    pending INTEGER NOT NULL CHECK(typeof(pending) = 'integer' AND pending IN (0, 1)),
+    row_digest BLOB NOT NULL CHECK(typeof(row_digest) = 'blob' AND length(row_digest) = 32),
+    FOREIGN KEY(object) REFERENCES native_object_v1(object) ON DELETE CASCADE
+) WITHOUT ROWID;
+";
+const SOURCE_BODY_INCIDENT_OBJECTS: &[(&str, &str, &str)] = &[(
+    "table",
+    "native_source_body_incident_v1",
+    "native Source body incident",
+)];
+
 const READY_PENDING_QUERY: &str = "SELECT work,length(payload),ready_since_ms FROM native_work_v1
     WHERE workspace=?1 AND epoch=?2 AND owner_mode=0 AND status=0 ORDER BY ready_since_ms,work LIMIT ?3";
 const READY_EXPIRED_QUERY: &str = "SELECT work,length(payload),lease_until_ms FROM native_work_v1
@@ -594,7 +643,7 @@ pub(crate) fn initialize(
     connection: &Connection,
     path: &Path,
     native_first_birth: bool,
-) -> Result<(), CoreError> {
+) -> Result<(u8, bool), CoreError> {
     let mut installed = 0usize;
     for (kind, name, _) in SCHEMA_OBJECTS {
         let exists: i64 = connection
@@ -679,7 +728,7 @@ pub(crate) fn initialize(
             "native work clock digest mismatch".into(),
         ));
     }
-    Ok(())
+    capture_format::installed_extensions(connection, path)
 }
 
 fn sql(error: &rusqlite::Error) -> IndexError {
@@ -816,17 +865,83 @@ fn cached_execute<P: rusqlite::Params>(
 }
 
 fn require_object(connection: &Connection, reference: ObjectRef) -> Result<(), IndexError> {
+    require_object_with_budget(connection, reference, None)
+}
+
+enum ObjectReadBudget<'a> {
+    MemoryOnly(&'a WorkBudget),
+    WorkAndMemory(&'a mut WorkBudget),
+}
+
+impl ObjectReadBudget<'_> {
+    fn work(&self) -> &WorkBudget {
+        match self {
+            Self::MemoryOnly(work) => work,
+            Self::WorkAndMemory(work) => work,
+        }
+    }
+}
+
+fn require_object_with_budget(
+    connection: &Connection,
+    reference: ObjectRef,
+    mut budget: Option<ObjectReadBudget<'_>>,
+) -> Result<(), IndexError> {
+    // The registration and the sorted, deduplicated edge keys coexist.
+    // Keep their grant through validation and drop them before refunding it.
+    let mut _root_memory = None;
     let registration = object_install::read_metadata(
         connection,
         reference,
         object_install::MetadataLedger::Registered,
         || IndexError::CorruptObject("registered object metadata shape mismatch".into()),
-        |_bytes| Ok(()),
+        |bytes| {
+            if let Some(budget) = budget.as_mut() {
+                let stored_bytes =
+                    usize::try_from(bytes).map_err(|_| IndexError::ResourceLimited)?;
+                // The callback measures the borrowed payload and its 32-byte digest.
+                // Only exact, bounded child lists are accepted by the decoder.
+                let children = stored_bytes
+                    .saturating_sub(registration_codec::HEADER_BYTES + 32)
+                    .checked_div(32)
+                    .ok_or(IndexError::ResourceLimited)?;
+                let children = children.min(object_install::MAX_CHILDREN);
+                let edge_keys = u64::try_from(children)
+                    .map_err(|_| IndexError::ResourceLimited)?
+                    .checked_mul(32)
+                    .ok_or(IndexError::ResourceLimited)?;
+                let backing = RegisteredObject::allocation_bytes(children)?
+                    .checked_add(edge_keys)
+                    .ok_or(IndexError::ResourceLimited)?;
+                if let ObjectReadBudget::WorkAndMemory(work) = budget {
+                    // Each edge contributes a child key and checksum. Include one
+                    // extra row, which the validator may read to detect surplus.
+                    let scanned_bytes = edge_keys
+                        .checked_mul(2)
+                        .and_then(|edges| edges.checked_add(64))
+                        .and_then(|edges| edges.checked_add(bytes))
+                        .ok_or(IndexError::ResourceLimited)?;
+                    work.charge(WorkUsage {
+                        bytes: scanned_bytes,
+                        ..WorkUsage::default()
+                    })?;
+                }
+                _root_memory = budget
+                    .work()
+                    .reserve_memory(backing, MemoryLifetime::Temporary)?;
+            }
+            Ok(())
+        },
     )?
     .ok_or_else(|| {
         IndexError::CorruptObject("referenced root or child is not registered".into())
     })?;
-    require_registered_edges(connection, reference, &registration)
+    require_registered_edges_with_budget(
+        connection,
+        reference,
+        &registration,
+        budget.as_ref().map(ObjectReadBudget::work),
+    )
 }
 
 /// Complete validation using metadata checked by the current caller.
@@ -837,6 +952,15 @@ fn require_registered_edges(
     connection: &Connection,
     reference: ObjectRef,
     registration: &RegisteredObject,
+) -> Result<(), IndexError> {
+    require_registered_edges_with_budget(connection, reference, registration, None)
+}
+
+fn require_registered_edges_with_budget(
+    connection: &Connection,
+    reference: ObjectRef,
+    registration: &RegisteredObject,
+    budget: Option<&WorkBudget>,
 ) -> Result<(), IndexError> {
     if registration.reference != reference {
         return Err(IndexError::CorruptObject(
@@ -856,6 +980,7 @@ fn require_registered_edges(
         reference,
         &registration.children,
         object_install::EdgeLedger::Registered,
+        budget,
     )
 }
 
@@ -915,11 +1040,12 @@ fn insert_prepared_object(
 fn register_prepared_object(
     connection: &Connection,
     canonical: &RegisteredObject,
-) -> Result<(), IndexError> {
-    if !object_install::registered_matches(connection, canonical)? {
+) -> Result<bool, IndexError> {
+    let newly_registered = !object_install::registered_matches(connection, canonical)?;
+    if newly_registered {
         insert_prepared_object(connection, canonical)?;
     }
-    Ok(())
+    Ok(newly_registered)
 }
 
 fn register(connection: &Connection, objects: &[RegisteredObject]) -> Result<(), IndexError> {
@@ -928,7 +1054,7 @@ fn register(connection: &Connection, objects: &[RegisteredObject]) -> Result<(),
         for child in &canonical.children {
             require_object(connection, *child)?;
         }
-        register_prepared_object(connection, &canonical)?;
+        let _newly_registered = register_prepared_object(connection, &canonical)?;
     }
     Ok(())
 }
@@ -1039,23 +1165,52 @@ impl<'tx, 'conn> RegisteredBatchInTransaction<'tx, 'conn> {
 
 fn register_confirmed_preflighted_children<'tx, 'conn>(
     preflight: managed_install::PreflightedRegistrationChildren<'tx, 'conn>,
-) -> Result<Option<RegisteredBatchInTransaction<'tx, 'conn>>, IndexError> {
+) -> Result<
+    (
+        Option<RegisteredBatchInTransaction<'tx, 'conn>>,
+        ManagedRegistrationBits,
+    ),
+    IndexError,
+> {
     if preflight.is_unique() {
         let registered = RegisteredBatchInTransaction::register(preflight)?;
-        return object_install::transfer_registered_batch(registered).map(Some);
+        let mut newly_registered = [0_u64; 4];
+        for (index, pending) in registered.provisional_at_preflight.iter().enumerate() {
+            if *pending {
+                mark_managed_registration(&mut newly_registered, index)?;
+            }
+        }
+        return object_install::transfer_registered_batch(registered)
+            .map(|registered| (Some(registered), newly_registered));
     }
     // Only managed confirmation creates this proof after its charged child checks.
     // It borrows the actual transaction and exact immutable batch until this
     // immediate consumption; no authentication result is cached across calls.
     let (connection, objects) = preflight.into_parts();
+    let mut newly_registered = [0_u64; 4];
     register_confirmed_using(connection, objects, |connection, objects| {
-        for object in objects {
+        for (index, object) in objects.iter().enumerate() {
             let canonical = object_install::checked_object(object)?;
-            register_prepared_object(connection, &canonical)?;
+            if register_prepared_object(connection, &canonical)? {
+                mark_managed_registration(&mut newly_registered, index)?;
+            }
         }
         Ok(())
     })?;
-    Ok(None)
+    Ok((None, newly_registered))
+}
+
+type ManagedRegistrationBits = [u64; 4];
+
+fn mark_managed_registration(
+    bits: &mut ManagedRegistrationBits,
+    index: usize,
+) -> Result<(), IndexError> {
+    let word = bits
+        .get_mut(index / 64)
+        .ok_or(IndexError::ResourceLimited)?;
+    *word |= 1_u64 << (index % 64);
+    Ok(())
 }
 
 fn reserve(
@@ -1263,8 +1418,20 @@ fn require_intent_with_attempt_key(
 }
 
 fn ensure_roots(connection: &Connection, view: &CatalogView) -> Result<(), IndexError> {
+    ensure_roots_with_budget(connection, view, None)
+}
+
+fn ensure_roots_with_budget(
+    connection: &Connection,
+    view: &CatalogView,
+    budget: Option<&WorkBudget>,
+) -> Result<(), IndexError> {
     for reference in roots(view) {
-        require_object(connection, reference)?;
+        require_object_with_budget(
+            connection,
+            reference,
+            budget.map(ObjectReadBudget::MemoryOnly),
+        )?;
     }
     Ok(())
 }
@@ -1294,69 +1461,116 @@ fn write_view(connection: &Connection, view: &CatalogView) -> Result<(), IndexEr
     Ok(())
 }
 
-fn read_view_row(connection: &Connection, identity: ViewRef) -> Result<CatalogView, IndexError> {
-    let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = connection
-        .query_row(
-            "SELECT identity_digest,payload,row_digest FROM native_view_v1
-         WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
-            params![
-                workspace_key(identity.workspace)?,
-                int(identity.epoch)?,
-                int(identity.sequence)?
-            ],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()
-        .map_err(|error| sql(&error))?;
-    let Some((identity_digest, payload, row_digest)) = row else {
-        return Err(IndexError::SnapshotUnavailable);
-    };
-    check_digest(b"qidx.native.view.v1", &payload, &row_digest)?;
-    let view: CatalogView = decode(&payload)?;
-    if view.identity != identity || identity_digest != identity.digest.0.to_vec() {
-        return Err(IndexError::Storage("native view identity mismatch".into()));
+const MAX_VIEW_PAYLOAD_BYTES: i64 = 4096;
+const MAX_VIEW_ROOTS: usize = 7;
+const VIEW_ROOT_QUERY_LIMIT: i64 = MAX_VIEW_ROOTS as i64 + 1;
+
+fn view_blob<'a>(
+    row: &'a rusqlite::Row<'_>,
+    column: usize,
+    min: usize,
+    max: usize,
+    error: &'static str,
+) -> Result<&'a [u8], IndexError> {
+    match row.get_ref(column).map_err(|cause| sql(&cause))? {
+        rusqlite::types::ValueRef::Blob(bytes) if (min..=max).contains(&bytes.len()) => Ok(bytes),
+        _ => Err(IndexError::Storage(error.into())),
     }
-    validate_view_identity(&view).map_err(|error| IndexError::Storage(error.to_string()))?;
-    let workspace = workspace_key(identity.workspace)?;
+}
+
+fn decode_view_payload(row: &rusqlite::Row<'_>, offset: usize) -> Result<CatalogView, IndexError> {
+    let payload = view_blob(
+        row,
+        offset,
+        1,
+        usize::try_from(MAX_VIEW_PAYLOAD_BYTES).map_err(|_| IndexError::ResourceLimited)?,
+        "native view payload shape mismatch",
+    )?;
+    let row_digest = view_blob(row, offset + 1, 32, 32, "native view digest shape mismatch")?;
+    check_digest(b"qidx.native.view.v1", payload, row_digest)?;
+    decode(payload)
+}
+
+fn read_view_row(connection: &Connection, identity: ViewRef) -> Result<CatalogView, IndexError> {
+    read_view_row_by_key(connection, identity, &workspace_key(identity.workspace)?)
+}
+
+fn read_view_row_by_key(
+    connection: &Connection,
+    identity: ViewRef,
+    workspace_blob: &[u8],
+) -> Result<CatalogView, IndexError> {
+    let epoch = int(identity.epoch)?;
+    let sequence = int(identity.sequence)?;
+    let view = {
+        let mut statement = connection.prepare_cached(
+            "SELECT CASE WHEN typeof(identity_digest)='blob' AND length(identity_digest)=32 THEN identity_digest END,
+                    CASE WHEN typeof(payload)='blob' AND length(payload) BETWEEN 1 AND ?4 THEN payload END,
+                    CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN row_digest END
+             FROM native_view_v1 WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
+        ).map_err(|error| sql(&error))?;
+        let mut rows = statement
+            .query(params![
+                workspace_blob,
+                epoch,
+                sequence,
+                MAX_VIEW_PAYLOAD_BYTES
+            ])
+            .map_err(|error| sql(&error))?;
+        let row = rows
+            .next()
+            .map_err(|error| sql(&error))?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        let view = decode_view_payload(row, 1)?;
+        let identity_digest = view_blob(row, 0, 32, 32, "native view identity mismatch")?;
+        if view.identity != identity || identity_digest != identity.digest.0 {
+            return Err(IndexError::Storage("native view identity mismatch".into()));
+        }
+        validate_view_identity(&view).map_err(|error| IndexError::Storage(error.to_string()))?;
+        view
+    };
+    let expected = distinct_roots(&view);
     let mut statement = connection
-        .prepare(
-            "SELECT object,row_digest FROM native_view_root_v1
-         WHERE workspace=?1 AND epoch=?2 AND sequence=?3 ORDER BY object",
+        .prepare_cached(
+            "SELECT CASE WHEN typeof(object)='blob' AND length(object)=32 THEN object END,
+                CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN row_digest END
+         FROM native_view_root_v1 WHERE workspace=?1 AND epoch=?2 AND sequence=?3
+         ORDER BY object LIMIT ?4",
         )
         .map_err(|error| sql(&error))?;
-    let rows = statement
-        .query_map(
-            params![&workspace, int(identity.epoch)?, int(identity.sequence)?],
-            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
-        )
+    let mut rows = statement
+        .query(params![
+            workspace_blob,
+            epoch,
+            sequence,
+            VIEW_ROOT_QUERY_LIMIT
+        ])
         .map_err(|error| sql(&error))?;
-    let rows = rows
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| sql(&error))?;
-    let mut actual = Vec::with_capacity(rows.len());
-    for (object, row_digest) in rows {
+    let mut seen = 0;
+    while let Some(row) = rows.next().map_err(|error| sql(&error))? {
+        let object = view_blob(row, 0, 32, 32, "native view root shape mismatch")?;
+        let row_digest = view_blob(row, 1, 32, 32, "native view root shape mismatch")?;
         if row_digest
             != fields_digest(
                 b"qidx.native.viewroot.v1",
-                &(
-                    &workspace,
-                    int(identity.epoch)?,
-                    int(identity.sequence)?,
-                    &object,
-                ),
+                &(workspace_blob, epoch, sequence, object),
             )?
         {
             return Err(IndexError::Storage(
                 "native view root digest mismatch".into(),
             ));
         }
-        actual.push(object);
+        if expected
+            .get(seen)
+            .is_none_or(|reference| object != reference.0.0)
+        {
+            return Err(IndexError::Storage(
+                "native view root ledger mismatch".into(),
+            ));
+        }
+        seen += 1;
     }
-    let expected = distinct_roots(&view)
-        .into_iter()
-        .map(object_key)
-        .collect::<Vec<_>>();
-    if actual != expected {
+    if seen != expected.len() {
         return Err(IndexError::Storage(
             "native view root ledger mismatch".into(),
         ));
@@ -1368,28 +1582,41 @@ fn current_view(
     connection: &Connection,
     workspace: WorkspaceKey,
 ) -> Result<Option<CatalogView>, IndexError> {
-    let row: Option<(i64, i64, Vec<u8>, Vec<u8>)> = connection
-        .query_row(
-            "SELECT epoch,sequence,payload,row_digest FROM native_workspace_v1 WHERE workspace=?1",
-            params![workspace_key(workspace)?],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .optional()
-        .map_err(|error| sql(&error))?;
-    let Some((epoch, sequence, payload, row_digest)) = row else {
-        return Ok(None);
+    current_view_by_key(connection, workspace, &workspace_key(workspace)?)
+}
+
+fn current_view_by_key(
+    connection: &Connection,
+    workspace: WorkspaceKey,
+    workspace_blob: &[u8],
+) -> Result<Option<CatalogView>, IndexError> {
+    let view = {
+        let mut statement = connection.prepare_cached(
+            "SELECT epoch,sequence,
+                    CASE WHEN typeof(payload)='blob' AND length(payload) BETWEEN 1 AND ?2 THEN payload END,
+                    CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN row_digest END
+             FROM native_workspace_v1 WHERE workspace=?1",
+        ).map_err(|error| sql(&error))?;
+        let mut rows = statement
+            .query(params![workspace_blob, MAX_VIEW_PAYLOAD_BYTES])
+            .map_err(|error| sql(&error))?;
+        let Some(row) = rows.next().map_err(|error| sql(&error))? else {
+            return Ok(None);
+        };
+        let view = decode_view_payload(row, 2)?;
+        let epoch = uint(row.get(0).map_err(|error| sql(&error))?)?;
+        let sequence = uint(row.get(1).map_err(|error| sql(&error))?)?;
+        if view.identity.workspace != workspace
+            || view.identity.epoch != epoch
+            || view.identity.sequence != sequence
+        {
+            return Err(IndexError::Storage(
+                "native current view key mismatch".into(),
+            ));
+        }
+        view
     };
-    check_digest(b"qidx.native.view.v1", &payload, &row_digest)?;
-    let view: CatalogView = decode(&payload)?;
-    if view.identity.workspace != workspace
-        || view.identity.epoch != uint(epoch)?
-        || view.identity.sequence != uint(sequence)?
-    {
-        return Err(IndexError::Storage(
-            "native current view key mismatch".into(),
-        ));
-    }
-    let historical = read_view_row(connection, view.identity)?;
+    let historical = read_view_row_by_key(connection, view.identity, workspace_blob)?;
     if historical != view {
         return Err(IndexError::Storage(
             "native current and history differ".into(),
@@ -1398,21 +1625,18 @@ fn current_view(
     Ok(Some(view))
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OperationRow {
     immutable: ImmutableOperation,
     events: Vec<SourceEvent>,
     fence: u64,
     status: OperationStatus,
+    #[serde(deserialize_with = "serde::Deserialize::deserialize")]
     published_view: Option<CatalogView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    projection_replay: Option<ProjectionReplayStamp>,
 }
-quanta_index_contract::native_serde_struct!(OperationRow {
-    immutable: ImmutableOperation,
-    events: Vec<SourceEvent>,
-    fence: u64,
-    status: OperationStatus,
-    published_view: Option<CatalogView>,
-});
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WorkRow {
@@ -1630,7 +1854,13 @@ fn bounded_work_blob(
 
 fn read_work(connection: &Connection, intent: &WorkIntent) -> Result<Option<WorkRow>, IndexError> {
     let key = work_key(intent)?;
-    read_work_by_key(connection, &key, Some(intent))
+    read_work_by_key(connection, &key, WorkLookup::Intent(intent))
+}
+
+enum WorkLookup<'a> {
+    Intent(&'a WorkIntent),
+    ReadyKey,
+    ExactKey,
 }
 
 // Owned ready discovery starts from a bounded key scan. Healthy rows share
@@ -1640,14 +1870,18 @@ fn read_work_by_ready_key(
     connection: &Connection,
     key: &[u8],
 ) -> Result<Option<WorkRow>, IndexError> {
-    read_work_by_key(connection, key, None)
+    read_work_by_key(connection, key, WorkLookup::ReadyKey)
 }
 
 fn read_work_by_key(
     connection: &Connection,
     key: &[u8],
-    expected_intent: Option<&WorkIntent>,
+    lookup: WorkLookup<'_>,
 ) -> Result<Option<WorkRow>, IndexError> {
+    let expected_intent = match lookup {
+        WorkLookup::Intent(intent) => Some(intent),
+        WorkLookup::ReadyKey | WorkLookup::ExactKey => None,
+    };
     let (selected, decoded) = {
         let mut statement = connection
             .prepare_cached(
@@ -1671,7 +1905,8 @@ fn read_work_by_key(
         } else {
             None
         };
-        if let Some((decoded, _, _)) = &prechecked
+        if matches!(lookup, WorkLookup::ReadyKey)
+            && let Some((decoded, _, _)) = &prechecked
             && work_key(&decoded.intent)? != key
         {
             // The old ready path looked up the decoded identity. Keep its
@@ -2281,8 +2516,10 @@ fn claim_events(
     connection: &Connection,
     key: OperationKey,
     events: &[SourceEvent],
+    projection_replay: Option<ProjectionReplayStamp>,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
+    let native_dsl_projection = key.producer == NATIVE_DSL_PRODUCER_V1 && projection_replay.is_some();
     let mut unique = std::collections::BTreeSet::new();
     for event in events {
         budget.checkpoint()?;
@@ -2319,10 +2556,16 @@ fn claim_events(
                 true,
             )?,
             Some(mut prior) => {
-                if prior.event.predecessor != event.predecessor
-                    || prior.event.payload != event.payload
-                {
+                if prior.event.predecessor != event.predecessor {
                     return Err(IndexError::DigestConflict);
+                }
+                if prior.event.payload != event.payload {
+                    if !native_dsl_projection
+                        || !refused_native_dsl_claim_can_rebind(connection, prior, budget)?
+                    {
+                        return Err(IndexError::DigestConflict);
+                    }
+                    prior.event = *event;
                 }
                 match prior.state {
                     EventClaimState::Pending if prior.operation != key => {
@@ -2339,6 +2582,27 @@ fn claim_events(
         }
     }
     Ok(())
+}
+
+fn refused_native_dsl_claim_can_rebind(
+    connection: &Connection,
+    prior: EventClaim,
+    budget: &mut WorkBudget,
+) -> Result<bool, IndexError> {
+    if prior.state != EventClaimState::Refused || prior.operation.producer != NATIVE_DSL_PRODUCER_V1
+    {
+        return Ok(false);
+    }
+    // A refused projection does not advance its frontier. The prior operation
+    // row remains immutable while the next operation claims that event slot.
+    publication_result::project_operation_metadata(connection, prior.operation, budget, |row| {
+        Ok(row.is_some_and(|row| {
+            matches!(row.status, OperationStatus::Refused(_))
+                && row.immutable.source_mode == SourceOperationMode::Unchanged
+                && row.projection_replay.is_some()
+                && row.events.contains(&prior.event)
+        }))
+    })
 }
 
 fn operation_claims(
@@ -2453,6 +2717,14 @@ fn read_operation(
     connection: &Connection,
     key: OperationKey,
 ) -> Result<Option<OperationRow>, IndexError> {
+    read_operation_with_budget(connection, key, None)
+}
+
+fn read_operation_with_budget(
+    connection: &Connection,
+    key: OperationKey,
+    budget: Option<&mut WorkBudget>,
+) -> Result<Option<OperationRow>, IndexError> {
     let row: Option<OperationSqlRow> = connection
         .query_row(
             "SELECT workspace,epoch,payload,row_digest FROM native_operation_v1 WHERE operation=?1",
@@ -2464,7 +2736,16 @@ fn read_operation(
     let Some((workspace, epoch, payload, row_digest)) = row else {
         return Ok(None);
     };
-    decode_stored_operation(connection, key, &workspace, epoch, &payload, &row_digest).map(Some)
+    decode_stored_operation(
+        connection,
+        key,
+        &workspace,
+        epoch,
+        &payload,
+        &row_digest,
+        budget,
+    )
+    .map(Some)
 }
 
 fn decode_stored_operation(
@@ -2474,6 +2755,7 @@ fn decode_stored_operation(
     epoch: i64,
     payload: &[u8],
     row_digest: &[u8],
+    mut budget: Option<&mut WorkBudget>,
 ) -> Result<OperationRow, IndexError> {
     check_digest(b"qidx.native.operation.v1", payload, row_digest)?;
     let operation: OperationRow = decode(payload)?;
@@ -2485,7 +2767,18 @@ fn decode_stored_operation(
     }
     publication_result::validate_operation_result(&operation)?;
     if matches!(operation.status, OperationStatus::Pending(_)) {
-        require_object(connection, operation.immutable.request)?;
+        if let Some(work) = budget.as_mut() {
+            // Registration, its edge ledger, and the operation custody index.
+            work.charge(WorkUsage {
+                reads: 3,
+                ..WorkUsage::default()
+            })?;
+        }
+        require_object_with_budget(
+            connection,
+            operation.immutable.request,
+            budget.map(ObjectReadBudget::WorkAndMemory),
+        )?;
         let operation_id = operation_key(key)?;
         let request_id = object_key(operation.immutable.request);
         if !has_operation_object_custody(connection, &operation_id, &request_id)? {
@@ -3000,40 +3293,52 @@ fn begin(connection: &mut Connection) -> Result<rusqlite::Transaction<'_>, Index
         .map_err(|error| sql(&error))
 }
 
+fn open_ingress_transaction(
+    catalog: &SqliteCatalog,
+    operation: OperationKey,
+    existing_only: bool,
+) -> Result<Option<IngressRef>, IndexError> {
+    let mut guard = catalog
+        .lock()
+        .map_err(|error| IndexError::Storage(error.to_string()))?;
+    let tx = begin(&mut guard)?;
+    if operation.producer == OWNED_WORK_PRODUCER {
+        let now = catalog_now_ms(&tx, catalog.clock.now_unix_ms())?;
+        owned_work::validate_reserved_key(&tx, operation, now)?;
+    }
+    if read_operation(&tx, operation)?.is_some() {
+        return Err(IndexError::Conflict);
+    }
+    let current = current_view(&tx, operation.workspace)?.ok_or(IndexError::SnapshotUnavailable)?;
+    if current.identity.epoch != operation.epoch {
+        return Err(IndexError::Conflict);
+    }
+    let prior = read_ingress(&tx, operation)?;
+    if existing_only && prior.is_none() {
+        return Ok(None);
+    }
+    let stage = IngressRef {
+        operation,
+        fence: next_fence(&tx)?,
+    };
+    write_ingress(
+        &tx,
+        IngressRow {
+            stage,
+            sealed: prior.and_then(|row| row.sealed),
+        },
+        prior.is_none(),
+    )?;
+    tx.commit().map_err(|error| sql(&error))?;
+    drop(guard);
+    Ok(Some(stage))
+}
+
 impl InputStagingPort for SqliteCatalog {
     fn open_ingress(&self, operation: OperationKey) -> Result<IngressRef, IndexError> {
-        let mut guard = self
-            .lock()
-            .map_err(|error| IndexError::Storage(error.to_string()))?;
-        let tx = begin(&mut guard)?;
-        if operation.producer == OWNED_WORK_PRODUCER {
-            let now = catalog_now_ms(&tx, self.clock.now_unix_ms())?;
-            owned_work::validate_reserved_key(&tx, operation, now)?;
-        }
-        if read_operation(&tx, operation)?.is_some() {
-            return Err(IndexError::Conflict);
-        }
-        let current =
-            current_view(&tx, operation.workspace)?.ok_or(IndexError::SnapshotUnavailable)?;
-        if current.identity.epoch != operation.epoch {
-            return Err(IndexError::Conflict);
-        }
-        let prior = read_ingress(&tx, operation)?;
-        let stage = IngressRef {
-            operation,
-            fence: next_fence(&tx)?,
-        };
-        write_ingress(
-            &tx,
-            IngressRow {
-                stage,
-                sealed: prior.and_then(|row| row.sealed),
-            },
-            prior.is_none(),
-        )?;
-        tx.commit().map_err(|error| sql(&error))?;
-        drop(guard);
-        Ok(stage)
+        open_ingress_transaction(self, operation, false)?.ok_or_else(|| {
+            IndexError::BackendViolation("new ingress transaction returned no stage".into())
+        })
     }
 
     fn adopt_registered_inputs(
@@ -3146,6 +3451,26 @@ impl InputStagingPort for SqliteCatalog {
         Ok(())
     }
 
+    fn persist_source_stage_replay_receipt_v1(
+        &self,
+        receipt: quanta_index_contract::native_protocol::SourceStageReplayReceiptV1,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        source_stage_replay_receipt::persist(self, receipt, budget)
+    }
+
+    fn read_source_stage_replay_receipt_v1(
+        &self,
+        operation: OperationKey,
+        correlation: quanta_index_core::index::Digest,
+        budget: &mut WorkBudget,
+    ) -> Result<
+        Option<quanta_index_contract::native_protocol::SourceStageReplayReceiptV1>,
+        IndexError,
+    > {
+        source_stage_replay_receipt::read(self, operation, correlation, budget)
+    }
+
     fn discard_inputs(
         &self,
         ingress: IngressRef,
@@ -3163,6 +3488,109 @@ impl InputStagingPort for SqliteCatalog {
 }
 
 impl SqliteCatalog {
+    /// Re-fence only a staged Source operation that still owns its confirmed
+    /// mutation root. An absent ingress cannot become a new stage here.
+    pub fn reopen_source_stage_ingress_v1(
+        &self,
+        operation: OperationKey,
+        root: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<IngressRef, IndexError> {
+        if operation.producer == OWNED_WORK_PRODUCER {
+            return Err(IndexError::InvalidInput(
+                "reserved owned work producer".into(),
+            ));
+        }
+        let _read_memory = budget.reserve_memory(8192, MemoryLifetime::Temporary)?;
+        budget.charge(WorkUsage {
+            reads: 5,
+            writes: 1,
+            bytes: 1024,
+            ..WorkUsage::default()
+        })?;
+        let mut guard = self.lock_native_budget(budget)?;
+        let tx = begin(&mut guard)?;
+        let operation_blob = operation_key(operation)?;
+        let admitted: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_operation_v1 WHERE operation=?1)",
+                params![&operation_blob],
+                |row| row.get(0),
+            )
+            .map_err(|error| sql(&error))?;
+        if admitted {
+            return Err(IndexError::Conflict);
+        }
+        let current =
+            current_view(&tx, operation.workspace)?.ok_or(IndexError::SnapshotUnavailable)?;
+        if current.identity.epoch != operation.epoch {
+            return Err(IndexError::FenceLost);
+        }
+        let ingress_size: Option<(Option<i64>, Option<i64>)> = tx.query_row(
+            "SELECT CASE WHEN typeof(payload)='blob' AND length(payload) BETWEEN 1 AND 4096 THEN length(payload) END,
+                    CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN length(row_digest) END
+             FROM native_ingress_v1 WHERE operation=?1",
+            params![&operation_blob],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().map_err(|error| sql(&error))?;
+        let Some((Some(payload_len), Some(32))) = ingress_size else {
+            return if ingress_size.is_none() {
+                Err(IndexError::FenceLost)
+            } else {
+                Err(IndexError::Storage(
+                    "Source stage ingress shape invalid".into(),
+                ))
+            };
+        };
+        budget.charge(WorkUsage {
+            reads: 1,
+            bytes: u64::try_from(payload_len)
+                .map_err(|_| IndexError::ResourceLimited)?
+                .checked_add(32)
+                .ok_or(IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        let prior = read_ingress(&tx, operation)?.ok_or(IndexError::FenceLost)?;
+        if prior.sealed.is_some() {
+            return Err(IndexError::Conflict);
+        }
+        budget.charge(WorkUsage {
+            reads: 2,
+            bytes: 128,
+            ..WorkUsage::default()
+        })?;
+        if !confirmed_ingress_object(&tx, operation, root)? {
+            return Err(IndexError::InvalidInput(
+                "Source stage root is not confirmed by its ingress".into(),
+            ));
+        }
+        let stage = IngressRef {
+            operation,
+            fence: next_fence(&tx)?,
+        };
+        write_ingress(
+            &tx,
+            IngressRow {
+                stage,
+                sealed: None,
+            },
+            false,
+        )?;
+        budget.checkpoint()?;
+        tx.commit().map_err(|error| sql(&error))?;
+        Ok(stage)
+    }
+
+    /// Atomically rotates an existing ingress fence without creating a new
+    /// stage. Admission layers can distinguish a response-loss retry from new
+    /// work without a check-then-create race.
+    pub fn reopen_ingress_if_present(
+        &self,
+        operation: OperationKey,
+    ) -> Result<Option<IngressRef>, IndexError> {
+        open_ingress_transaction(self, operation, true)
+    }
+
     fn admit_common(
         &self,
         immutable: ImmutableOperation,
@@ -3171,8 +3599,29 @@ impl SqliteCatalog {
         owned: Option<&UpdateRequest>,
         budget: &mut WorkBudget,
     ) -> Result<AdmissionOutcome, IndexError> {
+        self.admit_with_projection_replay(immutable, ingress, events, owned, None, budget)
+    }
+
+    fn admit_with_projection_replay(
+        &self,
+        immutable: ImmutableOperation,
+        ingress: IngressRef,
+        events: &[SourceEvent],
+        owned: Option<&UpdateRequest>,
+        projection_replay: Option<ProjectionReplayStamp>,
+        budget: &mut WorkBudget,
+    ) -> Result<AdmissionOutcome, IndexError> {
         let mut guard = self.lock_native_budget(budget)?;
         let tx = begin(&mut guard)?;
+        if projection_replay.is_some_and(|replay| {
+            replay.expected_view.workspace != immutable.key.workspace
+                || replay.expected_view.epoch != immutable.key.epoch
+                || immutable.source_mode != SourceOperationMode::Unchanged
+        }) {
+            return Err(IndexError::InvalidInput(
+                "projection replay stamp has a foreign base".into(),
+            ));
+        }
         match owned {
             Some(request) => {
                 if immutable.key.producer != OWNED_WORK_PRODUCER
@@ -3195,7 +3644,10 @@ impl SqliteCatalog {
             None => {}
         }
         if let Some(existing) = read_operation(&tx, immutable.key)? {
-            if existing.immutable != immutable || existing.events != events {
+            if existing.immutable != immutable
+                || existing.events != events
+                || existing.projection_replay != projection_replay
+            {
                 return Err(IndexError::DigestConflict);
             }
             return Ok(AdmissionOutcome::Existing(existing.status));
@@ -3236,11 +3688,12 @@ impl SqliteCatalog {
                 fence,
                 status: OperationStatus::Pending(attempt),
                 published_view: None,
+                projection_replay,
             },
             true,
         )?;
         transfer_ingress_objects(&tx, immutable.key, budget)?;
-        claim_events(&tx, immutable.key, events, budget)?;
+        claim_events(&tx, immutable.key, events, projection_replay, budget)?;
         delete_ingress(&tx, immutable.key, budget)?;
         budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
@@ -3258,6 +3711,29 @@ impl OperationJournalPort for SqliteCatalog {
         budget: &mut WorkBudget,
     ) -> Result<AdmissionOutcome, IndexError> {
         self.admit_common(immutable, ingress, events, None, budget)
+    }
+
+    fn admit_projection(
+        &self,
+        immutable: ImmutableOperation,
+        ingress: IngressRef,
+        events: &[SourceEvent],
+        replay: ProjectionReplayStamp,
+        budget: &mut WorkBudget,
+    ) -> Result<AdmissionOutcome, IndexError> {
+        self.admit_with_projection_replay(immutable, ingress, events, None, Some(replay), budget)
+    }
+
+    fn projection_replay(
+        &self,
+        key: OperationKey,
+        budget: &mut WorkBudget,
+    ) -> Result<(OperationStatus, Option<ProjectionReplayStamp>), IndexError> {
+        publication_result::with_operation_metadata(self, key, budget, |row| {
+            Ok(row.map_or((OperationStatus::Unknown, None), |row| {
+                (row.status, row.projection_replay)
+            }))
+        })
     }
 
     fn admit_owned(
@@ -3646,8 +4122,9 @@ impl WorkClaimPort for SqliteCatalog {
         session: &dyn quanta_index_core::index::ReadSessionLease,
         request: &UpdateRequest,
         lease: Duration,
+        budget: &WorkBudget,
     ) -> Result<quanta_index_core::index::TicketRecord, IndexError> {
-        self.acquire_materialization_ticket_impl(session, request, lease)
+        self.acquire_materialization_ticket_impl(session, request, lease, budget)
     }
 
     fn prepared_work(&self, claim: &WorkClaim) -> Result<Option<OwnerMemberBinding>, IndexError> {
@@ -3702,6 +4179,92 @@ impl WorkClaimPort for SqliteCatalog {
     }
 }
 
+fn read_event_frontier(
+    connection: &Connection,
+    workspace: &[u8],
+    producer: ProducerId,
+    stream: StreamId,
+) -> Result<Option<(i64, i64)>, IndexError> {
+    let prior = connection
+        .query_row(
+            "SELECT stream_epoch,sequence,row_digest FROM native_frontier_v1
+             WHERE workspace=?1 AND producer=?2 AND stream=?3",
+            params![workspace, producer.0.as_slice(), stream.0.as_slice()],
+            |row| {
+                let digest = row.get_ref(2)?.as_blob()?;
+                let digest = <[u8; 32]>::try_from(digest).map_err(|_| {
+                    rusqlite::Error::InvalidColumnType(
+                        2,
+                        "row_digest".into(),
+                        rusqlite::types::Type::Blob,
+                    )
+                })?;
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, digest))
+            },
+        )
+        .optional()
+        .map_err(|error| sql(&error))?;
+    let Some((epoch, sequence, row_digest)) = prior else {
+        return Ok(None);
+    };
+    if row_digest.as_slice()
+        != fields_digest(
+            b"qidx.native.frontier.v1",
+            &(
+                workspace,
+                producer.0.as_slice(),
+                stream.0.as_slice(),
+                epoch,
+                sequence,
+            ),
+        )?
+        .as_slice()
+    {
+        return Err(IndexError::Storage(
+            "native frontier digest mismatch".into(),
+        ));
+    }
+    Ok(Some((epoch, sequence)))
+}
+
+impl SqliteCatalog {
+    /// Read the published cursor from the same SQLite snapshot as the exact
+    /// current view. An old retained view cannot be paired with a new cursor.
+    pub fn observe_native_event_frontier_v1(
+        &self,
+        expected: ViewRef,
+        producer: ProducerId,
+        stream: StreamId,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<(u64, u64)>, IndexError> {
+        const REQUEST_BYTES: u64 = 16 * 1024;
+        budget.charge(WorkUsage {
+            reads: 4,
+            bytes: REQUEST_BYTES,
+            ..WorkUsage::default()
+        })?;
+        let _scratch = budget.reserve_memory(REQUEST_BYTES, MemoryLifetime::Temporary)?;
+        let mut connection = self.lock_native_budget(budget)?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(|error| sql(&error))?;
+        let workspace = workspace_key(expected.workspace)?;
+        let current = current_view_by_key(&tx, expected.workspace, &workspace)?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        if current.identity != expected {
+            return Err(IndexError::Conflict);
+        }
+        let frontier = read_event_frontier(&tx, &workspace, producer, stream)?
+            .map(|(epoch, sequence)| -> Result<_, IndexError> {
+                Ok((uint(epoch)?, uint(sequence)?))
+            })
+            .transpose()?;
+        budget.checkpoint()?;
+        tx.commit().map_err(|error| sql(&error))?;
+        Ok(frontier)
+    }
+}
+
 fn install_frontiers(
     connection: &Connection,
     workspace: WorkspaceKey,
@@ -3710,59 +4273,13 @@ fn install_frontiers(
 ) -> Result<(), IndexError> {
     let workspace = workspace_key(workspace)?;
     for event in events {
-        let prior: Option<(i64, i64, Vec<u8>)> = connection
-            .query_row(
-                "SELECT stream_epoch,sequence,row_digest FROM native_frontier_v1
-             WHERE workspace=?1 AND producer=?2 AND stream=?3",
-                params![
-                    &workspace,
-                    event.producer.0.to_vec(),
-                    event.stream.0.to_vec()
-                ],
-                |row| {
-                    let value = row.get_ref(2)?;
-                    let rusqlite::types::ValueRef::Blob(digest) = value else {
-                        return Err(rusqlite::Error::InvalidColumnType(
-                            2,
-                            "row_digest".into(),
-                            value.data_type(),
-                        ));
-                    };
-                    if digest.len() != 32 {
-                        return Err(rusqlite::Error::InvalidColumnType(
-                            2,
-                            "row_digest".into(),
-                            rusqlite::types::Type::Blob,
-                        ));
-                    }
-                    Ok((row.get(0)?, row.get(1)?, digest.to_vec()))
-                },
-            )
-            .optional()
-            .map_err(|error| sql(&error))?;
-        if let Some((epoch, sequence, row_digest)) = prior.as_ref()
-            && *row_digest
-                != fields_digest(
-                    b"qidx.native.frontier.v1",
-                    &(
-                        &workspace,
-                        event.producer.0.to_vec(),
-                        event.stream.0.to_vec(),
-                        *epoch,
-                        *sequence,
-                    ),
-                )?
-        {
-            return Err(IndexError::Storage(
-                "native frontier digest mismatch".into(),
-            ));
-        }
+        let prior = read_event_frontier(connection, &workspace, event.producer, event.stream)?;
         match prior {
-            Some((epoch, sequence, _))
+            Some((epoch, sequence))
                 if !matches!(mode, SourceOperationMode::Resync { .. })
                     && uint(epoch)? == event.stream_epoch
                     && uint(sequence)? == event.predecessor => {}
-            Some((epoch, _, _))
+            Some((epoch, _))
                 if !matches!(mode, SourceOperationMode::Unchanged)
                     && uint(epoch)? < event.stream_epoch
                     && event.predecessor == 0
@@ -3866,7 +4383,8 @@ impl CatalogPublicationPort for SqliteCatalog {
         let mut guard = self.lock_native_budget(budget)?;
         let tx = begin(&mut guard)?;
         let mut row = check_attempt(&tx, publication.attempt)?;
-        let current = current_view(&tx, publication.expected.workspace)?
+        let workspace = workspace_key(publication.expected.workspace)?;
+        let current = current_view_by_key(&tx, publication.expected.workspace, &workspace)?
             .ok_or(IndexError::SnapshotUnavailable)?;
         if current.identity != publication.expected {
             return Err(IndexError::Conflict);
@@ -3940,6 +4458,16 @@ impl CatalogPublicationPort for SqliteCatalog {
             ));
         }
         ensure_roots(&tx, next)?;
+        // Recheck after preparation, inside the transaction that would publish
+        // the successor. A scrub may have fenced its base or a new dependency.
+        view_quarantine::refuse_published_dependencies(
+            self,
+            &tx,
+            current.identity,
+            &workspace,
+            next,
+            budget,
+        )?;
         source_authority::commit(
             &tx,
             publication.attempt.operation,
@@ -3966,7 +4494,7 @@ impl CatalogPublicationPort for SqliteCatalog {
                 "UPDATE native_workspace_v1 SET sequence=?2,payload=?3,row_digest=?4
              WHERE workspace=?1 AND epoch=?5 AND sequence=?6",
                 params![
-                    workspace_key(current.identity.workspace)?,
+                    &workspace,
                     int(next.identity.sequence)?,
                     &payload,
                     digest(b"qidx.native.view.v1", &payload).to_vec(),
@@ -4152,6 +4680,7 @@ impl CatalogPublicationPort for SqliteCatalog {
             bytes: 2048,
         })?;
         write_operation(&tx, &row, false)?;
+        budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
         drop(guard);
         Ok(row.status)
@@ -4453,8 +4982,8 @@ mod tests {
 
     mod checked_registration;
     mod confirmation_shadows;
-    mod offline_protected_routes;
     mod offline_protected_native_snapshot;
+    mod offline_protected_routes;
     mod offline_rollback;
     mod offline_source_quiescence;
     mod operation_ref_storage;
@@ -4757,6 +5286,382 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM native_pin_v1", [], |row| row.get(0))?)
     }
 
+    fn view_scratch_refusal_budget() -> WorkBudget {
+        use quanta_index_core::index::{MemoryLease, MemoryLifetime, MemoryScope, MemoryScopePort};
+
+        struct RefuseScratch;
+        impl MemoryScopePort for RefuseScratch {
+            fn reserve(&self, _: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+                Err(IndexError::ResourceLimited)
+            }
+        }
+        let mut budget = admission_budget();
+        budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(RefuseScratch))));
+        budget
+    }
+
+    struct TicketScratchCounters {
+        reservations: AtomicU64,
+        live_bytes: AtomicU64,
+        refused_while_live: AtomicBool,
+    }
+
+    impl quanta_index_core::index::MemoryLeaseOwner for TicketScratchCounters {
+        fn release(&self, bytes: u64) {
+            let _previous = self.live_bytes.fetch_sub(bytes, Ordering::SeqCst);
+        }
+    }
+
+    struct RefuseTicketRootScratch {
+        counters: Arc<TicketScratchCounters>,
+        admitted_grants: u64,
+    }
+
+    impl quanta_index_core::index::MemoryScopePort for RefuseTicketRootScratch {
+        fn reserve(
+            &self,
+            bytes: u64,
+            lifetime: quanta_index_core::index::MemoryLifetime,
+        ) -> Result<quanta_index_core::index::MemoryLease, IndexError> {
+            use quanta_index_core::index::{MemoryLease, MemoryLifetime};
+
+            if lifetime != MemoryLifetime::Temporary {
+                return Err(IndexError::BackendViolation(
+                    "ticket scratch was not temporary".into(),
+                ));
+            }
+            if self.counters.reservations.fetch_add(1, Ordering::SeqCst) >= self.admitted_grants {
+                self.counters.refused_while_live.store(
+                    self.counters.live_bytes.load(Ordering::SeqCst) > 0,
+                    Ordering::SeqCst,
+                );
+                return Err(IndexError::ResourceLimited);
+            }
+            let _previous = self.counters.live_bytes.fetch_add(bytes, Ordering::SeqCst);
+            Ok(MemoryLease::new(bytes, self.counters.clone()))
+        }
+    }
+
+    fn root_scratch_refusal_budget() -> (WorkBudget, Arc<TicketScratchCounters>) {
+        scratch_refusal_after(1)
+    }
+
+    fn scratch_refusal_after(admitted_grants: u64) -> (WorkBudget, Arc<TicketScratchCounters>) {
+        use quanta_index_core::index::MemoryScope;
+
+        let counters = Arc::new(TicketScratchCounters {
+            reservations: AtomicU64::new(0),
+            live_bytes: AtomicU64::new(0),
+            refused_while_live: AtomicBool::new(false),
+        });
+        let scope = Arc::new(RefuseTicketRootScratch {
+            counters: counters.clone(),
+            admitted_grants,
+        });
+        let mut budget = admission_budget();
+        budget.bind_memory_scope(Some(MemoryScope::new(scope)));
+        (budget, counters)
+    }
+
+    thread_local! {
+        // Live scratch bytes, observed seals, and whether every seal held scratch.
+        static TICKET_SEAL_TRACE: std::cell::Cell<(u64, u64, bool)> = const {
+            std::cell::Cell::new((0, 0, true))
+        };
+    }
+
+    struct TicketSealMemory;
+
+    impl quanta_index_core::index::MemoryLeaseOwner for TicketSealMemory {
+        fn release(&self, bytes: u64) {
+            TICKET_SEAL_TRACE.with(|state| {
+                let (live, seals, held) = state.get();
+                let remaining = live.checked_sub(bytes);
+                state.set((
+                    remaining.unwrap_or_default(),
+                    seals,
+                    held && remaining.is_some(),
+                ));
+            });
+        }
+    }
+
+    impl quanta_index_core::index::MemoryScopePort for TicketSealMemory {
+        fn reserve(
+            &self,
+            bytes: u64,
+            lifetime: quanta_index_core::index::MemoryLifetime,
+        ) -> Result<quanta_index_core::index::MemoryLease, IndexError> {
+            use quanta_index_core::index::{MemoryLease, MemoryLifetime};
+
+            if lifetime != MemoryLifetime::Temporary {
+                return Err(IndexError::BackendViolation(
+                    "ticket scratch was not temporary".into(),
+                ));
+            }
+            TICKET_SEAL_TRACE.with(|state| {
+                let (live, seals, held) = state.get();
+                let next = live.checked_add(bytes).ok_or(IndexError::ResourceLimited)?;
+                state.set((next, seals, held));
+                Ok(MemoryLease::new(bytes, Arc::new(TicketSealMemory)))
+            })
+        }
+    }
+
+    fn observe_ticket_seal(event: rusqlite::trace::TraceEvent<'_>) {
+        let rusqlite::trace::TraceEvent::Stmt(_statement, sql) = event else {
+            return;
+        };
+        if sql.starts_with("UPDATE native_pin_v1 SET row_digest=") {
+            TICKET_SEAL_TRACE.with(|state| {
+                let (live, seals, held) = state.get();
+                state.set((live, seals.saturating_add(1), held && live > 0));
+            });
+        }
+    }
+
+    fn traced_ticket_seal<T>(
+        catalog: &SqliteCatalog,
+        action: impl FnOnce(&WorkBudget) -> T,
+    ) -> Result<(T, u64, bool, u64), Box<dyn Error>> {
+        use quanta_index_core::index::MemoryScope;
+
+        TICKET_SEAL_TRACE.with(|state| state.set((0, 0, true)));
+        let mut budget = admission_budget();
+        budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(TicketSealMemory))));
+        catalog.lock()?.trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(observe_ticket_seal),
+        );
+        let outcome = action(&budget);
+        catalog
+            .lock()?
+            .trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+        let (live, seals, held) = TICKET_SEAL_TRACE.with(std::cell::Cell::get);
+        Ok((outcome, seals, held, live))
+    }
+
+    #[test]
+    fn read_ticket_holds_scratch_through_pin_seal_and_refunds_it() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let session = catalog.open_read_session()?;
+        let selections = [
+            ViewSelection::Exact(genesis.identity),
+            ViewSelection::Latest {
+                workspace: genesis.identity.workspace,
+                epoch: genesis.identity.epoch,
+            },
+        ];
+        for selection in selections {
+            let (result, seals, held, live) = traced_ticket_seal(&catalog, |budget| {
+                catalog.acquire_ticket(session.as_ref(), selection, Duration::from_secs(30), budget)
+            })?;
+            let ticket = result?;
+            check_eq!(seals, 1);
+            check!(held);
+            check_eq!(live, 0);
+            check_eq!(ticket.view.identity, genesis.identity);
+            catalog.validate_ticket(session.as_ref(), ticket.lease)?;
+            catalog.release_ticket(session.as_ref(), ticket.lease)?;
+            check_eq!(fixture_pin_count(&catalog)?, 0);
+        }
+
+        catalog.lock()?.execute_batch(
+            "CREATE TRIGGER fail_read_ticket_pin BEFORE UPDATE OF row_digest ON native_pin_v1
+             BEGIN SELECT RAISE(ABORT, 'pin seal fault'); END;",
+        )?;
+        for selection in selections {
+            let (result, seals, held, live) = traced_ticket_seal(&catalog, |budget| {
+                catalog.acquire_ticket(session.as_ref(), selection, Duration::from_secs(30), budget)
+            })?;
+            check!(matches!(result, Err(IndexError::Storage(_))));
+            check_eq!(seals, 1);
+            check!(held);
+            check_eq!(live, 0);
+            check_eq!(fixture_pin_count(&catalog)?, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn read_ticket_refuses_root_scratch_without_pin_or_leaked_lease() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let attempt = admit_new(&catalog, operation(41, 190))?;
+        let child = object(28, vec![]);
+        let parent = object(29, vec![child.reference]);
+        reserve_confirm(&catalog, attempt, &[child, parent.clone()])?;
+        let next = view(1, genesis.profile, Some(parent.reference));
+        check_eq!(
+            publish(&catalog, attempt, &genesis, next.clone())?,
+            OperationStatus::Published(next.identity)
+        );
+        let session = catalog.open_read_session()?;
+        for selection in [
+            ViewSelection::Exact(next.identity),
+            ViewSelection::Latest {
+                workspace: next.identity.workspace,
+                epoch: next.identity.epoch,
+            },
+        ] {
+            let (budget, counters) = root_scratch_refusal_budget();
+            check_eq!(
+                catalog.acquire_ticket(
+                    session.as_ref(),
+                    selection,
+                    Duration::from_secs(30),
+                    &budget
+                ),
+                Err(IndexError::ResourceLimited)
+            );
+            check_eq!(counters.reservations.load(Ordering::SeqCst), 2);
+            check!(counters.refused_while_live.load(Ordering::SeqCst));
+            check_eq!(counters.live_bytes.load(Ordering::SeqCst), 0);
+            check_eq!(fixture_pin_count(&catalog)?, 0);
+
+            let ticket = acquire_ticket_with_test_budget(
+                &catalog,
+                session.as_ref(),
+                selection,
+                Duration::from_secs(30),
+            )?;
+            check_eq!(ticket.view, next);
+            catalog.release_ticket(session.as_ref(), ticket.lease)?;
+            check_eq!(fixture_pin_count(&catalog)?, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn read_ticket_refuses_unbounded_or_unowned_view_rows_without_a_pin() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let session = catalog.open_read_session()?;
+        let exact = ViewSelection::Exact(genesis.identity);
+        let latest = ViewSelection::Latest {
+            workspace: genesis.identity.workspace,
+            epoch: genesis.identity.epoch,
+        };
+        let duration = Duration::from_secs(30);
+        let workspace = workspace_key(genesis.identity.workspace)?;
+        let payload = encode(&genesis)?;
+        let payload_digest = digest(b"qidx.native.view.v1", &payload);
+        // Whitespace leaves the decoded view and its identity intact. With a
+        // matching checksum, only the stored payload limit rejects this row.
+        let mut oversized = payload.clone();
+        oversized.resize(usize::try_from(MAX_VIEW_PAYLOAD_BYTES + 1)?, b' ');
+        let oversized_digest = digest(b"qidx.native.view.v1", &oversized);
+        check_eq!(decode::<CatalogView>(&oversized)?, genesis);
+        for selection in [exact, latest] {
+            let ticket = catalog.acquire_ticket(
+                session.as_ref(),
+                selection,
+                duration,
+                &admission_budget(),
+            )?;
+            check_eq!(ticket.view, genesis);
+            catalog.release_ticket(session.as_ref(), ticket.lease)?;
+        }
+
+        check_eq!(
+            catalog.acquire_ticket(
+                session.as_ref(),
+                exact,
+                duration,
+                &view_scratch_refusal_budget()
+            ),
+            Err(IndexError::ResourceLimited)
+        );
+
+        {
+            let connection = catalog.lock()?;
+            check_eq!(
+                connection.execute(
+                    "UPDATE native_workspace_v1 SET payload=?2,row_digest=?3 WHERE workspace=?1",
+                    params![&workspace, &oversized, &oversized_digest[..]],
+                )?,
+                1
+            );
+        }
+        check_eq!(
+            catalog.acquire_ticket(session.as_ref(), latest, duration, &admission_budget()),
+            Err(IndexError::Storage(
+                "native view payload shape mismatch".into()
+            ))
+        );
+        {
+            let connection = catalog.lock()?;
+            check_eq!(
+                connection.execute(
+                    "UPDATE native_workspace_v1 SET payload=?2,row_digest=?3 WHERE workspace=?1",
+                    params![&workspace, &payload, &payload_digest[..]],
+                )?,
+                1
+            );
+            check_eq!(
+                connection.execute(
+                    "UPDATE native_view_v1 SET payload=?2,row_digest=?3 WHERE workspace=?1",
+                    params![&workspace, &oversized, &oversized_digest[..]],
+                )?,
+                1
+            );
+        }
+        for selection in [exact, latest] {
+            check_eq!(
+                catalog.acquire_ticket(session.as_ref(), selection, duration, &admission_budget()),
+                Err(IndexError::Storage(
+                    "native view payload shape mismatch".into()
+                ))
+            );
+        }
+        {
+            let connection = catalog.lock()?;
+            check_eq!(
+                connection.execute(
+                    "UPDATE native_view_v1 SET payload=?2,row_digest=?3 WHERE workspace=?1",
+                    params![&workspace, &payload, &payload_digest[..]],
+                )?,
+                1
+            );
+            let _ = connection.execute(
+                "UPDATE native_view_root_v1 SET row_digest=printf('%032d', 0) WHERE workspace=?1",
+                params![&workspace],
+            )?;
+        }
+        for selection in [exact, latest] {
+            check!(matches!(
+                catalog.acquire_ticket(session.as_ref(), selection, duration, &admission_budget()),
+                Err(IndexError::Storage(_))
+            ));
+        }
+        {
+            let connection = catalog.lock()?;
+            let epoch = int(genesis.identity.epoch)?;
+            let sequence = int(genesis.identity.sequence)?;
+            let profile = object_key(genesis.profile);
+            let checksum = fields_digest(
+                b"qidx.native.viewroot.v1",
+                &(&workspace, epoch, sequence, &profile),
+            )?;
+            let _ = connection.execute(
+                "UPDATE native_view_root_v1 SET row_digest=?2 WHERE workspace=?1",
+                params![&workspace, checksum],
+            )?;
+            // Leave a formerly valid, fully authenticated Exact view behind.
+            let _ = connection.execute(
+                "DELETE FROM native_workspace_v1 WHERE workspace=?1",
+                params![&workspace],
+            )?;
+        }
+        check_eq!(
+            catalog.acquire_ticket(session.as_ref(), exact, duration, &admission_budget()),
+            Err(IndexError::SnapshotUnavailable)
+        );
+        check_eq!(fixture_pin_count(&catalog)?, 0);
+        Ok(())
+    }
+
     #[test]
     fn selected_boot_manifest_survives_retention_and_explicit_retirement() -> TestResult {
         let root = tempfile::tempdir()?;
@@ -4976,14 +5881,10 @@ mod tests {
         // than authorizing deletion from absence alone.
         let guard = catalog.lock().map_err(|error| error.to_string())?;
         check!(matches!(
-            boot_manifest::refuse_selected_orphan(
-                &guard,
-                first_op.request,
-                &mut admission_budget()
-            ),
+            boot_record::refuse_selected_orphan(&guard, first_op.request, &mut admission_budget()),
             Err(IndexError::Storage(_))
         ));
-        check_eq!(boot_manifest::read_stored(&guard)?, Some(selected.clone()));
+        check_eq!(boot_record::read_stored(&guard)?, Some(selected.clone()));
 
         let anchor = object(199, Vec::new());
         register(&guard, std::slice::from_ref(&anchor))?;
@@ -5007,7 +5908,7 @@ mod tests {
             [],
             |row| row.get(0),
         )?;
-        let digest = boot_manifest::checksum(&nonce, &payload);
+        let digest = boot_record::checksum(&nonce, &payload);
         check_eq!(
             guard.execute(
                 "UPDATE native_capture_format_v1 SET boot_manifest=?1,boot_manifest_digest=?2 WHERE singleton=1",
@@ -5487,6 +6388,30 @@ mod tests {
         };
         let latest = publish_plain_next(&catalog, &queued, 2, 201)?;
         check_eq!(request.expected_view, queued.identity);
+        check_eq!(
+            catalog.acquire_materialization_ticket(
+                session.as_ref(),
+                request,
+                Duration::from_secs(60),
+                &view_scratch_refusal_budget(),
+            ),
+            Err(IndexError::ResourceLimited)
+        );
+        check_eq!(fixture_pin_count(&catalog)?, 0);
+        let (budget, counters) = root_scratch_refusal_budget();
+        check_eq!(
+            catalog.acquire_materialization_ticket(
+                session.as_ref(),
+                request,
+                Duration::from_secs(60),
+                &budget,
+            ),
+            Err(IndexError::ResourceLimited)
+        );
+        check_eq!(counters.reservations.load(Ordering::SeqCst), 2);
+        check!(counters.refused_while_live.load(Ordering::SeqCst));
+        check_eq!(counters.live_bytes.load(Ordering::SeqCst), 0);
+        check_eq!(fixture_pin_count(&catalog)?, 0);
         let before = {
             let connection = catalog.lock()?;
             let counter: i64 = connection.query_row(
@@ -5501,14 +6426,18 @@ mod tests {
             counter
         };
         clock.set(1_010);
-        check!(matches!(
+        let (failed_pin, seals, held, live) = traced_ticket_seal(&catalog, |budget| {
             catalog.acquire_materialization_ticket(
                 session.as_ref(),
                 request,
-                Duration::from_secs(60)
-            ),
-            Err(IndexError::Storage(_))
-        ));
+                Duration::from_secs(60),
+                budget,
+            )
+        })?;
+        check!(matches!(failed_pin, Err(IndexError::Storage(_))));
+        check_eq!(seals, 1);
+        check!(held);
+        check_eq!(live, 0);
         {
             let connection = catalog.lock()?;
             let rows: i64 =
@@ -5526,11 +6455,18 @@ mod tests {
             check_eq!((rows, floor, counter), (0, 1_000, before));
             connection.execute_batch("DROP TRIGGER fail_materialization_pin;")?;
         }
-        let ticket = catalog.acquire_materialization_ticket(
-            session.as_ref(),
-            request,
-            Duration::from_secs(60),
-        )?;
+        let (issued_pin, seals, held, live) = traced_ticket_seal(&catalog, |budget| {
+            catalog.acquire_materialization_ticket(
+                session.as_ref(),
+                request,
+                Duration::from_secs(60),
+                budget,
+            )
+        })?;
+        let ticket = issued_pin?;
+        check_eq!(seals, 1);
+        check!(held);
+        check_eq!(live, 0);
         check_eq!(ticket.view, latest);
         check_eq!(ticket.lease.session, session.binding());
         check_eq!(ticket.lease.expires_at_ms, 61_010);
@@ -5549,7 +6485,8 @@ mod tests {
             catalog.acquire_materialization_ticket(
                 session.as_ref(),
                 request,
-                Duration::from_millis(50)
+                Duration::from_millis(50),
+                &admission_budget(),
             ),
             Err(IndexError::WorkFenceLost)
         ));
@@ -5582,7 +6519,8 @@ mod tests {
             catalog.acquire_materialization_ticket(
                 session.as_ref(),
                 &altered,
-                Duration::from_secs(1)
+                Duration::from_secs(1),
+                &admission_budget(),
             ),
             Err(IndexError::DigestConflict)
         ));
@@ -5594,7 +6532,8 @@ mod tests {
                 .acquire_materialization_ticket(
                     foreign_session.as_ref(),
                     &grant.assignment.request,
-                    Duration::from_secs(1)
+                    Duration::from_secs(1),
+                    &admission_budget(),
                 )
                 .is_err()
         );
@@ -5637,6 +6576,7 @@ mod tests {
                 session.as_ref(),
                 request,
                 Duration::from_secs(1),
+                &admission_budget(),
             )
         })?;
         check_eq!(pin_reads, (1, 1, 2));
@@ -5728,6 +6668,7 @@ mod tests {
                 session.as_ref(),
                 request,
                 Duration::from_secs(1),
+                &admission_budget(),
             ),
             Err(IndexError::WorkFenceLost)
         );
@@ -5750,6 +6691,7 @@ mod tests {
                 session.as_ref(),
                 request,
                 Duration::from_secs(1),
+                &admission_budget(),
             ),
             Err(IndexError::WorkFenceLost)
         );
@@ -7062,6 +8004,7 @@ mod tests {
                         fence: next_fence(&tx)?,
                         status: OperationStatus::Refused(reason),
                         published_view: None,
+                        projection_replay: None,
                     },
                     true,
                 )?;
@@ -7301,6 +8244,62 @@ mod tests {
             attempt,
             &[RegisteredObject::unscoped(work_root, 1, vec![])],
         )?;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        for (denial, error) in [
+            (WorkBudgetDenial::Cancelled, IndexError::Cancelled),
+            (WorkBudgetDenial::Deadline, IndexError::ResourceLimited),
+        ] {
+            let request = quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(2));
+            let deadline = request.deadline();
+            let cancel = request.cancel_handle();
+            let operation_written = Arc::new(AtomicBool::new(false));
+            let marker = Arc::clone(&operation_written);
+            catalog
+                .lock()?
+                .update_hook(Some(move |_, _: &str, table: &str, _| {
+                    if table == "native_operation_v1" {
+                        marker.store(true, Ordering::Release);
+                        if denial == WorkBudgetDenial::Cancelled {
+                            cancel.cancel();
+                        } else {
+                            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+                        }
+                    }
+                }))?;
+            let mut late_budget = WorkBudget::with_request(
+                WorkLimits {
+                    reads: 128,
+                    writes: 128,
+                    bytes: 8192,
+                    mutations: 128,
+                },
+                request,
+            );
+            let mut late = VecActions(VecDeque::from([WorkAction::Create(missing_root)]));
+            let interrupted =
+                catalog.commit_transition(missing_publication.clone(), &mut late, &mut late_budget);
+            catalog
+                .lock()?
+                .update_hook(None::<fn(rusqlite::hooks::Action, &str, &str, i64)>)?;
+            check!(operation_written.load(Ordering::Acquire));
+            check_eq!(interrupted, Err(error));
+            check_eq!(late_budget.first_denial(), Some(denial));
+            check_eq!(
+                inspect_with_test_budget(&catalog, operation.key)?,
+                OperationStatus::Pending(attempt)
+            );
+            let ticket = acquire_ticket_with_test_budget(
+                &catalog,
+                session.as_ref(),
+                ViewSelection::Latest {
+                    workspace: workspace(),
+                    epoch: 7,
+                },
+                Duration::from_secs(30),
+            )?;
+            check_eq!(ticket.view.identity, genesis.identity);
+            catalog.release_ticket(session.as_ref(), ticket.lease)?;
+        }
         let mut valid = VecActions(VecDeque::from([WorkAction::Create(missing_root)]));
         check_eq!(
             catalog.commit_transition(missing_publication, &mut valid, &mut new_budget())?,
@@ -7986,6 +8985,590 @@ mod tests {
     }
 
     #[test]
+    fn prepared_publication_cannot_advance_a_concurrently_quarantined_base() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let initial = admit_new(&catalog, operation(2, 75))?;
+        let body = object(76, vec![]);
+        let body_ref = body.reference;
+        let parent = object(77, vec![body_ref]);
+        let base = view(1, genesis.profile, Some(parent.reference));
+        reserve_confirm(&catalog, initial, &[body, parent])?;
+        check_eq!(
+            publish(&catalog, initial, &genesis, base.clone())?,
+            OperationStatus::Published(base.identity)
+        );
+
+        let pending = operation(3, 78);
+        let attempt = admit_new(&catalog, pending)?;
+        let next = view(2, base.profile, base.members.0);
+        check_eq!(
+            catalog.quarantine_source_body(base.identity, body_ref, &mut admission_budget())?,
+            body_ref
+        );
+        check_eq!(
+            publish(&catalog, attempt, &base, next),
+            Err(IndexError::CorruptObject(
+                "native exact view Source body is quarantined".into()
+            ))
+        );
+        check_eq!(fixture_current_view(&catalog)?.identity, base.identity);
+        check_eq!(
+            inspect_with_test_budget(&catalog, pending.key)?,
+            OperationStatus::Pending(attempt)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_publication_from_healthy_base_refuses_quarantined_dependency() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let initial = admit_new(&catalog, operation(2, 75))?;
+        let body = object(76, vec![]);
+        let body_ref = body.reference;
+        let parent = object(77, vec![body_ref]);
+        let damaged = view(1, genesis.profile, Some(parent.reference));
+        reserve_confirm(&catalog, initial, &[body, parent])?;
+        check_eq!(
+            publish(&catalog, initial, &genesis, damaged.clone())?,
+            OperationStatus::Published(damaged.identity)
+        );
+
+        let clean_attempt = admit_new(&catalog, operation(3, 78))?;
+        let clean = view(2, genesis.profile, None);
+        check_eq!(
+            publish(&catalog, clean_attempt, &damaged, clean.clone())?,
+            OperationStatus::Published(clean.identity)
+        );
+        let pending = operation(4, 79);
+        let candidate_attempt = admit_new(&catalog, pending)?;
+        let new_parent = object(80, vec![body_ref]);
+        let affected = view(3, genesis.profile, Some(new_parent.reference));
+        reserve_confirm(&catalog, candidate_attempt, &[new_parent])?;
+
+        check_eq!(
+            catalog.quarantine_source_body(damaged.identity, body_ref, &mut admission_budget())?,
+            body_ref
+        );
+        check_eq!(
+            publish(&catalog, candidate_attempt, &clean, affected),
+            Err(IndexError::CorruptObject(
+                "native publication depends on a quarantined Source body".into()
+            ))
+        );
+        check_eq!(fixture_current_view(&catalog)?.identity, clean.identity);
+        check_eq!(
+            inspect_with_test_budget(&catalog, pending.key)?,
+            OperationStatus::Pending(candidate_attempt)
+        );
+
+        let clean_successor = view(3, genesis.profile, None);
+        let clean_attempt = admit_new(&catalog, operation(5, 81))?;
+        check_eq!(
+            publish(&catalog, clean_attempt, &clean, clean_successor.clone())?,
+            OperationStatus::Published(clean_successor.identity)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_body_receipt_failure_keeps_incident_and_boot_completes_siblings() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let initial = admit_new(&catalog, operation(2, 175))?;
+        let body = object(176, vec![]);
+        let body_ref = body.reference;
+        let parent = object(177, vec![body_ref]);
+        let base = view(1, genesis.profile, Some(parent.reference));
+        reserve_confirm(&catalog, initial, &[body, parent])?;
+        check_eq!(
+            publish(&catalog, initial, &genesis, base.clone())?,
+            OperationStatus::Published(base.identity)
+        );
+        let attempt = admit_new(&catalog, operation(3, 178))?;
+        let sibling = view(2, base.profile, base.members.0);
+        check_eq!(
+            publish(&catalog, attempt, &base, sibling.clone())?,
+            OperationStatus::Published(sibling.identity)
+        );
+
+        view_quarantine::install_schema_for_test(&catalog)?;
+        let connection = catalog.lock()?;
+        connection.execute_batch(
+            "CREATE TRIGGER refuse_body_receipt
+             BEFORE INSERT ON native_view_source_body_quarantine_v1
+             BEGIN SELECT RAISE(ABORT, 'fixture receipt failure'); END;",
+        )?;
+        drop(connection);
+        check!(matches!(
+            catalog.quarantine_source_body(base.identity, body_ref, &mut admission_budget()),
+            Err(IndexError::Storage(ref message))
+                if message.contains("fixture receipt failure")
+        ));
+        let connection = catalog.lock()?;
+        check_eq!(
+            connection.query_row(
+                "SELECT count(*) FROM native_view_source_body_quarantine_v1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?,
+            0
+        );
+        check_eq!(
+            connection.query_row(
+                "SELECT pending FROM native_source_body_incident_v1 WHERE object=?1",
+                params![body_ref.0.0.as_slice()],
+                |row| row.get::<_, i64>(0),
+            )?,
+            1
+        );
+        connection.execute_batch("DROP TRIGGER refuse_body_receipt;")?;
+        check_eq!(
+            connection.execute(
+                "UPDATE native_source_body_incident_v1 SET pending=0 WHERE object=?1",
+                params![body_ref.0.0.as_slice()],
+            )?,
+            1
+        );
+        drop(connection);
+        drop(catalog);
+
+        let catalog = open(root.path())?;
+        check!(matches!(
+            catalog.complete_legacy_source_body_quarantines(&mut admission_budget()),
+            Err(IndexError::Storage(ref message))
+                if message == "native Source body incident row mismatch"
+        ));
+        let connection = catalog.lock()?;
+        check_eq!(
+            connection.execute(
+                "UPDATE native_source_body_incident_v1 SET pending=1 WHERE object=?1",
+                params![body_ref.0.0.as_slice()],
+            )?,
+            1
+        );
+        drop(connection);
+        catalog.complete_legacy_source_body_quarantines(&mut admission_budget())?;
+        let connection = catalog.lock()?;
+        let workspace = workspace_key(base.identity.workspace)?;
+        for view in [base.identity, sibling.identity] {
+            check!(matches!(
+                view_quarantine::refuse_if_quarantined(
+                    &catalog,
+                    &connection,
+                    &workspace,
+                    int(view.epoch)?,
+                    int(view.sequence)?,
+                    None,
+                ),
+                Err(IndexError::CorruptObject(_))
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_body_seed_failure_fences_process_and_retry_clears_transient() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let initial = admit_new(&catalog, operation(2, 180))?;
+        let body = object(181, vec![]);
+        let body_ref = body.reference;
+        let parent = object(182, vec![body_ref]);
+        let base = view(1, genesis.profile, Some(parent.reference));
+        reserve_confirm(&catalog, initial, &[body, parent])?;
+        check_eq!(
+            publish(&catalog, initial, &genesis, base.clone())?,
+            OperationStatus::Published(base.identity)
+        );
+        let attempt = admit_new(&catalog, operation(3, 183))?;
+        let sibling = view(2, base.profile, base.members.0);
+        check_eq!(
+            publish(&catalog, attempt, &base, sibling.clone())?,
+            OperationStatus::Published(sibling.identity)
+        );
+
+        view_quarantine::install_schema_for_test(&catalog)?;
+        let connection = catalog.lock()?;
+        connection.execute_batch(
+            "CREATE TRIGGER refuse_first_body_receipt
+             BEFORE INSERT ON native_view_source_body_quarantine_v1
+             BEGIN SELECT RAISE(ABORT, 'fixture first receipt failure'); END;",
+        )?;
+        drop(connection);
+        check!(matches!(
+            catalog.quarantine_source_body(base.identity, body_ref, &mut admission_budget()),
+            Err(IndexError::Storage(ref message))
+                if message.contains("fixture first receipt failure")
+        ));
+        check_eq!(
+            catalog
+                .transient_source_body_quarantines
+                .read()
+                .map_err(|_| { IndexError::Storage("transient quarantine lock poisoned".into()) })?
+                .len(),
+            2
+        );
+        let connection = catalog.lock()?;
+        check_eq!(
+            connection.query_row(
+                "SELECT count(*) FROM native_view_source_body_quarantine_v1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?,
+            0
+        );
+        let workspace = workspace_key(base.identity.workspace)?;
+        for view in [base.identity, sibling.identity] {
+            check!(matches!(
+                view_quarantine::refuse_if_quarantined(
+                    &catalog,
+                    &connection,
+                    &workspace,
+                    int(view.epoch)?,
+                    int(view.sequence)?,
+                    None,
+                ),
+                Err(IndexError::CorruptObject(_))
+            ));
+        }
+        let replacement_identity = ViewRef {
+            digest: Digest([u8::MAX; 32]),
+            ..base.identity
+        };
+        check!(matches!(
+            view_quarantine::refuse_if_quarantined(
+                &catalog,
+                &connection,
+                &workspace,
+                int(replacement_identity.epoch)?,
+                int(replacement_identity.sequence)?,
+                None,
+            ),
+            Err(IndexError::CorruptObject(_))
+        ));
+        connection.execute_batch("DROP TRIGGER refuse_first_body_receipt;")?;
+        drop(connection);
+
+        check_eq!(
+            catalog.quarantine_source_body(base.identity, body_ref, &mut admission_budget())?,
+            body_ref
+        );
+        check_eq!(
+            catalog
+                .transient_source_body_quarantines
+                .read()
+                .map_err(|_| { IndexError::Storage("transient quarantine lock poisoned".into()) })?
+                .len(),
+            0
+        );
+        let connection = catalog.lock()?;
+        check_eq!(
+            connection.query_row(
+                "SELECT count(*) FROM native_view_source_body_quarantine_v1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?,
+            2
+        );
+        drop(connection);
+
+        check!(
+            catalog
+                .transient_source_body_quarantines
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert((base.identity, body_ref), None)
+                .is_none()
+        );
+        check_eq!(
+            catalog.advance_exact_history_floor(
+                base.identity.workspace,
+                base.identity.epoch,
+                2,
+                &mut admission_budget(),
+            )?,
+            2
+        );
+        let retired = catalog.retire_exact_history_page(
+            base.identity.workspace,
+            base.identity.epoch,
+            Some(0),
+            8,
+            &mut admission_budget(),
+        )?;
+        check_eq!(retired.retired, 1);
+        check_eq!(
+            catalog
+                .transient_source_body_quarantines
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn distinct_body_incidents_survive_seed_failure_and_catalog_reopen() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let body_a = object(184, vec![]);
+        let body_b = object(185, vec![]);
+        let a = body_a.reference;
+        let b = body_b.reference;
+        let a_parent = object(186, vec![a]);
+        let common_parent = object(187, vec![a, b]);
+        let b_parent = object(188, vec![b]);
+
+        let a_attempt = admit_new(&catalog, operation(2, 189))?;
+        reserve_confirm(&catalog, a_attempt, &[body_a, a_parent.clone()])?;
+        let a_only = view(1, genesis.profile, Some(a_parent.reference));
+        check_eq!(
+            publish(&catalog, a_attempt, &genesis, a_only.clone())?,
+            OperationStatus::Published(a_only.identity)
+        );
+
+        let common_attempt = admit_new(&catalog, operation(3, 190))?;
+        reserve_confirm(&catalog, common_attempt, &[body_b, common_parent.clone()])?;
+        let common = view(2, genesis.profile, Some(common_parent.reference));
+        check_eq!(
+            publish(&catalog, common_attempt, &a_only, common.clone())?,
+            OperationStatus::Published(common.identity)
+        );
+
+        let b_attempt = admit_new(&catalog, operation(4, 191))?;
+        reserve_confirm(&catalog, b_attempt, &[b_parent.clone()])?;
+        let b_only = view(3, genesis.profile, Some(b_parent.reference));
+        check_eq!(
+            publish(&catalog, b_attempt, &common, b_only.clone())?,
+            OperationStatus::Published(b_only.identity)
+        );
+
+        let healthy_attempt = admit_new(&catalog, operation(5, 192))?;
+        let healthy = view(4, genesis.profile, None);
+        check_eq!(
+            publish(&catalog, healthy_attempt, &b_only, healthy.clone())?,
+            OperationStatus::Published(healthy.identity)
+        );
+
+        view_quarantine::install_schema_for_test(&catalog)?;
+        let connection = catalog.lock()?;
+        connection.execute_batch(
+            "CREATE TRIGGER refuse_first_a_body_receipt
+             BEFORE INSERT ON native_view_source_body_quarantine_v1
+             BEGIN SELECT RAISE(ABORT, 'fixture A seed failure'); END;",
+        )?;
+        drop(connection);
+        check!(matches!(
+            catalog.quarantine_source_body(common.identity, a, &mut admission_budget()),
+            Err(IndexError::Storage(ref message)) if message.contains("fixture A seed failure")
+        ));
+        let connection = catalog.lock()?;
+        check_eq!(
+            connection.query_row(
+                "SELECT count(*) FROM native_view_source_body_quarantine_v1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?,
+            0
+        );
+        connection.execute_batch("DROP TRIGGER refuse_first_a_body_receipt;")?;
+        drop(connection);
+
+        check_eq!(
+            catalog.quarantine_source_body(common.identity, b, &mut admission_budget())?,
+            b
+        );
+        drop(catalog);
+
+        let catalog = open(root.path())?;
+        let session = catalog.open_read_session()?;
+        for damaged in [&a_only, &common, &b_only] {
+            check!(
+                matches!(
+                    acquire_ticket_with_test_budget(
+                        &catalog,
+                        session.as_ref(),
+                        ViewSelection::Exact(damaged.identity),
+                        Duration::from_secs(30),
+                    ),
+                    Err(IndexError::CorruptObject(_))
+                ),
+                "damaged view {:?} became readable after reopen",
+                damaged.identity
+            );
+        }
+        let ticket = acquire_ticket_with_test_budget(
+            &catalog,
+            session.as_ref(),
+            ViewSelection::Exact(healthy.identity),
+            Duration::from_secs(30),
+        )?;
+        check_eq!(ticket.view.identity, healthy.identity);
+        catalog.release_ticket(session.as_ref(), ticket.lease)?;
+
+        for (sequence, request_id, parent_id, body) in [(6, 193, 195, a), (7, 194, 196, b)] {
+            let attempt = admit_new(&catalog, operation(sequence, request_id))?;
+            let parent = object(parent_id, vec![body]);
+            let candidate = view(5, healthy.profile, Some(parent.reference));
+            reserve_confirm(&catalog, attempt, &[parent])?;
+            check!(matches!(
+                publish(&catalog, attempt, &healthy, candidate),
+                Err(IndexError::CorruptObject(ref message))
+                    if message == "native publication depends on a quarantined Source body"
+            ));
+        }
+
+        // Re-proving either independent body must not overwrite the other incident.
+        check_eq!(
+            catalog.quarantine_source_body(common.identity, a, &mut admission_budget())?,
+            a
+        );
+        check_eq!(
+            catalog.quarantine_source_body(common.identity, b, &mut admission_budget())?,
+            b
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn single_view_body_receipt_resume_fences_siblings_and_is_idempotent() -> TestResult {
+        assert_single_view_receipt_completion(false)
+    }
+
+    #[test]
+    fn exact_view_retirement_preserves_legacy_body_fault_for_remaining_siblings() -> TestResult {
+        assert_single_view_receipt_completion(true)
+    }
+
+    fn assert_single_view_receipt_completion(retire: bool) -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let initial = admit_new(&catalog, operation(2, 75))?;
+        let body = object(76, vec![]);
+        let body_ref = body.reference;
+        let parent = object(77, vec![body_ref]);
+        let base = view(1, genesis.profile, Some(parent.reference));
+        reserve_confirm(&catalog, initial, &[body, parent])?;
+        check_eq!(
+            publish(&catalog, initial, &genesis, base.clone())?,
+            OperationStatus::Published(base.identity)
+        );
+        let attempt = admit_new(&catalog, operation(3, 78))?;
+        let sibling = view(2, base.profile, base.members.0);
+        check_eq!(
+            publish(&catalog, attempt, &base, sibling.clone())?,
+            OperationStatus::Published(sibling.identity)
+        );
+
+        let workspace = workspace_key(base.identity.workspace)?;
+        let epoch = int(base.identity.epoch)?;
+        let sequence = int(base.identity.sequence)?;
+        let object = body_ref.0.0;
+        let identity = base.identity.digest.0;
+        let legacy_digest = fields_digest(
+            b"qidx.native.view-source-body-quarantine.v1\0",
+            &(&workspace, epoch, sequence, identity, object),
+        )?;
+        view_quarantine::install_schema_for_test(&catalog)?;
+        let connection = catalog.lock()?;
+        check_eq!(
+            connection.execute(
+                "INSERT INTO native_view_source_body_quarantine_v1
+                 (workspace,epoch,sequence,identity_digest,object,row_digest)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                params![
+                    workspace,
+                    epoch,
+                    sequence,
+                    identity.as_slice(),
+                    object.as_slice(),
+                    legacy_digest
+                ],
+            )?,
+            1
+        );
+        view_quarantine::refuse_if_quarantined(
+            &catalog,
+            &connection,
+            &workspace,
+            epoch,
+            int(sibling.identity.sequence)?,
+            None,
+        )?;
+        drop(connection);
+
+        let remaining_receipt = if retire {
+            check_eq!(
+                catalog.advance_exact_history_floor(
+                    base.identity.workspace,
+                    base.identity.epoch,
+                    2,
+                    &mut admission_budget(),
+                )?,
+                2
+            );
+            let page = catalog.retire_exact_history_page(
+                base.identity.workspace,
+                base.identity.epoch,
+                Some(0),
+                8,
+                &mut admission_budget(),
+            )?;
+            check_eq!(page.retired, 1);
+            sibling.identity
+        } else {
+            check_eq!(
+                catalog.resume_source_body_quarantine(base.identity, &mut admission_budget())?,
+                Some(body_ref)
+            );
+            base.identity
+        };
+        drop(catalog);
+        let catalog = open(root.path())?;
+        let connection = catalog.lock()?;
+        check!(matches!(
+            view_quarantine::refuse_if_quarantined(
+                &catalog,
+                &connection,
+                &workspace,
+                epoch,
+                int(sibling.identity.sequence)?,
+                None,
+            ),
+            Err(IndexError::CorruptObject(_))
+        ));
+        drop(connection);
+        let mut no_writes = WorkBudget::with_request(
+            WorkLimits {
+                reads: 2,
+                writes: 0,
+                bytes: 4096,
+                mutations: 0,
+            },
+            quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(5)),
+        );
+        check_eq!(
+            catalog.resume_source_body_quarantine(remaining_receipt, &mut no_writes)?,
+            Some(body_ref)
+        );
+        catalog.complete_legacy_source_body_quarantines(&mut admission_budget())?;
+        let mut completed_boot_budget = WorkBudget::with_request(
+            WorkLimits {
+                reads: 2,
+                writes: 0,
+                bytes: 160,
+                mutations: 0,
+            },
+            quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(5)),
+        );
+        catalog.complete_legacy_source_body_quarantines(&mut completed_boot_budget)?;
+        Ok(())
+    }
+
+    #[test]
     fn source_frontier_has_own_sequence_and_is_atomic_with_view() -> TestResult {
         let root = tempfile::tempdir()?;
         let (catalog, genesis) = setup(root.path())?;
@@ -8467,6 +10050,15 @@ mod tests {
             sequence: 1,
             payload: digest_id(152),
         };
+        check_eq!(
+            catalog.observe_native_event_frontier_v1(
+                genesis.identity,
+                event.producer,
+                event.stream,
+                &mut admission_budget(),
+            )?,
+            None
+        );
         let attempt = admit_new_events(&catalog, first, &[event])?;
         let projection = object(153, vec![]);
         reserve_confirm(&catalog, attempt, std::slice::from_ref(&projection))?;
@@ -8493,6 +10085,15 @@ mod tests {
         check_eq!(next.source, genesis.source);
         drop(catalog);
         let catalog = open(root.path())?;
+        check_eq!(
+            catalog.observe_native_event_frontier_v1(
+                next.identity,
+                event.producer,
+                event.stream,
+                &mut admission_budget(),
+            )?,
+            Some((1, 1))
+        );
         check_eq!(
             inspect_with_test_budget(&catalog, first.key)?,
             OperationStatus::Published(next.identity)
@@ -8563,6 +10164,24 @@ mod tests {
             OperationStatus::Published(following.identity)
         );
         check_eq!(following.source, genesis.source);
+        check_eq!(
+            catalog.observe_native_event_frontier_v1(
+                following.identity,
+                event.producer,
+                event.stream,
+                &mut admission_budget(),
+            )?,
+            Some((1, 2))
+        );
+        check!(matches!(
+            catalog.observe_native_event_frontier_v1(
+                next.identity,
+                event.producer,
+                event.stream,
+                &mut admission_budget(),
+            ),
+            Err(IndexError::Conflict)
+        ));
         Ok(())
     }
 
@@ -8730,6 +10349,28 @@ mod tests {
                 checksum
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn ingress_resume_if_present_never_creates_and_rotates_existing_fence() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, _) = setup(root.path())?;
+        let operation = operation(699, 169);
+
+        check_eq!(catalog.reopen_ingress_if_present(operation.key)?, None);
+        check_eq!(fixture_read_ingress(&catalog, operation.key)?, None);
+
+        let first = catalog.open_ingress(operation.key)?;
+        let resumed = catalog
+            .reopen_ingress_if_present(operation.key)?
+            .ok_or("existing ingress was not resumed")?;
+        check_eq!(resumed.operation, first.operation);
+        check!(resumed.fence > first.fence);
+        check_eq!(
+            catalog.reserve_inputs(first, &[]),
+            Err(IndexError::FenceLost)
+        );
         Ok(())
     }
 
@@ -11062,6 +12703,7 @@ mod tests {
                 fence: next_fence(&tx)?,
                 status: OperationStatus::Refused(reason),
                 published_view: None,
+                projection_replay: None,
             },
             true,
         )?;
@@ -13556,6 +15198,122 @@ mod tests {
     }
 
     #[test]
+    fn managed_source_stage_receipt_retains_exact_ingress_and_confirmed_roots() -> TestResult {
+        use quanta_index_contract::native_protocol::{
+            SourceStageHistoryRefsV1, SourceStageReplayContextV1, SourceStageReplayReceiptV1,
+        };
+        use quanta_index_core::index::ports::ManagedObjectInstallPort;
+        use quanta_index_core::index::{Digest, MapRoot, ObjectInstallScope, OwnerMutationSet};
+
+        let (_root, catalog, ingress) = managed_adoption_fixture()?;
+        let mutation_root = object(221, vec![]);
+        let history_profile = object(222, vec![]);
+        let history_root = object(223, vec![]);
+        let roots = [
+            mutation_root.clone(),
+            history_profile.clone(),
+            history_root.clone(),
+        ];
+        catalog.reserve_managed(
+            ObjectInstallScope::Ingress(ingress),
+            &roots,
+            &mut admission_budget(),
+        )?;
+        catalog.confirm_managed(
+            ObjectInstallScope::Ingress(ingress),
+            &roots,
+            &mut admission_budget(),
+        )?;
+        let correlation = Digest([224; 32]);
+        let receipt = SourceStageReplayReceiptV1 {
+            ingress,
+            owners: OwnerMutationSet {
+                root: MapRoot(Some(mutation_root.reference)),
+                count: 1,
+                digest: Digest([225; 32]),
+            },
+            context: SourceStageReplayContextV1 {
+                correlation,
+                history: Some(SourceStageHistoryRefsV1 {
+                    profile: history_profile.reference,
+                    root: history_root.reference,
+                }),
+            },
+        };
+        catalog.persist_source_stage_replay_receipt_v1(receipt, &mut admission_budget())?;
+        check_eq!(
+            catalog.read_source_stage_replay_receipt_v1(
+                ingress.operation,
+                correlation,
+                &mut admission_budget(),
+            )?,
+            Some(receipt)
+        );
+        catalog.persist_source_stage_replay_receipt_v1(receipt, &mut admission_budget())?;
+        check_eq!(
+            catalog.read_source_stage_replay_receipt_v1(
+                ingress.operation,
+                Digest([226; 32]),
+                &mut admission_budget(),
+            )?,
+            None
+        );
+        let mut conflicting = receipt;
+        conflicting.owners.digest = Digest([227; 32]);
+        check_eq!(
+            catalog.persist_source_stage_replay_receipt_v1(conflicting, &mut admission_budget(),),
+            Err(IndexError::DigestConflict)
+        );
+
+        check_eq!(
+            catalog.reopen_source_stage_ingress_v1(
+                ingress.operation,
+                object(228, vec![]).reference,
+                &mut admission_budget(),
+            ),
+            Err(IndexError::InvalidInput(
+                "Source stage root is not confirmed by its ingress".into(),
+            ))
+        );
+        check_eq!(
+            catalog.reopen_source_stage_ingress_v1(
+                operation(12003, 154).key,
+                mutation_root.reference,
+                &mut admission_budget(),
+            ),
+            Err(IndexError::FenceLost)
+        );
+        let rotated = catalog.reopen_source_stage_ingress_v1(
+            ingress.operation,
+            mutation_root.reference,
+            &mut admission_budget(),
+        )?;
+        check_ne!(rotated.fence, ingress.fence);
+        check_eq!(
+            catalog.read_source_stage_replay_receipt_v1(
+                ingress.operation,
+                correlation,
+                &mut admission_budget(),
+            )?,
+            None
+        );
+        check_eq!(
+            catalog.persist_source_stage_replay_receipt_v1(receipt, &mut admission_budget()),
+            Err(IndexError::FenceLost)
+        );
+        catalog.seal_inputs(rotated, mutation_root.reference)?;
+        check_eq!(
+            catalog.reopen_source_stage_ingress_v1(
+                ingress.operation,
+                mutation_root.reference,
+                &mut admission_budget(),
+            ),
+            Err(IndexError::Conflict)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn managed_namespace_binding_fused_read_keeps_shape_and_mutation_checks() -> TestResult {
         static NAMESPACE_READS: AtomicU64 = AtomicU64::new(0);
 
@@ -15418,6 +17176,396 @@ mod tests {
             Err(IndexError::ResourceLimited)
         );
         check_eq!(budget.first_denial(), Some(WorkBudgetDenial::Reads));
+        Ok(())
+    }
+
+    #[test]
+    fn pin_absence_operations_fit_a_page_budget_with_many_unrelated_pins() -> TestResult {
+        use quanta_index_core::index::{CatalogReadSettlementPort, NativeReadSettlementScope};
+
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let foreign_workspace = WorkspaceKey {
+            slot: SlotId(id(9)),
+            ..workspace()
+        };
+        let foreign_profile = object(190, vec![]);
+        let mut foreign = view(0, foreign_profile.reference, None);
+        foreign.identity.workspace = foreign_workspace;
+        foreign.identity.digest = foreign.identity_digest()?;
+        let stage = catalog.begin_bootstrap(
+            foreign_workspace,
+            foreign.identity.epoch,
+            &GenesisIdentity(foreign_profile.clone()),
+            &mut admission_budget(),
+        )?;
+        catalog.reserve_bootstrap(stage, &foreign_profile)?;
+        catalog.confirm_bootstrap(stage, &foreign_profile)?;
+        check_eq!(
+            catalog.publish_bootstrap(stage, foreign.clone(), &mut admission_budget())?,
+            foreign.identity
+        );
+
+        let foreign_session = catalog.open_read_session()?;
+        for _ in 0..641 {
+            let _pin = acquire_ticket_with_test_budget(
+                &catalog,
+                foreign_session.as_ref(),
+                ViewSelection::Exact(foreign.identity),
+                Duration::from_secs(30),
+            )?;
+        }
+
+        let intent = owner_work(156);
+        let one = publish_work_next(&catalog, &genesis, 1, &intent, 951, 156)?;
+        let session = catalog.open_read_session()?;
+        let held = acquire_ticket_with_test_budget(
+            &catalog,
+            session.as_ref(),
+            ViewSelection::Exact(one.identity),
+            Duration::from_secs(30),
+        )?;
+        let scope = NativeReadSettlementScope {
+            workspace: workspace(),
+            epoch: 7,
+            target: one.identity,
+        };
+        let page_budget = || {
+            WorkBudget::with_request(
+                WorkLimits {
+                    reads: 640,
+                    writes: 160,
+                    bytes: 10 * 1024 * 1024,
+                    mutations: 160,
+                },
+                quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(30)),
+            )
+        };
+        check!(
+            catalog
+                .observe_read_settlement(session.as_ref(), scope, &mut page_budget())?
+                .has_remaining_target_pins
+        );
+        check!(
+            !catalog
+                .release_held_ticket(session.as_ref(), held.lease, scope, &mut page_budget())?
+                .has_remaining_target_pins
+        );
+        let _two = publish_plain_next(&catalog, &one, 2, 157)?;
+        set_terminal_work_status(&catalog, &intent, &WorkStatus::Superseded)?;
+        check_eq!(
+            catalog.advance_exact_history_floor(workspace(), 7, 2, &mut page_budget())?,
+            2
+        );
+        let work =
+            catalog.retire_terminal_work_page(workspace(), 7, None, 1, &mut page_budget())?;
+        check_eq!((work.examined, work.retired, work.blocked), (1, 1, 0));
+        let views =
+            catalog.retire_exact_history_page(workspace(), 7, Some(0), 1, &mut page_budget())?;
+        check_eq!((views.examined, views.retired, views.blocked), (1, 1, 0));
+        check_eq!(fixture_pin_count(&catalog)?, 641);
+        drop(catalog);
+        let reopened = open(root.path())?;
+        check_eq!(fixture_pin_count(&reopened)?, 641);
+        Ok(())
+    }
+
+    #[test]
+    fn live_pin_read_refuses_unfunded_scratch_and_preserves_lease() -> TestResult {
+        use quanta_index_core::index::{
+            CatalogReadSettlementPort, NativeReadSettlementScope, WorkBudgetDenial,
+        };
+
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let empty = catalog.recover_read_sessions(None, 1, &mut view_scratch_refusal_budget())?;
+        check_eq!(
+            (empty.recovered, empty.pins_released, empty.has_more),
+            (0, 0, false)
+        );
+        let session = catalog.open_read_session()?;
+        let lease = Duration::from_secs(30);
+        let ticket = acquire_ticket_with_test_budget(
+            &catalog,
+            session.as_ref(),
+            ViewSelection::Exact(genesis.identity),
+            lease,
+        )?;
+        let scope = NativeReadSettlementScope {
+            workspace: workspace(),
+            epoch: genesis.identity.epoch,
+            target: genesis.identity,
+        };
+
+        let validation = view_scratch_refusal_budget();
+        check_eq!(
+            catalog.validate_ticket_for_request(session.as_ref(), ticket.lease, &validation),
+            Err(IndexError::ResourceLimited)
+        );
+        check_eq!(validation.first_denial(), Some(WorkBudgetDenial::Memory));
+
+        let renewal = view_scratch_refusal_budget();
+        check_eq!(
+            catalog.renew_ticket_for_request(session.as_ref(), ticket.lease, lease, &renewal),
+            Err(IndexError::ResourceLimited)
+        );
+        check_eq!(renewal.first_denial(), Some(WorkBudgetDenial::Memory));
+
+        let mut release = view_scratch_refusal_budget();
+        check_eq!(
+            catalog.release_held_ticket(session.as_ref(), ticket.lease, scope, &mut release),
+            Err(IndexError::ResourceLimited)
+        );
+        check_eq!(release.first_denial(), Some(WorkBudgetDenial::Memory));
+        check_eq!(fixture_pin_count(&catalog)?, 1);
+        catalog.validate_ticket_for_request(session.as_ref(), ticket.lease, &admission_budget())?;
+        check!(
+            !catalog
+                .release_held_ticket(
+                    session.as_ref(),
+                    ticket.lease,
+                    scope,
+                    &mut admission_budget()
+                )?
+                .has_remaining_target_pins
+        );
+        check_eq!(fixture_pin_count(&catalog)?, 0);
+
+        let _dead_pin = acquire_ticket_with_test_budget(
+            &catalog,
+            session.as_ref(),
+            ViewSelection::Exact(genesis.identity),
+            lease,
+        )?;
+        drop(session);
+        let mut recovery = view_scratch_refusal_budget();
+        check!(matches!(
+            catalog.recover_read_sessions(None, 1, &mut recovery),
+            Err(IndexError::ResourceLimited)
+        ));
+        check_eq!(recovery.first_denial(), Some(WorkBudgetDenial::Memory));
+        check_eq!(fixture_pin_count(&catalog)?, 1);
+
+        let (mut recovery, scratch) = root_scratch_refusal_budget();
+        check!(matches!(
+            catalog.recover_read_sessions(None, 1, &mut recovery),
+            Err(IndexError::ResourceLimited)
+        ));
+        check_eq!(recovery.first_denial(), Some(WorkBudgetDenial::Memory));
+        check_eq!(scratch.reservations.load(Ordering::SeqCst), 2);
+        check!(scratch.refused_while_live.load(Ordering::SeqCst));
+        check_eq!(scratch.live_bytes.load(Ordering::SeqCst), 0);
+        check_eq!(fixture_pin_count(&catalog)?, 1);
+        let recovered = catalog.recover_read_sessions(None, 1, &mut admission_budget())?;
+        check_eq!((recovered.recovered, recovered.pins_released), (1, 1));
+        check_eq!(fixture_pin_count(&catalog)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn read_recovery_preserves_committed_cursor_when_retired_cleanup_lacks_memory() -> TestResult {
+        use quanta_index_core::index::{ReadSessionRef, WorkBudgetDenial};
+
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let orphan = ReadSessionRef {
+            id: 700,
+            fence: 701,
+        };
+        let inserted = catalog.lock()?.execute(
+            "INSERT INTO native_read_session_open_v1(id,fence,row_digest) VALUES (?1,?2,?3)",
+            params![
+                int(orphan.id)?,
+                int(orphan.fence)?,
+                lifetime::creation::open_intent_digest(orphan)?
+            ],
+        )?;
+        check_eq!(inserted, 1);
+        let mut refusal = view_scratch_refusal_budget();
+        check!(matches!(
+            catalog.recover_read_sessions(None, 1, &mut refusal),
+            Err(IndexError::ResourceLimited)
+        ));
+        check_eq!(refusal.first_denial(), Some(WorkBudgetDenial::Memory));
+        let open_intents = || -> Result<i64, Box<dyn Error>> {
+            Ok(catalog.lock()?.query_row(
+                "SELECT COUNT(*) FROM native_read_session_open_v1",
+                [],
+                |row| row.get(0),
+            )?)
+        };
+        check_eq!(open_intents()?, 1);
+
+        let dead = catalog.open_read_session()?;
+        let _ticket = acquire_ticket_with_test_budget(
+            &catalog,
+            dead.as_ref(),
+            ViewSelection::Exact(genesis.identity),
+            Duration::from_secs(30),
+        )?;
+        drop(dead);
+        // Admit both pages and refuse the pin row after the open-intent delete
+        // has been staged. The single Catalog transaction must roll it back.
+        let (mut refusal, scratch) = scratch_refusal_after(2);
+        check!(matches!(
+            catalog.recover_read_sessions(None, 1, &mut refusal),
+            Err(IndexError::ResourceLimited)
+        ));
+        check_eq!(refusal.first_denial(), Some(WorkBudgetDenial::Memory));
+        check_eq!(scratch.reservations.load(Ordering::SeqCst), 3);
+        check!(scratch.refused_while_live.load(Ordering::SeqCst));
+        check_eq!(scratch.live_bytes.load(Ordering::SeqCst), 0);
+        check_eq!(open_intents()?, 1);
+        check_eq!(fixture_pin_count(&catalog)?, 1);
+        let joint_retry = catalog.recover_read_sessions(None, 1, &mut admission_budget())?;
+        check_eq!(
+            (
+                joint_retry.open_intents_reaped,
+                joint_retry.recovered,
+                joint_retry.pins_released,
+                joint_retry.has_more
+            ),
+            (1, 1, 1, false)
+        );
+
+        let session = catalog.open_read_session()?;
+        let binding = session.binding();
+        drop(session);
+        let (mut work, scratch) = root_scratch_refusal_budget();
+        let page = catalog.recover_read_sessions(None, 1, &mut work)?;
+        check_eq!(
+            (page.after, page.recovered, page.pins_released),
+            (Some(binding), 1, 0)
+        );
+        check!(page.has_more);
+        check_eq!(work.first_denial(), Some(WorkBudgetDenial::Memory));
+        check_eq!(scratch.reservations.load(Ordering::SeqCst), 2);
+        check!(!scratch.refused_while_live.load(Ordering::SeqCst));
+        check_eq!(scratch.live_bytes.load(Ordering::SeqCst), 0);
+        let tombstones = || -> Result<i64, Box<dyn Error>> {
+            Ok(catalog.lock()?.query_row(
+                "SELECT COUNT(*) FROM native_read_session_retire_v1",
+                [],
+                |row| row.get(0),
+            )?)
+        };
+        check_eq!(tombstones()?, 1);
+        let retry = catalog.recover_read_sessions(page.after, 1, &mut admission_budget())?;
+        check_eq!(
+            (retry.after, retry.recovered, retry.has_more),
+            (Some(binding), 0, false)
+        );
+        check_eq!(tombstones()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn read_settlement_rechecks_pin_rows_after_an_external_catalog_change() -> TestResult {
+        use quanta_index_core::index::{CatalogReadSettlementPort, NativeReadSettlementScope};
+
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let session = catalog.open_read_session()?;
+        let acquire = || {
+            acquire_ticket_with_test_budget(
+                &catalog,
+                session.as_ref(),
+                ViewSelection::Exact(genesis.identity),
+                Duration::from_secs(30),
+            )
+        };
+        let held = acquire()?;
+        let aliased = acquire()?.lease;
+        let scope = NativeReadSettlementScope {
+            workspace: workspace(),
+            epoch: 7,
+            target: genesis.identity,
+        };
+        check!(
+            catalog
+                .observe_read_settlement(session.as_ref(), scope, &mut admission_budget())?
+                .has_remaining_target_pins
+        );
+
+        let outside = Connection::open(catalog.path())?;
+        outside.pragma_update(None, "foreign_keys", "OFF")?;
+        let canonical = workspace_key(workspace())?;
+        let mut alias = canonical.clone();
+        alias.push(b' ');
+        check_eq!(decode::<WorkspaceKey>(&alias)?, workspace());
+        let ticket = ticket_to_integer(aliased.id)?;
+        let digest = fields_digest(
+            b"qidx.native.pin.v2",
+            &(
+                ticket,
+                int(aliased.session.id)?,
+                int(aliased.session.fence)?,
+                int(aliased.fence)?,
+                int(aliased.expires_at_ms)?,
+                &alias,
+                7_i64,
+                0_i64,
+            ),
+        )?;
+        let mut reader = catalog.lock()?;
+        let snapshot = reader.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let read_workspace = || -> rusqlite::Result<Vec<u8>> {
+            snapshot.query_row(
+                "SELECT workspace FROM native_pin_v1 WHERE ticket=?1",
+                [ticket],
+                |row| row.get(0),
+            )
+        };
+        check_eq!(read_workspace()?, canonical);
+        check_eq!(
+            outside.execute(
+                "UPDATE native_pin_v1 SET workspace=?2,row_digest=?3 WHERE ticket=?1",
+                params![ticket, alias, digest],
+            )?,
+            1
+        );
+        let mut one_read = WorkBudget::new(
+            WorkLimits {
+                reads: 1,
+                writes: 0,
+                bytes: 0,
+                mutations: 0,
+            },
+            Instant::now() + Duration::from_secs(30),
+        );
+        catalog.require_pin_integrity(&snapshot, &mut one_read)?;
+        check_eq!(one_read.usage().reads, 1);
+        check_eq!(read_workspace()?, canonical);
+        snapshot.commit()?;
+        drop(reader);
+        check_eq!(
+            catalog.observe_read_settlement(session.as_ref(), scope, &mut admission_budget()),
+            Err(IndexError::Storage("native pin row shape changed".into()))
+        );
+        check_eq!(
+            catalog.release_held_ticket(
+                session.as_ref(),
+                held.lease,
+                scope,
+                &mut admission_budget()
+            ),
+            Err(IndexError::Storage("native pin row shape changed".into()))
+        );
+        catalog.validate_ticket(session.as_ref(), held.lease)?;
+        check!(matches!(
+            open(root.path()),
+            Err(CoreError::Storage(message)) if message.contains("native pin row shape changed")
+        ));
+
+        check_eq!(
+            outside.execute("DELETE FROM native_pin_v1 WHERE ticket=?1", [ticket])?,
+            1
+        );
+        check!(
+            !catalog
+                .release_held_ticket(session.as_ref(), held.lease, scope, &mut admission_budget())?
+                .has_remaining_target_pins
+        );
         Ok(())
     }
 

@@ -9,10 +9,7 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::{
-    ExactRepoRelativePathV1, GoTestTraceFrameClassV1, HybridQueryRequest, RepoId,
-    validate_public_top_k,
-};
+use crate::{ExactRepoRelativePathV1, HybridQueryRequest, RepoId, validate_public_top_k};
 
 /// Canonical source-frame hints parsed from the raw, public failure excerpt.
 /// Matching text is query-bound; it does not prove an actual call-stack frame.
@@ -145,15 +142,6 @@ impl GoTestTraceSourceFramesV1 {
             });
         }
         None
-    }
-
-    #[must_use]
-    pub fn frame_class(&self) -> GoTestTraceFrameClassV1 {
-        match self.paths.len() {
-            0 => GoTestTraceFrameClassV1::Unresolved,
-            1 => GoTestTraceFrameClassV1::Exact,
-            _ => GoTestTraceFrameClassV1::Ambiguous,
-        }
     }
 
     #[must_use]
@@ -441,6 +429,7 @@ impl<'de> Deserialize<'de> for GoTestTraceFileQueryRequestV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::GoTestTraceFrameClassV1;
     use crate::{QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax};
 
     fn request() -> GoTestTraceFileQueryRequestV1 {

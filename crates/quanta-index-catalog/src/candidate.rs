@@ -57,7 +57,7 @@ use quanta_index_core::{
 };
 
 use crate::connection::{SqliteCatalog, blob32, engine_error};
-use crate::integrity::IntegrityCheckError;
+use crate::integrity_error::IntegrityCheckError;
 use crate::sequence::{SequenceEventKindV1, append_sequence_event, verify_event_reference};
 
 const CANDIDATE_ROW_DOMAIN: &[u8] = b"quanta-index:catalog:repomap-candidate-row:v1\0";

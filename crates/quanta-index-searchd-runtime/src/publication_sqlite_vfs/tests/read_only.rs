@@ -67,6 +67,18 @@ fn observe(root: &Path) -> Result<Vec<ObservedFile>, Box<dyn std::error::Error>>
     Ok(observed)
 }
 
+fn catalog_input_sizes(root: &Path) -> Result<(u64, u64), Box<dyn std::error::Error>> {
+    let main = catalog_dir(root).join(CATALOG_FILE_NAME);
+    let wal = main.with_file_name(format!("{CATALOG_FILE_NAME}-wal"));
+    let main_bytes = fs::metadata(main)?.len();
+    let wal_bytes = match fs::metadata(wal) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error.into()),
+    };
+    Ok((main_bytes, wal_bytes))
+}
+
 #[test]
 fn clean_catalog_verification_preserves_every_entry_and_denies_write_budget() -> TestResult {
     let mut nonce = [0; 32];
@@ -91,6 +103,109 @@ fn clean_catalog_verification_preserves_every_entry_and_denies_write_budget() ->
     require(
         observe(&fixture.root)? == before,
         "clean verification changed source files",
+    )?;
+    fixture.vfs.drain_retirements()?;
+    Ok(())
+}
+
+#[test]
+fn verification_refuses_oversized_valid_schema_before_catalog_decode() -> TestResult {
+    const COMMENT_BYTES: usize = 256 * 1024;
+    let fixture = fixture_with_boot_input(|root| {
+        drop(SqliteCatalog::open(root, Duration::ZERO)?);
+        let path = catalog_dir(root).join(CATALOG_FILE_NAME);
+        let connection = Connection::open(&path)?;
+        let ddl = format!(
+            "CREATE TABLE oversized_schema_guard (value INTEGER /*{}*/)",
+            "x".repeat(COMMENT_BYTES)
+        );
+        connection.execute_batch(&ddl)?;
+        drop(connection);
+
+        // The DDL is valid and its body remains in the persisted schema.
+        let ordinary = Connection::open(&path)?;
+        let stored_bytes: i64 = ordinary.query_row(
+            "SELECT octet_length(sql) FROM sqlite_schema WHERE name='oversized_schema_guard'",
+            [],
+            |row| row.get(0),
+        )?;
+        let nonce: Vec<u8> = ordinary.query_row(
+            "SELECT root_nonce FROM native_capture_format_v1 WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )?;
+        require(
+            usize::try_from(stored_bytes)? > COMMENT_BYTES && nonce.len() == 32,
+            "ordinary SQLite did not read the valid oversized stored DDL",
+        )?;
+        drop(ordinary);
+        privatize(root)?;
+        Ok(16 * 1024 * 1024)
+    })?;
+    let before = observe(&fixture.root)?;
+    let refusal = verify_native_boot_catalog(&fixture.root, fixture.vfs.as_ref(), &mut budget()?);
+    require(
+        matches!(refusal, Err(IndexError::Storage(message)) if message.contains("too big")),
+        "Catalog verification did not refuse the oversized SQLite schema row",
+    )?;
+    require(
+        observe(&fixture.root)? == before,
+        "oversized schema refusal changed Catalog input bytes",
+    )?;
+    fixture.vfs.drain_retirements()?;
+    Ok(())
+}
+
+#[test]
+fn verification_refuses_aggregate_oversized_valid_schema() -> TestResult {
+    const OBJECTS: usize = 180;
+    const COMMENT_BYTES: usize = 1536;
+    let fixture = fixture_with_boot_input(|root| {
+        drop(SqliteCatalog::open(root, Duration::ZERO)?);
+        let path = catalog_dir(root).join(CATALOG_FILE_NAME);
+        let connection = Connection::open(&path)?;
+        connection.execute_batch("BEGIN;")?;
+        let comment = "x".repeat(COMMENT_BYTES);
+        for index in 0..OBJECTS {
+            connection.execute_batch(&format!(
+                "CREATE TABLE aggregate_schema_guard_{index:03} (value INTEGER /*{comment}*/);"
+            ))?;
+        }
+        connection.execute_batch("COMMIT;")?;
+        drop(connection);
+
+        let ordinary = Connection::open(&path)?;
+        let (objects, largest, combined): (i64, i64, i64) = ordinary.query_row(
+            "SELECT count(*),max(octet_length(sql)),sum(octet_length(sql))
+             FROM sqlite_schema WHERE name LIKE 'aggregate_schema_guard_%'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let nonce: Vec<u8> = ordinary.query_row(
+            "SELECT root_nonce FROM native_capture_format_v1 WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )?;
+        require(
+            usize::try_from(objects)? == OBJECTS
+                && usize::try_from(largest)? < 2048
+                && usize::try_from(combined)? > 256 * 1024
+                && nonce.len() == 32,
+            "ordinary SQLite did not retain the valid bounded rows and oversized schema total",
+        )?;
+        drop(ordinary);
+        privatize(root)?;
+        Ok(16 * 1024 * 1024)
+    })?;
+    let before = observe(&fixture.root)?;
+    let refusal = verify_native_boot_catalog(&fixture.root, fixture.vfs.as_ref(), &mut budget()?);
+    require(
+        matches!(refusal, Err(IndexError::Storage(message)) if message.contains("too big")),
+        "Catalog verification accepted an oversized schema made of bounded DDL rows",
+    )?;
+    require(
+        observe(&fixture.root)? == before,
+        "aggregate schema refusal changed Catalog input bytes",
     )?;
     fixture.vfs.drain_retirements()?;
     Ok(())
@@ -214,6 +329,50 @@ fn committed_crash_wal_is_read_without_shm_creation_or_source_mutation() -> Test
             read.root_nonce == [7; 32],
             "verifier omitted the committed crash WAL",
         )?;
+        {
+            let (main_bytes, wal_bytes) = catalog_input_sizes(&fixture.root)?;
+            let admitted_wal_bytes = wal_bytes.checked_sub(1).ok_or("fixture WAL was empty")?;
+            let _scope = fixture.vfs.enter_read_only_scope(
+                &RequestBudgetV1::unbounded(),
+                main_bytes,
+                admitted_wal_bytes,
+            );
+            let path = catalog_dir(&fixture.root).join(CATALOG_FILE_NAME);
+            let opened = Connection::open_with_flags_and_vfs(
+                path,
+                OpenFlags::SQLITE_OPEN_READ_WRITE,
+                fixture.vfs.name(),
+            );
+            let error = match opened {
+                Err(error) => Some(error),
+                Ok(connection) => {
+                    let configured = connection.set_db_config(
+                        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+                        true,
+                    )?;
+                    assert!(configured, "fixture did not disable checkpoint-on-close");
+                    connection.execute_batch("PRAGMA locking_mode=EXCLUSIVE;")?;
+                    let error = connection
+                        .query_row(
+                            "SELECT root_nonce FROM native_capture_format_v1 WHERE singleton=1",
+                            [],
+                            |row| row.get::<_, Vec<u8>>(0),
+                        )
+                        .err();
+                    connection.close().map_err(|(_connection, error)| error)?;
+                    error
+                }
+            };
+            require(
+                matches!(
+                    error,
+                    Some(rusqlite::Error::SqliteFailure(failure, _))
+                        if failure.extended_code == rusqlite::ffi::SQLITE_IOERR_FSTAT
+                            || failure.extended_code == rusqlite::ffi::SQLITE_IOERR_READ
+                ),
+                "WAL recovery did not refuse bytes beyond its admitted size",
+            )?;
+        }
         require(
             observe(&fixture.root)? == before,
             "WAL verification changed DB/WAL/SHM entries or bytes",
@@ -287,9 +446,11 @@ fn verification_native_handles_refuse_creation_and_writes_even_without_query_onl
     })?;
     let before = observe(&fixture.root)?;
     {
-        let _scope = fixture
-            .vfs
-            .enter_read_only_scope(&RequestBudgetV1::unbounded());
+        let (main_bytes, wal_bytes) = catalog_input_sizes(&fixture.root)?;
+        let _scope =
+            fixture
+                .vfs
+                .enter_read_only_scope(&RequestBudgetV1::unbounded(), main_bytes, wal_bytes);
         let missing = fixture.root.join("must-not-exist.sqlite");
         require(
             Connection::open_with_flags_and_vfs(
@@ -322,6 +483,78 @@ fn verification_native_handles_refuse_creation_and_writes_even_without_query_onl
     require(
         observe(&fixture.root)? == before,
         "native write refusal mutated source files",
+    )?;
+    fixture.vfs.drain_retirements()?;
+    Ok(())
+}
+
+#[test]
+fn verification_scope_refuses_same_inode_main_growth_after_admission() -> TestResult {
+    let fixture = fixture_with_boot_input(|root| {
+        drop(SqliteCatalog::open(root, Duration::ZERO)?);
+        privatize(root)?;
+        Ok(16 * 1024 * 1024)
+    })?;
+    let path = catalog_dir(&fixture.root).join(CATALOG_FILE_NAME);
+    let (main_bytes, wal_bytes) = catalog_input_sizes(&fixture.root)?;
+    let original_inode = fs::metadata(&path)?.ino();
+    let _scope =
+        fixture
+            .vfs
+            .enter_read_only_scope(&RequestBudgetV1::unbounded(), main_bytes, wal_bytes);
+    let open = || {
+        Connection::open_with_flags_and_vfs(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE,
+            fixture.vfs.name(),
+        )
+    };
+    let connection = open()?;
+    let configured = connection.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        true,
+    )?;
+    assert!(configured, "fixture did not disable checkpoint-on-close");
+    connection.execute_batch("PRAGMA locking_mode=EXCLUSIVE;")?;
+    let root_nonce: Vec<u8> = connection.query_row(
+        "SELECT root_nonce FROM native_capture_format_v1 WHERE singleton=1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(root_nonce.len(), 32);
+    connection.close().map_err(|(_connection, error)| error)?;
+
+    let grown = main_bytes
+        .checked_add(4096)
+        .ok_or("fixture main size overflow")?;
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)?
+        .set_len(grown)?;
+    let metadata = fs::metadata(&path)?;
+    require(
+        metadata.ino() == original_inode && metadata.len() == grown,
+        "fixture did not grow the admitted main inode",
+    )?;
+    let refused = match open() {
+        Err(_) => true,
+        Ok(connection) => {
+            let read = connection
+                .execute_batch("PRAGMA locking_mode=EXCLUSIVE;")
+                .and_then(|_| {
+                    connection.query_row(
+                        "SELECT root_nonce FROM native_capture_format_v1 WHERE singleton=1",
+                        [],
+                        |row| row.get::<_, Vec<u8>>(0),
+                    )
+                });
+            connection.close().map_err(|(_connection, error)| error)?;
+            read.is_err()
+        }
+    };
+    require(
+        refused,
+        "verification read accepted growth of the admitted main inode",
     )?;
     fixture.vfs.drain_retirements()?;
     Ok(())
@@ -370,7 +603,10 @@ fn native_verification_reads_observe_the_original_cancellation_without_a_vm_hook
     let before = observe(&fixture.root)?;
     let request = RequestBudgetV1::until(deadline()?);
     {
-        let _scope = fixture.vfs.enter_read_only_scope(&request);
+        let (main_bytes, wal_bytes) = catalog_input_sizes(&fixture.root)?;
+        let _scope = fixture
+            .vfs
+            .enter_read_only_scope(&request, main_bytes, wal_bytes);
         let connection = Connection::open_with_flags_and_vfs(
             catalog_dir(&fixture.root).join(CATALOG_FILE_NAME),
             OpenFlags::SQLITE_OPEN_READ_WRITE,
@@ -916,11 +1152,12 @@ fn legacy_history_snapshot_visits_only_the_requested_generation() -> TestResult 
     drop(quiescent);
 
     let mut visits = 0;
+    let mut complete_budget = legacy_original_budget()?;
     visit_legacy_history_snapshot_rows_v1(
         &fixture.root,
         fixture.vfs.as_ref(),
         &generation,
-        &mut legacy_original_budget()?,
+        &mut complete_budget,
         &mut |row, _budget| {
             let matches_row = row.key.generation == generation
                 && match visits {
@@ -946,6 +1183,27 @@ fn legacy_history_snapshot_visits_only_the_requested_generation() -> TestResult 
         },
     )?;
     require(visits == 2, "Legacy History snapshot omitted expected rows")?;
+
+    let last_byte = complete_budget
+        .usage()
+        .bytes
+        .checked_sub(1)
+        .ok_or("History row read did not charge bytes")?;
+    let mut partial_visits = 0;
+    let limited = visit_legacy_history_snapshot_rows_v1(
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        &generation,
+        &mut legacy_original_budget_with_work_bytes(last_byte)?,
+        &mut |_, _| {
+            partial_visits += 1;
+            Ok(())
+        },
+    );
+    require(
+        matches!(limited, Err(IndexError::ResourceLimited)) && partial_visits == 1,
+        "a partial row scan lost its typed work refusal",
+    )?;
 
     let mut absent = generation;
     absent.generation = ManifestGeneration::new(20);
@@ -975,7 +1233,7 @@ fn legacy_history_snapshot_visits_only_the_requested_generation() -> TestResult 
 #[test]
 fn legacy_history_source_requires_exact_original_ack_and_complete_inventory() -> TestResult {
     use quanta_index_catalog::{
-        LegacyHistoryProducerScopeV1, LegacyHistorySourceProofV1,
+        LegacyHistoryCheckpointPageV1, LegacyHistoryProducerScopeV1, LegacyHistorySourceProofV1,
         observe_legacy_history_snapshot_v1, verify_legacy_history_source_inventory_v1,
         verify_legacy_history_sources_v1, visit_legacy_history_checkpoint_pages_v1,
         visit_legacy_history_generation_keys_v1,
@@ -992,7 +1250,7 @@ fn legacy_history_source_requires_exact_original_ack_and_complete_inventory() ->
     use quanta_index_core::{
         AuxiliaryAuthorityCatalogPort, AuxiliaryDomainV1, AuxiliaryGenerationKeyV1,
         AuxiliaryMutationBatchV1, AuxiliaryRowFamilyV1, AuxiliaryRowKeyV1, AuxiliaryRowMutationV1,
-        AuxiliaryRowV1, ClaimOutcomeV1, CoreError, IdempotencyCatalogPort, IdempotencyKeyV1,
+        AuxiliaryRowV1, ClaimOutcomeV1, IdempotencyCatalogPort, IdempotencyKeyV1,
         domains::auxiliary::HistorySnapshotDigestV1,
     };
 
@@ -1140,6 +1398,26 @@ fn legacy_history_source_requires_exact_original_ack_and_complete_inventory() ->
             && snapshot.terminal_receipt == input.publications[0].ack,
         "independent History snapshot disagrees with the persisted epoch, bytes or ACK",
     )?;
+    // Reject after a real page reaches the sink. The provisional page may
+    // have been sent, but the caller must receive no completed observation.
+    let mut provisional_pages = 0;
+    let limited = visit_legacy_history_checkpoint_pages_v1(
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        &generation,
+        &mut legacy_original_budget()?,
+        &mut |_, budget| {
+            provisional_pages += 1;
+            budget.charge(quanta_index_core::index::WorkUsage {
+                bytes: u64::MAX,
+                ..Default::default()
+            })
+        },
+    );
+    require(
+        matches!(limited, Err(IndexError::ResourceLimited)) && provisional_pages == 1,
+        "provisional History export changed the original work refusal",
+    )?;
     let mut page_count = 0_u32;
     let mut restored_rows = Vec::new();
     let paged = visit_legacy_history_checkpoint_pages_v1(
@@ -1148,16 +1426,21 @@ fn legacy_history_source_requires_exact_original_ack_and_complete_inventory() ->
         &generation,
         &mut legacy_original_budget()?,
         &mut |page, _budget| {
+            let LegacyHistoryCheckpointPageV1::V1 { page, .. } = page else {
+                return Err(IndexError::Storage(
+                    "small Legacy History fixture exported a large row".into(),
+                ));
+            };
             page_count += 1;
             if page.ordinal != page_count
                 || page.generation != generation
                 || page.validate_shape().is_err()
                 || serde_json::to_vec(page)
-                    .map_err(|error| CoreError::Storage(error.to_string()))?
+                    .map_err(|error| IndexError::Storage(error.to_string()))?
                     .len()
                     > quanta_index_contract::index::MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1
             {
-                return Err(CoreError::Storage(
+                return Err(IndexError::Storage(
                     "Legacy History export page differs".into(),
                 ));
             }
@@ -1499,8 +1782,14 @@ fn legacy_history_source_requires_exact_original_ack_and_complete_inventory() ->
             &next,
             &mut legacy_original_budget()?,
             &mut |page, _| {
+                let quanta_index_catalog::LegacyHistoryCheckpointPageV1::V1 { page, .. } = page
+                else {
+                    return Err(IndexError::Storage(
+                        "small multi-revision History fixture exported a large row".into(),
+                    ));
+                };
                 if page.generation != next || page.validate_shape().is_err() {
-                    return Err(CoreError::Storage(
+                    return Err(IndexError::Storage(
                         "wrong multi-revision History page".into(),
                     ));
                 }
@@ -1654,7 +1943,11 @@ fn legacy_quiescence_refuses_live_other_scope_but_allows_inactive_history() -> T
                         }
                     }
                     2 | 3 | 6 | 7 | 8 => {
-                        let repo_id = RepoId::new(if kind == 6 { "foreign-repo" } else { "legacy-repo" })?;
+                        let repo_id = RepoId::new(if kind == 6 {
+                            "foreign-repo"
+                        } else {
+                            "legacy-repo"
+                        })?;
                         let revision_id = RevisionId::new("other-revision")?;
                         let generation = AuxiliaryGenerationKeyV1 {
                             repo_id: repo_id.clone(),
@@ -1719,6 +2012,43 @@ fn legacy_quiescence_refuses_live_other_scope_but_allows_inactive_history() -> T
             require(
                 matches!(observed, Err(IndexError::Conflict)),
                 "foreign or unresolved Legacy authority outside current scope was accepted",
+            )?;
+        }
+        if kind == 1 {
+            let mut source_rows = 0_u64;
+            let mut repomap_heads = 0_u64;
+            let census = quanta_index_catalog::visit_legacy_active_catalog_heads_v1(
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                &mut legacy_original_budget()?,
+                &mut |source_key, receipt, sequence, _| {
+                    if source_key != &key
+                        || receipt.batch_digest != key.batch_digest
+                        || sequence == 0
+                    {
+                        return Err(IndexError::DigestConflict);
+                    }
+                    source_rows += 1;
+                    Ok(())
+                },
+                &mut |candidate, activation, _| {
+                    if candidate.repo_id != "legacy-repo"
+                        || candidate.revision_id != "other-revision"
+                        || candidate.manifest_generation != 18
+                        || activation.epoch != 1
+                    {
+                        return Err(IndexError::DigestConflict);
+                    }
+                    repomap_heads += 1;
+                    Ok(())
+                },
+            )?;
+            require(
+                census.published_search_corpus_rows == 1
+                    && census.active_repomap_heads == 1
+                    && source_rows == 1
+                    && repomap_heads == 1,
+                "complete Legacy census lost the real Source ACK or sibling RepoMap head",
             )?;
         }
         require(

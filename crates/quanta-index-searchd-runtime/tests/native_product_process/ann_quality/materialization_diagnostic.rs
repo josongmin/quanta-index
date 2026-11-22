@@ -351,7 +351,8 @@ fn run_phase_diagnostic(rows: u64, materialize: bool, prefix_target: Option<usiz
     });
     writeln!(
         std::io::stderr().lock(),
-        "native-ann-phase rows={rows} materialize={materialize} trace_record={record}"
+        "native-ann-phase rows={rows} materialize={materialize} trace_record={record} trace_path={:?}",
+        record.then_some(trace.as_path()),
     )?;
     let mut daemon = Daemon::start_with_api_key_and_trace(
         &config_path,
@@ -591,6 +592,7 @@ fn wait_for_completed_prefix(
             };
             Ok(status)
         });
+        let observed_at = Instant::now();
         let completed = completion.completed();
         cost.observe_completed(completed);
         let _all_completed = polled?;
@@ -613,6 +615,7 @@ fn wait_for_completed_prefix(
                 .ok_or("4K prefix progress report overflow")?;
         }
         if completed >= target {
+            cost.observe_receipts_complete(observed_at);
             cost.mark_success();
             writeln!(
                 std::io::stderr().lock(),
@@ -623,7 +626,7 @@ fn wait_for_completed_prefix(
         }
         let advanced = completed > previous_completed;
         previous_completed = completed;
-        thread::sleep(
+        cost.pause_before_receipts(
             pace.after_page(advanced, deadline.saturating_duration_since(Instant::now())),
         );
     }

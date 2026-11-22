@@ -190,6 +190,13 @@ impl<'a> ScopedReads<'a> {
 }
 
 impl PersistentMapPort for ScopedReads<'_> {
+    fn cold_scan_memory_credit_limits(
+        &self,
+        max_entries: usize,
+    ) -> Result<Option<quanta_index_core::index::MemoryCreditLimits>, IndexError> {
+        super::cold_scan_memory_credit_limits(self.store, max_entries)
+    }
+
     fn lookup(
         &self,
         root: MapRoot,
@@ -226,6 +233,12 @@ impl PersistentMapPort for ScopedReads<'_> {
         })
     }
 
+    fn last_entry(&self, root: MapRoot, budget: &mut WorkBudget) -> Result<MapPage, IndexError> {
+        FileObjectStore::last_entry_with(root, budget, |reference, budget| {
+            self.read_node(root, reference, budget)
+        })
+    }
+
     fn try_visit_scan_pages(
         &self,
         root: MapRoot,
@@ -235,7 +248,10 @@ impl PersistentMapPort for ScopedReads<'_> {
         FileObjectStore::try_visit_scan_pages_with(
             root,
             budget,
-            |reference, budget| self.read_node(root, reference, budget),
+            // The continuation visits each canonical node once. Inserting
+            // these reads into the long-lived scoped cache would retain a
+            // window child's Original lease after the child closes.
+            |reference, budget| self.store.read_node(reference, budget),
             visitor,
         )
     }

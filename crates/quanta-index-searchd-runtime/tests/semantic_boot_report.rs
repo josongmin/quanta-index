@@ -1,214 +1,114 @@
-//! LDB-E2E-01 observability: the assembled runtime exposes a populated,
-//!
-//! payload-free `SemanticBootReport` (seeded sealed-generation count and
-//! cold-boot seed timing).
+//! LDB-E2E-01 semantic seed counts and orphan classification on Legacy boot.
 
 #![forbid(unsafe_code)]
-#![expect(
-    clippy::expect_used,
-    reason = "integration-test helpers outside `#[test]` fns assert fixture setup with `expect`; the workspace already permits this inside test fns and a helper that cannot set up its fixture has no caller to propagate to"
-)]
 
-use std::path::Path;
+use std::{error::Error, fs, path::Path};
 
-use quanta_index_contract::{
-    BatchIngestMode, CapabilityStatusV1, EmbeddingDistanceMetric, EmbeddingId,
-    EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, ManifestGeneration,
-    OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchPlaneTrackKind, SearchScopeKey,
-    SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
-    SourceFileKey, SourceRoleV1, lex::LanguageCode,
+use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+use quanta_index_core::{GenerationQuarantineReasonV1, GenerationStorageKeyV1};
+use quanta_index_sdk::QuantaIndex;
+use quanta_index_searchd_harness::{
+    legacy_reference::{LegacySearchdBinary, publish_legacy_source},
+    private_tempdir,
+    scale_runtime_policy::DEFAULT_HISTORY_MAX_GENERATIONS,
 };
-use quanta_index_core::GenerationStorageKeyV1;
-use quanta_index_core::domains::generation::GenerationQuarantineReasonV1;
-use quanta_index_searchd_harness::E2eRuntime;
-use quanta_index_semantic::{SemanticAdapter, build_resident_batch_v1};
 
-type TestResult = Result<(), Box<dyn std::error::Error>>;
+type TestResult = Result<(), Box<dyn Error>>;
 
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts the assembled boot report via assert macros"
-)]
-fn fresh_runtime_exposes_empty_semantic_boot_report() -> TestResult {
-    // The boot report comes from the harness-owned runtime (TOPT-03):
-    // sockets and retention are the harness builder's, and the daemon
-    // start that the report describes is the same start under test.
-    let mut runtime = E2eRuntime::boot()?;
-    runtime.start()?;
-    let report = runtime
-        .semantic_boot_report()
-        .ok_or("a started daemon reports its semantic boot")?;
-
-    // A fresh state root has no durable generations.
-    assert_eq!(report.seed.sealed_generations, 0);
-    runtime.stop()?;
-    Ok(())
-}
-
-fn fixture_batch(generation: ManifestGeneration) -> Result<SemanticIngestBatch, String> {
-    let language =
-        LanguageCode::new("rust").map_err(|err| format!("fixture language invalid: {err}"))?;
-    Ok(SemanticIngestBatch {
-        repo_id: RepoId::new("repo-bootrep").expect("static fixture ID satisfies canonical policy"),
-        revision_id: RevisionId::new("rev-bootrep")
-            .expect("static fixture ID satisfies canonical policy"),
-        generation,
-        base_generation: None,
-        manifest_digest: format!("manifest:{}", generation.get()),
-        batch_digest: format!("batch:{}", generation.get()),
-        mode: BatchIngestMode::ReplaceGeneration,
-        model_contract: EmbeddingModelContract {
-            model_id: "text-embed".to_string().into_boxed_str(),
-            model_version: Some("1".to_string().into_boxed_str()),
-            dimension: 3,
-            normalization: EmbeddingNormalization::L2Unit,
-            distance_metric: EmbeddingDistanceMetric::Cosine,
-            policy_digest: "policy:bootrep".to_string().into_boxed_str(),
-            view_policy_digest: None,
-        },
-        required_corpora: vec![SemanticCorpusKindV1::SymbolCard],
-        corpus_policy_digest: Some("policy:bootrep".to_string()),
-        clear_surfaces: Vec::new(),
-        replace_scopes: vec![SemanticReplaceScope {
-            scope: SearchScopeKey {
-                doc_surface: SearchScopeSurface::Chunk,
-                source_file: SourceFileKey {
-                    source_repo_id: RepoId::new("repo-bootrep")
-                        .expect("static fixture ID satisfies canonical policy"),
-                    repo_relative_path: RepoRelativePath::new("x.rs"),
-                },
-            },
-            scope_digest: "scope:x.rs".to_string(),
-            embeddings: vec![EmbeddingRecord {
-                embedding_id: EmbeddingId::new("emb-1"),
-                record_id: "record-1".to_string().into_boxed_str(),
-                owner_kind: OwnerDocKind::Chunk,
-                owner_id: "owner-1".to_string().into_boxed_str(),
-                corpus_kind: SemanticCorpusKindV1::SymbolCard,
-                parent_owner_id: None,
-                source_doc_id: "doc-1".to_string().into_boxed_str(),
-                source_file: SourceFileKey {
-                    source_repo_id: RepoId::new("repo-bootrep")
-                        .expect("static fixture ID satisfies canonical policy"),
-                    repo_relative_path: RepoRelativePath::new("x.rs"),
-                },
-                language,
-                package: None,
-                symbol_kind: None,
-                visibility: None,
-                source_role: SourceRoleV1::CardText,
-                generated: false,
-                capability_status: CapabilityStatusV1::Full,
-                authority_digest: "auth:1".to_string().into_boxed_str(),
-                render_policy_digest: "render:1".to_string().into_boxed_str(),
-                card_schema_version: 1,
-                start_byte: 0,
-                end_byte: 8,
-                start_line: 1,
-                end_line: 2,
-                snippet: "fn x() {}".to_string().into_boxed_str(),
-                embedding_input_digest: "in:1".to_string().into_boxed_str(),
-                vector_digest: "vec:1".to_string().into_boxed_str(),
-                view_kind: "raw_chunk".to_string().into_boxed_str(),
-                vector: vec![1.0_f32, 0.0, 0.0],
-            }],
-            cluster_memberships: Vec::new(),
-        }],
-        tombstone_scopes: Vec::new(),
-        seal: true,
-    })
-}
-
-/// A corrupted generation nothing activates and nothing retains is an
-/// orphan, not fatal and not seeded.
-///
-/// Boot proves the active set only (QI-BB-026), and this state root has
-/// none. The generation was built straight through the adapter, so the
-/// durable search-corpus authority never recorded it: boot lists it as an
-/// orphan (QI-BB-003) without looking at its content, seeds nothing, and a
-/// pin to it answers `UNKNOWN_GENERATION`. The door that opens a retained
-/// corrupt generation refuses it; `e2e_boot_quarantine` proves that end to
-/// end.
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts the assembled boot report on an inactive corrupted generation via assert macros"
-)]
-fn runtime_boot_inventories_a_corrupted_inactive_semantic_generation() -> TestResult {
-    let temp = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = temp.path().to_path_buf();
-    let semantic_root = state_root.join("indexes").join("semantic");
-    let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
-    let generation = ManifestGeneration::new(9);
-    build_resident_batch_v1(&adapter, &fixture_batch(generation)?)?;
-
-    let manifest_path = GenerationStorageKeyV1::for_repo_revision(
-        &RepoId::new("repo-bootrep").expect("static fixture ID satisfies canonical policy"),
-        &RevisionId::new("rev-bootrep").expect("static fixture ID satisfies canonical policy"),
-    )
-    .generation_dir(&semantic_root, generation)
-    .join("semantic-manifest.cbor");
-    let manifest_bytes = std::fs::read(&manifest_path)?;
-    let mut value: ciborium::value::Value = ciborium::from_reader(&manifest_bytes[..])
-        .map_err(|err| format!("decode manifest cbor: {err}"))?;
-    let mut bumped = false;
-    if let ciborium::value::Value::Map(entries) = &mut value {
-        for (key, val) in entries.iter_mut() {
-            if key.as_text() == Some("row_count") {
-                *val = ciborium::value::Value::Integer(ciborium::value::Integer::from(99_u64));
-                bumped = true;
-                break;
-            }
+fn require_empty_semantic_seed(client: &QuantaIndex, orphans: u32) -> TestResult {
+    // SemanticBootReport uses the same TrackInventoryReport as these gauges.
+    let snapshot = client.observability().metrics_snapshot()?;
+    for (name, expected) in [
+        ("boot_semantic_sealed_generations", 0.0_f64),
+        ("boot_semantic_quarantined_generations", 0.0),
+        ("boot_semantic_orphaned_generations", f64::from(orphans)),
+        ("boot_active_pairs_validated", 0.0),
+    ] {
+        let point = snapshot.gauges.iter().find(|gauge| gauge.name == name);
+        if point.map(|gauge| gauge.value.to_bits()) != Some(expected.to_bits()) {
+            return Err(format!("{name} should be {expected}, got {point:?}").into());
         }
     }
-    if !bumped {
-        return Err("expected `row_count` field in manifest CBOR".into());
-    }
-    let mut tampered = Vec::new();
-    ciborium::into_writer(&value, &mut tampered)
-        .map_err(|err| format!("encode manifest cbor: {err}"))?;
-    std::fs::write(&manifest_path, &tampered)?;
-
-    // The harness serves the caller-owned root the adapter seeded
-    // above (TOPT-03); the daemon start under test is a real start, so
-    // its reports describe bound sockets, not phantom paths.
-    let mut runtime = E2eRuntime::boot_in(&state_root)?;
-    runtime.start()?;
-    let report = runtime
-        .semantic_boot_report()
-        .ok_or("a started daemon reports its semantic boot")?;
-    assert_eq!(report.seed.sealed_generations, 0);
-    assert_eq!(report.seed.quarantined_generations, 0);
-    let inventory = runtime
-        .boot_inventory()
-        .ok_or("a started daemon reports its boot inventory")?;
-    assert_eq!(inventory.semantic.sealed_generations, 0);
-    assert!(inventory.semantic.quarantined.is_empty());
-    // The runtime names directories under the canonical state root.
-    let generation_dir = std::fs::canonicalize(
-        manifest_path
-            .parent()
-            .ok_or("the manifest lives in its generation directory")?,
-    )?;
-    let orphaned: Vec<(SearchPlaneTrackKind, &Path, GenerationQuarantineReasonV1)> = inventory
-        .semantic
-        .orphaned
-        .iter()
-        .map(|entry| (entry.track, entry.path.as_path(), entry.reason))
-        .collect();
-    assert_eq!(
-        orphaned,
-        vec![(
-            SearchPlaneTrackKind::Semantic,
-            generation_dir.as_path(),
-            GenerationQuarantineReasonV1::Orphaned
-        )]
-    );
-    assert_eq!(
-        inventory.active_pairs_validated, 0,
-        "nothing is active, so boot proves nothing"
-    );
-    runtime.stop()?;
     Ok(())
+}
+
+#[test]
+fn fresh_runtime_exposes_empty_semantic_boot_report() -> TestResult {
+    let root = private_tempdir()?;
+    let binary = LegacySearchdBinary::from_environment()?;
+    let daemon = binary.start(root.path(), DEFAULT_HISTORY_MAX_GENERATIONS)?;
+    let client = daemon.connect()?;
+    require_empty_semantic_seed(&client, 0)?;
+    drop(client);
+    daemon.stop()?;
+    binary.verify()
+}
+
+fn alter_row_count(manifest_path: &Path) -> TestResult {
+    let bytes = fs::read(manifest_path)?;
+    let mut value: ciborium::Value = ciborium::from_reader(bytes.as_slice())?;
+    let ciborium::Value::Map(entries) = &mut value else {
+        return Err("expected a semantic scope manifest map".into());
+    };
+    let (_, row_count) = entries
+        .iter_mut()
+        .find(|(key, _)| key.as_text() == Some("row_count"))
+        .ok_or("expected row_count in the scope manifest")?;
+    *row_count = ciborium::Value::Integer(99_u64.into());
+    let mut tampered = Vec::new();
+    ciborium::into_writer(&value, &mut tampered)?;
+    fs::write(manifest_path, tampered)?;
+    Ok(())
+}
+
+/// A bad orphan is listed by its physical path and stays out of readiness.
+/// Move only the semantic directory from a stopped donor. The receiving root
+/// has never published that generation and has no activation or seal record.
+#[test]
+fn runtime_boot_inventories_a_corrupted_inactive_semantic_generation() -> TestResult {
+    let donor = private_tempdir()?;
+    let root = private_tempdir()?;
+    let binary = LegacySearchdBinary::from_environment()?;
+    let repo = RepoId::new("repo-bootrep")?;
+    let revision = RevisionId::new("rev-bootrep")?;
+    let generation = ManifestGeneration::new(9);
+    let producer = binary.start(donor.path(), DEFAULT_HISTORY_MAX_GENERATIONS)?;
+    let client = producer.connect()?;
+    let (_head, receipt) = publish_legacy_source(
+        &client,
+        &repo,
+        &revision,
+        generation.get(),
+        None,
+        &[("x.rs", "fn x() {}", 1)],
+        None,
+    )?;
+    if !receipt.sealed || receipt.accepted_semantic_replace_scopes != 1 {
+        return Err(format!("orphan donor did not seal one semantic file: {receipt:?}").into());
+    }
+    drop(client);
+    producer.stop()?;
+    let family = GenerationStorageKeyV1::for_repo_revision(&repo, &revision);
+    let track = Path::new("indexes/semantic");
+    let original = family.generation_dir(&donor.path().join(track), generation);
+    let orphan = family.generation_dir(&root.path().join(track), generation);
+    fs::create_dir_all(orphan.parent().ok_or("orphan has no generation family")?)?;
+    fs::rename(original, &orphan)?;
+    alter_row_count(&orphan.join("semantic-manifest.cbor"))?;
+
+    let daemon = binary.start(root.path(), DEFAULT_HISTORY_MAX_GENERATIONS)?;
+    let client = daemon.connect()?;
+    require_empty_semantic_seed(&client, 1)?;
+    let inventory = client.quarantine().inventory()?;
+    let [entry] = inventory.semantic.as_slice() else {
+        return Err(format!("boot must list exactly one semantic orphan: {inventory:?}").into());
+    };
+    if Path::new(&entry.path) != fs::canonicalize(&orphan)?
+        || entry.reason != GenerationQuarantineReasonV1::Orphaned.as_code_str()
+    {
+        return Err(format!("boot listed the wrong semantic orphan: {entry:?}").into());
+    }
+    drop(client);
+    daemon.stop()?;
+    binary.verify()
 }

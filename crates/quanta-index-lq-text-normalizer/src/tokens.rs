@@ -178,6 +178,12 @@ impl<L> TokenCursor<'_, L> {
         self.text.as_ref()
     }
 
+    /// Number of NFC bytes left after the last accepted run and its delimiter.
+    #[must_use]
+    pub fn remaining_bytes(&self) -> usize {
+        self.text.len().saturating_sub(self.offset)
+    }
+
     /// Scan the same normalized backing again without cloning its memory lease.
     pub fn rewind(&mut self) {
         self.offset = 0;
@@ -186,39 +192,94 @@ impl<L> TokenCursor<'_, L> {
 
     /// Return the next run without materializing later runs.
     pub fn next_run(&mut self) -> Option<TokenRun<'_>> {
-        let remaining = self.text.get(self.offset..)?;
+        match self.try_next_run_if(|_run, _text| Ok::<_, core::convert::Infallible>(true)) {
+            Ok(run) => run,
+            Err(never) => match never {},
+        }
+    }
+
+    /// Inspect one run and commit its progress only when the predicate accepts.
+    /// A refusal or predicate error leaves that run available to the next scan.
+    /// The predicate borrows the same NFC backing; no cursor or lease is cloned.
+    pub fn try_next_run_if<E>(
+        &mut self,
+        accept: impl FnOnce(TokenRun<'_>, &str) -> Result<bool, E>,
+    ) -> Result<Option<TokenRun<'_>>, E> {
+        self.try_scan_run(accept, None::<fn() -> Result<(), E>>)
+    }
+
+    /// Scan with a checkpoint at each 4 KiB boundary, including within a
+    /// single run and in trailing separators. A checkpoint error leaves the
+    /// cursor at its previous position.
+    pub fn try_next_run_with_checkpoint<E>(
+        &mut self,
+        checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<TokenRun<'_>>, E> {
+        self.try_scan_run(|_run, _text| Ok(true), Some(checkpoint))
+    }
+
+    fn try_scan_run<E>(
+        &mut self,
+        accept: impl FnOnce(TokenRun<'_>, &str) -> Result<bool, E>,
+        mut checkpoint: Option<impl FnMut() -> Result<(), E>>,
+    ) -> Result<Option<TokenRun<'_>>, E> {
+        const CHECKPOINT_BYTES: usize = 4096;
+        let Some(remaining) = self.text.get(self.offset..) else {
+            return Ok(None);
+        };
+        let mut checkpoint_at = (self.offset | (CHECKPOINT_BYTES - 1)).saturating_add(1);
         let mut run_start = None;
         for (relative, ch) in remaining.char_indices() {
             let absolute = self.offset.saturating_add(relative);
+            let char_end = absolute.saturating_add(ch.len_utf8());
+            if let Some(checkpoint) = &mut checkpoint
+                && char_end >= checkpoint_at
+            {
+                checkpoint()?;
+                checkpoint_at = checkpoint_at.saturating_add(CHECKPOINT_BYTES);
+            }
             if is_token_char(ch) {
                 if run_start.is_none() {
                     run_start = Some(absolute);
                 }
             } else if let Some(start) = run_start {
-                let text = self.text.get(start..absolute)?;
-                let position = self.position;
-                self.position = self.position.saturating_add(1);
-                self.offset = absolute.saturating_add(ch.len_utf8());
-                return Some(TokenRun {
+                let Some(text) = self.text.get(start..absolute) else {
+                    return Ok(None);
+                };
+                let run = TokenRun {
                     text,
-                    position,
+                    position: self.position,
                     start,
                     end: absolute,
-                });
+                };
+                if !accept(run, self.text.as_ref())? {
+                    return Ok(None);
+                }
+                self.position = self.position.saturating_add(1);
+                self.offset = char_end;
+                return Ok(Some(run));
             }
         }
-        self.offset = self.text.len();
-        let start = run_start?;
+        let Some(start) = run_start else {
+            self.offset = self.text.len();
+            return Ok(None);
+        };
         let end = self.text.len();
-        let text = self.text.get(start..end)?;
-        let position = self.position;
-        self.position = self.position.saturating_add(1);
-        Some(TokenRun {
+        let Some(text) = self.text.get(start..end) else {
+            return Ok(None);
+        };
+        let run = TokenRun {
             text,
-            position,
+            position: self.position,
             start,
             end,
-        })
+        };
+        if !accept(run, self.text.as_ref())? {
+            return Ok(None);
+        }
+        self.position = self.position.saturating_add(1);
+        self.offset = end;
+        Ok(Some(run))
     }
 }
 
@@ -321,16 +382,29 @@ pub fn phrase_ranges<'a>(
     document: &'a [Token],
     phrase: &'a [Token],
 ) -> impl Iterator<Item = core::ops::Range<usize>> + 'a {
+    phrase_ranges_by(document, phrase, |token, expected| {
+        token.text == expected.text
+    })
+}
+
+/// Position and range matching for a borrowed prepared term representation.
+pub fn phrase_ranges_by<'a, T>(
+    document: &'a [Token],
+    phrase: &'a [T],
+    same_term: impl Fn(&Token, &T) -> bool + 'a,
+) -> impl Iterator<Item = core::ops::Range<usize>> + 'a {
     document
         .iter()
         .enumerate()
-        .filter(|(_, token)| phrase.first().is_some_and(|first| token.text == first.text))
-        .filter_map(|(anchor, token)| {
+        .filter_map(move |(anchor, token)| {
+            if !phrase.first().is_some_and(|first| same_term(token, first)) {
+                return None;
+            }
             let matches = phrase.iter().enumerate().all(|(offset, expected)| {
                 document
                     .get(anchor.saturating_add(offset))
                     .is_some_and(|candidate| {
-                        candidate.text == expected.text
+                        same_term(candidate, expected)
                             && candidate.position == token.position.saturating_add(offset)
                     })
             });
@@ -401,6 +475,60 @@ mod tests {
         CaseMode, MAX_TOKEN_BYTES, TextQueryError, Token, TokenCursor, TokenRun, contains_phrase,
         contains_substring, query_tokens, tokenize,
     };
+
+    #[test]
+    fn conditional_cursor_preserves_rejected_and_failed_runs_on_the_same_nfc_backing() {
+        let mut cursor = TokenCursor::new("one!cafe\u{301}。tail");
+        assert_eq!(
+            cursor.next_run().map(|run| (run.text, run.position)),
+            Some(("one", 0))
+        );
+        let refused = cursor.try_next_run_if(|run, text| {
+            assert_eq!((run.text, run.position), ("café", 1));
+            assert_eq!(&text[run.end..], "。tail");
+            Ok::<_, &str>(false)
+        });
+        assert_eq!(refused, Ok(None));
+        assert_eq!(
+            cursor.next_run().map(|run| (run.text, run.position)),
+            Some(("café", 1))
+        );
+        let failed = cursor.try_next_run_if(|run, _text| {
+            assert_eq!((run.text, run.position), ("tail", 2));
+            Err::<bool, _>("cancelled")
+        });
+        assert_eq!(failed, Err("cancelled"));
+        assert_eq!(
+            cursor.next_run().map(|run| (run.text, run.position)),
+            Some(("tail", 2))
+        );
+        assert_eq!(cursor.next_run(), None);
+    }
+
+    #[test]
+    fn cursor_checkpoints_inside_long_runs_and_separator_tails() {
+        for (input, expected) in [("x".repeat(16_384), true), ("。".repeat(6000), false)] {
+            let mut cursor = TokenCursor::new(&input);
+            let mut checkpoints = 0;
+            assert_eq!(
+                cursor.try_next_run_with_checkpoint(|| {
+                    checkpoints += 1;
+                    if checkpoints == 2 {
+                        Err("cancelled")
+                    } else {
+                        Ok(())
+                    }
+                }),
+                Err("cancelled")
+            );
+            assert_eq!(cursor.remaining_bytes(), input.len());
+            assert_eq!(
+                cursor.next_run().map(|run| (run.text, run.position)),
+                expected.then_some((input.as_str(), 0))
+            );
+            assert_eq!(cursor.remaining_bytes(), 0);
+        }
+    }
 
     #[test]
     fn cursor_reports_fixed_nfc_runs_and_offsets() {

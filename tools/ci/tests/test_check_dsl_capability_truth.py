@@ -303,9 +303,22 @@ def test_main_fails_closed_on_flipped_verdict(monkeypatch, synthetic_owner_dumps
     assert MODULE.main() == 1
 
 
-def test_main_fails_closed_when_owner_dump_fails(monkeypatch, synthetic_owner_dumps):
+def test_main_fails_closed_when_owner_dump_fails(monkeypatch, capsys):
     def fail_dump(_package: str, _bin_name: str) -> dict:
         raise RuntimeError("owner dump unavailable")
 
     monkeypatch.setattr(MODULE, "run_json_dump", fail_dump)
     assert MODULE.main() == 1
+    reported = capsys.readouterr().err
+    assert reported.count("owner dump unavailable") == 2
+    assert "docs-only widening" not in reported
+    assert "silent narrowing/extraction loss" not in reported
+
+
+def test_run_json_dump_rejects_non_object_payload(monkeypatch):
+    def run(*_args, **_kwargs):
+        return MODULE.subprocess.CompletedProcess([], 0, "[]", "")
+
+    monkeypatch.setattr(MODULE.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="must emit a JSON object"):
+        MODULE.run_json_dump("test-package", "test-dump")

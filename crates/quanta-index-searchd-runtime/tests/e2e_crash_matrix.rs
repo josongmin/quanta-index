@@ -35,33 +35,28 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ExitStatus};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::SystemTime;
 
-use crate::searchd_binary_process::{
-    SOCKET_TIMEOUT, SearchdBinaryProcess, remove_socket_files, searchd_command, terminate_child,
-    wait_for_sockets,
-};
+use crate::searchd_binary_process::CrashDaemon;
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     SearchCorpusActiveHeadV1, SearchPlaneRollbackSearchCorpusGenerationCasRequest, SourceFileKey,
     SourcePublicationEvent,
 };
 use quanta_index_core::{GenerationStorageKeyV1, RECLAIM_AREA_DIR_NAME};
-use quanta_index_sdk::{ConnectOptions, LanguageCode, QuantaIndex, SdkError, SearchCorpusBatch};
-use quanta_index_search_plane::crash_point::{
-    self, AFTER_CATALOG_TRANSACTION, AFTER_FENCE, AFTER_LEDGER_RECONCILE, AFTER_RETENTION_RECEIPT,
-    AFTER_SEMANTIC_SEAL, BEFORE_AUTHORITY_RECORD, BEFORE_RECORD_FORGET, BETWEEN_TRACK_RECLAIMS,
-    CRASH_EXIT_CODE, CRASH_POINT_ENV,
-};
+use quanta_index_sdk::{LanguageCode, QuantaIndex, SdkError, SearchCorpusBatch};
+use quanta_index_search_plane::crash_point::{AFTER_FENCE, CRASH_EXIT_CODE, CRASH_POINT_ENV};
 use quanta_index_searchd_harness::{
     fixture_source_scope_v1, semantic_source_scopes_for_chunk_records,
 };
+
+#[path = "e2e_crash_matrix/cases.rs"]
+mod cases;
+use cases::{GC_CASES, GcCase, SEAL_CASES, SealCase};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -265,43 +260,25 @@ fn refused(client: &QuantaIndex, generation: u64, codes: [&str; 2]) -> TestResul
     )
 }
 
-/// Wait for a daemon that must exit on its own; its exit status.
-fn wait_for_exit(state_root: &Path, child: &mut Child) -> Result<ExitStatus, Box<dyn Error>> {
-    let start = Instant::now();
-    while start.elapsed() < SOCKET_TIMEOUT {
-        if let Some(status) = child.try_wait()? {
-            remove_socket_files(state_root)?;
-            return Ok(status);
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    terminate_child(child)?;
-    remove_socket_files(state_root)?;
-    Err("the daemon never reached its crash point".into())
-}
-
 /// Publish `generation` under a daemon over `state_root` that keeps `keep`
 /// generations per pair and exits at `point`; the state root is left as
 /// the crash left it.
 fn publish_through_a_crash(
+    daemon: &CrashDaemon,
     state_root: &Path,
     point: &str,
     keep: usize,
     generation: u64,
 ) -> TestResult {
-    let mut command = searchd_command(state_root, keep);
-    let _configured = command.env(CRASH_POINT_ENV, point);
-    let mut child = command.spawn()?;
-    wait_for_sockets(state_root, &mut child)?;
-    let crashing = QuantaIndex::connect_legacy(ConnectOptions::from_state_root(state_root))?;
+    let process = daemon.start(state_root, keep, [(CRASH_POINT_ENV, point.to_owned())])?;
+    let crashing = process.connect()?;
     if let Ok(receipt) = crashing.search_corpus().publish(&batch(generation)?) {
-        terminate_child(&mut child)?;
         return Err(format!(
             "the seal of {generation} was acked although the daemon exits during it at {point}: {receipt:?}"
         )
         .into());
     }
-    let status = wait_for_exit(state_root, &mut child)?;
+    let status = process.wait_for_exit()?;
     if status.code() != Some(CRASH_EXIT_CODE) {
         return Err(format!("the daemon exited {status} rather than at {point}").into());
     }
@@ -351,7 +328,7 @@ fn file_stamps(dir: &Path) -> Result<BTreeMap<PathBuf, (u64, SystemTime)>, Box<d
 fn every_case<C>(
     cases: &[C],
     point: fn(&C) -> &'static str,
-    run: fn(&C) -> TestResult,
+    run: impl Fn(&C) -> TestResult,
 ) -> TestResult {
     let failures: Vec<String> = cases
         .iter()
@@ -373,57 +350,16 @@ const SEAL_KEEP: usize = 8;
 /// its own exact readiness code.
 const NOT_YET_SERVEABLE: [&str; 2] = ["NOT_READY", "SEMANTIC_GENERATION_NOT_MATERIALIZED"];
 
-/// A crash during a seal: where, and what the disk and boot show for it.
-struct SealCase {
-    point: &'static str,
-    /// Remove the lexical sealed identity after the crash: the state a
-    /// crash inside the lexical seal leaves (see the module doc).
-    unseal_lexical: bool,
-    /// Whether generation 2 has a directory on each track (lexical,
-    /// semantic) after the crash.
-    dirs: [bool; 2],
-    /// The tracks the crash left sealed: the retry keeps every file of
-    /// theirs and builds the others anew.
-    sealed: [bool; 2],
-    /// The pairs boot names half-sealed: a sealed track whose partner is
-    /// not sealed.
-    half_sealed_pairs: u32,
-}
-
-const SEAL_CASES: [SealCase; 3] = [
-    SealCase {
-        point: AFTER_SEMANTIC_SEAL,
-        unseal_lexical: false,
-        dirs: [false, true],
-        sealed: [false, true],
-        half_sealed_pairs: 1,
-    },
-    SealCase {
-        point: BEFORE_AUTHORITY_RECORD,
-        unseal_lexical: false,
-        dirs: [true, true],
-        sealed: [true, true],
-        half_sealed_pairs: 0,
-    },
-    SealCase {
-        point: BEFORE_AUTHORITY_RECORD,
-        unseal_lexical: true,
-        dirs: [true, true],
-        sealed: [false, true],
-        half_sealed_pairs: 1,
-    },
-];
-
 /// One seal crash case, from the crash to the converged retry.
-fn a_seal_crash(case: &SealCase) -> TestResult {
+fn a_seal_crash(daemon: &CrashDaemon, case: &SealCase) -> TestResult {
     let root = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = std::fs::canonicalize(root.path())?;
-    let first = SearchdBinaryProcess::start_with_history_max_generations(&state_root, SEAL_KEEP)?;
+    let first = daemon.start(&state_root, SEAL_KEEP, [])?;
     let client = first.connect()?;
     let one = publish_and_activate(&client, 1, None)?;
     drop(client);
-    first.stop()?;
-    publish_through_a_crash(&state_root, case.point, SEAL_KEEP, 2)?;
+    first.kill_and_wait()?;
+    publish_through_a_crash(daemon, &state_root, case.point, SEAL_KEEP, 2)?;
     if case.unseal_lexical {
         std::fs::remove_file(
             generation_dir(&state_root, "indexes/lexical", 2).join(LEXICAL_SEALED_IDENTITY),
@@ -441,8 +377,7 @@ fn a_seal_crash(case: &SealCase) -> TestResult {
         }
     }
 
-    let restarted =
-        SearchdBinaryProcess::start_with_history_max_generations(&state_root, SEAL_KEEP)?;
+    let restarted = daemon.start(&state_root, SEAL_KEEP, [])?;
     let client = restarted.connect()?;
     boot_gauge_reads(&client, "boot_half_sealed_pairs", case.half_sealed_pairs)?;
     refused(&client, 2, NOT_YET_SERVEABLE)?;
@@ -466,7 +401,7 @@ fn a_seal_crash(case: &SealCase) -> TestResult {
         }
     }
     drop(client);
-    restarted.stop()
+    restarted.kill_and_wait()
 }
 
 /// The history cap of the GC cases: the seal of 4 retires 1.
@@ -476,40 +411,6 @@ const GC_KEEP: usize = 3;
 const RETAINED: [u64; 3] = [2, 3, 4];
 const RETIRED: u64 = 1;
 
-/// A crash during the GC the seal of 4 triggers: where, and which tracks
-/// (lexical, semantic) still hold the retired generation right after it.
-struct GcCase {
-    point: &'static str,
-    retired_left: [bool; 2],
-}
-
-const GC_CASES: [GcCase; 6] = [
-    GcCase {
-        point: AFTER_RETENTION_RECEIPT,
-        retired_left: [true, true],
-    },
-    GcCase {
-        point: AFTER_CATALOG_TRANSACTION,
-        retired_left: [true, true],
-    },
-    GcCase {
-        point: AFTER_LEDGER_RECONCILE,
-        retired_left: [true, true],
-    },
-    GcCase {
-        point: AFTER_FENCE,
-        retired_left: [true, true],
-    },
-    GcCase {
-        point: BETWEEN_TRACK_RECLAIMS,
-        retired_left: [false, true],
-    },
-    GcCase {
-        point: BEFORE_RECORD_FORGET,
-        retired_left: [false, false],
-    },
-];
-
 /// The predecessor and the active generation the crash leaves behind.
 struct ActiveLine {
     predecessor: SearchCorpusActiveHeadV1,
@@ -518,16 +419,20 @@ struct ActiveLine {
 
 /// Seal 1, 2 and 3 active in turn, then seal 4 under a daemon that exits at
 /// `point`; the state root is left as the crash left it.
-fn seal_through_a_gc_crash(state_root: &Path, point: &str) -> Result<ActiveLine, Box<dyn Error>> {
+fn seal_through_a_gc_crash(
+    daemon: &CrashDaemon,
+    state_root: &Path,
+    point: &str,
+) -> Result<ActiveLine, Box<dyn Error>> {
     // Sealing 1–3 retires nothing under the first daemon's cap of 8.
-    let first = SearchdBinaryProcess::start_with_history_max_generations(state_root, 8)?;
+    let first = daemon.start(state_root, SEAL_KEEP, [])?;
     let client = first.connect()?;
     let one = publish_and_activate(&client, 1, None)?;
     let predecessor = publish_and_activate(&client, 2, Some(one))?;
     let active = publish_and_activate(&client, 3, Some(predecessor.clone()))?;
     drop(client);
-    first.stop()?;
-    publish_through_a_crash(state_root, point, GC_KEEP, 4)?;
+    first.kill_and_wait()?;
+    publish_through_a_crash(daemon, state_root, point, GC_KEEP, 4)?;
     Ok(ActiveLine {
         predecessor,
         active,
@@ -560,10 +465,10 @@ fn retained_whole_and_retired_unknown(state_root: &Path, client: &QuantaIndex) -
 /// generation and the candidate survive whole, the retired generation is
 /// unknown, a retried seal finishes the GC, and the predecessor is still a
 /// rollback target.
-fn a_gc_crash(case: &GcCase) -> TestResult {
+fn a_gc_crash(daemon: &CrashDaemon, case: &GcCase) -> TestResult {
     let root = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = std::fs::canonicalize(root.path())?;
-    let line = seal_through_a_gc_crash(&state_root, case.point)?;
+    let line = seal_through_a_gc_crash(daemon, &state_root, case.point)?;
     for (track_root, left) in TRACK_ROOTS.into_iter().zip(case.retired_left) {
         if generation_dir(&state_root, track_root, RETIRED).is_dir() != left
             || reclaim_area_entries(&state_root, track_root)? != 0
@@ -575,7 +480,7 @@ fn a_gc_crash(case: &GcCase) -> TestResult {
         }
     }
 
-    let restarted = SearchdBinaryProcess::start_with_history_max_generations(&state_root, GC_KEEP)?;
+    let restarted = daemon.start(&state_root, GC_KEEP, [])?;
     let client = restarted.connect()?;
     retained_whole_and_retired_unknown(&state_root, &client)?;
 
@@ -607,46 +512,46 @@ fn a_gc_crash(case: &GcCase) -> TestResult {
         return Err(format!("the rollback activated {rolled_back:?}").into());
     }
     drop(client);
-    restarted.stop()
+    restarted.kill_and_wait()
 }
 
 #[test]
 fn the_matrix_has_a_case_for_every_crash_point() -> TestResult {
-    let cased: BTreeSet<&str> = SEAL_CASES
-        .iter()
-        .map(|case| case.point)
-        .chain(GC_CASES.iter().map(|case| case.point))
-        .collect();
-    let declared: BTreeSet<&str> = crash_point::ALL.into_iter().collect();
-    if cased != declared {
-        return Err(format!(
-            "points without a case: {:?}; cases without a declared point: {:?}",
-            declared.difference(&cased).collect::<Vec<_>>(),
-            cased.difference(&declared).collect::<Vec<_>>(),
-        )
-        .into());
-    }
-    Ok(())
+    cases::require_declared_crash_points()
 }
 
 #[test]
+#[ignore = "requires a pinned old-Q debug binary with QUANTA_INDEX_CRASH_POINT"]
 fn every_seal_crash_converges_on_the_same_generation() -> TestResult {
-    every_case(&SEAL_CASES, |case| case.point, a_seal_crash)
+    let daemon = CrashDaemon::new()?;
+    every_case(
+        &SEAL_CASES,
+        |case| case.point,
+        |case| a_seal_crash(&daemon, case),
+    )
 }
 
 #[test]
+#[ignore = "requires a pinned old-Q debug binary with QUANTA_INDEX_CRASH_POINT"]
 fn every_gc_crash_loses_nothing_retained() -> TestResult {
-    every_case(&GC_CASES, |case| case.point, a_gc_crash)
+    let daemon = CrashDaemon::new()?;
+    every_case(
+        &GC_CASES,
+        |case| case.point,
+        |case| a_gc_crash(&daemon, case),
+    )
 }
 
 /// A retired generation left in the lexical reclaim area — moved out of its
 /// namespace, not yet removed — is finished at boot, counted in the boot
 /// gauge, and never listed as a quarantine finding.
 #[test]
+#[ignore = "requires a pinned old-Q debug binary with QUANTA_INDEX_CRASH_POINT"]
 fn an_interrupted_removal_is_finished_at_boot() -> TestResult {
+    let daemon = CrashDaemon::new()?;
     let root = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = std::fs::canonicalize(root.path())?;
-    let _line = seal_through_a_gc_crash(&state_root, AFTER_FENCE)?;
+    let _line = seal_through_a_gc_crash(&daemon, &state_root, AFTER_FENCE)?;
     let area = state_root
         .join("indexes/lexical")
         .join(RECLAIM_AREA_DIR_NAME);
@@ -660,7 +565,7 @@ fn an_interrupted_removal_is_finished_at_boot() -> TestResult {
         area.join(key.reclaim_entry_name(ManifestGeneration::new(RETIRED))),
     )?;
 
-    let restarted = SearchdBinaryProcess::start_with_history_max_generations(&state_root, GC_KEEP)?;
+    let restarted = daemon.start(&state_root, GC_KEEP, [])?;
     let client = restarted.connect()?;
     boot_gauge_reads(&client, "boot_lexical_interrupted_reclaims_finished", 1)?;
     boot_gauge_reads(&client, "boot_lexical_interrupted_reclaims_unfinished", 0)?;
@@ -680,5 +585,5 @@ fn an_interrupted_removal_is_finished_at_boot() -> TestResult {
     }
     retained_whole_and_retired_unknown(&state_root, &client)?;
     drop(client);
-    restarted.stop()
+    restarted.kill_and_wait()
 }

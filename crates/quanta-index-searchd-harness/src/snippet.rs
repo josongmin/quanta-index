@@ -7,7 +7,7 @@
 //! deterministically so the head of the result list never streams an unbounded
 //! blob. This rail seeds a corpus designed to exercise four snippet intents
 //! (phrase hit, regex hit, multi-hit, long-line), runs each query against the
-//! live ranker, and grades the produced [`LexicalCandidate::snippet`] against
+//! live ranker, and grades the produced excerpt against
 //! three blocking properties:
 //!
 //! 1. **needle present** — the matched token/phrase actually appears in the
@@ -20,26 +20,26 @@
 //!
 //! The rail is split into two layers that are tested independently:
 //!
-//! - a **pure window oracle** ([`compute_snippet_window`]) that defines what a
-//!   correct hit-centered, bounded, deterministically-truncated window looks
-//!   like, unit-tested with synthetic inputs (no daemon). This is the SSOT for
-//!   the *target* snippet contract;
+//! - a **pure window oracle** ([`compute_snippet_window`]) that derives the
+//!   expected hit-centered window from the fixed ingested source, independent
+//!   of the daemon's emitted snippet;
 //! - a **seeded end-to-end measurement** that records the engine's ACTUAL
 //!   snippet against that contract.
 //!
 //! Fail-closed posture: the rail does NOT rewrite or post-process the engine
 //! snippet to make it pass. The live lexical path truncates an over-long source
 //! line to a hit-centered, bounded window (the J7Q-02 engine fix), and this rail
-//! grades that emitted window as-is. The window oracle ([`compute_snippet_window`])
-//! is the independent target spec: it proves the gate can distinguish a good
-//! window from a bad one, and the engine's emitted window converges to it. A
-//! regression that re-emitted an unwindowed full-chunk snippet would trip the
-//! centering/bound gate RED — that RED would be the measurement, not a rail defect.
+//! compares that emitted window with the fixed source oracle. A wrong-source
+//! snippet containing the needle or an unwindowed long line trips the gate.
 
 use std::path::Path;
 
 use anyhow::Result as AnyResult;
-use quanta_index_contract::{LexicalCandidate, TextQuerySyntax};
+use quanta_index_contract::HighlightSpan;
+use quanta_index_contract::{
+    index::{SourceCut, ViewRef},
+    native_protocol::NativeTextPreviewEvidence,
+};
 use serde_json::{Value, json};
 
 use crate::artifact::{
@@ -47,28 +47,11 @@ use crate::artifact::{
     PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest, corpus_digest,
     saturating_u64,
 };
-use crate::harness::E2eRuntime;
 
-/// Repo id under which the snippet fixture is ingested.
-pub const SNIPPET_REPO: &str = "repo-snippet";
-
-/// Result cap requested for every snippet query.
-pub const TOP_K: u32 = 10;
-
-/// Declared maximum snippet length (bytes) a quality snippet may emit.
-///
-/// A snippet longer than this is, by definition, not a bounded hit-centered
-/// window: the long-line intent must be truncated below this ceiling. Sized so
-/// a normal multi-line code chunk passes but an unbounded long line trips.
-pub const MAX_SNIPPET_LEN: usize = 240;
-
-/// Minimum leading context (bytes) a *long-line* hit must carry.
-///
-/// If a long-line snippet places the hit within this many bytes of byte 0, it is
-/// "pinned to the leading edge" and fails the centering gate (no leading context
-/// was retained). Short snippets (whole source shorter than [`MAX_SNIPPET_LEN`])
-/// are exempt: there is nothing to center because no truncation was required.
-pub const MIN_LEADING_CONTEXT: usize = 16;
+pub use crate::snippet_fixture::{
+    MAX_SNIPPET_LEN, MIN_LEADING_CONTEXT, SNIPPET_CORPUS, SNIPPET_QUERIES, SNIPPET_REPO,
+    SnippetFixture, SnippetIntent, SnippetQuery, TOP_K,
+};
 
 /// Lossless-in-practice `usize -> f64` for snippet offsets and lengths.
 ///
@@ -109,16 +92,14 @@ pub struct SnippetWindow {
 ///   match so the needle has leading *and* trailing context where the source
 ///   permits, clamped to a UTF-8 char boundary so the result is always valid
 ///   UTF-8;
-/// - returns `None` when the needle is absent (a snippet with no hit has no
-///   window — the caller treats this as a fail-closed needle-absent failure,
-///   never a best-effort empty window).
+/// - returns `None` when the needle is absent or too wide for the window.
 ///
 /// Truncation is byte-window-based and fully determined by
 /// `(source, needle, max_len)`, so two runs over identical inputs always emit
 /// byte-identical windows — the property the golden-window artifact freezes.
 #[must_use]
 pub fn compute_snippet_window(source: &str, needle: &str, max_len: usize) -> Option<SnippetWindow> {
-    if needle.is_empty() {
+    if needle.is_empty() || needle.len() > max_len {
         return None;
     }
     let hit = source.find(needle)?;
@@ -128,23 +109,14 @@ pub fn compute_snippet_window(source: &str, needle: &str, max_len: usize) -> Opt
             hit_offset: hit,
         });
     }
-    // Center the window on the hit: half the budget of leading context, the
-    // remainder trailing. Saturating arithmetic keeps the start in range.
-    let lead_budget = half(max_len);
-    let raw_start = hit.saturating_sub(lead_budget);
-    let start = floor_char_boundary(source, raw_start);
-    let raw_end = start.saturating_add(max_len).min(source.len());
-    let end = floor_char_boundary(source, raw_end);
-    // `start..end` is always a valid, in-bounds slice: `start` and `end` are both
-    // `floor_char_boundary` results (hence char boundaries) with `start <=
-    // raw_start <= hit <= source.len()`, `raw_end = min(start + max_len,
-    // source.len()) >= start`, and stepping `raw_end` down to a boundary cannot
-    // cross below the boundary `start`, so `start <= end <= source.len()`. Thus
-    // `source.get(start..end)` is always `Some`; the `unwrap_or("")` is
-    // unreachable-by-construction, kept as a typed-safe floor in place of a slice
-    // index (string slicing is banned in production paths).
-    let text = source.get(start..end).unwrap_or("").to_string();
-    let hit_offset = hit.saturating_sub(start);
+    // Leave room for the entire hit before assigning leading context. The
+    // first boundary at or after the ideal start preserves that space.
+    let lead = half(max_len).min(max_len.checked_sub(needle.len())?);
+    let ideal_start = hit.saturating_sub(lead);
+    let start = (ideal_start..=hit).find(|offset| source.is_char_boundary(*offset))?;
+    let end = floor_char_boundary(source, start.saturating_add(max_len));
+    let text = source.get(start..end)?.to_string();
+    let hit_offset = hit.checked_sub(start)?;
     Some(SnippetWindow { text, hit_offset })
 }
 
@@ -176,39 +148,6 @@ fn floor_char_boundary(s: &str, index: usize) -> usize {
 // ---------------------------------------------------------------------------
 // Observed snippet metrics + gate.
 // ---------------------------------------------------------------------------
-
-/// The snippet intent a judged query exercises.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SnippetIntent {
-    /// A multi-token phrase that must appear verbatim and centered.
-    Phrase,
-    /// A token reachable via regex syntax; needle is the literal it resolves to.
-    Regex,
-    /// A token that occurs multiple times in the chunk (multi-hit count > 1).
-    MultiHit,
-    /// A single very long source line that MUST be truncated + centered.
-    LongLine,
-}
-
-impl SnippetIntent {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Phrase => "phrase",
-            Self::Regex => "regex",
-            Self::MultiHit => "multi_hit",
-            Self::LongLine => "long_line",
-        }
-    }
-
-    /// Whether this intent's source is long enough that a bounded, centered
-    /// window is *required* (vs. a short chunk that is legitimately emitted
-    /// whole).
-    #[must_use]
-    pub fn requires_truncation(self) -> bool {
-        matches!(self, Self::LongLine)
-    }
-}
 
 /// Per-snippet observed metrics, computed from the engine's emitted snippet.
 #[derive(Clone, Debug, PartialEq)]
@@ -317,96 +256,6 @@ pub fn gate_snippet(
 // Seeded corpus + judged snippet queries.
 // ---------------------------------------------------------------------------
 
-/// One seeded snippet fixture document.
-#[derive(Clone, Copy, Debug)]
-pub struct SnippetFixture {
-    pub path: &'static str,
-    pub content: &'static str,
-}
-
-/// One judged snippet query: query text, the needle the snippet must center on,
-/// and the declared intent that selects the gate.
-#[derive(Clone, Copy, Debug)]
-pub struct SnippetQuery {
-    /// Stable query id (artifact key + regression anchor).
-    pub id: &'static str,
-    /// Query text issued to the engine.
-    pub query: &'static str,
-    /// The literal substring the snippet must contain and center on.
-    pub needle: &'static str,
-    /// Intent — selects the blocking gate.
-    pub intent: SnippetIntent,
-    /// Repo-relative path of the fixture doc the query is expected to hit.
-    pub expect_path: &'static str,
-}
-
-/// A long source line whose needle is buried near the middle.
-///
-/// A single physical line far exceeding [`MAX_SNIPPET_LEN`], so a correct
-/// snippet MUST truncate and center, and the live (full-text) snippet will
-/// exceed the bound.
-const LONG_LINE: &str = "let prefix_padding_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa = compute_target_marker_zzz(0) + suffix_padding_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb;\n";
-
-/// `(path, content)` snippet fixtures, one per intent.
-pub const SNIPPET_CORPUS: &[SnippetFixture] = &[
-    SnippetFixture {
-        path: "src/snippet/phrase.rs",
-        content: "fn header() {}\n\
-                  // the quick brown fox marker sits here for the phrase intent\n\
-                  fn footer() {}\n",
-    },
-    SnippetFixture {
-        path: "src/snippet/regex.rs",
-        content: "fn alpha() {}\n\
-                  pub fn regex_target_symbol(input: &str) -> usize { input.len() }\n\
-                  fn omega() {}\n",
-    },
-    SnippetFixture {
-        path: "src/snippet/multi.rs",
-        content: "fn repeated_marker_a() { repeated_marker_a(); repeated_marker_a(); }\n",
-    },
-    SnippetFixture {
-        path: "src/snippet/longline.rs",
-        content: LONG_LINE,
-    },
-];
-
-/// The judged snippet query set (the snippet rail SSOT).
-pub const SNIPPET_QUERIES: &[SnippetQuery] = &[
-    SnippetQuery {
-        id: "snip.phrase.brown_fox",
-        query: "brown",
-        needle: "brown fox marker",
-        intent: SnippetIntent::Phrase,
-        expect_path: "src/snippet/phrase.rs",
-    },
-    SnippetQuery {
-        id: "snip.regex.target_symbol",
-        query: "regex_target_symbol",
-        needle: "regex_target_symbol",
-        intent: SnippetIntent::Regex,
-        expect_path: "src/snippet/regex.rs",
-    },
-    SnippetQuery {
-        id: "snip.multi.repeated_marker",
-        query: "repeated_marker_a",
-        needle: "repeated_marker_a",
-        intent: SnippetIntent::MultiHit,
-        expect_path: "src/snippet/multi.rs",
-    },
-    SnippetQuery {
-        id: "snip.longline.compute_target",
-        query: "compute_target_marker_zzz",
-        needle: "compute_target_marker_zzz",
-        intent: SnippetIntent::LongLine,
-        expect_path: "src/snippet/longline.rs",
-    },
-];
-
-// ---------------------------------------------------------------------------
-// Report engine.
-// ---------------------------------------------------------------------------
-
 /// Scored outcome for one snippet query.
 #[derive(Clone, Debug)]
 pub struct SnippetScore {
@@ -421,6 +270,12 @@ pub struct SnippetScore {
     /// The exact snippet bytes the engine emitted (the golden window record).
     pub snippet: Option<String>,
     pub metrics: Option<SnippetMetrics>,
+    pub observed_hit_offset: Option<u32>,
+    pub observed_highlights: Vec<HighlightSpan>,
+    /// Actual ranked rows returned by the engine, including decoys.
+    pub ranked_hits: Option<u64>,
+    /// Full verified Native match count, or the Legacy candidate count.
+    pub matched_total: Option<u64>,
     pub failures: Vec<String>,
 }
 
@@ -436,97 +291,241 @@ impl SnippetScore {
 pub struct SnippetReport {
     pub scores: Vec<SnippetScore>,
     pub passed: bool,
+    pub native_provenance: Option<NativeSnippetProvenance>,
 }
 
-/// Boot one runtime, seed the snippet fixtures, seal + activate.
-pub fn prepare_snippet_runtime() -> AnyResult<E2eRuntime> {
-    let mut rt = E2eRuntime::boot()?;
-    for fixture in SNIPPET_CORPUS {
-        rt.ingest_text(SNIPPET_REPO, fixture.path, fixture.content)?;
-    }
-    let _generation = rt.seal()?;
-    rt.activate_last_sealed_generation()?;
-    Ok(rt)
+/// Source and executable identity for an actual Native preview observation.
+#[derive(Clone, Debug)]
+pub struct NativeSnippetProvenance {
+    pub published_view: ViewRef,
+    pub source_cut: SourceCut,
+    pub config_sha256: String,
+    pub config_template_sha256: String,
+    pub daemon_sha256: String,
 }
 
-/// Find the candidate matching the expected fixture path.
-///
-/// Returns `None` when no candidate for that path is present (a retrieval miss,
-/// surfaced as a failure rather than silently graded against a different doc).
-fn candidate_for_path<'a>(
-    candidates: &'a [LexicalCandidate],
-    expect_path: &str,
-) -> Option<&'a LexicalCandidate> {
-    candidates
+/// Resolve the immutable source bytes by the fixture's expected path, never
+/// by a returned snippet or by the candidate's claimed source metadata.
+fn fixture_source(expect_path: &str) -> Option<&'static str> {
+    SNIPPET_CORPUS
         .iter()
-        .find(|c| c.repo_relative_path.as_str() == expect_path)
+        .find(|fixture| fixture.path == expect_path)
+        .map(|fixture| fixture.content)
 }
 
-/// Score one snippet query end to end against the live ranker.
-///
-/// Fails closed: a typed query error or a missing expected candidate is a
-/// recorded failure, never a silent pass with an empty snippet.
-fn score_query(rt: &mut E2eRuntime, query: &SnippetQuery) -> SnippetScore {
-    let result = rt.query_text(TextQuerySyntax::Native, query.query, TOP_K);
-    if let Some(error) = result.typed_error {
-        return SnippetScore {
-            id: query.id,
-            intent: query.intent,
-            query: query.query,
-            needle: query.needle,
-            expect_path: query.expect_path,
-            matched_path: None,
-            snippet: None,
-            metrics: None,
-            failures: vec![format!(
-                "{}: query returned typed error {}: {}",
-                query.intent.as_str(),
-                error.code,
-                error.message
-            )],
-        };
-    }
-    let Some(candidate) = candidate_for_path(&result.candidates, query.expect_path) else {
-        return SnippetScore {
-            id: query.id,
-            intent: query.intent,
-            query: query.query,
-            needle: query.needle,
-            expect_path: query.expect_path,
-            matched_path: None,
-            snippet: None,
-            metrics: None,
-            failures: vec![format!(
-                "{}: expected candidate for `{}` not retrieved (snippet ungradable)",
-                query.intent.as_str(),
-                query.expect_path
-            )],
-        };
+fn fixture_window(expect_path: &str, needle: &str) -> Option<SnippetWindow> {
+    compute_snippet_window(fixture_source(expect_path)?, needle, MAX_SNIPPET_LEN)
+}
+
+/// The emitted bytes must come from the fixed source at the declared focus.
+/// Presence, length and centering alone permit unrelated text around a needle.
+fn fixture_window_failures(
+    query: &SnippetQuery,
+    observed: &str,
+    hit_offset: Option<u32>,
+    highlights: &[HighlightSpan],
+) -> Vec<String> {
+    let expect_path = query.expect_path;
+    let Some(expected) = fixture_window(expect_path, query.needle) else {
+        return vec![format!(
+            "fixed source or needle missing for `{expect_path}`"
+        )];
     };
-    let metrics = measure_snippet(&candidate.snippet, query.needle);
-    let failures = gate_snippet(query.intent, &metrics, MAX_SNIPPET_LEN, MIN_LEADING_CONTEXT);
+    if observed != expected.text {
+        return vec![format!(
+            "fixed source window differs from emitted snippet for `{expect_path}`"
+        )];
+    }
+
+    // These fixtures use literal ASCII needles with deliberately chosen token
+    // boundaries. The regex additionally covers the full positive signature.
+    let mut ranges: Vec<_> = expected
+        .text
+        .match_indices(query.needle)
+        .map(|(start, text)| (start, text.len()))
+        .collect();
+    if query.intent == SnippetIntent::Regex {
+        let signature = "regex_target_symbol(input: &str)";
+        ranges.extend(
+            expected
+                .text
+                .match_indices(signature)
+                .map(|(start, text)| (start, text.len())),
+        );
+        ranges.sort_unstable();
+    }
+    let mut failures = Vec::new();
+    if hit_offset.and_then(|offset| usize::try_from(offset).ok()) != Some(expected.hit_offset) {
+        failures.push(format!(
+            "fixed source hit offset differs for `{expect_path}`"
+        ));
+    }
+    let observed_ranges = highlights.iter().map(|span| {
+        usize::try_from(span.start)
+            .ok()
+            .zip(usize::try_from(span.len).ok())
+    });
+    if !observed_ranges.eq(ranges.into_iter().map(Some)) {
+        failures.push(format!(
+            "fixed source highlights differ for `{expect_path}`"
+        ));
+    }
+    failures
+}
+
+/// The negative controls share the applicable posting anchors. Losing phrase
+/// adjacency or regex verification must change the judged result population.
+fn predicate_population_failures(intent: SnippetIntent, candidate_count: usize) -> Vec<String> {
+    if matches!(intent, SnippetIntent::Phrase | SnippetIntent::Regex) && candidate_count != 1 {
+        vec![format!(
+            "{} fixture expected one selected source, observed {candidate_count}",
+            intent.as_str()
+        )]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Grade the exact emitted bytes against the fixed source.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the scorer uses explicit query, emitted excerpt, rank count, and source evidence"
+)]
+fn score_observed(
+    query: &SnippetQuery,
+    matched_path: &str,
+    snippet: &str,
+    hit_offset: Option<u32>,
+    highlights: &[HighlightSpan],
+    candidate_count: usize,
+    ranked_hits: usize,
+    matched_total: u64,
+) -> SnippetScore {
+    let metrics = measure_snippet(snippet, query.needle);
+    let mut failures = gate_snippet(query.intent, &metrics, MAX_SNIPPET_LEN, MIN_LEADING_CONTEXT);
+    failures.extend(fixture_window_failures(
+        query, snippet, hit_offset, highlights,
+    ));
+    failures.extend(predicate_population_failures(query.intent, candidate_count));
     SnippetScore {
         id: query.id,
         intent: query.intent,
         query: query.query,
         needle: query.needle,
         expect_path: query.expect_path,
-        matched_path: Some(candidate.repo_relative_path.as_str().to_string()),
-        snippet: Some(candidate.snippet.clone()),
+        matched_path: Some(matched_path.to_string()),
+        snippet: Some(snippet.to_string()),
         metrics: Some(metrics),
+        observed_hit_offset: hit_offset,
+        observed_highlights: highlights.to_vec(),
+        ranked_hits: Some(saturating_u64(ranked_hits)),
+        matched_total: Some(matched_total),
         failures,
     }
 }
 
-/// Run the full snippet rail against a freshly seeded runtime.
-pub fn run_snippet_report() -> AnyResult<SnippetReport> {
-    let mut rt = prepare_snippet_runtime()?;
+/// Grade the product Native SDK preview without rewriting its excerpt evidence.
+pub fn run_native_snippet_report(daemon_bin: &Path) -> AnyResult<SnippetReport> {
+    let observed = crate::native_index::run_native_snippet_observations(daemon_bin)?;
+    anyhow::ensure!(
+        observed.rows.len() == SNIPPET_QUERIES.len(),
+        "Native snippet observation omitted judged queries"
+    );
     let mut scores = Vec::with_capacity(SNIPPET_QUERIES.len());
-    for query in SNIPPET_QUERIES {
-        scores.push(score_query(&mut rt, query));
+    for (query, row) in SNIPPET_QUERIES.iter().zip(&observed.rows) {
+        let candidate_count = usize::try_from(row.ranking.matched)?;
+        let selected = row
+            .ranking
+            .hits
+            .iter()
+            .zip(&row.previews)
+            .find(|(hit, _)| hit.path == query.expect_path);
+        let score = match selected {
+            Some((hit, preview)) => match &preview.evidence {
+                NativeTextPreviewEvidence::Excerpt(excerpt) => {
+                    let offset = u32::try_from(
+                        excerpt.original_focus.start - excerpt.original_context.start,
+                    )?;
+                    score_observed(
+                        query,
+                        &hit.path,
+                        &excerpt.text,
+                        Some(offset),
+                        &excerpt.highlights,
+                        candidate_count,
+                        row.ranking.hits.len(),
+                        row.ranking.matched,
+                    )
+                }
+                NativeTextPreviewEvidence::Path => {
+                    anyhow::bail!(
+                        "Native snippet {} returned path evidence for a body query",
+                        query.id
+                    )
+                }
+                NativeTextPreviewEvidence::Unavailable(reason) => SnippetScore {
+                    id: query.id,
+                    intent: query.intent,
+                    query: query.query,
+                    needle: query.needle,
+                    expect_path: query.expect_path,
+                    matched_path: Some(hit.path.clone()),
+                    snippet: None,
+                    metrics: None,
+                    observed_hit_offset: None,
+                    observed_highlights: Vec::new(),
+                    ranked_hits: Some(u64::try_from(row.ranking.hits.len())?),
+                    matched_total: Some(row.ranking.matched),
+                    failures: {
+                        let mut failures = vec![format!(
+                            "{}: Native preview unavailable for `{}`: {reason:?}",
+                            query.intent.as_str(),
+                            query.expect_path
+                        )];
+                        failures
+                            .extend(predicate_population_failures(query.intent, candidate_count));
+                        failures
+                    },
+                },
+            },
+            None => SnippetScore {
+                id: query.id,
+                intent: query.intent,
+                query: query.query,
+                needle: query.needle,
+                expect_path: query.expect_path,
+                matched_path: None,
+                snippet: None,
+                metrics: None,
+                observed_hit_offset: None,
+                observed_highlights: Vec::new(),
+                ranked_hits: Some(u64::try_from(row.ranking.hits.len())?),
+                matched_total: Some(row.ranking.matched),
+                failures: {
+                    let mut failures = vec![format!(
+                        "{}: expected candidate for `{}` not retrieved (snippet ungradable)",
+                        query.intent.as_str(),
+                        query.expect_path
+                    )];
+                    failures.extend(predicate_population_failures(query.intent, candidate_count));
+                    failures
+                },
+            },
+        };
+        scores.push(score);
     }
     let passed = scores.iter().all(SnippetScore::passed);
-    Ok(SnippetReport { scores, passed })
+    Ok(SnippetReport {
+        scores,
+        passed,
+        native_provenance: Some(NativeSnippetProvenance {
+            published_view: observed.published_view,
+            source_cut: observed.source_cut,
+            config_sha256: observed.config_sha256,
+            config_template_sha256: observed.config_template_sha256,
+            daemon_sha256: observed.daemon_sha256,
+        }),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +551,10 @@ fn score_json(score: &SnippetScore) -> Value {
         "expect_path": score.expect_path,
         "matched_path": score.matched_path,
         "metrics": score.metrics.as_ref().map(metrics_json),
+        "observed_hit_offset": score.observed_hit_offset,
+        "observed_highlights": score.observed_highlights,
+        "ranked_hits": score.ranked_hits,
+        "matched_total": score.matched_total,
         "bounds": {
             "max_snippet_len": MAX_SNIPPET_LEN,
             "min_leading_context": MIN_LEADING_CONTEXT,
@@ -564,16 +567,11 @@ fn score_json(score: &SnippetScore) -> Value {
 
 /// The golden-window record for one query.
 ///
-/// Pairs the exact snippet bytes the engine emitted with the ideal hit-centered
-/// window the oracle would produce for the same `(snippet-source, needle)`. With
-/// the engine truncating, the two converge on the long-line intent; a divergence
-/// would be the visible, checked-in evidence of an unwindowed-snippet regression.
+/// Pair the emitted bytes with the window computed from the fixed ingested
+/// source. The expected window exists even when retrieval emits no snippet.
 fn golden_window_json(score: &SnippetScore) -> Value {
     let observed = score.snippet.clone();
-    let oracle = score
-        .snippet
-        .as_ref()
-        .and_then(|s| compute_snippet_window(s, score.needle, MAX_SNIPPET_LEN));
+    let oracle = fixture_window(score.expect_path, score.needle);
     json!({
         "id": score.id,
         "intent": score.intent.as_str(),
@@ -590,10 +588,19 @@ fn artifact_detail(report: &SnippetReport) -> Value {
     let scores: Vec<Value> = report.scores.iter().map(score_json).collect();
     json!({
         "passed": report.passed,
+        "backend": if report.native_provenance.is_some() { "index-native" } else { "legacy-reference" },
+        "native_provenance": report.native_provenance.as_ref().map(|binding| json!({
+            "published_view": binding.published_view,
+            "source_cut": binding.source_cut,
+            "config_sha256": binding.config_sha256,
+            "config_template_sha256": binding.config_template_sha256,
+            "daemon_sha256": binding.daemon_sha256,
+            "resource_scope": "snippet_matrix process; daemon resources not sampled",
+        })),
         "max_snippet_len": MAX_SNIPPET_LEN,
         "min_leading_context": MIN_LEADING_CONTEXT,
         "scores": scores,
-        "gate_note": "snippet quality is hit-centered window + bounded length + deterministic truncation, NOT substring presence; the engine snippet is graded as-emitted, never post-processed to pass",
+        "gate_note": "snippet quality requires the fixed-source window, hit-centered bounded length, and deterministic truncation; the engine snippet is graded as-emitted, never post-processed to pass",
     })
 }
 
@@ -608,6 +615,19 @@ pub fn artifact(
         .iter()
         .map(|fixture| (fixture.path.to_string(), fixture.content.to_string()))
         .collect::<Vec<_>>();
+    let mut config_entries = vec![
+        ("max_snippet_len", MAX_SNIPPET_LEN.to_string()),
+        ("min_leading_context", MIN_LEADING_CONTEXT.to_string()),
+        ("queries", SNIPPET_QUERIES.len().to_string()),
+    ];
+    if let Some(binding) = &report.native_provenance {
+        config_entries.push(("backend", "index-native".to_string()));
+        config_entries.push((
+            "native_config_template_sha256",
+            binding.config_template_sha256.clone(),
+        ));
+        config_entries.push(("native_daemon_sha256", binding.daemon_sha256.clone()));
+    }
     Ok(BenchArtifactV1 {
         dimension: "snippet".to_string(),
         mode: BenchMode::Warm,
@@ -615,14 +635,7 @@ pub fn artifact(
         provenance: BenchProvenanceV1 {
             git_head,
             corpus_digest: corpus_digest("snippet", &corpus),
-            config_digest: config_digest(
-                "snippet",
-                &[
-                    ("max_snippet_len", MAX_SNIPPET_LEN.to_string()),
-                    ("min_leading_context", MIN_LEADING_CONTEXT.to_string()),
-                    ("queries", SNIPPET_QUERIES.len().to_string()),
-                ],
-            ),
+            config_digest: config_digest("snippet", &config_entries),
             model_revision: None,
         },
         host,
@@ -636,7 +649,7 @@ pub fn artifact(
                 scenario_id: score.id.to_string(),
                 route_family: RouteFamily::Lexical,
                 syntax: BenchSyntax::Native,
-                result_shape: if score.matched_path.is_some() {
+                result_shape: if score.ranked_hits.is_some_and(|count| count > 0) {
                     ResultShape::Candidates
                 } else {
                     ResultShape::Empty
@@ -645,7 +658,7 @@ pub fn artifact(
                 qps: None,
                 error_count: saturating_u64(score.failures.len()),
                 timeout_count: 0,
-                result_count: Some(u64::from(score.matched_path.is_some())),
+                result_count: score.ranked_hits,
                 typed_error_code: None,
                 engine_touched: vec!["lexical".to_string()],
                 early_stop_reason: None,
@@ -662,19 +675,41 @@ pub fn write_artifacts(
     git_head: GitHeadV1,
     host: HostV1,
 ) -> AnyResult<()> {
+    std::fs::create_dir_all(dir)?;
+    invalidate_artifacts(dir)?;
     let golden: Vec<Value> = report.scores.iter().map(golden_window_json).collect();
     let git_head_text = git_head.as_str().to_string();
-    artifact(report, git_head, host)?.write_to(&dir.join("summary.json"))?;
+    let summary = artifact(report, git_head, host)?;
+    let golden_file = tempfile::NamedTempFile::new_in(dir)?;
+    let summary_file = tempfile::NamedTempFile::new_in(dir)?;
     crate::artifact::write_json_pretty(
-        &dir.join("golden_windows.json"),
+        golden_file.path(),
         &json!({
             "schema_version": 2,
             "dimension": "snippet",
             "git_head": git_head_text,
             "windows": golden,
-            "oracle_note": "oracle_window is the ideal hit-centered, bounded window compute_snippet_window would emit for (observed_snippet, needle); with the engine truncating, observed_snippet and oracle_window converge on the long_line intent, and any divergence marks an unwindowed-snippet regression",
+            "oracle_note": "oracle_window is computed from the fixed ingested source and needle, independently of observed_snippet; any mismatch fails the source-window gate",
         }),
     )?;
+    summary.write_to(summary_file.path())?;
+    golden_file.as_file().sync_all()?;
+    summary_file.as_file().sync_all()?;
+    let _golden = golden_file.persist(dir.join("golden_windows.json"))?;
+    let _summary = summary_file.persist(dir.join("summary.json"))?;
+    Ok(())
+}
+
+/// Remove an earlier verdict before a new direct producer attempt can fail.
+/// The summary is the commit marker, so remove it before its supplemental gold.
+pub fn invalidate_artifacts(dir: &Path) -> std::io::Result<()> {
+    for name in ["summary.json", "golden_windows.json"] {
+        match std::fs::remove_file(dir.join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
     Ok(())
 }
 
@@ -685,6 +720,136 @@ pub fn write_artifacts(
 )]
 mod tests {
     use super::*;
+    use quanta_index_contract::{LqExpr, LqLeaf, parse_native_content_query};
+
+    fn publication_fixture_report() -> SnippetReport {
+        let scores = SNIPPET_QUERIES
+            .iter()
+            .map(|query| SnippetScore {
+                id: query.id,
+                intent: query.intent,
+                query: query.query,
+                needle: query.needle,
+                expect_path: query.expect_path,
+                matched_path: None,
+                snippet: None,
+                metrics: None,
+                observed_hit_offset: None,
+                observed_highlights: Vec::new(),
+                ranked_hits: None,
+                matched_total: None,
+                failures: vec!["writer fixture has no observation".into()],
+            })
+            .collect();
+        SnippetReport {
+            scores,
+            passed: false,
+            native_provenance: None,
+        }
+    }
+
+    #[test]
+    fn artifact_writer_replaces_a_prior_pair_with_complete_current_rows() -> AnyResult<()> {
+        let output = tempfile::tempdir()?;
+        let head = GitHeadV1::parse(&"a".repeat(40))?;
+        std::fs::write(output.path().join("summary.json"), b"old green")?;
+        std::fs::write(output.path().join("golden_windows.json"), b"old gold")?;
+        write_artifacts(
+            &publication_fixture_report(),
+            output.path(),
+            head,
+            HostV1::observe()?,
+        )?;
+        let summary: Value =
+            serde_json::from_slice(&std::fs::read(output.path().join("summary.json"))?)?;
+        let golden: Value =
+            serde_json::from_slice(&std::fs::read(output.path().join("golden_windows.json"))?)?;
+        assert_eq!(summary["schema_version"], 2);
+        assert_eq!(summary["provenance"]["git_head"], "a".repeat(40));
+        assert_eq!(golden["git_head"], summary["provenance"]["git_head"]);
+        assert_eq!(summary["rows"].as_array().map(Vec::len), Some(4));
+        assert_eq!(golden["windows"].as_array().map(Vec::len), Some(4));
+        assert_eq!(summary["detail"]["passed"], false);
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_writer_removes_prior_green_before_failed_gold_publish() -> AnyResult<()> {
+        let output = tempfile::tempdir()?;
+        std::fs::write(
+            output.path().join("summary.json"),
+            br#"{"detail":{"passed":true}}"#,
+        )?;
+        std::fs::create_dir(output.path().join("golden_windows.json"))?;
+        let result = write_artifacts(
+            &publication_fixture_report(),
+            output.path(),
+            GitHeadV1::parse(&"b".repeat(40))?,
+            HostV1::observe()?,
+        );
+        assert!(
+            result.is_err(),
+            "golden path directory must refuse publication"
+        );
+        assert!(
+            !output.path().join("summary.json").exists(),
+            "a failed new run must not leave a previous green summary"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn judged_phrase_and_regex_use_admitted_native_content_syntax() {
+        let phrase = parse_native_content_query(SNIPPET_QUERIES[0].query)
+            .expect("phrase fixture must parse");
+        assert!(matches!(
+            &phrase.expr,
+            LqExpr::Leaf(LqLeaf::Phrase(text)) if text == "brown fox marker"
+        ));
+        let regex =
+            parse_native_content_query(SNIPPET_QUERIES[1].query).expect("regex fixture must parse");
+        assert!(matches!(
+            &regex.expr,
+            LqExpr::All(children) if children.iter().any(|expr| matches!(expr,
+                LqExpr::Leaf(LqLeaf::Keyword(text)) if text == "regex_target_symbol"
+            )) && children.iter().any(|expr| matches!(expr,
+                LqExpr::Leaf(LqLeaf::Regex(source)) if source == r"regex_target_symbol\(input: &str\)"
+            ))
+        ));
+        assert!(
+            quanta_index_lexical::native::validate_native_text_input(&phrase)
+                .expect("phrase fixture must be admitted by Native")
+                > 0
+        );
+        assert!(
+            quanta_index_lexical::native::validate_native_text_input(&regex)
+                .expect("anchored regex fixture must be admitted by Native")
+                > 0
+        );
+    }
+
+    #[test]
+    fn decoys_expose_dropped_predicates_without_changing_judged_rows() {
+        assert_eq!(SNIPPET_QUERIES.len(), 4);
+        let phrase = "brown fox marker";
+        let phrase_decoy = fixture_source("src/snippet/phrase_decoy.rs").expect("phrase decoy");
+        assert!(
+            phrase
+                .split_ascii_whitespace()
+                .all(|term| phrase_decoy.contains(term))
+        );
+        assert!(!phrase_decoy.contains(phrase));
+        let expected = fixture_source("src/snippet/regex.rs").expect("regex source");
+        let decoy = fixture_source("src/snippet/regex_decoy.rs").expect("regex decoy");
+        assert!(expected.contains("regex_target_symbol"));
+        assert!(decoy.contains("regex_target_symbol"));
+        assert!(expected.contains("regex_target_symbol(input: &str)"));
+        assert!(!decoy.contains("regex_target_symbol(input: &str)"));
+        for intent in [SnippetIntent::Phrase, SnippetIntent::Regex] {
+            assert!(predicate_population_failures(intent, 1).is_empty());
+            assert!(!predicate_population_failures(intent, 2).is_empty());
+        }
+    }
 
     // --- pure window oracle ---------------------------------------------
 
@@ -737,6 +902,15 @@ mod tests {
         // If text built, it is valid UTF-8 by construction (String); assert hit.
         assert!(w.text.contains("NEEDLE"));
         assert!(w.text.len() <= 80);
+    }
+
+    #[test]
+    fn window_fits_the_whole_needle_before_assigning_context() {
+        let source = "abcéABCDEzzzzzz";
+        let window = compute_snippet_window(source, "ABCDE", 6).expect("fitting hit");
+        assert_eq!(window.text, "ABCDEz");
+        assert_eq!(window.hit_offset, 0);
+        assert!(compute_snippet_window(source, "ABCDE", 4).is_none());
     }
 
     // --- observed metrics ------------------------------------------------
@@ -849,58 +1023,93 @@ mod tests {
         assert!(failures.is_empty(), "{failures:?}");
     }
 
-    // --- seeded end-to-end ----------------------------------------------
+    #[test]
+    fn fixed_source_gate_rejects_orphan_context_with_valid_metrics() {
+        let query = &SNIPPET_QUERIES[0];
+        let orphan = "unrelated brown fox marker context";
+        let metrics = measure_snippet(orphan, query.needle);
+        assert!(
+            gate_snippet(query.intent, &metrics, MAX_SNIPPET_LEN, MIN_LEADING_CONTEXT).is_empty(),
+            "the old metric gate alone must accept this counterexample"
+        );
+        assert_eq!(
+            fixture_window_failures(query, orphan, None, &[]),
+            vec![format!(
+                "fixed source window differs from emitted snippet for `{}`",
+                query.expect_path
+            )]
+        );
+        let score = SnippetScore {
+            id: query.id,
+            intent: query.intent,
+            query: query.query,
+            needle: query.needle,
+            expect_path: query.expect_path,
+            matched_path: Some(query.expect_path.to_string()),
+            snippet: Some(orphan.to_string()),
+            metrics: Some(metrics),
+            observed_hit_offset: None,
+            observed_highlights: Vec::new(),
+            ranked_hits: Some(1),
+            matched_total: Some(1),
+            failures: fixture_window_failures(query, orphan, None, &[]),
+        };
+        let golden = golden_window_json(&score);
+        assert_ne!(golden["observed_snippet"], golden["oracle_window"]);
+        assert_eq!(
+            golden["oracle_window"],
+            fixture_source(query.expect_path).expect("fixed source")
+        );
+        assert!(!score.passed());
+    }
 
     #[test]
-    fn seeded_snippet_rail_runs_and_grades_every_query() {
-        let report = run_snippet_report().expect("snippet rail runs");
+    fn fixed_source_gate_requires_emitted_anchor_and_every_highlight() {
+        let query = &SNIPPET_QUERIES[2];
+        let observed = fixture_source(query.expect_path).expect("fixed multi-hit source");
+        let spans = [
+            HighlightSpan { start: 3, len: 17 },
+            HighlightSpan { start: 25, len: 17 },
+            HighlightSpan { start: 46, len: 17 },
+        ];
+        assert!(fixture_window_failures(query, observed, Some(3), &spans).is_empty());
         assert_eq!(
-            report.scores.len(),
-            SNIPPET_QUERIES.len(),
-            "every judged query must be scored"
+            fixture_window_failures(query, observed, None, &spans[..1]),
+            [
+                format!(
+                    "fixed source hit offset differs for `{}`",
+                    query.expect_path
+                ),
+                format!("fixed source highlights differ for `{}`", query.expect_path),
+            ]
         );
-        // Every NON-long-line intent must retrieve its candidate and present the
-        // needle: a short-chunk snippet is the full chunk, which contains the
-        // needle, so phrase/regex/multi must pass the presence floor.
-        for score in &report.scores {
-            if !score.intent.requires_truncation() {
-                let metrics = score
-                    .metrics
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("{}: no metrics (retrieval miss?)", score.id));
-                assert!(
-                    metrics.needle_present,
-                    "{}: needle absent from snippet `{:?}`",
-                    score.id, score.snippet
-                );
-            }
-        }
-        // The long-line query MUST retrieve its candidate so the snippet is
-        // gradable; with the engine truncating to a hit-centered window it now
-        // PASSES the bound/centering gate (the live measurement).
-        let long = report
-            .scores
-            .iter()
-            .find(|s| s.intent == SnippetIntent::LongLine)
-            .expect("long-line query scored");
-        assert!(
-            long.snippet.is_some(),
-            "long-line snippet must be retrieved to be measurable: {:?}",
-            long.failures
-        );
-        let artifact = artifact(
-            &report,
-            GitHeadV1::parse(&"a".repeat(40)).expect("head"),
-            HostV1::observe().expect("host"),
-        )
-        .expect("authority artifact")
-        .to_json()
-        .expect("json");
-        assert_eq!(artifact["schema_version"], 2);
-        assert_eq!(artifact["detail"]["passed"], report.passed);
+    }
+
+    #[test]
+    fn fixed_source_oracle_survives_missing_observation() {
+        let query = &SNIPPET_QUERIES[3];
+        let score = SnippetScore {
+            id: query.id,
+            intent: query.intent,
+            query: query.query,
+            needle: query.needle,
+            expect_path: query.expect_path,
+            matched_path: None,
+            snippet: None,
+            metrics: None,
+            observed_hit_offset: None,
+            observed_highlights: Vec::new(),
+            ranked_hits: None,
+            matched_total: None,
+            failures: vec!["retrieval miss".into()],
+        };
+        let golden = golden_window_json(&score);
+        assert!(golden["observed_snippet"].is_null());
         assert_eq!(
-            artifact["rows"].as_array().map(Vec::len),
-            Some(SNIPPET_QUERIES.len())
+            golden["oracle_window"],
+            fixture_window(query.expect_path, query.needle)
+                .expect("fixed long-line source")
+                .text
         );
     }
 }

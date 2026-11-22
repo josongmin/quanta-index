@@ -83,6 +83,7 @@ impl Ledger {
             self.runtime_state(&batch.repo_id, &batch.revision_id, batch.generation),
             epoch,
             batch,
+            || Ok(()),
         )?;
         self.apply_runtime_catalog_delta(&delta, now)
     }
@@ -91,7 +92,7 @@ impl Ledger {
     /// stamped with.
     pub(crate) fn apply_history_delta(
         &mut self,
-        delta: &HistoryDelta,
+        delta: &HistoryDelta<'_>,
         now: Instant,
     ) -> Result<(), CoreError> {
         self.aux_advance::<HistoryAuthorityState>(

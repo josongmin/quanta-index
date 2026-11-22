@@ -376,24 +376,15 @@ fn alias_output_denial_ceiling(body: &str) -> Result<u64, IndexError> {
     // Use the same canonical backing and selected output arithmetic as the
     // existing cold-arena admission regression. No threshold search is used.
     let (mut calibration, memory) = funded_token_budget(1_000_000)?;
-    let (mut cursor, mut packet) = prepare_indexed_token_input(body, &mut calibration)?;
+    let mut cursor = prepare_indexed_token_cursor(body, &mut calibration)?;
     let census =
         cold_tokens::CanonicalTokenCensus::count(&mut cursor, body.len(), &mut calibration)?
             .ok_or(IndexError::ResourceLimited)?;
-    check!(packet.try_prepare_cold_keys(census.packet_key_bytes(), &calibration)?);
-    let mut cold = cold_tokens::ColdTokens::try_new(census, &calibration)?
+    let mut cold = cold_tokens::ColdTokens::try_new(&census, &calibration)?
         .ok_or(IndexError::ResourceLimited)?;
-    check_eq!(
-        visit_prepared_token_batches(
-            &mut cursor,
-            &mut packet,
-            &mut calibration,
-            |rows, budget| { cold.push_batch(rows, budget) }
-        )?,
-        6
-    );
+    check_eq!(cold.fill_from_cursor(&mut cursor, &mut calibration)?, 6);
     cold.sort_and_validate(&calibration)?;
-    drop((packet, cursor));
+    drop(cursor);
     let alias = cold.try_packed_alias(&mut calibration)?.ok_or_else(|| {
         IndexError::BackendViolation("six-run source has no borrowed alias candidate".into())
     })?;

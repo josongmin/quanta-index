@@ -7,7 +7,7 @@ use quanta_index_core::index::{Digest, IndexError, ObjectRef, RegisteredObject};
 pub(super) const VERSION: i64 = 1;
 pub(super) const MAX_CHILDREN: usize = 4096;
 pub(super) const MAX_OBJECT_BYTES: u64 = 16 * 1024 * 1024 + 4096 * 32 + 16;
-const HEADER_BYTES: usize = 32 + 8 + 4;
+pub(super) const HEADER_BYTES: usize = 32 + 8 + 4;
 pub(super) const MAX_ENCODED_BYTES: usize = HEADER_BYTES + MAX_CHILDREN * 32;
 
 fn malformed() -> IndexError {
@@ -74,6 +74,9 @@ pub(super) fn decode(payload: &[u8]) -> Result<RegisteredObject, IndexError> {
     children
         .try_reserve_exact(count)
         .map_err(|_error| IndexError::ResourceLimited)?;
+    if children.capacity() > count {
+        return Err(IndexError::ResourceLimited);
+    }
     for chunk in payload
         .get(HEADER_BYTES..)
         .ok_or_else(malformed)?

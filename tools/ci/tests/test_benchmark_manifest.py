@@ -12,6 +12,8 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BENCHMARK_DIR = REPO_ROOT / "tools" / "benchmark"
 REGISTRY_PATH = BENCHMARK_DIR / "registry.toml"
@@ -55,6 +57,22 @@ def test_registry_has_no_second_manifest_data_source() -> None:
     assert not (BENCHMARK_DIR / "manifest.json").exists(), (
         "manifest.json must not return: registry.toml is the single data authority"
     )
+
+
+def test_archived_openai_ab_capture_has_no_current_checkout_build() -> None:
+    registry = _registry_module().load_registry()
+    assert "semantic-ab" not in registry["profiles"]
+    assert "rust-capture-quality-relevance-openai-ab" not in registry["producers"]
+    justfile = JUSTFILE.read_text(encoding="utf-8")
+    recipe = re.search(
+        r"^rust-capture-quality-relevance-openai-ab[^\n]*:\n(    [^\n]+)",
+        justfile,
+        re.MULTILINE,
+    )
+    assert recipe is not None
+    assert "benchctl.py capture-frozen-openai-ab" in recipe[1]
+    for option in ("--runner", "--runner-sha256", "--source-checkout", "--source-head", "--out"):
+        assert f" {option} " in recipe[1]
 
 
 def test_paired_and_lexical_profiles_have_distinct_owners() -> None:
@@ -124,6 +142,52 @@ def test_dsl_refresh_delegates_to_the_registry_control_plane() -> None:
     assert "@just rust-bench-dsl-" not in body
 
 
+def test_dsl_comparison_uses_the_control_planes_pair_check() -> None:
+    justfile = JUSTFILE.read_text(encoding="utf-8")
+    match = re.search(
+        r"^rust-bench-dsl-compare:\n(?P<body>(?:    [^\n]+\n)+)",
+        justfile,
+        re.MULTILINE,
+    )
+    assert match is not None
+    assert match.group("body").splitlines() == [
+        "    python3 tools/benchmark/benchctl.py compare dsl-authority",
+    ]
+
+
+def test_legacy_dsl_producers_cannot_overwrite_the_authority_pair() -> None:
+    recipes = set(RECIPE.findall(JUSTFILE.read_text(encoding="utf-8")))
+    assert recipes.isdisjoint({"rust-bench-dsl-warm", "rust-bench-dsl-cold"})
+
+
+def test_hellgate_all_uses_the_registered_dsl_authority() -> None:
+    justfile = JUSTFILE.read_text(encoding="utf-8")
+    match = re.search(
+        r'^rust-verify-hellgate-all\s+samples="20":\n(?P<body>(?:    [^\n]+\n)+)',
+        justfile,
+        re.MULTILINE,
+    )
+    assert match is not None
+    assert match.group("body").splitlines() == [
+        "    @just rust-verify-hellgate-fast",
+        "    @just rust-verify-hellgate-broad",
+        "    @just rust-bench-dsl-refresh {{samples}}",
+    ]
+
+
+@pytest.mark.parametrize("recipe", ["rust-build-fast", "rust-build-daemon"])
+def test_local_build_does_not_enable_the_retiring_legacy_engine(recipe: str) -> None:
+    match = re.search(
+        rf"^{recipe}:\n(?P<command>    [^\n]+)",
+        JUSTFILE.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert match is not None
+    flags = match.group("command").split()
+    assert "--no-default-features" in flags
+    assert "--all-features" not in flags
+
+
 def test_registry_refuses_a_family_without_a_required_key(tmp_path: Path) -> None:
     module = _registry_module()
     text = REGISTRY_PATH.read_text(encoding="utf-8")
@@ -143,7 +207,7 @@ def test_registry_refuses_an_unreachable_producer(tmp_path: Path) -> None:
     module = _registry_module()
     text = REGISTRY_PATH.read_text(encoding="utf-8")
     mutated = text.replace(
-        'recipe = "rust-bench-dsl-warm"', 'recipe = "rust-bench-dsl-nonexistent"'
+        'recipe = "rust-verify-quality-relevance"', 'recipe = "rust-bench-dsl-nonexistent"'
     )
     assert mutated != text
     path = tmp_path / "registry.toml"

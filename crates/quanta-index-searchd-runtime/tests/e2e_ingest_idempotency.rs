@@ -1,22 +1,5 @@
-//! QI-BB-032 — a batch digest is the canonical digest of one body, applied
-//! once.
-//!
-//! Before this, a producer that lost an ack and re-sent its batch made the
-//! search plane derive, embed and build again, and a different body under
-//! the same digest was applied as if it were the same. Now `batch_digest`
-//! is the canonical digest of the body and every receipt-bearing publish
-//! runs under a durable idempotency record: a replay of the same body is
-//! answered from the record with `applied = false` and the original
-//! sequence, a body that is not what its digest names is a typed
-//! `BATCH_DIGEST_MISMATCH` before any mutation or record, 8 and 32
-//! concurrent duplicates converge on one apply, and the record survives a
-//! daemon restart.
-//!
-//! Oracles are external: the receipts' `applied` / `durable_sequence`, the
-//! typed refusal, the idempotency table's row count read straight from the
-//! catalog file, and what a query serves afterwards.
-
-#![forbid(unsafe_code)]
+//! QI-BB-032 fast idempotency oracles against the pinned Legacy executable.
+//! The current SDK and raw ingest wire must name the same Source batch.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -24,178 +7,155 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::e2e_harness;
 use quanta_index_contract::{
-    BatchPublishReceipt, ERR_SERVER_OVERLOADED, IngestOperationKindV1, SearchPlaneErrorCodeV2,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
-    SearchPlaneIngestIpcResponseEnvelope, TextQuerySyntax,
+    BatchIngestMode, BatchPublishReceipt, ChunkId, ChunkRecord, ERR_SERVER_OVERLOADED,
+    GenerationPin, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    SearchCorpusIngestBatch, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope,
+    SearchPlaneIngestIpcResponse, SearchPlaneIngestIpcResponseEnvelope, SourceFileKey,
+    SourcePublicationEvent, lex::LanguageCode,
 };
-use quanta_index_core::{
-    BATCH_DIGEST_MISMATCH_CODE, IdempotencyCatalogPort as _, IdempotencyKeyV1, OperationInspectV1,
-};
+use quanta_index_core::BATCH_DIGEST_MISMATCH_CODE;
 use quanta_index_ipc::{ClientIoPolicy, send_request, stamp_batch_digest_v1};
+use quanta_index_sdk::SearchCorpusBatch;
+use quanta_index_searchd_harness::legacy_reference::{LegacySearchdBinary, daemon_socket_paths};
+use quanta_index_searchd_harness::{
+    fixture_source_scope_v1, private_tempdir, semantic_source_scopes_for_chunk_records,
+};
 
-use crate::searchd_binary_process::{SearchdBinaryProcess, daemon_socket_paths};
-use e2e_harness::E2eRuntime;
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
-type TestResult = Result<(), Box<dyn Error>>;
-
-/// The idempotency table's row count, read straight from the catalog file
-/// the daemon writes (`state_root/catalog/catalog-v1.sqlite`).
-fn idempotency_rows(rt: &E2eRuntime) -> Result<u64, Box<dyn Error>> {
-    let path = quanta_index_catalog::catalog_dir(rt.state_root())
-        .join(quanta_index_catalog::CATALOG_FILE_NAME);
-    let connection =
-        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let rows: i64 =
-        connection.query_row("SELECT COUNT(*) FROM idempotency_v2", [], |row| row.get(0))?;
-    Ok(u64::try_from(rows)?)
+fn source_batches(
+    repo: &RepoId,
+    revision: &RevisionId,
+    path: &str,
+    body: &str,
+) -> TestResult<(SearchCorpusIngestBatch, SearchCorpusBatch)> {
+    let chunk = ChunkRecord {
+        chunk_id: ChunkId::new(format!("e2e-idem-{path}")),
+        repo_relative_path: RepoRelativePath::new(path),
+        language: LanguageCode::new("rust")?,
+        start_byte: 0,
+        end_byte: u32::try_from(body.len())?,
+        start_line: 1,
+        end_line: 2,
+        text: body.to_owned().into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
+        source_repo_id: None,
+    };
+    let scope = fixture_source_scope_v1(
+        SourceFileKey {
+            source_repo_id: repo.clone(),
+            repo_relative_path: RepoRelativePath::new(path),
+        },
+        revision.clone(),
+        vec![chunk],
+        Vec::new(),
+    )?;
+    let semantic_scopes = semantic_source_scopes_for_chunk_records(repo, &scope.chunks);
+    let mut sdk = SearchCorpusBatch::replace_generation(
+        repo.clone(),
+        revision.clone(),
+        ManifestGeneration::new(1),
+        "lex-seal:1",
+    )
+    .source_event(SourcePublicationEvent {
+        stream_id: "e2e-harness-source-v1".into(),
+        event_id: "e2e-source-event-1".into(),
+        expected_base_event_id: None,
+        payload_sha256: [0; 32],
+    });
+    for semantic in &semantic_scopes {
+        sdk = sdk.replace_semantic_scope(
+            semantic.scope.clone(),
+            semantic.scope_digest.clone(),
+            semantic.sources.clone(),
+            semantic.cluster_memberships.clone(),
+        );
+    }
+    sdk = sdk.replace_scope(
+        scope.coverage.clone(),
+        scope.source_bytes.clone(),
+        scope.chunks.clone(),
+        scope.symbols.clone(),
+    );
+    let mut wire = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: "e2e-harness-source-v1".into(),
+            event_id: "e2e-source-event-1".into(),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        },
+        repo_id: repo.clone(),
+        revision_id: revision.clone(),
+        generation: ManifestGeneration::new(1),
+        base_generation: None,
+        manifest_digest: "lex-seal:1".into(),
+        batch_digest: String::new(),
+        mode: BatchIngestMode::ReplaceGeneration,
+        bundle_payload: None,
+        clear_surfaces: Vec::new(),
+        semantic_replace_scopes: semantic_scopes,
+        replace_scopes: vec![scope],
+        tombstone_scopes: Vec::new(),
+        semantic_tombstone_scopes: Vec::new(),
+        seal: true,
+    };
+    wire.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&wire)?;
+    stamp_batch_digest_v1(&mut wire)?;
+    if wire.batch_digest != sdk.batch_digest()? {
+        return Err("raw IPC fixture differs from public SDK source batch".into());
+    }
+    Ok((wire, sdk))
 }
 
-fn receipt_of(
-    response: SearchPlaneIngestIpcResponse,
-) -> Result<BatchPublishReceipt, Box<dyn Error>> {
+fn idempotency_rows(state_root: &Path) -> TestResult<u64> {
+    let catalog =
+        quanta_index_catalog::catalog_dir(state_root).join(quanta_index_catalog::CATALOG_FILE_NAME);
+    let connection =
+        rusqlite::Connection::open_with_flags(catalog, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM idempotency_v2", [], |row| row.get(0))?;
+    Ok(u64::try_from(count)?)
+}
+
+fn receipt_of(response: SearchPlaneIngestIpcResponse) -> TestResult<BatchPublishReceipt> {
     match response {
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) => Ok(outcome.receipt),
-        SearchPlaneIngestIpcResponse::Error(error) => {
-            Err(format!("refused: {}: {}", error.code, error.message).into())
-        }
-        other @ (SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
-        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
-        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
-        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)) => {
-            Err(format!("unexpected ingest response {other:?}").into())
-        }
+        other => Err(format!("expected SearchCorpus receipt, got {other:?}").into()),
     }
 }
 
-fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
-    match response {
-        SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.as_wire_str()),
-        SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
-        | SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
-        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
-        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => None,
+fn ingest_once(
+    socket: &Path,
+    request_id: u64,
+    batch: SearchCorpusIngestBatch,
+) -> TestResult<SearchPlaneIngestIpcResponse> {
+    let response: SearchPlaneIngestIpcResponseEnvelope = send_request(
+        socket,
+        &SearchPlaneIngestIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
+            request_id,
+            payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
+        },
+        ClientIoPolicy::default(),
+    )?;
+    if response.request_id != request_id {
+        return Err(format!("ingest response request ID changed: {response:?}").into());
     }
+    Ok(response.payload)
 }
 
-/// The same body twice is one apply; a different body wearing the first
-/// body's digest is refused, records nothing, and is never served.
-#[test]
-fn a_replay_is_acked_from_the_record_and_a_forged_digest_never_lands() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let batch = rt.text_search_corpus_batch("src/idem.rs", "fn first_body() { idem_first }")?;
-    let first = receipt_of(rt.ingest_once(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
-    )?)?;
-    if !first.applied || first.durable_sequence == 0 || first.batch_digest != batch.batch_digest {
-        return Err(format!("first publish must apply under a sequence: {first:?}").into());
-    }
-    let rows_after_apply = idempotency_rows(&rt)?;
-    if rows_after_apply != 1 {
-        return Err(format!("one apply must leave one record, found {rows_after_apply}").into());
-    }
-
-    let replay = receipt_of(rt.ingest_once(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
-    )?)?;
-    if replay.applied {
-        return Err(format!("a replay must not report a new apply: {replay:?}").into());
-    }
-    if replay.durable_sequence != first.durable_sequence
-        || replay.generation != first.generation
-        || replay.manifest_digest != first.manifest_digest
-        || replay.accepted_replace_scopes != first.accepted_replace_scopes
-    {
-        return Err(format!(
-            "a replay must carry the original apply's receipt: first={first:?} replay={replay:?}"
-        )
-        .into());
-    }
-
-    // One byte of the body changes; the carried digest does not.
-    let mut forged = batch.clone();
-    forged
-        .replace_scopes
-        .first_mut()
-        .and_then(|scope| scope.chunks.first_mut())
-        .ok_or("the batch carries one chunk")?
-        .text = "fn second_body() { idem_second }".into();
-    let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-        forged,
-    ))?;
-    if typed_code(&refused) != Some(BATCH_DIGEST_MISMATCH_CODE.as_wire_str()) {
-        return Err(format!(
-            "a body that is not what its digest names must be refused typed, got {refused:?}"
-        )
-        .into());
-    }
-    if idempotency_rows(&rt)? != rows_after_apply {
-        return Err("a refused forged batch must leave the catalog untouched".into());
-    }
-
-    // What is served is the first body and only the first body.
-    rt.publish_search_corpus_batch(batch)?;
-    rt.activate_last_sealed_generation()?;
-    let served_first = rt.query_text(TextQuerySyntax::Native, "idem_first", 5);
-    if let Some(error) = served_first.typed_error {
-        return Err(format!("the applied body must serve: {error}").into());
-    }
-    if served_first.candidate_ids.len() != 1 {
-        return Err(format!(
-            "the applied body must serve exactly once, served {}",
-            served_first.candidate_ids.len()
-        )
-        .into());
-    }
-    let served_second = rt.query_text(TextQuerySyntax::Native, "idem_second", 5);
-    if !served_second.candidate_ids.is_empty() {
-        return Err("the refused body must never be served".into());
-    }
-    Ok(())
-}
-
-/// One producer publishing `request` the way the admission contract asks.
-///
-/// A typed `SERVER_OVERLOADED` (QI-BB-002) — the serial ingest slot was
-/// busy past the queue budget — is retried with backoff, and every retry
-/// of the same body is itself a replay of the same idempotency key.
 fn publish_with_backoff(
     socket: &Path,
     request_id: u64,
-    request: &SearchPlaneIngestIpcRequest,
+    batch: SearchCorpusIngestBatch,
 ) -> Result<SearchPlaneIngestIpcResponse, Box<dyn Error + Send + Sync>> {
     const PATIENCE: Duration = Duration::from_secs(120);
     let started = Instant::now();
     loop {
-        let envelope = SearchPlaneIngestIpcRequestEnvelope {
-            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
-            request_id,
-            payload: request.clone(),
-        };
-        let response = send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
-            socket,
-            &envelope,
-            ClientIoPolicy::default(),
-        )?
-        .payload;
+        let response = ingest_once(socket, request_id, batch.clone())
+            .map_err(|error| -> Box<dyn Error + Send + Sync> { error.to_string().into() })?;
         let overloaded = matches!(
             &response,
             SearchPlaneIngestIpcResponse::Error(error) if error.code == ERR_SERVER_OVERLOADED
@@ -207,67 +167,166 @@ fn publish_with_backoff(
     }
 }
 
-/// `publishers` publishers of the same batch converge on one apply.
-///
-/// Exactly one receipt says `applied`, every receipt carries the same
-/// sequence, the catalog holds one record, and the corpus holds the row
-/// once.
+fn serve_count(
+    client: &quanta_index_sdk::QuantaIndex,
+    repo: &RepoId,
+    revision: &RevisionId,
+    text: &str,
+) -> TestResult<usize> {
+    let pin = GenerationPin::new(repo.clone(), revision.clone(), ManifestGeneration::new(1));
+    Ok(client
+        .lexical()
+        .query()
+        .native(text)
+        .pinned(pin)
+        .top_k(5)
+        .execute()?
+        .results
+        .len())
+}
+
+#[test]
+fn a_replay_is_acked_from_the_record_and_a_forged_digest_never_lands() -> TestResult {
+    let parent = private_tempdir()?;
+    let state = parent.path().join("state");
+    let binary = LegacySearchdBinary::from_environment()?;
+    let repo = RepoId::new("repo-e2e")?;
+    let revision = RevisionId::new("rev-e2e")?;
+    let (batch, sdk) = source_batches(
+        &repo,
+        &revision,
+        "src/idem.rs",
+        "fn first_body() { idem_first }",
+    )?;
+    let process = binary.start(&state, 8)?;
+    let outcome = (|| -> TestResult {
+        let socket = daemon_socket_paths(&state)[2].clone();
+        let first = receipt_of(ingest_once(&socket, 1, batch.clone())?)?;
+        if !first.applied || first.durable_sequence == 0 || first.batch_digest != batch.batch_digest
+        {
+            return Err(format!("first publish must apply under a sequence: {first:?}").into());
+        }
+        let rows_after_apply = idempotency_rows(&state)?;
+        if rows_after_apply != 1 {
+            return Err(
+                format!("one apply must leave one record, found {rows_after_apply}").into(),
+            );
+        }
+        let replay = receipt_of(ingest_once(&socket, 2, batch.clone())?)?;
+        if replay.applied
+            || replay.durable_sequence != first.durable_sequence
+            || replay.generation != first.generation
+            || replay.manifest_digest != first.manifest_digest
+            || replay.accepted_replace_scopes != first.accepted_replace_scopes
+        {
+            return Err(format!(
+                "replay must carry original receipt: first={first:?} replay={replay:?}"
+            )
+            .into());
+        }
+        let mut forged = batch.clone();
+        forged
+            .replace_scopes
+            .first_mut()
+            .and_then(|scope| scope.chunks.first_mut())
+            .ok_or("the batch carries one chunk")?
+            .text = "fn second_body() { idem_second }".into();
+        let refused = ingest_once(&socket, 3, forged)?;
+        if !matches!(&refused, SearchPlaneIngestIpcResponse::Error(error)
+            if error.code.as_wire_str() == BATCH_DIGEST_MISMATCH_CODE.as_wire_str())
+        {
+            return Err(format!("forged digest must be refused typed: {refused:?}").into());
+        }
+        if idempotency_rows(&state)? != rows_after_apply {
+            return Err("refused forged batch changed the catalog".into());
+        }
+        let client = process.connect()?;
+        let (activation_receipt, _) = client.search_corpus().publish_and_activate(&sdk, None)?;
+        if activation_receipt.applied
+            || activation_receipt.durable_sequence != first.durable_sequence
+        {
+            return Err(format!(
+                "activation replay changed original receipt: {activation_receipt:?}"
+            )
+            .into());
+        }
+        if serve_count(&client, &repo, &revision, "idem_first")? != 1 {
+            return Err("applied body must serve exactly once".into());
+        }
+        if serve_count(&client, &repo, &revision, "idem_second")? != 0 {
+            return Err("refused body must never be served".into());
+        }
+        Ok(())
+    })();
+    let stopped = process.stop();
+    outcome.and(stopped)?;
+    binary.verify()
+}
+
 fn duplicate_publishes_converge_on_one_apply(publishers: u64) -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let batch = rt.text_search_corpus_batch("src/race.rs", "fn raced_body() { idem_race }")?;
-    let socket = rt.ingest_socket_path()?;
-    let publishers = (0..publishers)
-        .map(|index| {
-            let socket = socket.clone();
-            let batch = batch.clone();
-            thread::spawn(move || {
-                publish_with_backoff(
-                    &socket,
-                    1_000_u64.saturating_add(index),
-                    &SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
-                )
+    let parent = private_tempdir()?;
+    let state = parent.path().join("state");
+    let binary = LegacySearchdBinary::from_environment()?;
+    let repo = RepoId::new("repo-e2e")?;
+    let revision = RevisionId::new("rev-e2e")?;
+    let (batch, sdk) = source_batches(
+        &repo,
+        &revision,
+        "src/race.rs",
+        "fn raced_body() { idem_race }",
+    )?;
+    let process = binary.start(&state, 8)?;
+    let outcome = (|| -> TestResult {
+        let socket = daemon_socket_paths(&state)[2].clone();
+        let publishers = (0..publishers)
+            .map(|index| {
+                let socket = socket.clone();
+                let batch = batch.clone();
+                thread::spawn(move || publish_with_backoff(&socket, 1_000 + index, batch))
             })
-        })
-        .collect::<Vec<_>>();
-    let mut receipts = Vec::new();
-    for publisher in publishers {
-        let response = publisher
-            .join()
-            .map_err(|panic| format!("publisher panicked: {panic:?}"))?
-            .map_err(|err| -> Box<dyn Error> { err })?;
-        receipts.push(receipt_of(response)?);
-    }
-    let applied = receipts.iter().filter(|receipt| receipt.applied).count();
-    if applied != 1 {
-        return Err(format!("exactly one publisher may apply, {applied} did: {receipts:?}").into());
-    }
-    let sequences: BTreeSet<u64> = receipts
-        .iter()
-        .map(|receipt| receipt.durable_sequence)
-        .collect();
-    if sequences.len() != 1 {
-        return Err(format!(
-            "every receipt must carry the one apply's sequence, got {sequences:?}"
-        )
-        .into());
-    }
-    if idempotency_rows(&rt)? != 1 {
-        return Err("duplicate publishes must leave exactly one record".into());
-    }
-    rt.publish_search_corpus_batch(batch)?;
-    rt.activate_last_sealed_generation()?;
-    let served = rt.query_text(TextQuerySyntax::Native, "idem_race", 5);
-    if let Some(error) = served.typed_error {
-        return Err(format!("the applied body must serve: {error}").into());
-    }
-    if served.candidate_ids.len() != 1 {
-        return Err(format!(
-            "duplicate publishes must leave one row, found {}",
-            served.candidate_ids.len()
-        )
-        .into());
-    }
-    Ok(())
+            .collect::<Vec<_>>();
+        let mut receipts = Vec::new();
+        for publisher in publishers {
+            let response = publisher
+                .join()
+                .map_err(|panic| format!("publisher panicked: {panic:?}"))?
+                .map_err(|error| -> Box<dyn Error> { error })?;
+            receipts.push(receipt_of(response)?);
+        }
+        let applied = receipts.iter().filter(|receipt| receipt.applied).count();
+        if applied != 1 {
+            return Err(
+                format!("exactly one publisher may apply, {applied} did: {receipts:?}").into(),
+            );
+        }
+        let sequences: BTreeSet<u64> = receipts
+            .iter()
+            .map(|receipt| receipt.durable_sequence)
+            .collect();
+        if sequences.len() != 1 {
+            return Err(format!("every receipt must carry one sequence: {sequences:?}").into());
+        }
+        if idempotency_rows(&state)? != 1 {
+            return Err("duplicates must leave exactly one record".into());
+        }
+        let client = process.connect()?;
+        let (activation_receipt, _) = client.search_corpus().publish_and_activate(&sdk, None)?;
+        if activation_receipt.applied
+            || activation_receipt.durable_sequence != receipts[0].durable_sequence
+        {
+            return Err(format!(
+                "activation replay changed original receipt: {activation_receipt:?}"
+            )
+            .into());
+        }
+        if serve_count(&client, &repo, &revision, "idem_race")? != 1 {
+            return Err("duplicates must leave one served row".into());
+        }
+        Ok(())
+    })();
+    let stopped = process.stop();
+    outcome.and(stopped)?;
+    binary.verify()
 }
 
 #[test]
@@ -280,125 +339,40 @@ fn thirty_two_concurrent_duplicate_publishes_converge_on_one_apply() -> TestResu
     duplicate_publishes_converge_on_one_apply(32)
 }
 
-/// The record is durable: a replay after a daemon restart is still answered
-/// from it, with the original sequence.
 #[test]
 fn a_replay_after_restart_is_still_a_replay() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let batch =
-        rt.text_search_corpus_batch("src/durable.rs", "fn durable_body() { idem_durable }")?;
-    let first = receipt_of(rt.ingest_once(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+    let parent = private_tempdir()?;
+    let state = parent.path().join("state");
+    let binary = LegacySearchdBinary::from_environment()?;
+    let repo = RepoId::new("repo-e2e")?;
+    let revision = RevisionId::new("rev-e2e")?;
+    let (batch, _) = source_batches(
+        &repo,
+        &revision,
+        "src/durable.rs",
+        "fn durable_body() { idem_durable }",
+    )?;
+    let first_process = binary.start(&state, 8)?;
+    let first = receipt_of(ingest_once(
+        &daemon_socket_paths(&state)[2],
+        1,
+        batch.clone(),
     )?)?;
-    let mut rt = rt.reopen();
-    let replay =
-        receipt_of(rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?)?;
+    first_process.stop()?;
+    if !first.applied || first.durable_sequence == 0 || idempotency_rows(&state)? != 1 {
+        return Err(format!("first publish was not durable: {first:?}").into());
+    }
+    let second_process = binary.start(&state, 8)?;
+    let replay = receipt_of(ingest_once(&daemon_socket_paths(&state)[2], 2, batch)?)?;
+    second_process.stop()?;
     if replay.applied || replay.durable_sequence != first.durable_sequence {
         return Err(format!(
-            "a replay across restart must be the recorded apply: first={first:?} replay={replay:?}"
+            "replay across restart must be recorded apply: first={first:?} replay={replay:?}"
         )
         .into());
     }
-    Ok(())
-}
-
-/// Two distinct searchd binary processes share one durable operation row.
-///
-/// This is the OS-process restart rail; the controlled timeout rail lives in
-/// the runtime library's private UDS fixture and reassembles a thread daemon.
-#[test]
-fn binary_restart_replays_original_operation_and_refuses_conflicting_source_digest() -> TestResult {
-    let parent = e2e_harness::private_tempdir()?;
-    let root = parent.path().join("state");
-    let fixture = E2eRuntime::boot_in(&root)?;
-    let batch = fixture.text_search_corpus_batch(
-        "src/process-replay.rs",
-        "fn original_source() { os_restart_replay }",
-    )?;
-    let key = IdempotencyKeyV1 {
-        kind: IngestOperationKindV1::SearchCorpus,
-        repo_id: batch.repo_id.clone(),
-        revision_id: batch.revision_id.clone(),
-        generation: batch.generation,
-        batch_digest: batch.batch_digest.clone(),
-    };
-    let socket = daemon_socket_paths(&root)[2].clone();
-    let first_process = SearchdBinaryProcess::start_with_history_max_generations(&root, 8)?;
-    let first = receipt_of(
-        send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
-            &socket,
-            &SearchPlaneIngestIpcRequestEnvelope {
-                diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
-                request_id: 901,
-                payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
-            },
-            ClientIoPolicy::default(),
-        )?
-        .payload,
-    )?;
-    if !first.applied || first.durable_sequence == 0 {
-        return Err(format!("first binary did not commit its source: {first:?}").into());
+    if idempotency_rows(&state)? != 1 {
+        return Err("restart replay changed idempotency row count".into());
     }
-    first_process.stop()?;
-    let catalog = quanta_index_catalog::SqliteCatalog::open(&root, Duration::from_secs(2))?;
-    if !matches!(
-        catalog.inspect(&key)?,
-        OperationInspectV1::Committed { durable_sequence, .. }
-            if durable_sequence == first.durable_sequence
-    ) {
-        return Err("first binary did not leave a committed operation row".into());
-    }
-    drop(catalog);
-
-    let second_process = SearchdBinaryProcess::start_with_history_max_generations(&root, 8)?;
-    let replay = receipt_of(
-        send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
-            &socket,
-            &SearchPlaneIngestIpcRequestEnvelope {
-                diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
-                request_id: 902,
-                payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
-            },
-            ClientIoPolicy::default(),
-        )?
-        .payload,
-    )?;
-    if replay != first.replayed() {
-        return Err(format!("binary restart changed the replay receipt: {replay:?}").into());
-    }
-    let mut conflicting = fixture.text_search_corpus_batch(
-        "src/process-replay.rs",
-        "fn alternate_source() { os_restart_replay }",
-    )?;
-    conflicting.source_event.stream_id = batch.source_event.stream_id.clone();
-    conflicting.source_event.event_id = batch.source_event.event_id.clone();
-    conflicting.source_event.expected_base_event_id = batch.source_event.expected_base_event_id;
-    stamp_batch_digest_v1(&mut conflicting)?;
-    let conflict_key = IdempotencyKeyV1 {
-        batch_digest: conflicting.batch_digest.clone(),
-        ..key.clone()
-    };
-    if conflict_key.batch_digest == key.batch_digest {
-        return Err("different canonical source did not change the batch digest".into());
-    }
-    let conflict = send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
-        &socket,
-        &SearchPlaneIngestIpcRequestEnvelope {
-            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
-            request_id: 903,
-            payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(conflicting),
-        },
-        ClientIoPolicy::default(),
-    )?
-    .payload;
-    if typed_code(&conflict) != Some(SearchPlaneErrorCodeV2::BatchDigestConflict.as_wire_str()) {
-        return Err(format!("wrong source digest was not a typed conflict: {conflict:?}").into());
-    }
-    let catalog = quanta_index_catalog::SqliteCatalog::open(&root, Duration::from_secs(2))?;
-    if !matches!(catalog.inspect(&conflict_key)?, OperationInspectV1::Absent)
-        || idempotency_rows(&fixture)? != 1
-    {
-        return Err("conflict appended or changed the original operation journal".into());
-    }
-    second_process.stop()
+    binary.verify()
 }

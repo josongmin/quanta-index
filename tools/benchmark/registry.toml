@@ -59,6 +59,12 @@ description = "Quiet self-hosted Linux bench host (lease + capture-time load sam
 required_for = ["dsl-warm", "dsl-cold"]
 status = "blocked-outside-repo"
 
+[external_inputs.native-dsl-authority-plan]
+owner = "F"
+description = "Frozen checkout HEAD, Native warm/cold runners, daemon and Published History fixture pins."
+required_for = ["dsl-warm", "dsl-cold"]
+status = "blocked-outside-repo"
+
 [external_inputs.native-file-execution-plan]
 owner = "F3"
 description = "Frozen composite source, blind query pack, qrels, policy and binaries plus a live Native socket/view and three index instances."
@@ -69,14 +75,16 @@ status = "blocked-outside-repo"
 # Producers. Allowlisted invocation owners only; no arbitrary shell fragments.
 # --------------------------------------------------------------------------
 
-[producers.rust-bench-dsl-warm]
-kind = "just-recipe"
-recipe = "rust-bench-dsl-warm"
+[producers.native-dsl-warm]
+kind = "python-module"
+module = "tools/benchmark/run_dsl_cold_matrix.py"
+argv = ["--native-artifact", "--native-authority", "--bin-mode", "warm"]
 outputs = ["artifacts/dsl-bench/warm-matrix.json"]
 
-[producers.rust-bench-dsl-cold]
-kind = "just-recipe"
-recipe = "rust-bench-dsl-cold"
+[producers.native-dsl-cold]
+kind = "python-module"
+module = "tools/benchmark/run_dsl_cold_matrix.py"
+argv = ["--native-artifact", "--native-authority", "--bin-mode", "cold"]
 outputs = ["artifacts/dsl-bench/cold-matrix.json"]
 
 [producers.rust-verify-quality-relevance]
@@ -102,7 +110,10 @@ outputs = ["artifacts/search-quality/scale/latest/summary.json"]
 [producers.rust-verify-quality-tail]
 kind = "just-recipe"
 recipe = "rust-verify-quality-tail"
-outputs = ["artifacts/search-quality/tail/latest/summary.json"]
+outputs = [
+    "artifacts/search-quality/tail/latest/summary.json",
+    "artifacts/search-quality/tail/latest/route_budgets.json",
+]
 
 [producers.rust-verify-quality-ann]
 kind = "just-recipe"
@@ -260,7 +271,7 @@ title = "DSL warm query-latency matrix"
 purpose = "dsl-latency"
 payload = "latency"
 result_unit = "ms"
-producer = "rust-bench-dsl-warm"
+producer = "native-dsl-warm"
 validator = "bench-artifacts"
 scorer = "dsl-latency"
 closure = "benchmark-control-plane"
@@ -276,7 +287,7 @@ title = "DSL true-cold query-latency matrix"
 purpose = "dsl-latency"
 payload = "latency"
 result_unit = "ms"
-producer = "rust-bench-dsl-cold"
+producer = "native-dsl-cold"
 validator = "bench-artifacts"
 scorer = "dsl-latency"
 closure = "benchmark-control-plane"
@@ -288,7 +299,7 @@ native_schema = "BenchArtifactV1:2"
 authority = "registry"
 
 [families.relevance]
-title = "Judged seeded-corpus relevance ranking"
+title = "Judged seeded-corpus relevance ranking (pinned Legacy reference)"
 purpose = "search-quality"
 payload = "latency"
 result_unit = "ratio"
@@ -352,7 +363,7 @@ native_schema = "BenchArtifactV1:2"
 authority = "registry"
 
 [families.tail]
-title = "Latency tail rail"
+title = "Pinned Legacy latency tail rail"
 purpose = "systems"
 payload = "latency"
 result_unit = "ms"
@@ -432,7 +443,7 @@ native_schema = "BenchArtifactV1:2"
 authority = "registry"
 
 [families.ops]
-title = "Operational counters diagnostics"
+title = "Pinned Legacy operator diagnostics"
 purpose = "systems"
 payload = "latency"
 result_unit = "ms"
@@ -448,7 +459,7 @@ native_schema = "BenchArtifactV1:2"
 authority = "registry"
 
 [families.ui]
-title = "UI-facing latency diagnostics"
+title = "Pinned Legacy UI contract diagnostics"
 purpose = "systems"
 payload = "latency"
 result_unit = "ms"

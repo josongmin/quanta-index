@@ -15,10 +15,34 @@ use quanta_index_contract::{
 use quanta_index_core::CoreError;
 use rusqlite::{Connection, params, types::ValueRef};
 
-use super::{SCHEMA, SCHEMA_OBJECTS, fields_digest, registration_codec};
+use super::{
+    SCHEMA, SCHEMA_OBJECTS, SOURCE_BODY_INCIDENT_OBJECTS, SOURCE_BODY_INCIDENT_SCHEMA,
+    VIEW_QUARANTINE_OBJECTS, VIEW_QUARANTINE_SCHEMA, fields_digest, registration_codec,
+    source_stage_replay_receipt,
+};
 use crate::connection::engine_error;
 
 const DIGEST_DOMAIN: &[u8] = b"qidx.native.capture-format.v1\0";
+const QUARANTINE_DIGEST_DOMAIN: &[u8] = b"qidx.native.capture-format.view-quarantine.v1\0";
+const QUARANTINE_FANOUT_DOMAIN: &[u8] = b"qidx.native.capture-format.view-quarantine.v2\0";
+const INCIDENT_PENDING_DOMAIN: &[u8] = b"qidx.native.capture-format.body-incident.pending.v1\0";
+const INCIDENT_COMPLETE_DOMAIN: &[u8] = b"qidx.native.capture-format.body-incident.complete.v1\0";
+const INCIDENT_IMPORT_DOMAIN: &[u8] = b"qidx.native.capture-format.body-incident.import.v1\0";
+pub(super) const QUARANTINE_SCHEMA_ABSENT: u8 = 0;
+const QUARANTINE_SCHEMA_LEGACY: u8 = 1;
+pub(super) const QUARANTINE_SCHEMA_CURRENT: u8 = 2;
+
+struct CaptureStamp {
+    root_nonce: [u8; 32],
+    row_digest: [u8; 32],
+    quarantine_fanout_complete: bool,
+    import_legacy_quarantine: bool,
+}
+
+pub(super) struct PendingQuarantine {
+    root_nonce: [u8; 32],
+    pub(super) import_legacy: bool,
+}
 
 fn unsupported(path: &Path, detail: &str) -> CoreError {
     CoreError::Typed {
@@ -30,9 +54,18 @@ fn unsupported(path: &Path, detail: &str) -> CoreError {
     }
 }
 
-fn expected_digest(root_nonce: &[u8; 32]) -> Result<Vec<u8>, CoreError> {
+fn expected_digest(root_nonce: &[u8; 32], has_quarantine: bool) -> Result<Vec<u8>, CoreError> {
+    let domain = if has_quarantine {
+        QUARANTINE_DIGEST_DOMAIN
+    } else {
+        DIGEST_DOMAIN
+    };
+    stamp_digest(root_nonce, domain)
+}
+
+fn stamp_digest(root_nonce: &[u8; 32], domain: &[u8]) -> Result<Vec<u8>, CoreError> {
     fields_digest(
-        DIGEST_DOMAIN,
+        domain,
         &(
             1_i64,
             i64::from(NATIVE_INDEX_STATE_VERSION),
@@ -56,7 +89,7 @@ pub(crate) fn preflight_capture_format(
     let mut query = connection
         .prepare(
             "SELECT type,name,typeof(sql),
-                    CASE WHEN typeof(sql)='text' THEN length(CAST(sql AS BLOB)) END
+                    CASE WHEN typeof(sql)='text' THEN octet_length(sql) END
              FROM sqlite_master
              WHERE (substr(name,1,7)='native_' COLLATE NOCASE
                     OR substr(tbl_name,1,7)='native_' COLLATE NOCASE)
@@ -66,7 +99,10 @@ pub(crate) fn preflight_capture_format(
     let mut rows = query
         .query([])
         .map_err(|error| engine_error("inspect native namespace", path, &error))?;
-    let mut installed = 0usize;
+    let mut installed_base = 0usize;
+    let mut installed_quarantine = false;
+    let mut installed_incidents = false;
+    let mut installed_source_stage = 0usize;
     while let Some(row) = rows
         .next()
         .map_err(|error| engine_error("inspect native namespace", path, &error))?
@@ -83,12 +119,25 @@ pub(crate) fn preflight_capture_format(
         let name = name_value
             .as_str()
             .map_err(|_error| unsupported(path, "invalid native object name"))?;
-        if !SCHEMA_OBJECTS
+        let is_base = SCHEMA_OBJECTS
             .iter()
             .any(|(expected_kind, expected_name, _)| {
                 *expected_kind == kind && *expected_name == name
-            })
-        {
+            });
+        let is_quarantine =
+            VIEW_QUARANTINE_OBJECTS
+                .iter()
+                .any(|(expected_kind, expected_name, _)| {
+                    *expected_kind == kind && *expected_name == name
+                });
+        let is_incident =
+            SOURCE_BODY_INCIDENT_OBJECTS
+                .iter()
+                .any(|(expected_kind, expected_name, _)| {
+                    *expected_kind == kind && *expected_name == name
+                });
+        let is_source_stage = source_stage_replay_receipt::is_schema_object(kind, name);
+        if !is_base && !is_quarantine && !is_incident && !is_source_stage {
             return Err(unsupported(path, "unknown native namespace object"));
         }
         // The shared canonical-schema verifier reads sqlite_master.sql into
@@ -104,7 +153,14 @@ pub(crate) fn preflight_capture_format(
         let sql_bytes: Option<i64> = row
             .get(3)
             .map_err(|error| engine_error("read native schema SQL byte length", path, &error))?;
-        let max_sql_bytes = i64::try_from(SCHEMA.len()).map_err(|error| {
+        let max_sql_bytes = i64::try_from(
+            SCHEMA
+                .len()
+                .max(VIEW_QUARANTINE_SCHEMA.len())
+                .max(SOURCE_BODY_INCIDENT_SCHEMA.len())
+                .max(source_stage_replay_receipt::SCHEMA.len()),
+        )
+        .map_err(|error| {
             CoreError::Storage(format!("native schema byte envelope overflow: {error}"))
         })?;
         if sql_type != "text"
@@ -115,26 +171,82 @@ pub(crate) fn preflight_capture_format(
                 "native schema SQL exceeds canonical byte envelope",
             ));
         }
-        installed = installed
-            .checked_add(1)
-            .ok_or_else(|| CoreError::Storage("native schema count overflow".into()))?;
+        if is_base {
+            installed_base = installed_base
+                .checked_add(1)
+                .ok_or_else(|| CoreError::Storage("native schema count overflow".into()))?;
+        }
+        installed_quarantine |= is_quarantine;
+        installed_incidents |= is_incident;
+        if is_source_stage {
+            installed_source_stage = installed_source_stage
+                .checked_add(1)
+                .ok_or_else(|| CoreError::Storage("native schema count overflow".into()))?;
+        }
     }
     drop(rows);
     drop(query);
-    if installed == 0 {
+    if installed_base == 0
+        && !installed_quarantine
+        && !installed_incidents
+        && installed_source_stage == 0
+    {
         return Ok(true);
     }
-    if installed != SCHEMA_OBJECTS.len() {
+    if installed_base != SCHEMA_OBJECTS.len() {
         return Err(unsupported(
             path,
             "partial native namespace or missing format table",
         ));
     }
+    if installed_incidents && !installed_quarantine {
+        return Err(unsupported(
+            path,
+            "partial native Source body incident schema",
+        ));
+    }
+    if installed_source_stage != 0
+        && installed_source_stage != source_stage_replay_receipt::schema_object_count()
+    {
+        return Err(unsupported(
+            path,
+            "partial native Source stage replay schema",
+        ));
+    }
     // The installed DDL must be checked before even idempotent CREATEs run.
     // Preserve actual SQLite errors; only incompatible DDL is a format refusal.
     verify_native_schema(connection, path)?;
-    let _nonce = verify_stamp(connection, path)?;
-    let _selected = super::boot_manifest::read_stored(connection)
+    if installed_quarantine {
+        crate::connection::verify_installed_schema_objects_with_refusal(
+            connection,
+            path,
+            VIEW_QUARANTINE_SCHEMA,
+            VIEW_QUARANTINE_OBJECTS,
+            |_label| unsupported(path, "native view quarantine schema definition differs"),
+        )?;
+    }
+    if installed_incidents {
+        crate::connection::verify_installed_schema_objects_with_refusal(
+            connection,
+            path,
+            SOURCE_BODY_INCIDENT_SCHEMA,
+            SOURCE_BODY_INCIDENT_OBJECTS,
+            |_label| {
+                unsupported(
+                    path,
+                    "native Source body incident schema definition differs",
+                )
+            },
+        )?;
+    }
+    if installed_source_stage != 0 {
+        source_stage_replay_receipt::verify_schema_with_refusal(connection, path, |_label| {
+            unsupported(path, "native Source stage replay schema definition differs")
+        })?;
+    }
+    let _stamp =
+        verify_stamp_for_schema(connection, path, installed_quarantine, installed_incidents)?;
+    let _selected = super::boot_record::read_stored(connection)
         .map_err(|error| CoreError::Storage(error.to_string()))?;
     Ok(false)
 }
@@ -175,15 +287,250 @@ pub(super) fn seed_and_verify(
                     NATIVE_SOURCE_CAPTURE_HASH_DOMAIN,
                     registration_codec::VERSION,
                     root_nonce.as_slice(),
-                    expected_digest(&root_nonce)?
+                    expected_digest(&root_nonce, false)?
                 ],
             )
             .map_err(|error| engine_error("seed native capture format", path, &error))?;
+        return Ok(());
     }
-    verify_stamp(connection, path).map(|_nonce| ())
+    let has_quarantine = has_quarantine_schema(connection, path)?;
+    let has_incidents = has_incident_schema(connection, path)?;
+    let _stamp = verify_stamp_for_schema(connection, path, has_quarantine, has_incidents)?;
+    if has_quarantine && !has_incidents {
+        let _current = ensure_current_quarantine_schema(connection, path)?;
+    }
+    Ok(())
+}
+
+pub(super) fn installed_extensions(
+    connection: &Connection,
+    path: &Path,
+) -> Result<(u8, bool), CoreError> {
+    let quarantine = quarantine_schema_state(connection, path)?;
+    let source_stage: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            params![source_stage_replay_receipt::OBJECTS[0].1],
+            |row| row.get(0),
+        )
+        .map_err(|error| engine_error("inspect native Source stage replay schema", path, &error))?;
+    Ok((quarantine, source_stage))
+}
+
+pub(super) fn ensure_current_quarantine_schema(
+    connection: &Connection,
+    path: &Path,
+) -> Result<u8, CoreError> {
+    let state = quarantine_schema_state(connection, path)?;
+    if state == QUARANTINE_SCHEMA_CURRENT {
+        let _stamp = verify_stamp_for_schema(connection, path, true, true)?;
+        return Ok(state);
+    }
+    let (has_quarantine, domain) = if state == QUARANTINE_SCHEMA_LEGACY {
+        (true, INCIDENT_IMPORT_DOMAIN)
+    } else {
+        (false, INCIDENT_COMPLETE_DOMAIN)
+    };
+    let stamp = verify_stamp_for_schema(connection, path, has_quarantine, false)?;
+    if !has_quarantine {
+        connection
+            .execute_batch(VIEW_QUARANTINE_SCHEMA)
+            .map_err(|error| engine_error("create native view quarantine", path, &error))?;
+        crate::connection::verify_installed_schema_objects(
+            connection,
+            path,
+            VIEW_QUARANTINE_SCHEMA,
+            VIEW_QUARANTINE_OBJECTS,
+        )?;
+    }
+    connection
+        .execute_batch(SOURCE_BODY_INCIDENT_SCHEMA)
+        .map_err(|error| engine_error("create native Source body incident schema", path, &error))?;
+    crate::connection::verify_installed_schema_objects(
+        connection,
+        path,
+        SOURCE_BODY_INCIDENT_SCHEMA,
+        SOURCE_BODY_INCIDENT_OBJECTS,
+    )?;
+    let changed = connection
+        .execute(
+            "UPDATE native_capture_format_v1 SET row_digest=?1
+             WHERE singleton=1 AND row_digest=?2",
+            params![
+                stamp_digest(&stamp.root_nonce, domain)?,
+                stamp.row_digest.as_slice()
+            ],
+        )
+        .map_err(|error| engine_error("stamp native quarantine extension", path, &error))?;
+    if changed != 1 {
+        return Err(unsupported(
+            path,
+            "capture stamp changed while installing quarantine extension",
+        ));
+    }
+    let _stamp = verify_stamp_for_schema(connection, path, true, true)?;
+    Ok(QUARANTINE_SCHEMA_CURRENT)
+}
+
+pub(super) fn require_current_quarantine_schema(
+    connection: &Connection,
+    path: &Path,
+) -> Result<(), CoreError> {
+    if quarantine_schema_state(connection, path)? != QUARANTINE_SCHEMA_CURRENT {
+        return Err(unsupported(
+            path,
+            "installed quarantine extension is incomplete",
+        ));
+    }
+    crate::connection::verify_installed_schema_objects_with_refusal(
+        connection,
+        path,
+        VIEW_QUARANTINE_SCHEMA,
+        VIEW_QUARANTINE_OBJECTS,
+        |_label| unsupported(path, "native view quarantine schema definition differs"),
+    )?;
+    crate::connection::verify_installed_schema_objects_with_refusal(
+        connection,
+        path,
+        SOURCE_BODY_INCIDENT_SCHEMA,
+        SOURCE_BODY_INCIDENT_OBJECTS,
+        |_label| {
+            unsupported(
+                path,
+                "native Source body incident schema definition differs",
+            )
+        },
+    )?;
+    let _stamp = verify_stamp_for_schema(connection, path, true, true)?;
+    Ok(())
 }
 
 pub(super) fn verify_stamp(connection: &Connection, path: &Path) -> Result<[u8; 32], CoreError> {
+    Ok(verify_stamp_for_schema(
+        connection,
+        path,
+        has_quarantine_schema(connection, path)?,
+        has_incident_schema(connection, path)?,
+    )?
+    .root_nonce)
+}
+
+pub(super) fn pending_quarantine_fanout(
+    connection: &Connection,
+    path: &Path,
+) -> Result<Option<PendingQuarantine>, CoreError> {
+    let stamp = verify_stamp_for_schema(connection, path, true, true)?;
+    Ok(
+        (!stamp.quarantine_fanout_complete).then_some(PendingQuarantine {
+            root_nonce: stamp.root_nonce,
+            import_legacy: stamp.import_legacy_quarantine,
+        }),
+    )
+}
+
+pub(super) fn mark_quarantine_fanout_pending(
+    connection: &Connection,
+    path: &Path,
+) -> Result<[u8; 32], CoreError> {
+    let stamp = verify_stamp_for_schema(connection, path, true, true)?;
+    if !stamp.quarantine_fanout_complete {
+        return Ok(stamp.root_nonce);
+    }
+    let changed = connection
+        .execute(
+            "UPDATE native_capture_format_v1 SET row_digest=?1 WHERE singleton=1 AND row_digest=?2",
+            params![
+                stamp_digest(&stamp.root_nonce, INCIDENT_PENDING_DOMAIN)?,
+                stamp_digest(&stamp.root_nonce, INCIDENT_COMPLETE_DOMAIN)?
+            ],
+        )
+        .map_err(|error| {
+            engine_error("mark native view quarantine fan-out pending", path, &error)
+        })?;
+    if changed != 1 {
+        return Err(unsupported(
+            path,
+            "quarantine fan-out marker changed before pending transition",
+        ));
+    }
+    Ok(stamp.root_nonce)
+}
+
+pub(super) fn stamp_quarantine_fanout(
+    connection: &Connection,
+    path: &Path,
+    pending: &PendingQuarantine,
+) -> Result<(), CoreError> {
+    let domain = if pending.import_legacy {
+        INCIDENT_IMPORT_DOMAIN
+    } else {
+        INCIDENT_PENDING_DOMAIN
+    };
+    let changed = connection
+        .execute(
+            "UPDATE native_capture_format_v1 SET row_digest=?1 WHERE singleton=1 AND row_digest=?2",
+            params![
+                stamp_digest(&pending.root_nonce, INCIDENT_COMPLETE_DOMAIN)?,
+                stamp_digest(&pending.root_nonce, domain)?
+            ],
+        )
+        .map_err(|error| {
+            engine_error(
+                "stamp completed native view quarantine fan-out",
+                path,
+                &error,
+            )
+        })?;
+    if changed != 1 {
+        return Err(unsupported(
+            path,
+            "quarantine fan-out stamp changed before commit",
+        ));
+    }
+    Ok(())
+}
+
+fn has_quarantine_schema(connection: &Connection, path: &Path) -> Result<bool, CoreError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            params![VIEW_QUARANTINE_OBJECTS[0].1],
+            |row| row.get(0),
+        )
+        .map_err(|error| engine_error("inspect native view quarantine schema", path, &error))
+}
+
+fn has_incident_schema(connection: &Connection, path: &Path) -> Result<bool, CoreError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            params![SOURCE_BODY_INCIDENT_OBJECTS[0].1],
+            |row| row.get(0),
+        )
+        .map_err(|error| engine_error("inspect native Source body incident schema", path, &error))
+}
+
+fn quarantine_schema_state(connection: &Connection, path: &Path) -> Result<u8, CoreError> {
+    match (
+        has_quarantine_schema(connection, path)?,
+        has_incident_schema(connection, path)?,
+    ) {
+        (false, false) => Ok(QUARANTINE_SCHEMA_ABSENT),
+        (true, false) => Ok(QUARANTINE_SCHEMA_LEGACY),
+        (true, true) => Ok(QUARANTINE_SCHEMA_CURRENT),
+        (false, true) => Err(unsupported(
+            path,
+            "Source body incident schema lacks view quarantine authority",
+        )),
+    }
+}
+
+fn verify_stamp_for_schema(
+    connection: &Connection,
+    path: &Path,
+    has_quarantine: bool,
+    has_incidents: bool,
+) -> Result<CaptureStamp, CoreError> {
     let mut query = connection
         .prepare(
             "SELECT
@@ -288,13 +635,37 @@ pub(super) fn verify_stamp(connection: &Connection, path: &Path) -> Result<[u8; 
             "capture domain, root nonce or digest mismatch",
         ));
     };
-    if root_nonce == [0; 32] || digest.as_slice() != expected_digest(&root_nonce)?.as_slice() {
+    let quarantine_fanout_complete = if has_incidents {
+        digest.as_slice() == stamp_digest(&root_nonce, INCIDENT_COMPLETE_DOMAIN)?.as_slice()
+    } else {
+        has_quarantine
+            && digest.as_slice() == stamp_digest(&root_nonce, QUARANTINE_FANOUT_DOMAIN)?.as_slice()
+    };
+    if root_nonce == [0; 32] {
         return Err(unsupported(
             path,
             "zero root nonce or capture digest mismatch",
         ));
     }
-    Ok(root_nonce)
+    let mut import_legacy_quarantine = false;
+    if !quarantine_fanout_complete {
+        let pending_digest = if has_incidents {
+            import_legacy_quarantine =
+                digest.as_slice() == stamp_digest(&root_nonce, INCIDENT_IMPORT_DOMAIN)?.as_slice();
+            stamp_digest(&root_nonce, INCIDENT_PENDING_DOMAIN)?
+        } else {
+            expected_digest(&root_nonce, has_quarantine)?
+        };
+        if !import_legacy_quarantine && digest.as_slice() != pending_digest.as_slice() {
+            return Err(unsupported(path, "capture digest mismatch"));
+        }
+    }
+    Ok(CaptureStamp {
+        root_nonce,
+        row_digest: digest,
+        quarantine_fanout_complete,
+        import_legacy_quarantine,
+    })
 }
 
 impl crate::SqliteCatalog {
@@ -523,8 +894,69 @@ mod tests {
             0x99, 0xd4, 0x9e, 0x18, 0x2a, 0xee, 0xda, 0x0d, 0xac, 0x77, 0x7f, 0x29, 0xdc, 0x42,
             0x77, 0x66, 0x2c, 0x1c,
         ];
-        let actual = super::expected_digest(&[7; 32])?;
+        let actual = super::expected_digest(&[7; 32], false)?;
         check_eq!(actual.as_slice(), GOLDEN.as_slice());
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_v20_catalog_defers_optional_extensions_and_reopens() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        drop(open(root.path())?);
+        let file = path(root.path());
+        let db = Connection::open(&file)?;
+        let nonce = super::verify_stamp(&db, &file)?;
+        let optional: i64 = db.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name IN (
+               'native_view_source_body_quarantine_v1',
+               'native_source_body_incident_v1',
+               'native_source_stage_replay_v1',
+               'native_source_stage_replay_rotate_v1',
+               'native_source_stage_replay_delete_v1')",
+            [],
+            |row| row.get(0),
+        )?;
+        check_eq!(optional, 0);
+        let digest: Vec<u8> = db.query_row(
+            "SELECT row_digest FROM native_capture_format_v1 WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )?;
+        check_eq!(digest, super::expected_digest(&nonce, false)?);
+        drop(db);
+
+        drop(open(root.path())?);
+        let db = Connection::open(&file)?;
+        check_eq!(super::verify_stamp(&db, &file)?, nonce);
+        check!(!super::has_quarantine_schema(&db, &file)?);
+        check!(!super::has_incident_schema(&db, &file)?);
+        Ok(())
+    }
+
+    #[test]
+    fn previous_view_quarantine_catalog_upgrades_once_and_refuses_missing_incident_table()
+    -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        drop(open(root.path())?);
+        let file = path(root.path());
+        let db = Connection::open(&file)?;
+        let nonce = super::verify_stamp(&db, &file)?;
+        db.execute_batch(super::VIEW_QUARANTINE_SCHEMA)?;
+        let changed = db.execute(
+            "UPDATE native_capture_format_v1 SET row_digest=?1 WHERE singleton=1",
+            params![super::expected_digest(&nonce, true)?],
+        )?;
+        check_eq!(changed, 1);
+        drop(db);
+
+        drop(open(root.path())?);
+        let db = Connection::open(&file)?;
+        check_eq!(super::verify_stamp(&db, &file)?, nonce);
+        check!(super::has_quarantine_schema(&db, &file)?);
+        check!(super::has_incident_schema(&db, &file)?);
+        db.execute_batch("DROP TABLE native_source_body_incident_v1")?;
+        drop(db);
+        require_format_refusal(root.path())?;
         Ok(())
     }
 
@@ -547,7 +979,7 @@ mod tests {
         );
         let nonce: [u8; 32] = nonce.try_into().map_err(|_nonce| "nonce width differs")?;
         check!(nonce != [0; 32]);
-        check_eq!(digest.len(), 32);
+        check_eq!(digest, super::expected_digest(&nonce, false)?);
         drop(db);
         let catalog = open(root.path())?;
         let mut budget = quanta_index_core::index::WorkBudget::with_request(
@@ -566,6 +998,67 @@ mod tests {
         check_eq!(usage.bytes, 160);
         drop(catalog);
         drop(open(root.path())?);
+        Ok(())
+    }
+
+    #[test]
+    fn source_stage_replay_schema_reopens_and_refuses_trigger_drift() -> Result<(), Box<dyn Error>>
+    {
+        let healthy = tempfile::tempdir()?;
+        drop(open(healthy.path())?);
+        let db = Connection::open(path(healthy.path()))?;
+        db.execute_batch(super::source_stage_replay_receipt::SCHEMA)?;
+        drop(db);
+        drop(open(healthy.path())?);
+        let db = Connection::open(path(healthy.path()))?;
+        let installed: i64 = db.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE (type='table' AND name='native_source_stage_replay_v1')
+                OR (type='trigger' AND name IN (
+                    'native_source_stage_replay_rotate_v1',
+                    'native_source_stage_replay_delete_v1'
+                ))",
+            [],
+            |row| row.get(0),
+        )?;
+        check_eq!(installed, 3);
+        drop(db);
+
+        for mutation in [
+            "DROP TRIGGER native_source_stage_replay_rotate_v1",
+            "DROP TRIGGER native_source_stage_replay_rotate_v1;
+             CREATE TRIGGER native_source_stage_replay_rotate_v1
+             AFTER UPDATE OF fence ON native_ingress_v1
+             BEGIN SELECT 1; END",
+        ] {
+            let root = tempfile::tempdir()?;
+            drop(open(root.path())?);
+            let file = path(root.path());
+            let db = Connection::open(&file)?;
+            db.execute_batch(super::source_stage_replay_receipt::SCHEMA)?;
+            db.execute_batch(mutation)?;
+            let before: Option<String> = db
+                .query_row(
+                    "SELECT sql FROM sqlite_master
+                     WHERE type='trigger' AND name='native_source_stage_replay_rotate_v1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            drop(db);
+
+            require_format_refusal(root.path())?;
+            let db = Connection::open(&file)?;
+            let after: Option<String> = db
+                .query_row(
+                    "SELECT sql FROM sqlite_master
+                     WHERE type='trigger' AND name='native_source_stage_replay_rotate_v1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            check_eq!(after, before);
+        }
         Ok(())
     }
 

@@ -1,4 +1,5 @@
-//! Explicit workspace mutation to generation-pinned lexical visibility rail.
+//! Workspace mutation to pinned Legacy lexical visibility.
+//! Supply QUANTA_INDEX_LEGACY_SEARCHD_BIN and QUANTA_INDEX_LEGACY_SEARCHD_SHA256.
 
 #[path = "../freshness.rs"]
 mod freshness;

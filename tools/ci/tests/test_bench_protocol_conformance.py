@@ -233,6 +233,44 @@ def test_identity_and_verdict_mutations_are_refused(mutate, match: str) -> None:
         module.seal(evidence)
 
 
+@pytest.mark.parametrize(
+    ("status", "exit_code"),
+    [
+        pytest.param("completed", False, id="boolean-success"),
+        pytest.param("completed", 0.0, id="float-success"),
+        pytest.param("failed", True, id="boolean-failure"),
+        pytest.param("failed", 1 << 31, id="above-i32"),
+        pytest.param("interrupted", -(1 << 31) - 1, id="below-i32"),
+        pytest.param("timeout", "124", id="string-timeout"),
+    ],
+)
+def test_exit_code_refuses_values_outside_the_wire_type(status: str, exit_code: object) -> None:
+    module = _load_evidence_module()
+    evidence = module.sample_evidence()
+    evidence["command"].update(status=status, exit_code=exit_code)
+    if status != "completed":
+        evidence["verdict"].update(status="not_run", reason="producer did not complete")
+    with pytest.raises(module.EvidenceError, match=r"command\.exit_code"):
+        module.seal(evidence)
+
+    evidence["digest"] = module.digest_of(module.body_value(evidence))
+    with pytest.raises(module.EvidenceError, match=r"command\.exit_code"):
+        module.open_evidence(module.to_canonical_json(evidence))
+
+
+@pytest.mark.parametrize(
+    ("status", "exit_code"),
+    [("failed", (1 << 31) - 1), ("interrupted", -(1 << 31)), ("timeout", None)],
+)
+def test_exit_code_preserves_signed_limits_and_missing_status(status: str, exit_code: int | None) -> None:
+    module = _load_evidence_module()
+    evidence = module.sample_evidence()
+    evidence["command"].update(status=status, exit_code=exit_code)
+    evidence["verdict"].update(status="not_run", reason="producer did not complete")
+    sealed = module.seal(evidence)
+    assert module.open_evidence(module.to_canonical_json(sealed))["command"] == evidence["command"]
+
+
 # --------------------------------------------------------------------------
 # Payload confusion refusals
 # --------------------------------------------------------------------------
@@ -1084,6 +1122,10 @@ def test_published_wire_schema_accepts_the_golden_and_refuses_malformed_document
     broken = json.loads(json.dumps(golden))
     broken["protocol_version"] = 2
     assert list(validator.iter_errors(broken)), "schema accepted an unknown protocol version"
+
+    for exit_code in (False, -(1 << 31) - 1, 1 << 31):
+        broken = {**golden, "command": {**golden["command"], "exit_code": exit_code}}
+        assert list(validator.iter_errors(broken)), f"schema accepted exit_code {exit_code!r}"
 
     broken = json.loads(json.dumps(golden))
     broken["payload"] = {"kind": "latency", "rows": [], "errors": 0, "timeouts": 0, "drops": 0}

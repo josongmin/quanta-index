@@ -665,6 +665,93 @@ fn nested_mode_reduces_physical_nodes_and_preserves_lookup_diff_and_reopen() -> 
 }
 
 #[test]
+fn cold_nested_path_postings_preserve_repeated_object_children_after_reopen() -> TestResult {
+    let build = |mode: RootPackingMode| {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let mut work = budget()?;
+        let mut rows = Vec::new();
+        for owner in 0u8..8 {
+            let source = value(&store, &[b's', owner], &mut work)?;
+            for term in b'a'..=b'h' {
+                // [term length][case term][owner], as in TreeV1 path postings.
+                let mut key = vec![0, 3, 0, term, b'x'];
+                let mut owner_key = [0u8; 32];
+                owner_key[31] = owner;
+                key.extend_from_slice(&owner_key);
+                rows.push((key, MapValue::Object(source)));
+            }
+        }
+        rows.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        let edits = rows
+            .iter()
+            .map(|(key, value)| {
+                OrdinalMapEdit::unscoped(
+                    0,
+                    MapEdit {
+                        key: key.clone(),
+                        expected: None,
+                        next: Some(*value),
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let before = physical_file_count(&directory)?;
+        let mut cursor = HintCursor {
+            edits: edits.into_iter(),
+            selected: vec![0],
+            mode,
+        };
+        let roots = store.apply_stream(
+            &[MapRoot(None)],
+            &mut cursor,
+            &RecordingSink::default(),
+            &mut work,
+        )?;
+        let root = *roots.first().ok_or("path posting root missing")?;
+        let physical_nodes = physical_file_count(&directory)?
+            .checked_sub(before)
+            .ok_or("path map object count shrank")?;
+        check_eq!(scan_all(&store, root, &mut work)?, rows);
+        Ok::<_, Box<dyn std::error::Error>>((directory, root, rows, physical_nodes))
+    };
+
+    let (plain_dir, plain_root, expected, plain_nodes) = build(RootPackingMode::None)?;
+    let (packed_dir, packed_root, packed_rows, packed_nodes) = build(RootPackingMode::Nested)?;
+    check_eq!(packed_rows, expected);
+    check!(packed_nodes < plain_nodes);
+    for (directory, root) in [(plain_dir, plain_root), (packed_dir, packed_root)] {
+        let store = FileObjectStore::open(&directory.0)?;
+        let mut work = budget()?;
+        check_eq!(scan_all(&store, root, &mut work)?, expected);
+        for (key, value) in &expected {
+            let source = *value.as_object_ref()?;
+            check_eq!(store.lookup_object(root, key, &mut work)?, Some(source));
+            let object = store.get(source, &mut work)?;
+            check_eq!(
+                object.payload.as_slice(),
+                &[b's', *key.last().ok_or("owner byte missing")?]
+            );
+        }
+        let ((key, value), remaining) = expected.split_first().ok_or("path postings missing")?;
+        let changed = store.apply(
+            root,
+            &[MapEdit {
+                key: key.clone(),
+                expected: Some(*value),
+                next: None,
+            }],
+            &RecordingSink::default(),
+            &mut work,
+        )?;
+        let remaining_rows = scan_all(&store, changed.root, &mut work)?;
+        check_eq!(remaining_rows.as_slice(), remaining);
+        check_eq!(scan_all(&store, root, &mut work)?, expected);
+    }
+    Ok(())
+}
+
+#[test]
 fn nested_wire_refuses_bad_child_version_length_and_edges() -> TestResult {
     let dir = TestDir::new();
     let store = FileObjectStore::open(&dir.0)?;

@@ -1,5 +1,10 @@
 use super::*;
 
+use quanta_index_contract::{
+    CandidateCountV1, IngestObservationStatus, SymbolQueryResponse, TextQueryResponse, TextRankUnit,
+};
+use quanta_index_core::GenerationStorageKeyV1;
+
 #[test]
 fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestResult {
     let fixture = SdkFrontdoorRuntime::start()?;
@@ -74,7 +79,8 @@ fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestR
 #[test]
 fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_query_views()
 -> TestResult {
-    let fixture = SdkFrontdoorRuntime::start()?;
+    let root = private_tempdir()?;
+    let fixture = SdkFrontdoorRuntime::start_at(root.path())?;
     let client = &fixture.client;
 
     let first_generation = lexical_batch()?;
@@ -99,6 +105,10 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
                     .any(|candidate| candidate.candidate_id == "alpha")
         },
     )?;
+    let expected_active = current_sdk_search_corpus_or_none(client, repo(), revision())?
+        .ok_or("first composite generation did not become active")?;
+    require_independent_chunk_clear_refusal(client, root.path(), &expected_active)?;
+
     let removed_scope = SourceFileKey {
         source_repo_id: repo(),
         repo_relative_path: RepoRelativePath::new("src/alpha.rs"),
@@ -125,8 +135,6 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
             .clone(),
     );
 
-    let expected_active = current_sdk_search_corpus_or_none(client, repo(), revision())?
-        .ok_or_else(|| "first composite generation did not become active".to_string())?;
     let (receipt, activation) = client
         .search_corpus()
         .publish_and_activate(&tombstone_only, Some(expected_active))?;
@@ -161,13 +169,10 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
         |response| response.generation == pin_two(),
     )?;
     if lexical.generation != pin_two()
-        || lexical
-            .results
-            .iter()
-            .any(|candidate| candidate.candidate_id == "alpha")
+        || !matches!(lexical.results.as_slice(), [row] if row.candidate_id == "beta")
     {
         return Err(format!(
-            "tombstone-only lexical generation retained removed alpha scope: {lexical:?}"
+            "tombstone-only lexical generation must retain only beta for sphinx: {lexical:?}"
         )
         .into());
     }
@@ -197,7 +202,383 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
         .into());
     }
 
+    let retained_text = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        pinned_text_query(client, "sphinx", pin())
+    })?;
+    let retained_semantic = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .semantic()
+            .query()
+            .text("quartz")
+            .pinned(pin())
+            .top_k(3)
+            .execute()
+    })?;
+    let retained_ids = retained_text
+        .results
+        .iter()
+        .map(|row| row.candidate_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if retained_text.generation != pin()
+        || retained_text.results.len() != 2
+        || retained_ids != BTreeSet::from(["alpha", "beta"])
+        || retained_semantic.generation != pin()
+        || !retained_semantic
+            .results
+            .iter()
+            .any(|row| row.candidate_id == "alpha")
+    {
+        return Err(format!(
+            "the original pinned view lost alpha: text={retained_text:?} semantic={retained_semantic:?}"
+        )
+        .into());
+    }
+
+    for pinned in [pin_two(), pin()] {
+        let symbols = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+            pinned_symbol_query(client, "MySdkSymbol", pinned.clone(), 3)
+        })?;
+        if symbols.generation != pinned
+            || !matches!(symbols.results.as_slice(), [row]
+                if row.candidate_id == "sym-sdk" && row.repo_relative_path.as_str() == "src/lib.rs")
+        {
+            return Err(
+                format!("the unrelated symbol must survive in {pinned:?}: {symbols:?}").into(),
+            );
+        }
+    }
+
     fixture.stop()
+}
+
+fn require_independent_chunk_clear_refusal(
+    client: &QuantaIndex,
+    state_root: &Path,
+    active: &SearchCorpusActiveHeadV1,
+) -> TestResult {
+    let clear = SearchCorpusBatch::delta(
+        repo(),
+        revision(),
+        generation_two(),
+        generation(),
+        "manifest:lexical-independent-chunk-clear",
+    )
+    .source_event(lexical_event(
+        "fixture:sdk-lexical-independent-chunk-clear-v2",
+        Some("fixture:sdk-lexical-v1"),
+    ))
+    .clear_surface(SearchScopeSurface::Chunk);
+    let refusal = expect_sdk_error(
+        client.search_corpus().publish_outcome(&clear),
+        "independent Chunk clear",
+    )?;
+    if !matches!(&refusal, SdkError::Remote { code: SearchPlaneErrorCodeV2::InvalidRequest, message, .. }
+        if message.contains("forbid independent Chunk/Symbol clear"))
+    {
+        return Err(format!("unexpected independent Chunk clear refusal: {refusal:?}").into());
+    }
+    if current_sdk_search_corpus_or_none(client, repo(), revision())?.as_ref() != Some(active) {
+        return Err("independent Chunk clear changed the active head".into());
+    }
+
+    let state_root = state_root.canonicalize()?;
+    let storage_key = GenerationStorageKeyV1::for_repo_revision(&repo(), &revision());
+    for track in ["indexes/lexical", "indexes/semantic"] {
+        let track_root = state_root.join(track);
+        let base = storage_key.generation_dir(&track_root, generation());
+        if !base.is_dir() {
+            return Err(format!("fixture base directory is missing: {}", base.display()).into());
+        }
+        let target = storage_key.generation_dir(&track_root, generation_two());
+        match target.symlink_metadata() {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => {
+                return Err(format!("independent Chunk clear created {}", target.display()).into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn symbol_content_authority_shapes_fail_closed_on_initial_and_replayed_batches() -> TestResult {
+    let root = private_tempdir()?;
+    let fixture = SdkFrontdoorRuntime::start_at(root.path())?;
+    let client = &fixture.client;
+    let batch = symbol_content_source_batch()?;
+    let (initial, activation, _timings) = client
+        .search_corpus()
+        .publish_and_activate_observed(&batch, None)?;
+    if !initial.receipt.applied
+        || !initial.receipt.sealed
+        || initial.receipt.durable_sequence == 0
+        || initial.observation.as_ref().map(|value| value.status)
+            != Some(IngestObservationStatus::Executed)
+    {
+        return Err(format!("Symbol fixture did not execute and seal durably: {initial:?}").into());
+    }
+    verify_symbol_content_shapes(client, "initial publication")?;
+
+    let replay = client.producer().publish_search_corpus_observed(&batch)?;
+    if replay.publication != initial.publication
+        || replay.receipt != initial.receipt.replayed()
+        || replay.observation.as_ref().map(|value| value.status)
+            != Some(IngestObservationStatus::Replayed)
+        || current_sdk_search_corpus_or_none(client, repo(), revision())?.as_ref()
+            != Some(&activation.active)
+    {
+        return Err(
+            format!("Symbol fixture replay changed publication authority: {replay:?}").into(),
+        );
+    }
+    // The initial query populated the resident snapshot. Reopen the replayed
+    // publication in a fresh process so that view cannot satisfy the oracle.
+    fixture.stop()?;
+    let reopened = SdkFrontdoorRuntime::start_at(root.path())?;
+    let client = &reopened.client;
+    let active = current_sdk_search_corpus_or_none(client, repo(), revision())?;
+    if active.as_ref() != Some(&activation.active) {
+        return Err(format!(
+            "reopening the replayed Symbol publication changed the active head: expected {:?}, got {active:?}",
+            activation.active
+        )
+        .into());
+    }
+    verify_symbol_content_shapes(client, "cold publication replay")?;
+    reopened.stop()
+}
+
+fn symbol_content_source_batch() -> Result<SearchCorpusBatch, Box<dyn Error>> {
+    let mut batch = lexical_batch()?;
+    for (id, path, module) in [
+        ("sym-worker", "src/worker.rs", "worker"),
+        ("sym-peer", "src/peer.rs", "peer"),
+    ] {
+        let key = SourceFileKey {
+            source_repo_id: repo(),
+            repo_relative_path: RepoRelativePath::new(path),
+        };
+        let mut symbol = symbol_record()?;
+        symbol.symbol_id = SymbolId::new(id);
+        symbol.repo_relative_path = key.repo_relative_path.clone();
+        symbol.definition_span.path = path.into();
+        symbol.qualified_name = format!("{module}::MySdkSymbol").into_boxed_str();
+        symbol.container_qualified_name = Some(module.into());
+        let scope = fixture_source_scope_v1(key, revision(), Vec::new(), vec![symbol])?;
+        batch = batch.replace_scope(
+            scope.coverage,
+            scope.source_bytes,
+            scope.chunks,
+            scope.symbols,
+        );
+    }
+    Ok(batch)
+}
+
+fn verify_symbol_content_shapes(client: &QuantaIndex, phase: &str) -> TestResult {
+    let expected_symbols = BTreeSet::from([
+        ("sym-sdk", "src/lib.rs"),
+        ("sym-worker", "src/worker.rs"),
+        ("sym-peer", "src/peer.rs"),
+    ]);
+    for query in [
+        "MySdkSymbol",
+        "MySdkSymbol content:MySdkSymbol",
+        r#"MySdkSymbol AND repo.has.content("sphinx riddles")"#,
+    ] {
+        let response = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+            pinned_symbol_query(client, query, pin(), 3)
+        })?;
+        let symbols = response
+            .results
+            .iter()
+            .map(|row| (row.candidate_id.as_str(), row.repo_relative_path.as_str()))
+            .collect::<BTreeSet<_>>();
+        if response.generation != pin()
+            || symbols != expected_symbols
+            || response.window.candidate_count() != CandidateCountV1::Exact(3)
+            || response.next_cursor.is_some()
+        {
+            return Err(
+                format!("{phase} {query:?}: unexpected Symbol window: {response:?}").into(),
+            );
+        }
+    }
+    // With three matches and top_k=1, the ordinary probe can show two rows.
+    // count:all must prove the full total while keeping the page capped.
+    for (query, expected_count) in [
+        (
+            "MySdkSymbol content:MySdkSymbol",
+            CandidateCountV1::AtLeast(2),
+        ),
+        ("count:all MySdkSymbol", CandidateCountV1::Exact(3)),
+        (
+            "count:all MySdkSymbol content:MySdkSymbol",
+            CandidateCountV1::Exact(3),
+        ),
+    ] {
+        let page = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+            pinned_symbol_query(client, query, pin(), 1)
+        })?;
+        if page.generation != pin()
+            || !matches!(page.results.as_slice(), [row] if expected_symbols.contains(
+                &(row.candidate_id.as_str(), row.repo_relative_path.as_str())))
+            || page.window.candidate_count() != expected_count
+            || page.window.has_more() != Some(true)
+            || page.next_cursor.is_none()
+        {
+            return Err(format!(
+                "{phase} {query:?}: expected {expected_count:?} in one Symbol page: {page:?}"
+            )
+            .into());
+        }
+    }
+
+    let same_file = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        pinned_symbol_query(
+            client,
+            r#"MySdkSymbol AND file.contains("fn main")"#,
+            pin(),
+            3,
+        )
+    })?;
+    assert_single_symbol_candidate(&same_file)
+        .map_err(|error| format!("{phase} file.contains in the Symbol file: {error}"))?;
+    for query in [
+        "MySdkSymbol content:absent_content_gate",
+        "MySdkSymbol AND repo.has.content(absent_content_gate)",
+        r#"MySdkSymbol AND file.contains("sphinx riddles")"#,
+    ] {
+        let response = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+            pinned_symbol_query(client, query, pin(), 3)
+        })?;
+        if response.generation != pin()
+            || !response.results.is_empty()
+            || response.window.candidate_count() != CandidateCountV1::Exact(0)
+            || response.next_cursor.is_some()
+        {
+            return Err(format!(
+                "{phase} {query:?}: expected an empty Symbol window: {response:?}"
+            )
+            .into());
+        }
+    }
+    for projection in ["type:symbol", "select:symbol"] {
+        let query = format!("{projection} MySdkSymbol content:MySdkSymbol");
+        let response =
+            wait_for_sdk_ready(SOCKET_TIMEOUT, || pinned_text_query(client, &query, pin()))?;
+        let symbols = response
+            .results
+            .iter()
+            .map(|row| (row.candidate_id.as_str(), row.repo_relative_path.as_str()))
+            .collect::<BTreeSet<_>>();
+        if response.generation != pin()
+            || response.rank_unit != TextRankUnit::Symbol
+            || symbols != expected_symbols
+            || response.window.candidate_count() != CandidateCountV1::Exact(3)
+            || response.next_cursor.is_some()
+        {
+            return Err(
+                format!("{phase} {query:?}: unexpected Symbol projection: {response:?}").into(),
+            );
+        }
+    }
+
+    let unsupported = SearchPlaneErrorCodeV2::LexPlannerUnsupportedFilterCombo;
+    let parse_fail = SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::ParseFail);
+    for leaf in [r#""MySdkSymbol""#, "'MySdkSymbol'", "/MySdkSymbol/"] {
+        for query in [
+            leaf.to_owned(),
+            format!("NOT {leaf}"),
+            format!("MySdkSymbol OR {leaf}"),
+            format!("MySdkSymbol AND {leaf}"),
+            format!("{leaf} AND repo.has.content(absent_content_gate)"),
+        ] {
+            require_symbol_content_refusal(client, phase, &query, unsupported)?;
+        }
+        // Public Native LQ only admits a keyword value after content:.
+        for expression in [
+            "MySdkSymbol",
+            "MySdkSymbol AND repo.has.content(absent_content_gate)",
+        ] {
+            let query = format!("{expression} content:{leaf}");
+            require_symbol_content_refusal(client, phase, &query, parse_fail)?;
+        }
+    }
+    for argument in [r#""MySdkSymbol""#, "'MySdkSymbol'"] {
+        let query = format!("symbol.has.name({argument})");
+        require_symbol_content_refusal(client, phase, &query, unsupported)?;
+        let conjunction = format!("MySdkSymbol AND {query}");
+        require_symbol_content_refusal(client, phase, &conjunction, unsupported)?;
+    }
+    for query in [
+        "patterntype:regexp MySdkSymbol",
+        "patterntype:regexp content:MySdkSymbol",
+    ] {
+        require_symbol_content_refusal(client, phase, query, unsupported)?;
+    }
+    Ok(())
+}
+
+fn require_symbol_content_refusal(
+    client: &QuantaIndex,
+    phase: &str,
+    query: &str,
+    expected: SearchPlaneErrorCodeV2,
+) -> TestResult {
+    let check = |route: &str, text: &str, result: Result<(), SdkError>| -> TestResult {
+        let context = format!("{phase} {route} {text:?}");
+        let error = expect_sdk_error(result, &context)?;
+        expect_remote_code(error, expected.as_wire_str())
+            .map_err(|error| format!("{context}: {error}").into())
+    };
+    for prefix in ["", "count:all "] {
+        let text = format!("{prefix}{query}");
+        check(
+            "Symbol",
+            &text,
+            pinned_symbol_query(client, &text, pin(), 3).map(|_| ()),
+        )?;
+    }
+    for projection in ["type:symbol", "select:symbol"] {
+        let text = format!("{projection} {query}");
+        check(
+            "Text",
+            &text,
+            pinned_text_query(client, &text, pin()).map(|_| ()),
+        )?;
+    }
+    Ok(())
+}
+
+fn pinned_symbol_query(
+    client: &QuantaIndex,
+    query: &str,
+    generation: GenerationPin,
+    top_k: u32,
+) -> Result<SymbolQueryResponse, SdkError> {
+    client
+        .symbol()
+        .query()
+        .native(query)
+        .pinned(generation)
+        .top_k(top_k)
+        .execute()
+}
+
+fn pinned_text_query(
+    client: &QuantaIndex,
+    query: &str,
+    generation: GenerationPin,
+) -> Result<TextQueryResponse, SdkError> {
+    client
+        .lexical()
+        .query()
+        .native(query)
+        .pinned(generation)
+        .top_k(3)
+        .execute()
 }
 
 #[test]

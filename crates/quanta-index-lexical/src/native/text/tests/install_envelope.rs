@@ -353,23 +353,13 @@ fn cold_owner_borrows_sorted_arena_without_replay_credit() -> Result<(), IndexEr
             ceiling: Arc::clone(&ceiling),
         },
     ))));
-    let (mut cursor, mut source_packet) = prepare_indexed_token_input(&body, &mut work)?;
+    let mut cursor = prepare_indexed_token_cursor(&body, &mut work)?;
     let census =
         super::super::cold_tokens::CanonicalTokenCensus::count(&mut cursor, body.len(), &mut work)?
             .ok_or(IndexError::ResourceLimited)?;
-    let packet_key_bytes = census.packet_key_bytes();
-    check!(source_packet.try_prepare_cold_keys(packet_key_bytes, &work)?);
-    let mut arena = super::super::cold_tokens::ColdTokens::try_new(census, &work)?
+    let mut arena = super::super::cold_tokens::ColdTokens::try_new(&census, &work)?
         .ok_or(IndexError::ResourceLimited)?;
-    check_eq!(
-        visit_prepared_token_batches(
-            &mut cursor,
-            &mut source_packet,
-            &mut work,
-            |batch, budget| { arena.push_batch(batch, budget) }
-        )?,
-        257
-    );
+    check_eq!(arena.fill_from_cursor(&mut cursor, &mut work)?, 257);
     arena.sort_and_validate(&work)?;
     check!(spool.token_term_page(None, &mut work)?.is_empty());
     let live = memory.live.load(Ordering::Relaxed);
@@ -505,7 +495,7 @@ fn cold_owner_borrows_sorted_arena_without_replay_credit() -> Result<(), IndexEr
         baseline_edits,
         baseline_spool,
     ));
-    drop((writes, edits, confirmed, spool, source_packet, cursor));
+    drop((writes, edits, confirmed, spool, cursor));
     check_eq!(memory.live.load(Ordering::Relaxed), 0);
     Ok(())
 }

@@ -1,10 +1,9 @@
 //! One tree enumeration/comparison algorithm for ordinary and admitted reads.
 //! Admitted callers supply the actual existing-root metadata I/O owner.
+use super::error::ExistingFileReadFailureV1;
 use super::ports::{ExistingTreeEntryKindV1, ExistingTreeMetadataIoPortV1};
-use crate::index::{
-    IndexError, MemoryLease, MemoryLifetime, WorkBudget, existing_file::ExistingFileReadFailureV1,
-};
-use crate::{SealedArtifactCommitmentV1, TreeCommitmentMismatchV1};
+use crate::index::{IndexError, MemoryLease, MemoryLifetime, WorkBudget};
+use crate::tree_commitment::{SealedArtifactCommitmentV1, TreeCommitmentMismatchV1};
 use std::{
     alloc::Layout,
     ffi::OsStr,

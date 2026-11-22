@@ -34,6 +34,13 @@ trait ErasedAdapter: Send + Sync {
         plan: PlanContext,
         attempt: &'a mut AttemptContext<'_>,
     ) -> Result<BuildFuture<'a, MemberBinding>, IndexError>;
+    fn compact_source_local<'a>(
+        &'a self,
+        prior: MemberBinding,
+        owner: OwnerKey,
+        plan: PlanContext,
+        attempt: &'a mut AttemptContext<'_>,
+    ) -> Result<BuildFuture<'a, MemberBinding>, IndexError>;
 }
 
 struct Adapter<A, F> {
@@ -95,6 +102,43 @@ where
                 ));
             }
             validate_member(&binding, &plan.instance, plan.input)?;
+            Ok(binding)
+        })
+    }
+
+    fn compact_source_local<'a>(
+        &'a self,
+        prior: MemberBinding,
+        owner: OwnerKey,
+        plan: PlanContext,
+        attempt: &'a mut AttemptContext<'_>,
+    ) -> Result<BuildFuture<'a, MemberBinding>, IndexError> {
+        build_staging::future(attempt, move |attempt| async move {
+            validate_member(&prior, &plan.instance, plan.input)?;
+            let instance = plan.instance.clone();
+            let input = plan.input;
+            let prior_artifact = prior.artifact;
+            let logical_commitment = prior.logical_commitment;
+            attempt.budget.checkpoint()?;
+            if self.backend.resource_demand() != self.resource_demand {
+                return Err(IndexError::BackendViolation(
+                    "compaction adapter resource demand changed after registration".into(),
+                ));
+            }
+            let binding = self
+                .backend
+                .compact_source_local(prior, owner, plan, attempt)
+                .await?;
+            attempt.budget.checkpoint()?;
+            if self.backend.resource_demand() != self.resource_demand
+                || binding.logical_commitment != logical_commitment
+                || binding.artifact == prior_artifact
+            {
+                return Err(IndexError::BackendViolation(
+                    "compaction returned an invalid physical replacement".into(),
+                ));
+            }
+            validate_member(&binding, &instance, input)?;
             Ok(binding)
         })
     }
@@ -622,6 +666,23 @@ impl AdapterRegistry {
             ),
             _ => Err(IndexError::InvalidInput(
                 "unregistered index descriptor".into(),
+            )),
+        }
+    }
+
+    pub(crate) fn compact_source_local<'a>(
+        &'a self,
+        prior: MemberBinding,
+        owner: OwnerKey,
+        plan: PlanContext,
+        attempt: &'a mut AttemptContext<'_>,
+    ) -> Result<BuildFuture<'a, MemberBinding>, IndexError> {
+        match self.core.get(&plan.instance.kind) {
+            Some(adapter) if self.supports(&plan.instance) => {
+                adapter.compact_source_local(prior, owner, plan, attempt)
+            }
+            _ => Err(IndexError::InvalidInput(
+                "unregistered compaction descriptor".into(),
             )),
         }
     }

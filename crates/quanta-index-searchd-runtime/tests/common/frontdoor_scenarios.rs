@@ -1,8 +1,4 @@
 #![forbid(unsafe_code)]
-#![expect(
-    dead_code,
-    reason = "shared scenario authority is consumed selectively by test binaries"
-)]
 
 use quanta_index_contract::TextQuerySyntax;
 
@@ -595,52 +591,5 @@ pub(super) const IPC_FRONTDOOR_SCENARIOS: &[IpcFrontdoorScenario] = &[
         syntax: TextQuerySyntax::Sourcegraph,
         query_text: "meta.surface:lexical catalog_surface_needle",
         expected: IpcFrontdoorExpectation::CandidateIds(&["surface"]),
-    },
-];
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct DslFrontdoorScenario {
-    pub(super) name: &'static str,
-    pub(super) syntax: TextQuerySyntax,
-    pub(super) query_text: &'static str,
-    pub(super) expected_candidate_ids: &'static [&'static str],
-}
-
-pub(super) const DSL_FRONTDOOR_SCENARIOS: &[DslFrontdoorScenario] = &[
-    DslFrontdoorScenario {
-        name: "sourcegraph_repo_has_file_true_gate",
-        syntax: TextQuerySyntax::Sourcegraph,
-        query_text: "repo:has.file(path:src/lib.rs) needle",
-        expected_candidate_ids: &["alpha", "beta"],
-    },
-    DslFrontdoorScenario {
-        name: "sourcegraph_repo_has_file_miss",
-        syntax: TextQuerySyntax::Sourcegraph,
-        query_text: "repo:has.file(path:missing.rs) needle",
-        expected_candidate_ids: &[],
-    },
-    DslFrontdoorScenario {
-        name: "sourcegraph_repo_has_path_true_gate",
-        syntax: TextQuerySyntax::Sourcegraph,
-        query_text: "repo:has.path(src/lib.rs) needle",
-        expected_candidate_ids: &["alpha", "beta"],
-    },
-    DslFrontdoorScenario {
-        name: "sourcegraph_repo_has_content_true_gate",
-        syntax: TextQuerySyntax::Sourcegraph,
-        query_text: "repo:has.content(alpha) needle",
-        expected_candidate_ids: &["alpha", "beta"],
-    },
-    DslFrontdoorScenario {
-        name: "sourcegraph_repo_contains_content_true_gate",
-        syntax: TextQuerySyntax::Sourcegraph,
-        query_text: "repo:contains.content(alpha) needle",
-        expected_candidate_ids: &["alpha", "beta"],
-    },
-    DslFrontdoorScenario {
-        name: "sourcegraph_file_has_content_path_true_gate",
-        syntax: TextQuerySyntax::Sourcegraph,
-        query_text: "file:has.content(path:src/lib.rs, needle)",
-        expected_candidate_ids: &["alpha"],
     },
 ];

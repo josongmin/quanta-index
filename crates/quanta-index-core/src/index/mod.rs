@@ -5,6 +5,8 @@ pub mod effort;
 mod error;
 pub mod existing_file;
 pub(crate) mod existing_tree;
+pub mod history_checkpoint;
+mod install_ports;
 mod lifetime;
 mod map_roots;
 mod map_value;
@@ -22,11 +24,13 @@ mod read_settlement;
 mod reclaim;
 mod records;
 mod registration;
+mod repository_key;
 mod source_paths;
 mod scratch;
 mod searchable;
 mod staging_payload;
 mod work;
+pub use budget::scoped_memory::ScopedMemoryBudget;
 pub use budget::{WorkBudget, WorkBudgetDenial, WorkLimits, WorkUsage};
 pub use error::IndexError;
 pub use lifetime::{
@@ -40,7 +44,7 @@ pub use map_value::{
 };
 pub use memory::{
     MemoryCredit, MemoryCreditClosePort, MemoryCreditLimits, MemoryLease, MemoryLeaseOwner,
-    MemoryLifetime, MemoryScope, MemoryScopePort, ScopedMemoryBudget,
+    MemoryLifetime, MemoryScope, MemoryScopePort,
 };
 pub use metadata::{
     MAX_BINDING_METADATA_BYTES, decode_coverage_binding, decode_member_binding,

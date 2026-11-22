@@ -73,7 +73,7 @@ impl SaveAuthority<'_> {
         )?;
         if record_object.registration.reference != record_ref
             || record_object.registration.children.as_slice() != [record.bytes]
-            || !crate::native::valid_native_source_path(&record.path)
+            || !crate::native_source_path::valid_native_source_path(&record.path)
         {
             return Err(IndexError::CorruptObject(
                 "save source record registration differs".into(),

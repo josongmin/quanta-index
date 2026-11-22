@@ -10,10 +10,7 @@ use serde::{Deserialize, Deserializer, de};
 use std::{io::Cursor, marker::PhantomData, path::Path};
 pub(crate) const COVERAGE_FORMAT: u32 = 2;
 pub(crate) const MAX_COVERAGE_ROOT_BYTES: usize = 32 * 1024;
-#[cfg(feature = "legacy-tantivy")]
-pub(crate) const MAX_COVERAGE_PAGE_BYTES: usize = 1024 * 1024;
-#[cfg(feature = "legacy-tantivy")]
-pub(crate) const MAX_COVERAGE_PAGE_ROWS: usize = 4096;
+
 pub(crate) const MAX_COVERAGE_ROOT_BYTES_U64: u64 = 32 * 1024;
 pub(crate) const MAX_COVERAGE_PAGE_BYTES_U64: u64 = 1024 * 1024;
 pub(crate) const MAX_COVERAGE_PAGE_ROWS_U32: u32 = 4096;

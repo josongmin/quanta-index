@@ -20,6 +20,7 @@ from tools.benchmark.evidence import parse_json, read_control
 from tools.benchmark.retrieval import (
     evaluator,
     go_trace_review_receipt,
+    native_file_paths,
     query_plan,
     result_window,
     run,
@@ -1484,11 +1485,14 @@ def build_native_file_decision(
     manifest: Path,
     policy: Path,
     daemon: Path,
-    config: Path,
+    config: Path | None,
     runner: Path,
     *,
     execution_evidence_root: Path | None = None,
     execution_run_ids: list[str] | None = None,
+    reviewed_labels_path: Path | None = None,
+    output: native_file_paths.Output | None = None,
+    require_signed_install: bool = False,
 ) -> dict:
     """Keep Native execution evidence separate from Legacy run qualification."""
     from tools.benchmark.retrieval.native_file_decision import build_native_file_decision as replay
@@ -1501,6 +1505,12 @@ def build_native_file_decision(
             "execution_run_ids": execution_run_ids,
         }
     )
+    if reviewed_labels_path is not None:
+        options["reviewed_labels_path"] = reviewed_labels_path
+    if output is not None:
+        options["output"] = output
+    if require_signed_install:
+        options["require_signed_install"] = True
     return replay(manifest, policy, daemon, config, runner, **options)
 
 
@@ -1520,8 +1530,10 @@ def main(argv: list[str] | None = None) -> int:
         "runner-binary",
         "native-execution-root",
         "native-execution-runs",
+        "native-reviewed-labels",
     ):
         parser.add_argument(f"--{key}")
+    parser.add_argument("--require-signed-install", action="store_true")
     args = parser.parse_args(argv)
     try:
         native = any(
@@ -1532,6 +1544,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.runner_binary,
                 args.native_execution_root,
                 args.native_execution_runs,
+                args.native_reviewed_labels,
+                args.require_signed_install,
             )
         )
         if native:
@@ -1540,7 +1554,6 @@ def main(argv: list[str] | None = None) -> int:
                     args.native_file_cohort,
                     args.policy,
                     args.daemon_binary,
-                    args.daemon_config,
                     args.runner_binary,
                     args.out,
                 )
@@ -1554,32 +1567,41 @@ def main(argv: list[str] | None = None) -> int:
                 )
             ):
                 raise DecisionError(
-                    "Native decision requires only cohort, policy, daemon/config, runner and out"
+                    "Native decision requires cohort, policy, daemon, runner and out"
                 )
-            output = Path(args.out)
-            if output.exists() or output.is_symlink():
-                raise DecisionError("Native decision output must be a new path")
+            output = native_file_paths.Output.prepare(
+                Path(args.out), exists_error="Native decision output must be a new path",
+            )
             if (args.native_execution_root is None) != (args.native_execution_runs is None):
                 raise DecisionError("Native execution evidence needs both root and run IDs")
-            options = {}
+            if args.require_signed_install and args.native_execution_root is None:
+                raise DecisionError(
+                    "Native signed installation requires controlled execution root and run IDs"
+                )
+            options = {"output": output}
+            if args.require_signed_install:
+                options["require_signed_install"] = True
             if args.native_execution_root is not None:
-                options = {
+                run_ids_path = Path(args.native_execution_runs)
+                output.protect((("execution run IDs", run_ids_path),))
+                options.update({
                     "execution_evidence_root": Path(args.native_execution_root),
                     "execution_run_ids": parse_json(
-                        read_control(Path(args.native_execution_runs)).decode("utf-8")
+                        read_control(run_ids_path).decode("utf-8")
                     ),
-                }
+                })
+            if args.native_reviewed_labels is not None:
+                options["reviewed_labels_path"] = Path(args.native_reviewed_labels)
             decision = build_native_file_decision(
                 Path(args.native_file_cohort),
                 Path(args.policy),
                 Path(args.daemon_binary),
-                Path(args.daemon_config),
+                Path(args.daemon_config) if args.daemon_config is not None else None,
                 Path(args.runner_binary),
                 **options,
             )
             rendered = json.dumps(decision, indent=2, sort_keys=True, allow_nan=False) + "\n"
-            with output.open("x", encoding="utf-8") as stream:
-                stream.write(rendered)
+            output.write(rendered)
         elif args.go_trace_plan or args.go_trace_judgments:
             if (
                 not args.go_trace_plan

@@ -11,12 +11,16 @@ use std::{
 
 use quanta_index_core::index::{
     CollectionId, Digest, GroupActivation, IndexKind, IndexProfile, InputDomain, InstanceSpec,
-    MemberBinding, ObjectBatchInput, OwnerKey, OwnerMutation, ProducerId, PublicationGroupId,
-    RegisteredObject, RegisteredObjectBatch, SchemaId, SlotId, SourceCut, SourceEvent, SourceInput,
-    SourceTextAdmission, SourceTransition, StableOwnerId, StorageFormatId, StoredObject, StreamId,
-    TenantId, UpdateKind, UpdateRequest, ViewRef, WorkspaceKey, WorktreeId,
+    MapEdit, MapRoot, MemberBinding, ObjectBatchInput, ObjectInstallScope, OwnerKey, OwnerMutation,
+    ProducerId, PublicationGroupId, RegisteredObject, RegisteredObjectBatch, SchemaId, SlotId,
+    SourceCut, SourceEvent, SourceInput, SourceTextAdmission, SourceTransition, StableOwnerId,
+    StorageFormatId, StoredObject, StreamId, TenantId, UpdateKind, UpdateRequest, ViewRef,
+    WorkspaceKey, WorktreeId,
     effort::ResourceNeed,
-    ports::{ImmutableObjectPort, ObjectInstallMemoryShape, ObjectWriteSink},
+    ports::{
+        ImmutableObjectPort, InputStagingPort, ObjectInstallMemoryShape, ObjectMapBatchPort,
+        ObjectWriteSink, PersistentMapPort,
+    },
 };
 use quanta_index_lexical::native::{CaseMode, NativeTextIndex, TextReadContext, TextRecipe};
 
@@ -26,6 +30,38 @@ mod native_catalog_profile;
 type TestResult<T = ()> = std::result::Result<T, Box<dyn Error>>;
 const POLICY: Digest = Digest([31; 32]);
 const MIB: u64 = 1024 * 1024;
+
+struct JoinedIngressSink(quanta_index_core::index::IngressRef);
+
+impl ObjectWriteSink for JoinedIngressSink {
+    fn managed_scope(&self) -> Option<ObjectInstallScope> {
+        Some(ObjectInstallScope::Ingress(self.0))
+    }
+
+    fn reserve(&self, _object: &RegisteredObject) -> Result<(), IndexError> {
+        Err(IndexError::BackendViolation(
+            "managed fixture callback was used".into(),
+        ))
+    }
+
+    fn installed(&self, _object: &RegisteredObject) -> Result<(), IndexError> {
+        Err(IndexError::BackendViolation(
+            "managed fixture callback was used".into(),
+        ))
+    }
+
+    fn reserve_batch(&self, _objects: &[RegisteredObject]) -> Result<(), IndexError> {
+        Err(IndexError::BackendViolation(
+            "managed fixture callback was used".into(),
+        ))
+    }
+
+    fn installed_batch(&self, _objects: &[RegisteredObject]) -> Result<(), IndexError> {
+        Err(IndexError::BackendViolation(
+            "managed fixture callback was used".into(),
+        ))
+    }
+}
 
 fn phase<T, E: std::fmt::Display>(label: &str, result: Result<T, E>) -> TestResult<T> {
     result.map_err(|error| format!("{label}: {error}").into())
@@ -400,6 +436,121 @@ fn open_fixture_with_memory_and_batch(
         _guard: guard,
         _physical: physical,
     })
+}
+
+fn measured_joined_page_anchor(
+    directory: &Path,
+    joined: bool,
+) -> TestResult<(ObjectRef, MapRoot, u64, u64, u64)> {
+    let fixture = open_fixture(directory, true)?;
+    let _genesis = fixture
+        .kernel
+        .create_workspace(workspace(), 1, &mut work(&fixture.scope))?;
+    let ingress = fixture._catalog.open_ingress(operation(99))?;
+    let sink = JoinedIngressSink(ingress);
+    let mut budget = work(&fixture.scope);
+    let leaves = (0..36_u8)
+        .map(|slot| ObjectBatchInput {
+            payload: vec![b'L', slot],
+            children: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let children = fixture
+        .objects
+        .install_batch(&leaves, &sink, &mut budget)?
+        .iter()
+        .map(|object| object.reference)
+        .collect::<Vec<_>>();
+    assert_eq!(children.len(), 36);
+    let page = ObjectBatchInput {
+        payload: b"QITXTD01-fixed-36-child-page".to_vec(),
+        children,
+    };
+    let page_ref = fixture
+        .objects
+        .identify(&page.payload, &page.children, &mut budget)?
+        .reference;
+    let edit = MapEdit::objects(b"anchor".to_vec(), None, Some(page_ref));
+    let reads_before = budget.usage().reads;
+    let sql_before = native_catalog_profile::snapshot()?.ok_or("Catalog profile absent")?;
+    let root = if joined {
+        let (references, roots) = fixture.objects.install_objects_and_maps(
+            std::slice::from_ref(&page),
+            &[MapRoot(None)],
+            &[&edit],
+            &sink,
+            &mut budget,
+        )?;
+        assert_eq!(references.first().copied(), Some(page_ref));
+        *roots.first().ok_or("joined root absent")?
+    } else {
+        let installed =
+            fixture
+                .objects
+                .install_batch(std::slice::from_ref(&page), &sink, &mut budget)?;
+        assert_eq!(
+            installed.first().map(|object| object.reference),
+            Some(page_ref)
+        );
+        fixture
+            .objects
+            .apply(MapRoot(None), &[edit], &sink, &mut budget)?
+            .root
+    };
+    let sql = native_catalog_profile::since(Some(sql_before))?.ok_or("Catalog profile absent")?;
+    let reads = budget.usage().reads - reads_before;
+    assert_eq!(
+        fixture
+            .objects
+            .lookup_object(root, b"anchor", &mut work(&fixture.scope))?,
+        Some(page_ref)
+    );
+    drop(fixture);
+    let reopened = open_fixture(directory, true)?;
+    assert_eq!(
+        reopened
+            .objects
+            .lookup_object(root, b"anchor", &mut work(&reopened.scope))?,
+        Some(page_ref)
+    );
+    assert_eq!(
+        reopened
+            .objects
+            .get(page_ref, &mut work(&reopened.scope))?
+            .registration
+            .children,
+        page.children
+    );
+    Ok((page_ref, root, reads, sql.read.calls, sql.commit.calls))
+}
+
+#[test]
+fn actual_managed_joined_page_anchor_avoids_second_child_authentication() -> TestResult {
+    let _profile = native_catalog_profile::Guard::start()?;
+    let separate_dir = tempfile::tempdir()?;
+    let separate = measured_joined_page_anchor(separate_dir.path(), false)?;
+    let joined_dir = tempfile::tempdir()?;
+    let joined = measured_joined_page_anchor(joined_dir.path(), true)?;
+    println!(
+        "managed page/anchor: separate reads={} selects={} commits={}, joined reads={} selects={} commits={}",
+        separate.2, separate.3, separate.4, joined.2, joined.3, joined.4
+    );
+    assert_eq!((joined.0, joined.1), (separate.0, separate.1));
+    assert!(
+        joined.2 < separate.2,
+        "joined reads {} must be below separate reads {}",
+        joined.2,
+        separate.2
+    );
+    assert!(
+        joined.3 < separate.3,
+        "joined Catalog SELECTs {} must be below separate SELECTs {}",
+        joined.3,
+        separate.3
+    );
+    assert_eq!(joined.4, 2, "joined one reserve/confirm group");
+    assert_eq!(separate.4, 4, "separate page and map groups");
+    Ok(())
 }
 
 fn published(outcome: SubmitOutcome) -> TestResult<ViewRef> {

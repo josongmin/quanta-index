@@ -1,10 +1,10 @@
 use super::*;
 
+use quanta_index_core::index::WorkBudgetDenial;
 use quanta_index_core::{
     DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticEmitV1,
     DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticRootKindV1, RequestBudgetV1,
 };
-use quanta_index_core::index::WorkBudgetDenial;
 use std::sync::Arc;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -185,7 +185,12 @@ fn run(record: bool, tail: Tail, layout: Layout) -> Result<Run, Box<dyn std::err
     let usage = work.usage();
     let denial = work.first_denial();
     let lookups = if matches!(layout, Layout::NonEmptyBase) {
-        if let Some(root) = result.as_ref().ok().and_then(|roots| roots.first()).copied() {
+        if let Some(root) = result
+            .as_ref()
+            .ok()
+            .and_then(|roots| roots.first())
+            .copied()
+        {
             let mut verify = budget()?;
             Some([
                 store.lookup(root, b"a", &mut verify)?,
@@ -284,7 +289,10 @@ fn empty_stream_reports_fixed_mixed_next_value_shapes_without_changing_work() ->
     // None differs from a present zero-data/zero-child Inline value. The
     // five child slots deliberately contain repeated physical references.
     check_shape(&recorded, [1, 1, 2, 2, 5, 201])?;
-    check_eq!(map_counter(&recorded, DiagnosticCounterV1::MapRootBuilds)?, 1);
+    check_eq!(
+        map_counter(&recorded, DiagnosticCounterV1::MapRootBuilds)?,
+        1
+    );
     Ok(())
 }
 
@@ -300,9 +308,15 @@ fn failed_empty_build_counts_reached_root_and_only_yielded_input_prefix() -> Tes
         check_eq!(off.denial, recorded.denial);
         check_eq!(off.denial, expected_denial);
         check!(off.events.is_empty());
-        check_eq!(format!("{:?}", off.result), format!("{:?}", recorded.result));
+        check_eq!(
+            format!("{:?}", off.result),
+            format!("{:?}", recorded.result)
+        );
         check!(recorded.result.is_err());
-        check_eq!(map_counter(&recorded, DiagnosticCounterV1::MapRootBuilds)?, 1);
+        check_eq!(
+            map_counter(&recorded, DiagnosticCounterV1::MapRootBuilds)?,
+            1
+        );
         check_shape(&recorded, [1, 1, 0, 0, 0, 33])?;
     }
     Ok(())
@@ -317,7 +331,10 @@ fn two_root_lookahead_and_scalar_prefetch_count_each_yielded_value_once() -> Tes
     check_eq!(off.result.as_ref().ok(), recorded.result.as_ref().ok());
     check_eq!(recorded.result.as_ref().ok().map(Vec::len), Some(2));
     check_shape(&recorded, [1, 1, 2, 2, 5, 201])?;
-    check_eq!(map_counter(&recorded, DiagnosticCounterV1::MapRootBuilds)?, 2);
+    check_eq!(
+        map_counter(&recorded, DiagnosticCounterV1::MapRootBuilds)?,
+        2
+    );
     Ok(())
 }
 
@@ -471,6 +488,9 @@ fn nonempty_base_delta_counts_original_cursor_once_without_scratch_replay() -> T
         ])
     );
     check_shape(&recorded, [1, 1, 2, 2, 5, 201])?;
-    check_eq!(map_counter(&recorded, DiagnosticCounterV1::MapRootBuilds)?, 1);
+    check_eq!(
+        map_counter(&recorded, DiagnosticCounterV1::MapRootBuilds)?,
+        1
+    );
     Ok(())
 }

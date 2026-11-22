@@ -525,6 +525,195 @@ fn source_root(
     maps.keep(Rows::from([(owner_map_key(owner).to_vec(), record.into())]))
 }
 
+#[test]
+fn cold_repeated_body_shares_one_draft_and_keeps_both_owners() -> Result<(), IndexError> {
+    let fixture = visitor_fixture()?;
+    let objects = CanonicalObjects::default();
+    let body = b"alpha beta charlie delta echo foxtrot golf hotel india juliet kilo lima";
+    let bytes = objects.seed(body.to_vec(), Vec::new())?;
+    let mut changes = Vec::new();
+    for id in [1, 2] {
+        let mut record = fixture_record(&fixture)?;
+        record.path = format!("owner-{id}");
+        record.bytes = bytes;
+        record.byte_len =
+            u64::try_from(body.len()).map_err(|_error| IndexError::ResourceLimited)?;
+        let reference = objects.seed(encode(&record)?, vec![bytes])?;
+        changes.push(SourceChange {
+            owner: OwnerKey {
+                producer: fixture.owner.producer,
+                stable_id: StableOwnerId([id; 16]),
+            },
+            prior: None,
+            next: Some((reference, SourceRecordOwner::new_unscoped(record))),
+        });
+    }
+    let [first, second] = changes.as_slice() else {
+        return Err(IndexError::ResourceLimited);
+    };
+    let mut baseline = None;
+    for share in [false, true] {
+        let maps = CanonicalMaps::default();
+        let scratch = TestScratch::default();
+        let memory = Arc::new(TokenMemory {
+            ceiling: 64 * 1024 * 1024,
+            ..TokenMemory::default()
+        });
+        let mut work = integration_budget()?;
+        work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+            BatchOutputMemoryScope(Arc::clone(&memory)),
+        ))));
+        let spool = TextSpool::new_cold_postings(&scratch, &mut work)?;
+        let mut context = AttemptContext {
+            attempt: test_attempt(fixture.ticket.view.identity.workspace),
+            objects: &objects,
+            maps: &maps,
+            custody: &TestCustody,
+            scratch: &scratch,
+            budget: &mut work,
+        };
+        let mut root = Root::default();
+        let mut batch = InventoryBatch::cold(if share { 3 } else { 1 })?;
+        batch.occurrence_writes.pack_owners = true;
+        batch.occurrence_writes.install_objects = Some(&objects);
+        let mut contributions = ContributionWrites::cold()?;
+        let mut inventories = InventoryReuse::new(fixture.recipe, 1)?;
+        let unrelated = fixture_record(&fixture)?;
+        inventories.remember(
+            &unrelated,
+            &fixture.inventory_root.into(),
+            1,
+            context.budget,
+        )?;
+        batch.push_change(
+            first,
+            &mut root,
+            &mut context,
+            &spool,
+            &mut contributions,
+            &mut inventories,
+        )?;
+        inventories.prefixes = None;
+        let before = context.budget.usage();
+        batch.push_change(
+            second,
+            &mut root,
+            &mut context,
+            &spool,
+            &mut contributions,
+            &mut inventories,
+        )?;
+        let after = context.budget.usage();
+        if share {
+            check_eq!(batch.rows.len(), 2);
+            check_eq!(batch.bases.len(), 1);
+            check_eq!(root.docs, 0);
+            check_eq!(after.mutations, before.mutations);
+            check!(matches!(
+                batch.rows.as_slice().get(1).map(|row| &row.next),
+                Some(PendingTextNext::Draft {
+                    slot: 0,
+                    shared: true,
+                    ..
+                })
+            ));
+        } else {
+            check_eq!(batch.rows.len(), 0);
+            check_eq!(root.docs, 2);
+            check!(
+                after
+                    .mutations
+                    .checked_sub(before.mutations)
+                    .is_some_and(|units| units >= 12)
+            );
+        }
+        batch.flush(
+            &mut root,
+            &mut context,
+            &spool,
+            &mut contributions,
+            &mut inventories,
+        )?;
+        check_eq!((root.docs, root.indexed_tokens), (2, 24));
+        let usage = context.budget.usage();
+        let (_, repeated) = second.next.as_ref().ok_or(IndexError::Conflict)?;
+        let next_window = inventories.lookup(repeated, context.budget)?;
+        check_eq!(
+            inventories
+                .entries
+                .as_ref()
+                .ok_or(IndexError::Conflict)?
+                .len(),
+            1
+        );
+        check_eq!(
+            inventories.lookup(&unrelated, context.budget)?.is_some(),
+            !share
+        );
+        check_eq!(next_window.map(|(_, tokens)| tokens), share.then_some(12));
+        contributions.flush(&mut context, &spool)?;
+        let mut top = spool.top_cursor();
+        let mut inventory = None;
+        for change in [first, second] {
+            let edit = top.next_edit(context.budget)?.ok_or(IndexError::Conflict)?;
+            check_eq!(edit.key(), &owner_key(change.owner));
+            let contribution = read_contribution(
+                edit.next()?.ok_or(IndexError::Conflict)?,
+                context.objects,
+                context.budget,
+            )?;
+            if let Some((expected, _)) = next_window {
+                check_eq!(contribution.inventory, expected);
+            }
+            check_eq!(
+                Some(contribution.record),
+                change.next.as_ref().map(|(reference, _)| *reference)
+            );
+            check_eq!(contribution.indexed_tokens, 12);
+            if let Some(original) = inventory {
+                check_eq!(contribution.inventory, original);
+            } else {
+                inventory = Some(contribution.inventory);
+            }
+        }
+        check!(top.next_edit(context.budget)?.is_none());
+        drop(top);
+        let terms = spool.posting_term_page(None, context.budget)?;
+        check_eq!(terms.len(), 24);
+        let mut cursor = spool.posting_cursor(terms);
+        let mut edits = Vec::new();
+        for term in 0..24u32 {
+            for owner in [first.owner, second.owner] {
+                let edit = cursor
+                    .next_edit(context.budget)?
+                    .ok_or(IndexError::Conflict)?;
+                check_eq!(edit.root(), term);
+                check_eq!(edit.key(), &owner_key(owner));
+                check_eq!(edit.expected()?, None);
+                let occurrence = edit.next()?.ok_or(IndexError::Conflict)?;
+                edits.push(occurrence);
+            }
+        }
+        check!(cursor.next_edit(context.budget)?.is_none());
+        if let Some((baseline_usage, baseline_edits)) = &baseline {
+            let baseline_usage: &WorkUsage = baseline_usage;
+            check!(usage.bytes < baseline_usage.bytes);
+            check!(usage.mutations < baseline_usage.mutations);
+            check_eq!(&edits, baseline_edits);
+        } else {
+            baseline = Some((usage, edits));
+        }
+        drop(cursor);
+        drop(batch);
+        drop(contributions);
+        drop(inventories);
+        drop(spool);
+        check_eq!(memory.live.load(Ordering::Relaxed), 0);
+        check!(!memory.invalid_release.load(Ordering::Relaxed));
+    }
+    Ok(())
+}
+
 fn prepare(
     index: &NativeTextIndex,
     base: BaseMember,
@@ -1200,6 +1389,7 @@ fn frozen_cold_small_inventory_borrows_planning_rows() -> Result<(), IndexError>
         &[EntryMap::default()],
         &[2],
         &[None],
+        &mut [None],
         &lease,
         &mut context,
     )?;
@@ -1235,12 +1425,89 @@ fn frozen_cold_small_inventory_borrows_planning_rows() -> Result<(), IndexError>
             &[EntryMap::default()],
             &[1],
             &[None],
+            &mut [None],
             &lease,
             &mut context,
         ),
         Err(IndexError::Conflict)
     ));
     check_eq!(maps.applies.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[test]
+fn ordinary_directory_producer_receipt_counts_descriptors_not_term_rows() -> Result<(), IndexError>
+{
+    let workspace = visitor_fixture()?.ticket.view.identity.workspace;
+    let objects = CanonicalObjects::default();
+    let maps = CanonicalMaps::default();
+    let scratch = TestScratch::default();
+    let mut work = integration_budget()?;
+    let spool = TextSpool::new(&scratch, &mut work)?;
+    let mut context = AttemptContext {
+        attempt: test_attempt(workspace),
+        objects: &objects,
+        maps: &maps,
+        custody: &TestCustody,
+        scratch: &scratch,
+        budget: &mut work,
+    };
+    let mut edits = InventoryEdits::new(0)?;
+    let mut writes = OccurrenceWrites::new();
+    let mut confirmed = ConfirmedOccurrences::new(0)?;
+    let prepared = prepare_inventory(
+        &distinct_terms(257),
+        &EntryMap::default(),
+        0,
+        &mut context,
+        &spool,
+        &mut confirmed,
+        &mut edits,
+        &mut writes,
+    )?;
+    check!(prepared.alias.is_none());
+    check_eq!(prepared.term_count, 514);
+    writes.flush(&mut context, &spool, &mut confirmed, &mut edits)?;
+    edits.flush(&spool, context.budget)?;
+    let read = spool.begin_inventory_read(context.budget)?;
+    let mut receipts = [None];
+    let roots = entry_patch::apply_frozen_inventory(
+        entry_map::EntryMapUse::ColdInventory,
+        &[EntryMap::default()],
+        &[prepared.term_count],
+        &[None],
+        &mut receipts,
+        &read,
+        &mut context,
+    )?;
+    let receipt = receipts[0].ok_or(IndexError::ResourceLimited)?;
+    let root = *roots
+        .as_slice()
+        .first()
+        .ok_or(IndexError::ResourceLimited)?;
+    check_eq!(root, EntryMap::InventoryDirectory(receipt.root));
+    check_eq!(receipt.attempt, context.attempt);
+    check_eq!(receipt.slot, 0);
+    check_eq!(receipt.descriptors, 514);
+    let next = Contribution {
+        record: reference(90),
+        inventory: root,
+        indexed_tokens: prepared.indexed_tokens,
+    };
+    let mut cursor = super::cold_inventory_cursor::ColdInventoryCursor::open(
+        &next,
+        None,
+        Some(&receipt),
+        super::cold_inventory_cursor::ColdInventoryProvenance::PreparedCanonical,
+        &objects,
+        &maps,
+        context.attempt,
+        context.budget,
+    )?;
+    for _ in 0..514 {
+        check!(cursor.next(&mut context)?.is_some());
+    }
+    check!(cursor.next(&mut context)?.is_none());
     Ok(())
 }
 
@@ -1308,6 +1575,7 @@ fn frozen_cold_directories_stage_together_and_reopen_by_original_slot() -> Resul
         &[EntryMap::default(); 3],
         &counts,
         &aliases,
+        &mut [None; 3],
         &read,
         &mut context,
     )?;
@@ -1350,6 +1618,7 @@ fn frozen_cold_directories_stage_together_and_reopen_by_original_slot() -> Resul
             &[EntryMap::default(); 3],
             &[2, 0, 1],
             &truncated,
+            &mut [None; 3],
             &read,
             &mut context,
         ),

@@ -185,3 +185,47 @@ fn imported_repomap_member_read_is_bound_to_exact_view_and_instance()
     );
     Ok(())
 }
+
+#[test]
+fn candidate_installation_wire_has_no_workspace_selector() -> Result<(), Box<dyn std::error::Error>>
+{
+    let request = NativeIndexRequest::ObserveCandidateInstallationV1;
+    let request_json = serde_json::to_value(&request)?;
+    assert_eq!(
+        request_json,
+        serde_json::json!("ObserveCandidateInstallationV1")
+    );
+    assert_eq!(
+        serde_json::from_value::<NativeIndexRequest>(request_json)?,
+        request
+    );
+    let mut wire = Vec::new();
+    ciborium::ser::into_writer(&request, &mut wire)?;
+    assert_eq!(
+        ciborium::de::from_reader::<NativeIndexRequest, _>(wire.as_slice())?,
+        request
+    );
+
+    let response = NativeIndexResponse::CandidateInstallationV1(NativeCandidateInstallationV1 {
+        config_sha256: Digest([12; 32]),
+        root_nonce: Digest([31; 32]),
+        root_device: 0x1234,
+        root_inode: 0x5678,
+    });
+    let response_json = serde_json::to_value(&response)?;
+    let fields = response_json
+        .get("CandidateInstallationV1")
+        .and_then(serde_json::Value::as_object)
+        .ok_or("candidate installation fields missing")?;
+    assert_eq!(fields.len(), 4);
+    for field in ["config_sha256", "root_nonce", "root_device", "root_inode"] {
+        assert!(fields.contains_key(field));
+    }
+    wire.clear();
+    ciborium::ser::into_writer(&response, &mut wire)?;
+    assert_eq!(
+        ciborium::de::from_reader::<NativeIndexResponse, _>(wire.as_slice())?,
+        response
+    );
+    Ok(())
+}

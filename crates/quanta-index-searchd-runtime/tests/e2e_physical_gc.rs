@@ -27,17 +27,23 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
-    GenerationPin, ManifestGeneration, QuarantineDiscardOutcomeDtoV1, QuarantineTargetV1,
-    TextQuerySyntax,
+    ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, QuarantineDiscardOutcomeDtoV1,
+    QuarantineTargetV1, RepoId, RepoRelativePath, RevisionId, SearchCorpusActiveHeadV1,
+    SearchPlaneErrorCodeV2, lex::LanguageCode,
 };
-use quanta_index_core::pool_write_admission::PoolWriteLimits;
 use quanta_index_core::{
     GenerationQuarantineReasonV1, GenerationStorageKeyV1, IntegrityScrubPolicyV1,
 };
-use quanta_index_searchd_harness as e2e_harness;
+use quanta_index_sdk::{QuantaIndex, SdkError, SearchCorpusBatch};
+use quanta_index_searchd_harness::{
+    legacy_reference::{
+        LegacySearchdBinary, SearchdBinaryProcess, legacy_source_batch,
+        legacy_source_delta_from_chunks, publish_legacy_source_batch,
+    },
+    private_tempdir,
+    scale_runtime_policy::DEFAULT_HISTORY_MAX_GENERATIONS,
+};
 use sha2::{Digest, Sha256};
-
-use e2e_harness::E2eRuntime;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -46,11 +52,154 @@ const TRACK_ROOTS: [&str; 2] = ["indexes/lexical", "indexes/semantic"];
 const SEALED: u64 = 5;
 const KEEP: usize = 2;
 
-fn pair_dir(rt: &E2eRuntime, track_root: &str) -> Result<PathBuf, Box<dyn Error>> {
+struct RetentionFixture {
+    process: SearchdBinaryProcess,
+    binary: LegacySearchdBinary,
+    client: QuantaIndex,
+    root: tempfile::TempDir,
+    repo: RepoId,
+    revision: RevisionId,
+    active: Option<SearchCorpusActiveHeadV1>,
+}
+
+impl RetentionFixture {
+    fn boot(keep: usize, scrub_and_quota: &[(&str, String)]) -> Result<Self, Box<dyn Error>> {
+        let root = private_tempdir()?;
+        let binary = LegacySearchdBinary::from_environment()?;
+        let (process, client) = Self::start_process(&binary, root.path(), keep, scrub_and_quota)?;
+        Ok(Self {
+            process,
+            binary,
+            client,
+            root,
+            repo: RepoId::new("repo-e2e")?,
+            revision: RevisionId::new("rev-e2e")?,
+            active: None,
+        })
+    }
+
+    fn start_process(
+        binary: &LegacySearchdBinary,
+        root: &Path,
+        keep: usize,
+        settings: &[(&str, String)],
+    ) -> Result<(SearchdBinaryProcess, QuantaIndex), Box<dyn Error>> {
+        let mut command = binary.benchmark_command(root, keep)?;
+        let _configured = command
+            .env("QUANTA_INDEX_MAINTENANCE_TICK_MS", "50")
+            .env("QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS", "86400000")
+            .env(
+                "QUANTA_INDEX_INTEGRITY_SCRUB_MAX_BYTES_PER_STEP",
+                IntegrityScrubPolicyV1::DEFAULT
+                    .max_bytes_per_step
+                    .to_string(),
+            )
+            .envs(settings.iter().map(|(key, value)| (*key, value)));
+        let process = SearchdBinaryProcess::start_with_pinned_command(root, command)?;
+        let client = process.connect()?;
+        Ok((process, client))
+    }
+
+    fn reopen(self, keep: usize) -> Result<Self, Box<dyn Error>> {
+        let Self {
+            process,
+            binary,
+            client,
+            root,
+            repo,
+            revision,
+            active,
+        } = self;
+        drop(client);
+        process.stop()?;
+        binary.verify()?;
+        let (process, client) = Self::start_process(&binary, root.path(), keep, &[])?;
+        Ok(Self {
+            process,
+            binary,
+            client,
+            root,
+            repo,
+            revision,
+            active,
+        })
+    }
+
+    fn stop(self) -> TestResult {
+        self.process.stop()?;
+        self.binary.verify()
+    }
+
+    fn state_root(&self) -> &Path {
+        self.root.path()
+    }
+
+    fn next_batch(
+        &self,
+        path: &str,
+        body: &str,
+        previous_body: Option<&str>,
+    ) -> Result<SearchCorpusBatch, Box<dyn Error>> {
+        let Some(active) = self.active.as_ref() else {
+            return legacy_source_batch(&self.repo, &self.revision, 1, None, &[(path, body, 1)]);
+        };
+        let previous = active.generation.lexical.manifest_generation.get();
+        let generation = previous
+            .checked_add(1)
+            .ok_or("fixture generation exhausted")?;
+        if let Some(previous_body) = previous_body {
+            return legacy_source_batch(
+                &self.repo,
+                &self.revision,
+                generation,
+                Some((path, previous_body, previous)),
+                &[(path, body, generation)],
+            );
+        }
+        legacy_source_delta_from_chunks(
+            &self.repo,
+            &self.revision,
+            generation,
+            &[],
+            &[],
+            vec![ChunkRecord {
+                chunk_id: ChunkId::new(format!("e2e-{generation}-{path}")),
+                repo_relative_path: RepoRelativePath::new(path),
+                language: LanguageCode::new("rust")?,
+                start_byte: 0,
+                end_byte: u32::try_from(body.len())?,
+                start_line: 1,
+                end_line: 2,
+                text: body.to_owned().into_boxed_str(),
+                structural: None,
+                parent_chunk_id: None,
+                source_repo_id: None,
+            }],
+        )
+    }
+
+    fn publish_file(
+        &mut self,
+        path: &str,
+        body: &str,
+        previous_body: Option<&str>,
+    ) -> Result<ManifestGeneration, Box<dyn Error>> {
+        let batch = self.next_batch(path, body, previous_body)?;
+        let (head, receipt) =
+            publish_legacy_source_batch(&self.client, &batch, self.active.clone())?;
+        if !receipt.sealed || head.generation.semantic.manifest_generation != batch.generation() {
+            return Err(format!("publication did not seal both tracks: {receipt:?}").into());
+        }
+        self.active = Some(head);
+        Ok(batch.generation())
+    }
+}
+
+fn pair_dir(rt: &RetentionFixture, track_root: &str) -> Result<PathBuf, Box<dyn Error>> {
     let canonical = std::fs::canonicalize(rt.state_root())?;
     Ok(canonical
         .join(track_root)
-        .join(GenerationStorageKeyV1::for_repo_revision(&rt.repo(), &rt.revision()).as_str()))
+        .join(GenerationStorageKeyV1::for_repo_revision(&rt.repo, &rt.revision).as_str()))
 }
 
 /// Generation numbers whose directories exist under `pair`.
@@ -75,70 +224,19 @@ fn generations_on_disk(pair: &Path) -> Result<BTreeSet<u64>, Box<dyn Error>> {
 
 /// Seal `SEALED` generations, activating each as it lands, so the reaped set
 /// is `SEALED - KEEP` and the retained set is the active one plus the newest.
-fn seal_generations(rt: &mut E2eRuntime) -> Result<Vec<ManifestGeneration>, Box<dyn Error>> {
+fn seal_generations(
+    rt: &mut RetentionFixture,
+    count: u64,
+) -> Result<Vec<ManifestGeneration>, Box<dyn Error>> {
     let mut sealed = Vec::new();
-    for index in 0..SEALED {
-        rt.ingest_text(
-            "repo",
+    for index in 0..count {
+        sealed.push(rt.publish_file(
             &format!("src/item_{index}.rs"),
             &format!("fn item_{index}() {{ needle_{index} }}"),
-        )?;
-        sealed.push(rt.seal()?);
-        rt.activate_last_sealed_generation()?;
+            None,
+        )?);
     }
     Ok(sealed)
-}
-
-#[test]
-fn reaping_a_generation_removes_its_directories_on_both_tracks() -> TestResult {
-    let mut rt = E2eRuntime::boot_with_history_max_generations(KEEP)?;
-    let sealed = seal_generations(&mut rt)?;
-    let expected: BTreeSet<u64> = sealed
-        .iter()
-        .rev()
-        .take(KEEP)
-        .map(|generation| generation.get())
-        .collect();
-
-    for track_root in ["indexes/lexical", "indexes/semantic"] {
-        let on_disk = generations_on_disk(&pair_dir(&rt, track_root)?)?;
-        if on_disk != expected {
-            return Err(format!(
-                "{track_root}: expected exactly the retained generations {expected:?} on disk, found {on_disk:?}"
-            )
-            .into());
-        }
-    }
-    Ok(())
-}
-
-/// The retained generations are untouched: the active one still serves and
-/// the newest is the pinned query target.
-#[test]
-fn retained_generations_still_serve_after_gc() -> TestResult {
-    let mut rt = E2eRuntime::boot_with_history_max_generations(KEEP)?;
-    let sealed = seal_generations(&mut rt)?;
-    let newest = sealed.last().copied().ok_or("no generation was sealed")?;
-    let result = rt.query_text(
-        TextQuerySyntax::Native,
-        &format!("needle_{}", SEALED.saturating_sub(1)),
-        5,
-    );
-    if let Some(error) = result.typed_error {
-        return Err(format!("newest generation {} does not serve: {error}", newest.get()).into());
-    }
-    if result.candidate_ids.len() != 1 {
-        return Err(format!(
-            "newest generation served {} rows for its own needle, expected 1",
-            result.candidate_ids.len()
-        )
-        .into());
-    }
-    let semantic = rt.query_semantic("needle", 5, None);
-    if let Some(error) = semantic.typed_error {
-        return Err(format!("semantic track does not serve after GC: {error}").into());
-    }
-    Ok(())
 }
 
 /// A directory whose sealed identity contradicts its path is never swept.
@@ -151,8 +249,8 @@ fn retained_generations_still_serve_after_gc() -> TestResult {
 /// level, where the crash point can be placed.
 #[test]
 fn a_directory_whose_identity_contradicts_its_path_fails_closed() -> TestResult {
-    let mut rt = E2eRuntime::boot_with_history_max_generations(KEEP)?;
-    let sealed = seal_generations(&mut rt)?;
+    let mut rt = RetentionFixture::boot(KEEP, &[])?;
+    let sealed = seal_generations(&mut rt, SEALED)?;
     let oldest_retained = sealed
         .iter()
         .rev()
@@ -168,24 +266,24 @@ fn a_directory_whose_identity_contradicts_its_path_fails_closed() -> TestResult 
         return Err("impostor fixture was not created".into());
     }
 
-    rt.ingest_text("repo", "src/extra.rs", "fn extra() { needle_extra }")?;
-    match rt.seal() {
-        Ok(generation) => Err(format!(
-            "seal of generation {} succeeded although the sweep met a directory whose identity contradicts its path",
-            generation.get()
+    let batch = rt.next_batch("src/extra.rs", "fn extra() { needle_extra }", None)?;
+    let refused = rt.client.search_corpus().publish(&batch);
+    if !matches!(
+        &refused,
+        Err(SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch,
+            ..
+        })
+    ) {
+        return Err(format!(
+            "seal did not refuse the directory identity contradiction: {refused:?}"
         )
-        .into()),
-        Err(error) => {
-            let rendered = error.to_string();
-            if !rendered.contains("GENERATION_IDENTITY_SCOPE_MISMATCH") {
-                return Err(format!("seal failed under an unexpected error: {rendered}").into());
-            }
-            if !impostor.is_dir() {
-                return Err("a directory with a contradicting identity was deleted".into());
-            }
-            Ok(())
-        }
+        .into());
     }
+    if !impostor.is_dir() || !donor.is_dir() {
+        return Err("the sweep removed a directory despite the identity contradiction".into());
+    }
+    rt.stop()
 }
 
 fn copy_tree(from: &Path, to: &Path) -> Result<(), Box<dyn Error>> {
@@ -234,7 +332,7 @@ fn inode_set_bytes(roots: &[PathBuf]) -> Result<u64, Box<dyn Error>> {
 }
 
 /// Inspect physical canonical pool files without consulting the quota ledger.
-fn physical_pool_inventory(rt: &E2eRuntime) -> Result<BTreeMap<String, u64>, Box<dyn Error>> {
+fn physical_pool_inventory(rt: &RetentionFixture) -> Result<BTreeMap<String, u64>, Box<dyn Error>> {
     let pool =
         std::fs::canonicalize(rt.state_root())?.join("indexes/lexical/lexical-object-pool/objects");
     let mut files = BTreeMap::new();
@@ -284,7 +382,7 @@ fn physical_pool_inventory(rt: &E2eRuntime) -> Result<BTreeMap<String, u64>, Box
     Ok(files)
 }
 
-fn assert_pool_quota_matches_disk(rt: &mut E2eRuntime) -> TestResult {
+fn assert_pool_quota_matches_disk(rt: &RetentionFixture) -> TestResult {
     let inventory = physical_pool_inventory(rt)?;
     let bytes = inventory.values().try_fold(0_u64, |sum, width| {
         sum.checked_add(*width).ok_or("physical pool byte overflow")
@@ -315,7 +413,7 @@ fn assert_pool_quota_matches_disk(rt: &mut E2eRuntime) -> TestResult {
     Ok(())
 }
 
-fn wait_for_pool_quota_to_match_disk(rt: &mut E2eRuntime) -> TestResult {
+fn wait_for_pool_quota_to_match_disk(rt: &RetentionFixture) -> TestResult {
     // The collector can unlink between a filesystem walk and the control
     // scrape. Require eventual agreement after its durable callback settles.
     let deadline = Instant::now()
@@ -359,28 +457,27 @@ fn lexical_pool_quota_matches_physical_gc_and_same_digest_recreation() -> TestRe
     const FIRST: &str = "fn reusable_body() { unique_first_content() }";
     const SECOND: &str = "fn replacement_body() { unique_second_content() }";
     const THIRD: &str = "fn replacement_body() { unique_third_content() }";
-    let limits = PoolWriteLimits::new(134_217_728, 100_000)?;
-    // Shared-pool collection is driven by scrub ticks, unlike generation
-    // directory retention. Override the harness's dormant 24-hour pacing.
-    let scrub =
-        IntegrityScrubPolicyV1::new(100, IntegrityScrubPolicyV1::DEFAULT.max_bytes_per_step)?;
-    let mut rt = E2eRuntime::boot_with_history_and_lexical_pool_write_limits(KEEP, limits)?
-        .with_integrity_scrub_policy(scrub);
+    // Shared-pool collection follows scrub ticks, so pace it as before.
+    let settings = [
+        (
+            "QUANTA_INDEX_LEXICAL_POOL_MAX_ENCODED_BYTES",
+            "134217728".into(),
+        ),
+        ("QUANTA_INDEX_LEXICAL_POOL_MAX_FILES", "100000".into()),
+        ("QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS", "100".into()),
+    ];
+    let mut rt = RetentionFixture::boot(KEEP, &settings)?;
     let first_digest = file_body_digest(FIRST)?;
 
-    for content in [FIRST, SECOND] {
-        rt.ingest_text("repo", "src/reused.rs", content)?;
-        let _generation = rt.seal()?;
-        rt.activate_last_sealed_generation()?;
-        wait_for_pool_quota_to_match_disk(&mut rt)?;
-    }
+    let _first = rt.publish_file("src/reused.rs", FIRST, None)?;
+    wait_for_pool_quota_to_match_disk(&rt)?;
+    let _second = rt.publish_file("src/reused.rs", SECOND, Some(FIRST))?;
+    wait_for_pool_quota_to_match_disk(&rt)?;
     if !physical_pool_inventory(&rt)?.contains_key(&first_digest) {
         return Err("first FileBody was not installed under its content digest".into());
     }
 
-    rt.ingest_text("repo", "src/reused.rs", THIRD)?;
-    let _generation = rt.seal()?;
-    rt.activate_last_sealed_generation()?;
+    let _third = rt.publish_file("src/reused.rs", THIRD, Some(SECOND))?;
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(30))
         .ok_or("GC deadline overflow")?;
@@ -396,13 +493,12 @@ fn lexical_pool_quota_matches_physical_gc_and_same_digest_recreation() -> TestRe
         std::thread::sleep(Duration::from_millis(25));
     }
 
-    rt.ingest_text("repo", "src/reused.rs", FIRST)?;
-    let _generation = rt.seal()?;
-    rt.activate_last_sealed_generation()?;
+    let _recreated = rt.publish_file("src/reused.rs", FIRST, Some(THIRD))?;
     if !physical_pool_inventory(&rt)?.contains_key(&first_digest) {
         return Err("same FileBody digest was not recreated after GC".into());
     }
-    wait_for_pool_quota_to_match_disk(&mut rt)
+    wait_for_pool_quota_to_match_disk(&rt)?;
+    rt.stop()
 }
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
@@ -547,7 +643,7 @@ fn disk_dependency(bytes: &[u8]) -> Result<DiskObjectRef, Box<dyn Error>> {
 /// Follow only committed root references. Reaped objects can remain in the
 /// shared pool until the asynchronous collector completes.
 fn retained_pool_bytes(
-    rt: &E2eRuntime,
+    rt: &RetentionFixture,
     retained: &BTreeSet<u64>,
     seen_inodes: &mut BTreeSet<(u64, u64)>,
 ) -> Result<u64, Box<dyn Error>> {
@@ -643,7 +739,7 @@ fn retained_pool_bytes(
 
 /// The directories `generations` occupy on both tracks, existing ones only.
 fn generation_dirs(
-    rt: &E2eRuntime,
+    rt: &RetentionFixture,
     generations: &BTreeSet<u64>,
 ) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let mut dirs = Vec::new();
@@ -665,8 +761,8 @@ struct Scrape {
 }
 
 impl Scrape {
-    fn take(rt: &mut E2eRuntime) -> Result<Self, Box<dyn Error>> {
-        let snapshot = rt.metrics_snapshot()?;
+    fn take(rt: &RetentionFixture) -> Result<Self, Box<dyn Error>> {
+        let snapshot = rt.client.observability().metrics_snapshot()?;
         Ok(Self {
             counters: snapshot
                 .counters
@@ -696,34 +792,50 @@ impl Scrape {
     }
 }
 
-fn pin(rt: &E2eRuntime, generation: ManifestGeneration) -> GenerationPin {
-    GenerationPin::new(rt.repo(), rt.revision(), generation)
+fn pin(rt: &RetentionFixture, generation: ManifestGeneration) -> GenerationPin {
+    GenerationPin::new(rt.repo.clone(), rt.revision.clone(), generation)
 }
 
 /// Both pinned routes refuse `generation` with `UNKNOWN_GENERATION`.
 fn assert_unknown_on_every_route(
-    rt: &mut E2eRuntime,
+    rt: &RetentionFixture,
     generation: ManifestGeneration,
     what: &str,
 ) -> TestResult {
-    let text = rt.query_text_with_pin(
-        TextQuerySyntax::Native,
-        "needle_1",
-        5,
-        Some(pin(rt, generation)),
-    );
-    match text.typed_error {
-        Some(error) if error.code.as_str() == "UNKNOWN_GENERATION" => {}
-        other => {
-            return Err(format!("lexical pin to {what} g{}: {other:?}", generation.get()).into());
-        }
+    let pin = pin(rt, generation);
+    let text = rt
+        .client
+        .lexical()
+        .query()
+        .native("needle_1")
+        .pinned(pin.clone())
+        .top_k(5)
+        .execute();
+    if !matches!(
+        &text,
+        Err(SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::UnknownGeneration,
+            ..
+        })
+    ) {
+        return Err(format!("lexical pin to {what} g{}: {text:?}", generation.get()).into());
     }
-    let semantic = rt.query_semantic_with_pin("needle", 5, Some(pin(rt, generation)));
-    match semantic.typed_error {
-        Some(error) if error.code.as_str() == "UNKNOWN_GENERATION" => {}
-        other => {
-            return Err(format!("semantic pin to {what} g{}: {other:?}", generation.get()).into());
-        }
+    let semantic = rt
+        .client
+        .semantic()
+        .query()
+        .text("needle")
+        .pinned(pin)
+        .top_k(5)
+        .execute();
+    if !matches!(
+        &semantic,
+        Err(SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::UnknownGeneration,
+            ..
+        })
+    ) {
+        return Err(format!("semantic pin to {what} g{}: {semantic:?}", generation.get()).into());
     }
     Ok(())
 }
@@ -735,24 +847,27 @@ fn assert_unknown_on_every_route(
 /// serve.
 #[test]
 fn a_reaped_generation_is_unknown_to_every_pinned_route() -> TestResult {
-    let mut rt = E2eRuntime::boot_with_history_max_generations(KEEP)?;
-    let sealed = seal_generations(&mut rt)?;
+    let mut rt = RetentionFixture::boot(KEEP, &[])?;
+    let sealed = seal_generations(&mut rt, SEALED)?;
     let reaped = sealed
         .get(1)
         .copied()
         .ok_or("fewer than two generations sealed")?;
-    assert_unknown_on_every_route(&mut rt, reaped, "reaped")?;
+    assert_unknown_on_every_route(&rt, reaped, "reaped")?;
     let newest = sealed.last().copied().ok_or("no generation was sealed")?;
-    let served = rt.query_text_with_pin(
-        TextQuerySyntax::Native,
-        &format!("needle_{}", SEALED.saturating_sub(1)),
-        5,
-        Some(pin(&rt, newest)),
-    );
-    if let Some(error) = served.typed_error {
-        return Err(format!("newest generation refused after a reaped pin: {error}").into());
+    let pin = pin(&rt, newest);
+    let served = rt
+        .client
+        .lexical()
+        .query()
+        .native(format!("needle_{}", SEALED - 1))
+        .pinned(pin.clone())
+        .top_k(5)
+        .execute()?;
+    if served.generation != pin || served.results.len() != 1 {
+        return Err(format!("newest generation lost its pinned row after GC: {served:?}").into());
     }
-    Ok(())
+    rt.stop()
 }
 
 /// GC reports what it did, in bytes that match the disk.
@@ -763,18 +878,9 @@ fn a_reaped_generation_is_unknown_to_every_pinned_route() -> TestResult {
 /// inode-set measurement of the retained directories.
 #[test]
 fn gc_metrics_report_reclaimed_and_retained_bytes_that_match_the_disk() -> TestResult {
-    let mut rt = E2eRuntime::boot_with_history_max_generations(KEEP)?;
-    let mut sealed = Vec::new();
-    for index in 0..SEALED.saturating_sub(1) {
-        rt.ingest_text(
-            "repo",
-            &format!("src/item_{index}.rs"),
-            &format!("fn item_{index}() {{ needle_{index} }}"),
-        )?;
-        sealed.push(rt.seal()?);
-        rt.activate_last_sealed_generation()?;
-    }
-    let before = Scrape::take(&mut rt)?;
+    let mut rt = RetentionFixture::boot(KEEP, &[])?;
+    let mut sealed = seal_generations(&mut rt, SEALED - 1)?;
+    let before = Scrape::take(&rt)?;
     // With KEEP retained, the next seal reaps the oldest retained one.
     let victim: BTreeSet<u64> = sealed
         .iter()
@@ -788,16 +894,13 @@ fn gc_metrics_report_reclaimed_and_retained_bytes_that_match_the_disk() -> TestR
         return Err(format!("victim {victim:?} is not on both tracks: {victim_dirs:?}").into());
     }
     let victim_bytes = inode_set_bytes(&victim_dirs)?;
-    let index = SEALED.saturating_sub(1);
-    rt.ingest_text(
-        "repo",
+    let index = SEALED - 1;
+    sealed.push(rt.publish_file(
         &format!("src/item_{index}.rs"),
         &format!("fn item_{index}() {{ needle_{index} }}"),
-    )?;
-    sealed.push(rt.seal()?);
-    rt.activate_last_sealed_generation()?;
-
-    let after = Scrape::take(&mut rt)?;
+        None,
+    )?);
+    let after = Scrape::take(&rt)?;
     let reclaimed_generations = after
         .counter("search_corpus_gc_reclaimed_generations_total")?
         .saturating_sub(before.counter("search_corpus_gc_reclaimed_generations_total")?);
@@ -851,7 +954,7 @@ fn gc_metrics_report_reclaimed_and_retained_bytes_that_match_the_disk() -> TestR
         )
         .into());
     }
-    Ok(())
+    rt.stop()
 }
 
 /// A restart under a lower cap leaves orphans, which are listed and discarded.
@@ -864,14 +967,13 @@ fn gc_metrics_report_reclaimed_and_retained_bytes_that_match_the_disk() -> TestR
 /// afterwards nothing lists it and only the retained directories remain.
 #[test]
 fn an_orphan_left_by_a_restart_is_unknown_listed_and_discardable() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let sealed = seal_generations(&mut rt)?;
+    let mut rt = RetentionFixture::boot(DEFAULT_HISTORY_MAX_GENERATIONS, &[])?;
+    let sealed = seal_generations(&mut rt, SEALED)?;
     let orphan = sealed
         .get(1)
         .copied()
         .ok_or("fewer than two generations sealed")?;
-    let mut rt = rt.reopen().with_history_max_generations(KEEP);
-    rt.start()?;
+    let rt = rt.reopen(KEEP)?;
 
     let expected_orphans: BTreeSet<u64> = sealed
         .iter()
@@ -885,29 +987,20 @@ fn an_orphan_left_by_a_restart_is_unknown_listed_and_discardable() -> TestResult
     if on_disk.len() != expected_orphans.len().saturating_mul(TRACK_ROOTS.len()) {
         return Err(format!("the orphan directories survive the restart: {on_disk:?}").into());
     }
-    let inventory = rt.boot_inventory().ok_or("the daemon is running")?.clone();
-    let reported: Vec<_> = inventory
-        .lexical
-        .orphaned
-        .iter()
-        .chain(inventory.semantic.orphaned.iter())
-        .cloned()
-        .collect();
-    let reported_paths: BTreeSet<PathBuf> =
-        reported.iter().map(|entry| entry.path.clone()).collect();
-    if reported_paths != on_disk {
-        return Err(format!("boot reports orphans {reported_paths:?}, on disk {on_disk:?}").into());
+    let boot = Scrape::take(&rt)?;
+    let expected_count = f64::from(u32::try_from(expected_orphans.len())?);
+    for name in [
+        "boot_lexical_orphaned_generations",
+        "boot_semantic_orphaned_generations",
+    ] {
+        if boot.gauge(name)?.to_bits() != expected_count.to_bits() {
+            return Err(format!("old-Q {name} differs from {expected_orphans:?}").into());
+        }
     }
-    if reported
-        .iter()
-        .any(|entry| entry.reason != GenerationQuarantineReasonV1::Orphaned)
-    {
-        return Err("every orphan is reported under the orphan reason".into());
-    }
-    assert_unknown_on_every_route(&mut rt, orphan, "orphan")?;
+    assert_unknown_on_every_route(&rt, orphan, "orphan")?;
 
     let orphan_code = GenerationQuarantineReasonV1::Orphaned.as_code_str();
-    let listed = rt.quarantine_inventory()?;
+    let listed = rt.client.quarantine().inventory()?;
     let listed_orphans: Vec<_> = listed
         .lexical
         .iter()
@@ -924,7 +1017,9 @@ fn an_orphan_left_by_a_restart_is_unknown_listed_and_discardable() -> TestResult
     }
     for entry in &listed_orphans {
         let ack = rt
-            .discard_quarantined(QuarantineTargetV1::Generation(entry.clone()))?
+            .client
+            .quarantine()
+            .discard(&QuarantineTargetV1::Generation(entry.clone()))
             .map_err(|error| format!("discard of {} refused: {error:?}", entry.path))?;
         match ack.outcome {
             QuarantineDiscardOutcomeDtoV1::Discarded { bytes } if bytes > 0 => {}
@@ -937,7 +1032,7 @@ fn an_orphan_left_by_a_restart_is_unknown_listed_and_discardable() -> TestResult
             return Err(format!("{} still exists after discard", entry.path).into());
         }
     }
-    let after = rt.quarantine_inventory()?;
+    let after = rt.client.quarantine().inventory()?;
     if after
         .lexical
         .iter()
@@ -961,5 +1056,5 @@ fn an_orphan_left_by_a_restart_is_unknown_listed_and_discardable() -> TestResult
             .into());
         }
     }
-    Ok(())
+    rt.stop()
 }

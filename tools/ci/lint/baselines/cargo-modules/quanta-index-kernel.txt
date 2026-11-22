@@ -69,6 +69,7 @@ crate quanta_index_kernel
 │       ├── trait ErasedHistoryAdapter: pub(super)
 │       └── struct HistoryAdapter: pub(self)
 ├── mod request_decode: pub(crate)
+│   ├── struct CompactSourceLocalParts: pub(self)
 │   ├── struct CountEvents: pub(self)
 │   │   ├── type Value: pub(self)
 │   │   └── type Value: pub(self)

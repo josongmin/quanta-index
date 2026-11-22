@@ -1,5 +1,5 @@
 //! Index-native scale adapter. This is the same scale rail and artifact owner,
-//! with a separate, explicit producer/daemon backend from the legacy `E2eRuntime`.
+//! with an explicit producer and daemon backend.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -47,6 +47,9 @@ use trace::NativeTrace;
 #[path = "native_index/executable.rs"]
 mod executable;
 use executable::NativeExecutable;
+#[path = "native_index/lifecycle.rs"]
+mod lifecycle;
+pub use lifecycle::NativeSession;
 #[path = "native_index/capture_artifacts.rs"]
 mod capture_artifacts;
 use capture_artifacts::ChildTraceArtifacts;
@@ -63,14 +66,23 @@ mod daemon_diagnostic;
 mod dsl_artifact;
 #[path = "native_index/dsl_history.rs"]
 mod dsl_history;
+#[path = "native_index/dsl_retained.rs"]
+mod dsl_retained;
 #[path = "native_index/dsl_text.rs"]
 mod dsl_text;
 #[path = "native_index/mixed_load.rs"]
 mod mixed_load;
+#[path = "native_index/quality.rs"]
+mod quality;
 #[path = "native_index/retained_read.rs"]
 mod retained_read;
+#[path = "native_index/snippet.rs"]
+mod snippet;
+#[cfg(test)]
+#[path = "native_index/source_identity_tests.rs"]
+mod source_identity_tests;
 pub use corpus::{
-    NativeCorpusInput, NativeSemanticCorpusInput, measure_native_corpus,
+    NativeCorpusInput, NativeCorpusTextLayout, NativeSemanticCorpusInput, measure_native_corpus,
     measure_native_corpus_with_semantic,
 };
 pub use dsl_artifact::assemble_native_dsl_artifact;
@@ -78,20 +90,46 @@ pub use dsl_history::{
     measure_cold_native_dsl_history, measure_native_dsl_history,
     measure_reopened_native_dsl_history,
 };
+pub use dsl_retained::{measure_native_dsl_retained, verify_native_dsl_retained_keyset};
 pub use dsl_text::{NativeDslTiming, measure_native_dsl_text};
+pub use quality::write_index_native_quality_artifacts;
+pub use snippet::{NativeSnippetObservations, run_native_snippet_observations};
 
 /// The supported Native DSL scenarios from the canonical benchmark registry.
 pub fn native_dsl_scenario_roster() -> Value {
-    let text = crate::scenarios::NATIVE_TEXT_FILE_SCENARIOS
+    let files = crate::scenarios::NATIVE_TEXT_FILE_SCENARIOS
         .iter()
         .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    let errors = crate::scenarios::SCENARIOS
+        .iter()
+        .filter(|scenario| {
+            scenario.fixture == crate::scenarios::FixtureKind::LexicalCorpus
+                && scenario.expected_typed_error_code == Some("PARSE_FAIL")
+        })
+        .map(|scenario| scenario.id)
+        .collect::<Vec<_>>();
+    let text = files
+        .into_iter()
+        .chain(errors.iter().copied())
         .collect::<Vec<_>>();
     let history = crate::scenarios::SCENARIOS
         .iter()
         .filter(|scenario| scenario.fixture == crate::scenarios::FixtureKind::HistoryLedger)
         .map(|scenario| scenario.id)
         .collect::<Vec<_>>();
-    json!({"text": text, "history": history})
+    let retained = crate::scenarios::SCENARIOS
+        .iter()
+        .filter(|scenario| {
+            matches!(
+                scenario.fixture,
+                crate::scenarios::FixtureKind::RuntimeCatalog
+                    | crate::scenarios::FixtureKind::StructuralTree
+            )
+        })
+        .map(|scenario| scenario.id)
+        .collect::<Vec<_>>();
+    json!({"text": text, "error": errors, "history": history, "retained": retained})
 }
 
 use crate::artifact::{
@@ -205,6 +243,11 @@ pub struct NativeIndexMeasurement {
     pub phases: BTreeMap<&'static str, NativePhase>,
     pub first_query_ms: f64,
     pub first_query_matched: u64,
+    /// Actual repeated SDK queries of the published full view, present only on
+    /// the explicit quality rail. The ordinary Index measurement remains one sample.
+    pub warm_samples_ms: Vec<f64>,
+    pub warm_result_count: Option<u64>,
+    pub warm_matched: Option<u64>,
     pub total_ms: f64,
     pub resource_observation: Option<Value>,
     pub churn_cycles: u32,
@@ -300,14 +343,14 @@ fn mixed_load_selection(
     Ok(true)
 }
 
-struct NativeDaemon<'a> {
+struct NativeDaemon {
     child: Child,
-    executable: &'a NativeExecutable,
+    executable: NativeExecutable,
 }
 
-impl<'a> NativeDaemon<'a> {
+impl NativeDaemon {
     fn start(
-        binary: &'a NativeExecutable,
+        binary: &NativeExecutable,
         config: &Path,
         socket: &Path,
         trace: Option<&Path>,
@@ -339,7 +382,7 @@ impl<'a> NativeDaemon<'a> {
             .with_context(|| format!("start native daemon {}", binary.path().display()))?;
         let mut daemon = Self {
             child,
-            executable: binary,
+            executable: binary.clone(),
         };
         let deadline = Instant::now()
             .checked_add(START_TIMEOUT)
@@ -371,6 +414,17 @@ impl<'a> NativeDaemon<'a> {
                 anyhow::bail!("native daemon did not bind UDS within {START_TIMEOUT:?}");
             }
             thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn linux_peak_rss_bytes(&self) -> Result<Option<u64>> {
+        #[cfg(target_os = "linux")]
+        {
+            crate::artifact::linux_child_peak_rss_bytes(&self.child).map(Some)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(None)
         }
     }
 
@@ -409,7 +463,7 @@ impl<'a> NativeDaemon<'a> {
     }
 }
 
-impl Drop for NativeDaemon<'_> {
+impl Drop for NativeDaemon {
     fn drop(&mut self) {
         drop(self.child.kill());
         drop(self.child.wait());
@@ -559,6 +613,18 @@ fn native_config(root: &Path, socket: &Path, workload: NativeForegroundWorkload)
                 "bytes":536_870_912,"mutations":1_000_000},
             "round_timeout_ms":2_000,"head_probe_every":4}
     })
+}
+
+/// Configure the product daemon to reopen the retained DSL History fixture.
+pub fn native_dsl_history_config(root: &Path, socket: &Path) -> Result<Value> {
+    mixed_native_config(
+        root,
+        socket,
+        NativeForegroundWorkload {
+            limits: workload::FIXED_FOREGROUND_WORK_LIMITS,
+            mode: workload::NativeWorkloadMode::Fixed,
+        },
+    )
 }
 
 fn mixed_native_config(
@@ -969,6 +1035,47 @@ pub fn measure_index_native_tier(
     child_trace_dir: Option<&Path>,
     trace_max_output_bytes: u64,
 ) -> Result<NativeIndexMeasurement> {
+    measure_index_native_tier_with_quality(
+        tier,
+        seed,
+        daemon_bin,
+        capture,
+        child_trace_dir,
+        trace_max_output_bytes,
+        false,
+    )
+}
+
+/// Run the same Native producer and lifecycle with 32 additional verified
+/// warm queries while its original daemon and full view remain live.
+pub fn measure_index_native_tier_quality(
+    tier: ScaleTier,
+    seed: u64,
+    daemon_bin: &Path,
+    capture: Option<quanta_index_searchd::DiagnosticCaptureLeaseV1>,
+    child_trace_dir: Option<&Path>,
+    trace_max_output_bytes: u64,
+) -> Result<NativeIndexMeasurement> {
+    measure_index_native_tier_with_quality(
+        tier,
+        seed,
+        daemon_bin,
+        capture,
+        child_trace_dir,
+        trace_max_output_bytes,
+        true,
+    )
+}
+
+fn measure_index_native_tier_with_quality(
+    tier: ScaleTier,
+    seed: u64,
+    daemon_bin: &Path,
+    capture: Option<quanta_index_searchd::DiagnosticCaptureLeaseV1>,
+    child_trace_dir: Option<&Path>,
+    trace_max_output_bytes: u64,
+    quality: bool,
+) -> Result<NativeIndexMeasurement> {
     let _validated_limits = quanta_index_searchd::DiagnosticCaptureLimitsV1::default()
         .with_max_output_bytes(trace_max_output_bytes)?;
     let trace = NativeTrace::new(capture);
@@ -989,6 +1096,7 @@ pub fn measure_index_native_tier(
             workload,
             child_traces.as_mut(),
             trace_max_output_bytes,
+            quality,
         )
         .with_context(|| format!("selected native foreground funding={}", workload.metadata()))
     })();
@@ -1020,8 +1128,14 @@ fn measure_native_inner(
     workload: NativeForegroundWorkload,
     mut child_traces: Option<&mut ChildTraceArtifacts>,
     trace_max_output_bytes: u64,
+    quality: bool,
 ) -> Result<NativeIndexMeasurement> {
     let mixed_enabled = configured_mixed_load(tier, seed, workload)?;
+    let churn_cycles = configured_churn_cycles()?;
+    anyhow::ensure!(
+        !quality || (!mixed_enabled && churn_cycles == 0),
+        "native scale quality requires the standard lifecycle without churn or mixed load"
+    );
     anyhow::ensure!(
         !mixed_enabled || !trace.enabled(),
         "native mixed load uses Off mode; full Record retention has no declared bounded capture profile"
@@ -1032,7 +1146,7 @@ fn measure_native_inner(
     let overall = Instant::now();
     let observation = NativeObservation::new(ObservationMode::from_env()?);
     let mut churn = NativeChurnProgress {
-        requested: configured_churn_cycles()?,
+        requested: churn_cycles,
         ..NativeChurnProgress::default()
     };
     let mut publication = PublicationAudit::default();
@@ -1211,6 +1325,21 @@ fn measure_native_inner(
             timed("first_search", &root, &mut phases, trace, || {
                 query_exact(&client, full_view, &first_token, Some(FIRST_PATH))
             })?;
+        let warm = quality
+            .then(|| {
+                timed("warm_search", &root, &mut phases, trace, || {
+                    quality::measure_warm_queries(&client, full_view, &corpus, &refs)
+                })
+            })
+            .transpose()?;
+        let (warm_samples_ms, warm_result_count, warm_matched) = match warm {
+            Some(sample) => (
+                sample.samples_ms,
+                Some(sample.result_count),
+                Some(sample.matched),
+            ),
+            None => (Vec::new(), None, None),
+        };
         let mut held_full = if mixed_enabled {
             Some(FullViewReadGuard::open(&client, full_view)?)
         } else {
@@ -1433,6 +1562,9 @@ fn measure_native_inner(
                 phases: BTreeMap::new(),
                 first_query_ms,
                 first_query_matched,
+                warm_samples_ms,
+                warm_result_count,
+                warm_matched,
                 total_ms: 0.0,
                 resource_observation: None,
                 churn_cycles: 0,
@@ -1704,6 +1836,17 @@ fn write_index_native_artifacts_inner(
     git_head: GitHeadV1,
     host: HostV1,
 ) -> Result<()> {
+    let artifact = index_native_artifact(measurement, git_head, host)?;
+    crate::artifact::write_json_pretty(&dir.join("tier_manifest.json"), &tier_manifest_json())?;
+    artifact.write_to(&dir.join("summary.json"))?;
+    Ok(())
+}
+
+fn index_native_artifact(
+    measurement: &NativeIndexMeasurement,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> Result<BenchArtifactV1> {
     let child_trace_files = measurement
         .child_traces
         .as_ref()
@@ -1865,9 +2008,7 @@ fn write_index_native_artifacts_inner(
         }],
         detail,
     };
-    crate::artifact::write_json_pretty(&dir.join("tier_manifest.json"), &tier_manifest_json())?;
-    artifact.write_to(&dir.join("summary.json"))?;
-    Ok(())
+    Ok(artifact)
 }
 
 #[cfg(test)]
@@ -1875,24 +2016,60 @@ mod product_tests {
     use super::*;
 
     #[test]
-    fn native_dsl_roster_uses_supported_text_and_history_scenarios() {
+    fn native_dsl_roster_covers_every_registered_scenario_once() {
         let roster = native_dsl_scenario_roster();
         let text = roster["text"].as_array().expect("text scenario array");
         let history = roster["history"]
             .as_array()
             .expect("History scenario array");
-        assert_eq!(text.len(), 7);
+        let retained = roster["retained"]
+            .as_array()
+            .expect("retained scenario array");
+        assert_eq!(text.len(), 14);
         assert_eq!(history.len(), 7);
-        for id in text.iter().chain(history) {
-            let scenario = crate::scenarios::scenario_by_id(id.as_str().expect("scenario id"))
-                .expect("registered Native scenario");
-            if history.contains(id) {
-                assert_eq!(
-                    scenario.fixture,
-                    crate::scenarios::FixtureKind::HistoryLedger
-                );
-            }
-        }
+        assert_eq!(retained.len(), 12);
+        let mut actual = text
+            .iter()
+            .chain(history)
+            .chain(retained)
+            .map(|id| id.as_str().expect("scenario ID"))
+            .collect::<Vec<_>>();
+        let mut expected = crate::scenarios::SCENARIOS
+            .iter()
+            .map(|scenario| scenario.id)
+            .collect::<Vec<_>>();
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn native_dsl_roster_includes_five_canonical_parse_refusals() {
+        let roster = native_dsl_scenario_roster();
+        let text = roster["text"]
+            .as_array()
+            .expect("Native Text scenario array");
+        let errors = roster["error"]
+            .as_array()
+            .expect("Native error scenario array");
+        let canonical = crate::scenarios::SCENARIOS
+            .iter()
+            .filter(|scenario| scenario.expected_typed_error_code == Some("PARSE_FAIL"))
+            .map(|scenario| scenario.id)
+            .collect::<Vec<_>>();
+        assert_eq!(canonical.len(), 5);
+        assert_eq!(text.len(), 14);
+        assert_eq!(
+            errors
+                .iter()
+                .map(|id| id.as_str().expect("error scenario ID"))
+                .collect::<Vec<_>>(),
+            canonical,
+        );
+        assert!(
+            errors.iter().all(|id| text.contains(id)),
+            "error roster is outside Text SDK route"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -2202,6 +2379,9 @@ mod product_tests {
             phases: BTreeMap::new(),
             first_query_ms: 0.0,
             first_query_matched: 1,
+            warm_samples_ms: Vec::new(),
+            warm_result_count: None,
+            warm_matched: None,
             total_ms: 0.0,
             resource_observation: None,
             churn_cycles: 0,
@@ -2417,6 +2597,29 @@ mod product_tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly built Native daemon and quiet functional execution"]
+    fn real_daemon_small_quality_runs_32_sdk_queries_and_lifecycle() -> Result<()> {
+        let binary = std::env::var_os("QUANTA_INDEX_SEARCHD_BIN")
+            .context("explicit QUANTA_INDEX_SEARCHD_BIN is required")?;
+        let binary = std::path::PathBuf::from(binary);
+        anyhow::ensure!(
+            binary.is_absolute() && binary.is_file(),
+            "daemon must be an absolute existing binary"
+        );
+        let measured = measure_index_native_tier_quality(
+            ScaleTier::Small,
+            42,
+            &binary,
+            None,
+            None,
+            quanta_index_searchd::DiagnosticCaptureLimitsV1::default().max_output_bytes,
+        )?;
+        let summary = quality::validate_quality(&measured)?;
+        anyhow::ensure!(summary.samples == 32, "Native quality SDK samples absent");
         Ok(())
     }
 

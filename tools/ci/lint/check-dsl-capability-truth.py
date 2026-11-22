@@ -231,9 +231,12 @@ def run_json_dump(package: str, bin_name: str) -> dict:
             f"{(result.stderr or result.stdout).strip() or 'no output'}"
         )
     try:
-        return json.loads(result.stdout)
+        dump = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{package}:{bin_name} emitted invalid JSON: {exc}") from exc
+    if not isinstance(dump, dict):
+        raise RuntimeError(f"{package}:{bin_name} must emit a JSON object")
+    return dump
 
 
 def load_predicate_capabilities() -> tuple[set[str], dict[str, str]]:
@@ -339,19 +342,17 @@ def main() -> int:
     lowering_src = LOWERING_RS.read_text(encoding="utf-8")
     matrix_md = CAPABILITY_MATRIX_MD.read_text(encoding="utf-8")
 
-    code_predicates: set[str] = set()
-    aliases: dict[str, str] = {}
     try:
         code_predicates, aliases = load_predicate_capabilities()
     except RuntimeError as exc:
         violations.append(str(exc))
-    if not code_predicates:
-        violations.append(
-            "could not load any predicate from the lexical dump bin — the "
-            "checker is blind, refusing to pass (fail-closed)"
-        )
-    doc_predicates = documented_predicates(matrix_md)
-    violations += check_predicate_parity(code_predicates, doc_predicates, aliases)
+    else:
+        if code_predicates:
+            violations += check_predicate_parity(
+                code_predicates, documented_predicates(matrix_md), aliases
+            )
+        else:
+            violations.append("lexical capability dump contains no canonical predicates")
 
     # Shape FIRST: only read the verdict map if the matrix is a flat table.
     verdicts: dict = {}
@@ -362,24 +363,19 @@ def main() -> int:
             verdicts = load_structural_verdicts()
         except RuntimeError as exc:
             violations.append(str(exc))
-        if not verdicts:
-            violations.append(
-                "could not load any leaf verdict from the search-plane dump bin — "
-                "the checker is blind, refusing to pass"
-            )
-        violations += check_structural_legality(verdicts)
+        else:
+            if verdicts:
+                violations += check_structural_legality(verdicts)
+            else:
+                violations.append("search-plane capability dump contains no structural verdicts")
 
     for ticket in sorted(ADV_TICKETS_DIR.glob("ADV-*.md")):
         violations += advanced_claim_violations(ticket.name, ticket.read_text(encoding="utf-8"))
 
     if violations:
-        sys.stderr.write("\nDSL capability truth drift detected:\n")
+        sys.stderr.write("\nDSL capability validation failed:\n")
         for v in violations:
             sys.stderr.write(f"  - {v}\n")
-        sys.stderr.write(
-            "\nCode owns capability; update the docs / frozen snapshot to match "
-            "the code-owned sources (or revert the code change). See ADV-04.\n"
-        )
         return 1
 
     print(

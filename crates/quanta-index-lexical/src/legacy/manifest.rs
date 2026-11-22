@@ -82,9 +82,9 @@ pub(crate) type CommitmentRow = (String, u64, [u8; 32]);
 /// Wire shape of the manifest: a fixed-order CBOR array so the encoding is
 /// auditable without a derive. Element 0 is the format version, which is
 /// read on its own before the rest of the row is decoded.
-
-// Only the reader uses bounded collections. The writer keeps the exact
-// format-16 tuple above; both tuple layouts serialize identically.
+///
+/// Only the reader uses bounded collections. The writer keeps the exact
+/// format-16 tuple layout; both tuple layouts serialize identically.
 type DecodedSealedManifestRow = (
     u32,
     ValueCompatible<String>,
@@ -270,6 +270,16 @@ impl LexicalSealedManifest {
                     self.index_meta.name,
                     super::names::TANTIVY_INDEX_META_FILE_NAME
                 ),
+            ));
+        }
+        let max_index_control_bytes = u64::try_from(super::names::MAX_INDEX_CONTROL_BYTES)
+            .map_err(|error| {
+                manifest_corrupt(path, &format!("index control bound exceeds u64: {error}"))
+            })?;
+        if self.index_meta.bytes > max_index_control_bytes {
+            return Err(manifest_corrupt(
+                path,
+                "index commit exceeds the control-file byte limit",
             ));
         }
         let top_level = |name: &str| !name.is_empty() && !name.contains('/');

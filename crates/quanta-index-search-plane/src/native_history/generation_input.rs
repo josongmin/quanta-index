@@ -2,7 +2,7 @@
 //! History member's immutable closure. The Legacy and Native routes share the
 //! ingest DTOs and digest codec.
 
-use super::{build, history_work_error, invalid};
+use super::{SourceInputData, build::source_input, history_work_error, invalid};
 use quanta_index_contract::{
     FileContributorIngestBatch, HistoryIngestBatch, RepoCommitRecencyIngestBatch,
     index::HistoryGenerationInputV1,
@@ -31,7 +31,7 @@ pub(super) fn decode_closure(
             "History generation input exceeds its fixed metadata bound",
         ));
     }
-    let value = build::decode_history_object_allow_children::<HistoryGenerationInputV1>(
+    let value = source_input::decode_history_object_allow_children::<HistoryGenerationInputV1>(
         reference, stored, budget,
     )?
     .value;
@@ -44,17 +44,17 @@ pub(super) fn decode_closure(
 pub(super) fn load_verified(
     reference: ObjectRef,
     context: &mut AttemptContext<'_>,
-) -> Result<build::SourceInputData<HistoryIngestBatch>, CoreError> {
+) -> Result<SourceInputData<HistoryIngestBatch>, CoreError> {
     let stored = context
         .objects
         .get(reference, context.budget)
         .map_err(|error| history_work_error(context.budget, error))?;
     let closure = decode_closure(reference, &stored, context.budget)?;
     drop(stored);
-    let input = build::load_history_object::<HistoryIngestBatch>(closure.original, context)?;
+    let input = source_input::load_history_batch_object(closure.original, context)?;
     let recency = closure
         .repo_commit_recency
-        .map(|child| build::load_history_object::<RepoCommitRecencyIngestBatch>(child, context))
+        .map(|child| source_input::load_history_object::<RepoCommitRecencyIngestBatch>(child, context))
         .transpose()?;
     verify_recency(
         &input.value,
@@ -64,7 +64,7 @@ pub(super) fn load_verified(
     drop(recency);
     let contributor = closure
         .file_contributor
-        .map(|child| build::load_history_object::<FileContributorIngestBatch>(child, context))
+        .map(|child| source_input::load_history_contributor_object(child, context))
         .transpose()?;
     verify_contributors(
         &input.value,

@@ -21,6 +21,7 @@ class CustodyError(ValueError):
     pass
 
 
+# The approved scanner control applies to pre-retirement checkout sources.
 SCANNER_PATH = "crates/quanta-index-lexical/src/searcher/code_search.rs"
 CONTROL_POLICY = "code-search-typo-unicode-control-v1"
 
@@ -223,7 +224,12 @@ def prepare_control(repo: Path, base: str, patch_path: Path, overlay_path: Path)
             or repo in destination.parent.resolve().parents
         ):
             raise CustodyError("control output must be a new absolute file outside checkout")
-    source = _git(repo, "show", f"{base}:{SCANNER_PATH}")
+    try:
+        source = _git(repo, "show", f"{base}:{SCANNER_PATH}")
+    except CustodyError as error:
+        raise CustodyError(
+            "scanner control requires an archived revision containing the Legacy scanner"
+        ) from error
     control = canonical_control_bytes(source)
     try:
         before = source.decode("utf-8").splitlines(keepends=True)

@@ -354,12 +354,12 @@ fn reserve_result(
     Ok(())
 }
 
-struct PrefixRefs {
-    entries: Vec<(Vec<u8>, ObjectRef)>,
+pub(super) struct PrefixRefs {
+    pub(super) entries: Vec<(Vec<u8>, ObjectRef)>,
     _memory: Vec<MemoryLease>,
 }
 
-fn scan_prefix(
+pub(super) fn scan_prefix(
     root: quanta_index_core::index::MapRoot,
     prefix: &[u8],
     limit: u32,

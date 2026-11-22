@@ -24,7 +24,7 @@ Routine 검사는 [AGENTS.md](../../AGENTS.md)를 따른다. 정식 purpose/rele
 | 증거 | 허용 범위 |
 | --- | --- |
 | S / U | Source·등록·API shape / owner-local unit·property invariant |
-| A / D | 선택한 실제 backend(SQLite/Tantivy/LanceDB 또는 Native immutable adapter) / full runtime·SDK·UDS composition |
+| A / D | 선택한 실제 storage/backend와 Native immutable adapter / full runtime·SDK·UDS composition |
 | P / F | 별도 OS process·signal·lease / fault·crash·race·cancellation |
 | Q / X | Admitted relevance·latency·RSS·QPS / 실제 external producer·provider |
 
@@ -57,7 +57,7 @@ Production-ready는 필수 process/ops/scale/external 조건까지 통과해야 
 
 - `G1-01 P0 S` producer가 source/graph/search fact를 만들고 search plane은 이를 임의 재해석하거나 raw source를 별도 authority로 사용하지 않는다.
 - `G1-02 P0 S` semantic public ingest는 typed semantic sources를 받으며, producer-authored completed vector를 public truth로 수용하지 않는다.
-- `G1-03 P0 S` search-plane/core가 Tantivy, LanceDB, SQLite, UDS 같은 concrete dependency를 직접 소유하지 않고 port 방향을 유지한다.
+- `G1-03 P0 S` search-plane/core가 storage, provider, transport 같은 concrete dependency를 직접 소유하지 않고 port 방향을 유지한다.
 - `G1-04 P1 S` runtime composition root만 concrete adapters와 process resources를 조립한다.
 - `G1-05 P1 S` query/control/ingest plane의 opcode와 owner가 중복되지 않는다.
 - `G1-06 P1 S` history, runtime, structural, RepoMap의 readiness가 unrelated lexical/semantic readiness를 오염시키지 않는다.
@@ -170,7 +170,7 @@ Production-ready는 필수 process/ops/scale/external 조건까지 통과해야 
 - `G9-02 P1 P` SIGTERM도 동일 semantics를 가지며 default process kill을 graceful drain으로 오인하지 않는다.
 - `G9-03 P1 P/F` forced kill 뒤 restart가 lock/socket/catalog를 복구한다.
 - `G9-04 P1 F` peer disconnect와 deadline이 queue/dispatch permits를 반환한다.
-- `G9-05 P1 F` cancellation 후 Tantivy/Lance/OpenAI background work의 잔존량과 최대 생존 시간이 bounded하다.
+- `G9-05 P1 F` cancellation 후 실제 선택한 storage/provider background work의 잔존량과 최대 생존 시간이 bounded하다.
 - `G9-06 P1 F/Q` 1/8/32 client와 slow client 혼합에서 정상 client가 head-of-line blocking으로 starvation되지 않는다.
 - `G9-07 P1 F` query/control/ingest queue 포화가 명시적 overload/deadline으로 응답하고 daemon 전체 deadlock을 만들지 않는다.
 - `G9-08 P1 F` long query, activation, ingest, GC, quarantine 교차 실행이 deadlock, use-after-delete, mixed generation을 만들지 않는다.

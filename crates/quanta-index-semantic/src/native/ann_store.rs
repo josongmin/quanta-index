@@ -5,7 +5,7 @@ use std::{
     collections::BTreeSet,
     fmt,
     ops::Range,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use async_trait::async_trait;
@@ -21,6 +21,8 @@ use quanta_index_core::{
     index::{IndexError, MemoryLease, MemoryLifetime, WorkBudget, WorkUsage},
 };
 use tokio::sync::RwLock;
+
+mod selected;
 
 const MIB: u64 = 1024 * 1024;
 
@@ -106,14 +108,15 @@ struct Counters {
 #[derive(Clone, Copy)]
 enum ChargePhase {
     Complete,
-    Operation,
+    Operation(u64),
     Bytes,
 }
 
 impl ChargePhase {
     const fn ops(self) -> u64 {
         match self {
-            Self::Complete | Self::Operation => 1,
+            Self::Complete => 1,
+            Self::Operation(ops) => ops,
             Self::Bytes => 0,
         }
     }
@@ -252,7 +255,7 @@ struct Shared {
     request: RequestBudgetV1,
     limits: AnnStoreLimits,
     backing: Option<MemoryLease>,
-    first_denial: Arc<OnceLock<IndexError>>,
+    first_denial: Arc<Mutex<Option<IndexError>>>,
 }
 
 impl Shared {
@@ -273,7 +276,7 @@ impl Shared {
     }
 
     fn charge_operation(&self, path: &Path, mutation: bool) -> object_store::Result<()> {
-        self.charge_delta(Some(path), 0, 0, mutation, ChargePhase::Operation)
+        self.charge_delta(Some(path), 0, 0, mutation, ChargePhase::Operation(1))
     }
 
     /// Complete a previously admitted operation without charging another op.
@@ -295,22 +298,41 @@ impl Shared {
         mutation: bool,
         phase: ChargePhase,
     ) -> object_store::Result<()> {
-        checkpoint(&self.request)?;
-        let result = self
-            .counters
-            .lock()
-            .map_err(|_error| denied("ANN counters poisoned"))?
-            .charge_delta(self.limits, path, write_bytes, read_bytes, mutation, phase);
-        self.record_denial(&result);
-        result
+        self.checkpoint()?;
+        self.counters()?
+            .charge_delta(self.limits, path, write_bytes, read_bytes, mutation, phase)
+            .map_err(|error| self.remember(error))
     }
 
-    fn record_denial(&self, result: &object_store::Result<()>) {
-        if let Err(object_store::Error::Generic { source, .. }) = result
+    fn counters(&self) -> object_store::Result<MutexGuard<'_, Counters>> {
+        self.counters
+            .lock()
+            .map_err(|_error| self.denied("ANN counters poisoned"))
+    }
+
+    fn checkpoint(&self) -> object_store::Result<()> {
+        checkpoint(&self.request).map_err(|error| self.remember(error))
+    }
+
+    fn check_path(&self, path: &Path) -> object_store::Result<()> {
+        validate_path(path, self.limits.max_path_bytes).map_err(|error| self.remember(error))
+    }
+
+    fn denied(&self, message: &'static str) -> object_store::Error {
+        self.remember(denied(message))
+    }
+
+    fn remember(&self, error: object_store::Error) -> object_store::Error {
+        if let object_store::Error::Generic { source, .. } = &error
             && let Some(failure) = source.downcast_ref::<AnnFailure>()
         {
-            let _first = self.first_denial.set(failure.error.clone());
+            let _first = self
+                .first_denial
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_or_insert_with(|| failure.error.clone());
         }
+        error
     }
 }
 
@@ -363,16 +385,25 @@ impl AnnMemoryStore {
         limits: AnnStoreLimits,
         budget: &mut WorkBudget,
     ) -> Result<Arc<Self>, IndexError> {
+        Self::admit(limits, limits.max_ops, limits.max_ops, budget)
+    }
+
+    fn admit(
+        limits: AnnStoreLimits,
+        read_ops: u64,
+        write_ops: u64,
+        budget: &mut WorkBudget,
+    ) -> Result<Arc<Self>, IndexError> {
         limits.validate()?;
         let bytes = limits
             .max_write_bytes
             .checked_add(limits.max_read_bytes)
             .ok_or(IndexError::ResourceLimited)?;
         budget.charge(WorkUsage {
-            reads: limits.max_ops,
-            writes: limits.max_ops,
+            reads: read_ops,
+            writes: write_ops,
             bytes,
-            mutations: limits.max_ops,
+            mutations: write_ops,
         })?;
         let backing = budget.reserve_memory(limits.admitted_memory()?, MemoryLifetime::Retained)?;
         Ok(Arc::new(Self {
@@ -390,14 +421,18 @@ impl AnnMemoryStore {
                 request: budget.request().clone(),
                 limits,
                 backing,
-                first_denial: Arc::new(OnceLock::new()),
+                first_denial: Arc::new(Mutex::new(None)),
             },
         }))
     }
 
-    /// Preserve the facade's first typed refusal across vendor string errors.
-    pub(super) fn first_denial(&self) -> Option<IndexError> {
-        self.shared.first_denial.get().cloned()
+    /// Consume the first facade refusal when its serial vendor operation settles.
+    pub(super) fn take_denial(&self) -> Option<IndexError> {
+        self.shared
+            .first_denial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     /// Wait for in-flight mutations before sealing the file inventory.
@@ -483,7 +518,8 @@ impl ObjectStore for AnnMemoryStore {
         opts: PutOptions,
     ) -> object_store::Result<PutResult> {
         let _mutation = self.shared.mutation_gate.read().await;
-        let bytes = u64::try_from(payload.content_length()).map_err(|_error| denied("ANN size"))?;
+        let bytes = u64::try_from(payload.content_length())
+            .map_err(|_error| self.shared.denied("ANN size"))?;
         self.shared.charge(Some(location), bytes, 0, true)?;
         self.inner.put_opts(location, payload, opts).await
     }
@@ -496,15 +532,11 @@ impl ObjectStore for AnnMemoryStore {
         let _mutation = self.shared.mutation_gate.read().await;
         self.shared.charge(Some(location), 0, 0, true)?;
         let inner = self.inner.put_multipart_opts(location, opts).await?;
-        let mut counters = self
-            .shared
-            .counters
-            .lock()
-            .map_err(|_error| denied("ANN counters poisoned"))?;
+        let mut counters = self.shared.counters()?;
         counters.active_uploads = counters
             .active_uploads
             .checked_add(1)
-            .ok_or_else(|| denied("ANN upload count overflow"))?;
+            .ok_or_else(|| self.shared.denied("ANN upload count overflow"))?;
         drop(counters);
         Ok(Box::new(AnnUpload {
             inner,
@@ -519,8 +551,8 @@ impl ObjectStore for AnnMemoryStore {
         location: &Path,
         options: GetOptions,
     ) -> object_store::Result<GetResult> {
-        checkpoint(&self.shared.request)?;
-        validate_path(location, self.shared.limits.max_path_bytes)?;
+        self.shared.checkpoint()?;
+        self.shared.check_path(location)?;
         self.shared.charge(Some(location), 0, 0, false)?;
         let head_only = options.head;
         let mut result = self.inner.get_opts(location, options).await?;
@@ -531,7 +563,7 @@ impl ObjectStore for AnnMemoryStore {
                 .range
                 .end
                 .checked_sub(result.range.start)
-                .ok_or_else(|| denied("ANN read range invalid"))?
+                .ok_or_else(|| self.shared.denied("ANN read range invalid"))?
         };
         self.shared.charge_bytes(None, 0, read_bytes, false)?;
         if head_only {
@@ -540,10 +572,10 @@ impl ObjectStore for AnnMemoryStore {
             return Ok(result);
         }
         let GetResultPayload::Stream(stream) = result.payload else {
-            return Err(object_error(
+            return Err(self.shared.remember(object_error(
                 IndexError::BackendViolation("ANN memory backend returned a file handle".into()),
                 "ANN read",
-            ));
+            )));
         };
         let backing = self.shared.backing.clone();
         result.payload = GetResultPayload::Stream(
@@ -559,27 +591,38 @@ impl ObjectStore for AnnMemoryStore {
         location: &Path,
         ranges: &[Range<u64>],
     ) -> object_store::Result<Vec<Bytes>> {
-        if u64::try_from(ranges.len()).map_err(|_error| denied("ANN range count"))?
-            > self.shared.limits.max_ops
-        {
-            return Err(denied("ANN range count exceeded"));
+        let count =
+            u64::try_from(ranges.len()).map_err(|_error| self.shared.denied("ANN range count"))?;
+        if count > self.shared.limits.max_ops {
+            self.shared.charge_operation(location, false)?;
+            return Err(self.shared.denied("ANN range count exceeded"));
         }
-        let bytes = ranges.iter().try_fold(0u64, |total, range| {
+        // Each range can produce an independently retained Bytes. Reserve its
+        // prepaid operation metadata before InMemory allocates the result Vec.
+        // Even an empty batch performs a lookup.
+        self.shared.charge_delta(
+            Some(location),
+            0,
+            0,
+            false,
+            ChargePhase::Operation(count.max(1)),
+        )?;
+        if ranges.iter().any(|range| range.end < range.start) {
+            return Err(self.shared.denied("ANN range invalid"));
+        }
+        // InMemory returns shared slices and clips each request at EOF. Charge
+        // all delivered slices (including overlaps) before exposing any of them.
+        let slices = self.inner.get_ranges(location, ranges).await?;
+        let bytes = slices.iter().try_fold(0u64, |total, slice| {
+            let length = u64::try_from(slice.len())
+                .map_err(|_error| self.shared.denied("ANN range size"))?;
             total
-                .checked_add(
-                    range
-                        .end
-                        .checked_sub(range.start)
-                        .ok_or_else(|| denied("ANN range invalid"))?,
-                )
-                .ok_or_else(|| denied("ANN range bytes overflow"))
+                .checked_add(length)
+                .ok_or_else(|| self.shared.denied("ANN range bytes overflow"))
         })?;
-        self.shared.charge(Some(location), 0, bytes, false)?;
+        self.shared.charge_bytes(None, 0, bytes, false)?;
         let backing = self.shared.backing.clone();
-        Ok(self
-            .inner
-            .get_ranges(location, ranges)
-            .await?
+        Ok(slices
             .into_iter()
             .map(|data| owned_bytes(data, backing.clone()))
             .collect())
@@ -602,7 +645,7 @@ impl ObjectStore for AnnMemoryStore {
                     store.shared.charge(Some(&path), 0, 0, true)?;
                     let one = futures::stream::once(async move { Ok(path) }).boxed();
                     let deleted = store.inner.delete_stream(one).try_next().await?;
-                    deleted.ok_or_else(|| denied("ANN delete did not settle"))
+                    deleted.ok_or_else(|| store.shared.denied("ANN delete did not settle"))
                 }
             })
             .boxed()
@@ -626,7 +669,7 @@ impl ObjectStore for AnnMemoryStore {
         to: &Path,
         options: CopyOptions,
     ) -> object_store::Result<()> {
-        validate_path(from, self.shared.limits.max_path_bytes)?;
+        self.shared.check_path(from)?;
         let _mutation = self.shared.mutation_gate.write().await;
         self.shared.charge_operation(to, true)?;
         let source = self.inner.head(from).await?;
@@ -662,35 +705,42 @@ impl Drop for AnnUpload {
 impl MultipartUpload for AnnUpload {
     fn put_part(&mut self, data: PutPayload) -> UploadPart {
         if self.settled {
-            return Box::pin(async { Err(denied("ANN multipart upload already settled")) });
+            return Box::pin(std::future::ready(Err(self
+                .shared
+                .denied("ANN multipart upload already settled"))));
         }
         let bytes = match u64::try_from(data.content_length()) {
             Ok(bytes) if bytes <= self.shared.limits.max_part_bytes => bytes,
-            _ => return Box::pin(async { Err(denied("ANN multipart part exceeds limit")) }),
+            _ => {
+                return Box::pin(std::future::ready(Err(self
+                    .shared
+                    .denied("ANN multipart part exceeds limit"))));
+            }
         };
+        // InMemoryUpload retains the payload before returning its future.
+        // The live upload prevents freeze until complete, abort, or drop.
+        if let Err(error) = self.shared.charge(Some(&self.path), bytes, 0, true) {
+            return Box::pin(std::future::ready(Err(error)));
+        }
         let part = self.inner.put_part(data);
         let shared = self.shared.clone();
-        let path = self.path.clone();
         Box::pin(async move {
             let _mutation = shared.mutation_gate.read().await;
-            shared.charge(Some(&path), bytes, 0, true)?;
+            // A part future can be polled after its upload has been dropped.
+            shared.charge_bytes(None, 0, 0, true)?;
             part.await
         })
     }
 
     async fn complete(&mut self) -> object_store::Result<PutResult> {
         if self.settled {
-            return Err(denied("ANN multipart upload already settled"));
+            return Err(self.shared.denied("ANN multipart upload already settled"));
         }
         let _mutation = self.shared.mutation_gate.read().await;
         self.shared.charge(Some(&self.path), 0, 0, true)?;
         let result = self.inner.complete().await?;
         self.settled = true;
-        let mut counters = self
-            .shared
-            .counters
-            .lock()
-            .map_err(|_error| denied("ANN counters poisoned"))?;
+        let mut counters = self.shared.counters()?;
         counters.active_uploads = counters.active_uploads.saturating_sub(1);
         drop(counters);
         Ok(result)
@@ -698,17 +748,13 @@ impl MultipartUpload for AnnUpload {
 
     async fn abort(&mut self) -> object_store::Result<()> {
         if self.settled {
-            return Err(denied("ANN multipart upload already settled"));
+            return Err(self.shared.denied("ANN multipart upload already settled"));
         }
         let _mutation = self.shared.mutation_gate.read().await;
         self.shared.charge(Some(&self.path), 0, 0, true)?;
         self.inner.abort().await?;
         self.settled = true;
-        let mut counters = self
-            .shared
-            .counters
-            .lock()
-            .map_err(|_error| denied("ANN counters poisoned"))?;
+        let mut counters = self.shared.counters()?;
         counters.active_uploads = counters.active_uploads.saturating_sub(1);
         drop(counters);
         Ok(())
@@ -781,6 +827,104 @@ mod tests {
             .enable_all()
             .build()
             .map_err(|error| IndexError::Storage(format!("ANN test runtime: {error}")))
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the fixture asserts the frozen store's operation counts and allocation custody"
+    )]
+    fn selected_files_share_single_chunk_and_prepay_only_their_puts() -> Result<(), IndexError> {
+        use crate::native::ann_files::{LoadedAnnChunk, LoadedAnnFile};
+        use quanta_index_core::index::{Digest, ObjectRef, RegisteredObject, StoredObject};
+
+        let runtime = test_runtime()?;
+        crate::run_blocking(&runtime, async {
+            let limits = AnnStoreLimits {
+                max_files: 3,
+                ..tiny_limits()
+            };
+            let (mut budget, counter) = test_budget()?;
+            // Exactly three private PUTs fit. Prepaying max_ops mutations
+            // would reject before the first file is opened.
+            budget.charge(WorkUsage {
+                writes: 1021,
+                mutations: 1021,
+                ..WorkUsage::default()
+            })?;
+            let owned = StoredObject::new(
+                RegisteredObject::unscoped(ObjectRef(Digest([1; 32])), 2, vec![]),
+                b"ab".to_vec(),
+                budget.reserve_memory(2, MemoryLifetime::Retained)?,
+            );
+            let chunk = || LoadedAnnChunk {
+                length: 2,
+                object: owned.clone(),
+            };
+            let files = [
+                LoadedAnnFile {
+                    path: "empty".into(),
+                    length: 0,
+                    chunks: vec![],
+                },
+                LoadedAnnFile {
+                    path: "one".into(),
+                    length: 2,
+                    chunks: vec![chunk()],
+                },
+                LoadedAnnFile {
+                    path: "two".into(),
+                    length: 4,
+                    chunks: vec![
+                        chunk(),
+                        LoadedAnnChunk {
+                            length: 2,
+                            object: StoredObject::new(
+                                RegisteredObject::unscoped(ObjectRef(Digest([2; 32])), 2, vec![]),
+                                b"cd".to_vec(),
+                                budget.reserve_memory(2, MemoryLifetime::Retained)?,
+                            ),
+                        },
+                    ],
+                },
+            ];
+            let store = AnnMemoryStore::from_verified_files(&files, limits, &mut budget).await?;
+            assert_eq!(budget.usage().writes, 1024);
+            assert_eq!(budget.usage().mutations, 1024);
+            assert_eq!(budget.usage().reads, 17);
+            let single = store
+                .get_range(&Path::from("one"), 0..2)
+                .await
+                .map_err(index_error)?;
+            assert_eq!(single.as_ptr(), owned.payload.as_ptr());
+            let multi = store
+                .get_range(&Path::from("two"), 0..4)
+                .await
+                .map_err(index_error)?;
+            assert_eq!(multi.as_ref(), b"abcd");
+            assert_eq!(
+                store
+                    .head(&Path::from("empty"))
+                    .await
+                    .map_err(index_error)?
+                    .size,
+                0
+            );
+            let denied = store.put(&Path::from("one"), PutPayload::new()).await;
+            assert!(matches!(
+                denied.map_err(index_error),
+                Err(IndexError::ResourceLimited)
+            ));
+            drop(multi);
+            drop(store);
+            drop(files);
+            drop(owned);
+            assert_eq!(single.as_ref(), b"ab");
+            assert!(counter.0.load(Ordering::Acquire) >= 2);
+            drop(single);
+            assert_eq!(counter.0.load(Ordering::Acquire), 0);
+            Ok(())
+        })
     }
 
     #[test]
@@ -960,10 +1104,87 @@ mod tests {
             assert_eq!((counters.ops, counters.read_bytes), (4, 2));
             drop(counters);
             assert!(matches!(
-                store.first_denial(),
+                store.take_denial(),
                 Some(IndexError::ResourceLimited)
             ));
             drop(store);
+            assert_eq!(counter.0.load(Ordering::Acquire), 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "range results, cumulative work and retained data are the test oracle"
+    )]
+    fn multirange_charges_returned_slices_and_counts_failed_attempts() -> Result<(), IndexError> {
+        let runtime = test_runtime()?;
+        crate::run_blocking(&runtime, async {
+            let (mut budget, counter) = test_budget()?;
+            let store = AnnMemoryStore::new(
+                AnnStoreLimits {
+                    max_read_bytes: 4,
+                    ..tiny_limits()
+                },
+                &mut budget,
+            )?;
+            let path = Path::from("a");
+            let _written = store
+                .put(&path, PutPayload::from_static(b"abcd"))
+                .await
+                .map_err(index_error)?;
+            let one = 0..1;
+            assert!(matches!(
+                store
+                    .get_ranges(&Path::from("missing"), std::slice::from_ref(&one))
+                    .await,
+                Err(object_store::Error::NotFound { .. })
+            ));
+            assert!(matches!(
+                store.get_ranges(&path, &[0..1, 4..5]).await,
+                Err(object_store::Error::Generic {
+                    store: "InMemory",
+                    ..
+                })
+            ));
+            assert_eq!(
+                store.shared.counters.lock().expect("counters").read_bytes,
+                0
+            );
+            assert_eq!(store.take_denial(), None);
+            assert!(
+                store
+                    .get_ranges(&path, &[])
+                    .await
+                    .map_err(index_error)?
+                    .is_empty()
+            );
+            let slices = store
+                .get_ranges(&path, &[2..100, 1..3])
+                .await
+                .map_err(index_error)?;
+            assert_eq!(
+                slices,
+                [Bytes::from_static(b"cd"), Bytes::from_static(b"bc")]
+            );
+            assert!(matches!(
+                store
+                    .get_ranges(&path, std::slice::from_ref(&one))
+                    .await
+                    .map_err(index_error),
+                Err(IndexError::ResourceLimited)
+            ));
+            let counters = store.shared.counters.lock().expect("counters");
+            assert_eq!((counters.ops, counters.read_bytes), (8, 4));
+            drop(counters);
+            assert!(matches!(
+                store.take_denial(),
+                Some(IndexError::ResourceLimited)
+            ));
+            drop(store);
+            assert!(counter.0.load(Ordering::Acquire) > 0);
+            drop(slices);
             assert_eq!(counter.0.load(Ordering::Acquire), 0);
             Ok(())
         })
@@ -1098,7 +1319,7 @@ mod tests {
                 Err(IndexError::InvalidInput(_))
             ));
             assert!(matches!(
-                store.first_denial(),
+                store.take_denial(),
                 Some(IndexError::InvalidInput(_))
             ));
             let counters = store.shared.counters.lock().expect("counters");
@@ -1135,6 +1356,92 @@ mod tests {
                 Err(IndexError::ResourceLimited)
             ));
             assert_eq!(store.shared.counters.lock().expect("counters").ops, 1);
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "retained range views must spend the same prepaid slots across batches"
+    )]
+    fn multirange_bounds_retained_views_across_batches() -> Result<(), IndexError> {
+        let runtime = test_runtime()?;
+        crate::run_blocking(&runtime, async {
+            let (mut budget, counter) = test_budget()?;
+            let store = AnnMemoryStore::new(
+                AnnStoreLimits {
+                    max_ops: 5,
+                    ..tiny_limits()
+                },
+                &mut budget,
+            )?;
+            let path = Path::from("a");
+            let _written = store
+                .put(&path, PutPayload::from_static(b"x"))
+                .await
+                .map_err(index_error)?;
+            let ranges = [0..1, 0..1];
+            let first = store
+                .get_ranges(&path, &ranges)
+                .await
+                .map_err(index_error)?;
+            let second = store
+                .get_ranges(&path, &ranges)
+                .await
+                .map_err(index_error)?;
+            assert!(matches!(
+                store.get_ranges(&path, &ranges).await.map_err(index_error),
+                Err(IndexError::ResourceLimited)
+            ));
+            let counters = store.shared.counters.lock().expect("counters");
+            assert_eq!((counters.ops, counters.read_bytes), (5, 4));
+            drop(counters);
+            drop(store);
+            drop(first);
+            assert!(counter.0.load(Ordering::Acquire) > 0);
+            assert_eq!(second, [Bytes::from_static(b"x"), Bytes::from_static(b"x")]);
+            drop(second);
+            assert_eq!(counter.0.load(Ordering::Acquire), 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "multipart admission and completed contents are observable store contracts"
+    )]
+    fn multipart_charges_on_submission_before_retaining_parts() -> Result<(), IndexError> {
+        let runtime = test_runtime()?;
+        crate::run_blocking(&runtime, async {
+            let (mut budget, _counter) = test_budget()?;
+            let store = AnnMemoryStore::new(tiny_limits(), &mut budget)?;
+            let path = Path::from("parts");
+            let mut upload = store.put_multipart(&path).await.map_err(index_error)?;
+
+            // Submit seven bytes without polling. The eighth byte must never
+            // reach the backend, even if its future is polled first.
+            let first = upload.put_part(PutPayload::from_static(b"abc"));
+            let second = upload.put_part(PutPayload::from_static(b"defg"));
+            let overflow = upload.put_part(PutPayload::from_static(b"h"));
+            assert_eq!(
+                overflow.await.map_err(index_error),
+                Err(IndexError::ResourceLimited)
+            );
+            assert_eq!(store.take_denial(), Some(IndexError::ResourceLimited));
+            drop(upload.put_part(PutPayload::from_static(b"i")));
+            second.await.map_err(index_error)?;
+            first.await.map_err(index_error)?;
+            let _completed = upload.complete().await.map_err(index_error)?;
+            let contents = store
+                .get(&path)
+                .await
+                .map_err(index_error)?
+                .bytes()
+                .await
+                .map_err(index_error)?;
+            assert_eq!(contents.as_ref(), b"abcdefg");
             Ok(())
         })
     }

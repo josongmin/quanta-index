@@ -93,6 +93,6 @@ pub use case::{
 };
 pub use tokens::{
     MAX_TOKEN_BYTES, TextQueryError, Token, TokenCursor, TokenRun, Tokenized, contains_phrase,
-    contains_substring, is_token_char, phrase_ranges, query_tokens, tokenize,
+    contains_substring, is_token_char, phrase_ranges, phrase_ranges_by, query_tokens, tokenize,
 };
 pub use version::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};

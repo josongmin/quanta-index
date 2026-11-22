@@ -13,8 +13,9 @@ stopped. Native SDK inventory recovery uses the running Native service.
 
 ## Current command and format authority
 
-The deployment launcher selects `serve-native` only with an admitted Native
-configuration; the legacy selection uses `serve`. The Native marker and
+The current release executable serves only an admitted Native configuration
+with `serve-native`; `serve` and the old offline state commands return exit 70.
+The Native marker and
 layout refusal are defined by the [runtime](../../crates/quanta-index-searchd-runtime/src/native.rs),
 and the catalog stamp is defined independently by the
 [Catalog](../../crates/quanta-index-catalog/src/native/authority/capture_format.rs).
@@ -66,8 +67,11 @@ acceptance remain in E06/E08 and the Native transition contract below.
 
 ## Offline state workflow (S21-11)
 
-This section covers the Legacy generation workflow. Native backup/restore and
-cross-root acceptance follow the explicit Native boundary below.
+This section records the retired Legacy generation workflow for interpreting
+old roots and receipts. Its `backup-state`, `restore-state`, and `verify-state`
+commands require the matching archived old-Q executable; the current release
+binary refuses them. Native rebuild/recovery and cross-root acceptance follow
+the explicit Native boundary below.
 
 CLI owner: `crates/quanta-index-searchd/src/cli/command.rs`.
 Execution owner: `crates/quanta-index-searchd-runtime/src/state_migration.rs`
@@ -354,8 +358,8 @@ No percentage tally or local pass authorizes default rollout.
 The Rust binary and deployment launcher now share the same selected Native
 command contract. Qualification results are recorded in
 [VALIDATION](../plans/oct-22-finalizing/VALIDATION.md), separately from source
-implementation. Native remains opt-in; the legacy `backup-state` and
-`restore-state` commands do not support the Native root.
+implementation. The historical Legacy `backup-state` and `restore-state`
+commands do not support the Native root. Current release serving uses Native only.
 
 Use a fresh root rebuilt from the authoritative producer for format changes.
 Do not migrate an unsupported root in place. After the intended operation is

@@ -1534,10 +1534,17 @@ pub fn inventory_persisted_generations_with_admission(
     admission: Option<&dyn FileAdmission>,
 ) -> Result<SemanticGenerationInventoryV1, CoreError> {
     let mut inventory = SemanticGenerationInventoryV1::default();
-    if !semantic_root.exists() {
-        return Ok(inventory);
-    }
-    for family_entry in read_dir(semantic_root)? {
+    let family_entries = match std::fs::read_dir(semantic_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(inventory),
+        Err(error) => {
+            return Err(CoreError::Storage(format!(
+                "semantic: list {}: {error}",
+                semantic_root.display()
+            )));
+        }
+    };
+    for family_entry in family_entries {
         let family_entry = dir_entry(family_entry)?;
         if !is_dir(&family_entry)? {
             continue;

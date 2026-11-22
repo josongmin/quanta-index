@@ -55,6 +55,7 @@ def default_cache_root() -> Path:
 
 def cargo_env(default_lane: str) -> dict[str, str]:
     env = os.environ.copy()
+    env.pop("CARGO_BUILD_BUILD_DIR", None)
     # Rustdoc JSON rendering changes across nightlies even when the Rust API
     # does not. Keep the baseline tied to the toolchain that produced it.
     env["RUSTUP_TOOLCHAIN"] = PUBLIC_API_TOOLCHAIN

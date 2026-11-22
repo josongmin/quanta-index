@@ -1,8 +1,7 @@
 //! `scale_matrix` — scale-tier rail artifact producer + gate (J7Q-03).
 //!
-//! Emits the checked-in tier manifest and measures the selected tier end-to-end
-//! (build -> activate -> cold and warm queries -> adapter-only open / plan /
-//! execute -> one-file delta -> reclaim) via the real `E2eRuntime`, and writes
+//! Emits the checked-in tier manifest and measures the selected tier's Source
+//! lifecycle through the Native SDK. The command writes
 //! the canonical artifacts under `artifacts/search-quality/scale/latest/`:
 //! `tier_manifest.json` and `summary.json`, the `BenchArtifactV1` (QI-BB-010)
 //! naming the exact head of a clean worktree, the generated corpus digest, the
@@ -29,13 +28,9 @@ use quanta_index_core::{
 use quanta_index_searchd::{DiagnosticCaptureLimitsV1, DiagnosticCaptureV1};
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::native_index::{
-    NativeIndexMeasurement, measure_index_native_tier, native_source_binding_for_failure,
-    write_index_native_artifacts,
-};
-#[cfg(feature = "legacy-bench")]
-use quanta_index_searchd_harness::scale::{
-    ScaleRuntimeConfig, TierMeasurement, measure_tier_with_runtime_config_and_capture,
-    source_binding_for_failure, write_artifacts,
+    NativeIndexMeasurement, measure_index_native_tier, measure_index_native_tier_quality,
+    native_source_binding_for_failure, write_index_native_artifacts,
+    write_index_native_quality_artifacts,
 };
 use quanta_index_searchd_harness::scale_disk_census::DiskObservationMode;
 use quanta_index_searchd_harness::scale_refusal::write_refusal_artifact_with_context;
@@ -46,21 +41,12 @@ use quanta_index_searchd_harness::source_fixture::ScaleTier;
 const DEFAULT_SEED: u64 = 0x5161_5343_414c_4531;
 
 const USAGE: &str = "Usage: scale_matrix [--tier small|medium|large|xlarge | --all-tiers]
-    [--backend legacy|index-native] [--native-daemon-bin ABSOLUTE_EXECUTABLE]
-    Legacy backend requires --features legacy-bench. Native default requires --native-daemon-bin.
-    [--seed U64] [--client-timeout-ms 1..=600000]
-    [--disk-observation boundary-only|periodic]
-    [--history-max-bytes POSITIVE_U64] [--history-max-total-bytes POSITIVE_U64]
+    [--backend index-native] --native-daemon-bin ABSOLUTE_EXECUTABLE [--native-quality]
+    [--seed U64] [--disk-observation boundary-only]
     [--out-dir ABSOLUTE_EXTERNAL_NEW_PATH]
     [--trace-mode off|record] [--trace-out ABSOLUTE_EXTERNAL_NEW_PATH]
     [--trace-max-output-bytes 6144..=1073741824]
-    Default tier: small (16 files). Native is the default backend without legacy-bench. medium=256, large=4096, xlarge=32768.
-    scale-supported-v1: timeout=600s, history pair=1GiB/total=2GiB, ingest text=128MiB.
-    Publications above 64MiB use 1MiB staged parts; sealed body cap=512MiB, process memory ceiling=4GiB.
-    Explicit timeout/history overrides remain diagnostic inputs.
-    A total-history override requires an explicit pair-history override.
-    Disk observation defaults to boundary-only: start/end disk census outside timed work.
-    periodic adds background disk resource sampling during timed work and may affect latency.
+    Default tier: small (16 files). medium=256, large=4096, xlarge=32768.
     Index-native: QUANTA_INDEX_NATIVE_WORK_LIMITS_JSON='{\"reads\":U64,\"writes\":U64,\"bytes\":U64,\"mutations\":U64}'
     is optional and requires exactly four positive unsigned integer fields. These fund cumulative
     logical work, not process RSS, allocated disk, free space, or physical resource reserves.
@@ -68,36 +54,15 @@ const USAGE: &str = "Usage: scale_matrix [--tier small|medium|large|xlarge | --a
     QUANTA_INDEX_CAUSAL_PROFILE_V1=1 is forbidden: legacy stderr profiling would contaminate Off/Record comparisons.
     --help, -h  Print this usage without running the rail.";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ScaleBackend {
-    #[cfg(feature = "legacy-bench")]
-    Legacy,
-    IndexNative,
-}
-
-enum ScaleResult {
-    #[cfg(feature = "legacy-bench")]
-    Legacy(Box<TierMeasurement>),
-    IndexNative(Box<NativeIndexMeasurement>),
-}
-
 struct CliArgs {
     out_dir: PathBuf,
     seed: u64,
     tiers: Vec<ScaleTier>,
     fresh_output: bool,
-    #[cfg(feature = "legacy-bench")]
-    client_timeout_ms: Option<u64>,
-    #[cfg(feature = "legacy-bench")]
-    disk_observation: DiskObservationMode,
-    #[cfg(feature = "legacy-bench")]
-    history_max_bytes: Option<u64>,
-    #[cfg(feature = "legacy-bench")]
-    history_max_total_bytes: Option<u64>,
     trace_out: Option<PathBuf>,
     trace_max_output_bytes: u64,
-    backend: ScaleBackend,
-    native_daemon_bin: Option<PathBuf>,
+    native_daemon_bin: PathBuf,
+    native_quality: bool,
 }
 
 struct RunOutcome<T> {
@@ -155,27 +120,29 @@ fn parse_args_from(
     let mut trace_mode = "off";
     let mut trace_out = None;
     let mut trace_max_output_bytes = None;
-    #[cfg(not(feature = "legacy-bench"))]
-    let mut backend = ScaleBackend::IndexNative;
-    #[cfg(feature = "legacy-bench")]
-    let mut backend = ScaleBackend::Legacy;
     let mut native_daemon_bin = None;
+    let mut native_quality = false;
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "--backend" => {
-                backend = match args.next().as_deref() {
-                    #[cfg(feature = "legacy-bench")]
-                    Some("legacy") => ScaleBackend::Legacy,
-                    Some("index-native") => ScaleBackend::IndexNative,
-                    _ => anyhow::bail!("--backend must be legacy or index-native"),
-                };
-            }
+            "--backend" => match args.next().as_deref() {
+                Some("index-native") => {}
+                Some("legacy") => anyhow::bail!(
+                    "Legacy scale requires the archived producer and its source checkout"
+                ),
+                _ => anyhow::bail!("--backend must be index-native"),
+            },
             "--native-daemon-bin" => {
                 native_daemon_bin =
                     Some(PathBuf::from(args.next().ok_or_else(|| {
                         anyhow::anyhow!("--native-daemon-bin requires a path")
                     })?));
+            }
+            "--native-quality" => {
+                if native_quality {
+                    anyhow::bail!("--native-quality may be specified only once");
+                }
+                native_quality = true;
             }
             "--out-dir" => {
                 out_dir_explicit = true;
@@ -294,33 +261,20 @@ fn parse_args_from(
     if trace_max_output_bytes.is_some() && trace_out.is_none() {
         anyhow::bail!("--trace-max-output-bytes requires --trace-out and Record mode");
     }
-    match backend {
-        #[cfg(feature = "legacy-bench")]
-        ScaleBackend::Legacy if native_daemon_bin.is_some() => {
-            anyhow::bail!("--native-daemon-bin requires --backend index-native")
-        }
-        ScaleBackend::IndexNative => {
-            let binary = native_daemon_bin.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("--backend index-native requires --native-daemon-bin")
-            })?;
-            if !binary.is_absolute()
-                || !binary.is_file()
-                || std::fs::metadata(binary)?.permissions().mode() & 0o111 == 0
-            {
-                anyhow::bail!("--native-daemon-bin must be an absolute existing executable");
-            }
-            if disk_observation != DiskObservationMode::BoundaryOnly
-                || history_max_bytes.is_some()
-                || history_max_total_bytes.is_some()
-                || client_timeout_ms.is_some()
-            {
-                anyhow::bail!(
-                    "index-native backend does not accept legacy runtime policy overrides"
-                );
-            }
-        }
-        #[cfg(feature = "legacy-bench")]
-        ScaleBackend::Legacy => {}
+    let native_daemon_bin = native_daemon_bin
+        .ok_or_else(|| anyhow::anyhow!("--backend index-native requires --native-daemon-bin"))?;
+    if !native_daemon_bin.is_absolute()
+        || !native_daemon_bin.is_file()
+        || std::fs::metadata(&native_daemon_bin)?.permissions().mode() & 0o111 == 0
+    {
+        anyhow::bail!("--native-daemon-bin must be an absolute existing executable");
+    }
+    if disk_observation != DiskObservationMode::BoundaryOnly
+        || history_max_bytes.is_some()
+        || history_max_total_bytes.is_some()
+        || client_timeout_ms.is_some()
+    {
+        anyhow::bail!("index-native backend does not accept legacy runtime policy overrides");
     }
     if let Some(path) = &trace_out {
         if !path.is_absolute() || path.exists() {
@@ -342,37 +296,21 @@ fn parse_args_from(
             anyhow::bail!("--trace-out must be outside the checkout");
         }
     }
-    #[cfg(feature = "legacy-bench")]
-    let _history = ScaleRuntimeConfig {
-        client_timeout: client_timeout_ms.map(Duration::from_millis),
-        disk_observation,
-        history_max_bytes,
-        history_max_total_bytes,
-    }
-    .execution_json()?;
     Ok(CliArgs {
         out_dir,
         seed,
         tiers,
         fresh_output: out_dir_explicit,
-        #[cfg(feature = "legacy-bench")]
-        client_timeout_ms,
-        #[cfg(feature = "legacy-bench")]
-        disk_observation,
-        #[cfg(feature = "legacy-bench")]
-        history_max_bytes,
-        #[cfg(feature = "legacy-bench")]
-        history_max_total_bytes,
         trace_out,
         trace_max_output_bytes: trace_max_output_bytes
             .unwrap_or_else(|| DiagnosticCaptureLimitsV1::default().max_output_bytes),
-        backend,
         native_daemon_bin,
+        native_quality,
     })
 }
 
-fn run(cli: &CliArgs) -> RunOutcome<Vec<ScaleResult>> {
-    let outcome = (|| -> AnyResult<RunOutcome<Vec<ScaleResult>>> {
+fn run(cli: &CliArgs) -> RunOutcome<Vec<NativeIndexMeasurement>> {
+    let outcome = (|| -> AnyResult<RunOutcome<Vec<NativeIndexMeasurement>>> {
         // Establish provenance and the output root before creating the recorder.
         let git_head = GitHeadV1::resolve(Path::new("."))?;
         let host = HostV1::observe()?;
@@ -440,7 +378,7 @@ fn run_with_capture(
     capture: Option<&DiagnosticCaptureV1>,
     git_head: &GitHeadV1,
     host: &HostV1,
-) -> AnyResult<Vec<ScaleResult>> {
+) -> AnyResult<Vec<NativeIndexMeasurement>> {
     // This lease remains live through the measurement and either artifact
     // path. Each runtime gets a separate child lease under one invocation root.
     let invocation_lease = capture.and_then(DiagnosticCaptureV1::lease);
@@ -456,32 +394,23 @@ fn run_with_capture(
         .as_ref()
         .zip(invocation.as_ref())
         .map(|(lease, root)| lease.context().child_context(root));
-    let result = (|| -> AnyResult<Vec<ScaleResult>> {
+    let result = (|| -> AnyResult<Vec<NativeIndexMeasurement>> {
         let mut measurements = Vec::with_capacity(cli.tiers.len());
-        #[cfg(feature = "legacy-bench")]
-        let runtime_config = ScaleRuntimeConfig {
-            client_timeout: cli.client_timeout_ms.map(Duration::from_millis),
-            disk_observation: cli.disk_observation,
-            history_max_bytes: cli.history_max_bytes,
-            history_max_total_bytes: cli.history_max_total_bytes,
-        };
-        let execution = match cli.backend {
-            #[cfg(feature = "legacy-bench")]
-            ScaleBackend::Legacy => runtime_config.execution_json()?,
-            ScaleBackend::IndexNative => serde_json::json!({
-                "backend":"index-native-configured-daemon-uds",
-                "scope":"index-only-source-event-to-ACK-to-searchability",
-                "trace_scope":"harness phase spans plus independent child daemon captures; clocks are not aligned",
-                "daemon_bin":cli.native_daemon_bin,
-                "mixed_load_requested":std::env::var_os("QUANTA_INDEX_NATIVE_MIXED_LOAD_V1").is_some(),
-            }),
-        };
+        let mut execution = serde_json::json!({
+            "backend":"index-native-configured-daemon-uds",
+            "scope":"index-only-source-event-to-ACK-to-searchability",
+            "trace_scope":"harness phase spans plus independent child daemon captures; clocks are not aligned",
+            "daemon_bin":cli.native_daemon_bin,
+            "mixed_load_requested":std::env::var_os("QUANTA_INDEX_NATIVE_MIXED_LOAD_V1").is_some(),
+        });
+        if cli.native_quality {
+            let object = execution
+                .as_object_mut()
+                .context("Native quality execution binding must be an object")?;
+            let _previous = object.insert("quality".into(), serde_json::json!("warm32-v1"));
+        }
         let refuse = |tier: ScaleTier, error: anyhow::Error| -> anyhow::Error {
-            let binding = match match cli.backend {
-                #[cfg(feature = "legacy-bench")]
-                ScaleBackend::Legacy => source_binding_for_failure(tier, cli.seed),
-                ScaleBackend::IndexNative => native_source_binding_for_failure(tier, cli.seed),
-            } {
+            let binding = match native_source_binding_for_failure(tier, cli.seed) {
                 Ok(binding) => binding,
                 Err(failure) => {
                     return error
@@ -495,17 +424,23 @@ fn run_with_capture(
                     git_head,
                     host,
                     &error,
-                    match cli.backend {
-                        #[cfg(feature = "legacy-bench")]
-                        ScaleBackend::Legacy => "scale",
-                        ScaleBackend::IndexNative => "scale-index-native",
-                    },
+                    "scale-index-native",
                     Some(&execution),
                 )
             }) {
                 return error.context(format!("refusal artifact write also failed: {failure:#}"));
             }
             error
+        };
+        let measure = if cli.native_quality {
+            measure_index_native_tier_quality
+        } else {
+            measure_index_native_tier
+        };
+        let write = if cli.native_quality {
+            write_index_native_quality_artifacts
+        } else {
+            write_index_native_artifacts
         };
         for tier in &cli.tiers {
             let child_capture_directory = cli
@@ -515,27 +450,14 @@ fn run_with_capture(
             let runtime_lease = invocation
                 .as_ref()
                 .and_then(|root| invocation_lease.as_ref()?.child_of(root));
-            let measured = match cli.backend {
-                #[cfg(feature = "legacy-bench")]
-                ScaleBackend::Legacy => measure_tier_with_runtime_config_and_capture(
-                    *tier,
-                    cli.seed,
-                    runtime_config,
-                    runtime_lease,
-                )
-                .map(|measurement| ScaleResult::Legacy(Box::new(measurement))),
-                ScaleBackend::IndexNative => measure_index_native_tier(
-                    *tier,
-                    cli.seed,
-                    cli.native_daemon_bin
-                        .as_deref()
-                        .ok_or_else(|| anyhow::anyhow!("native daemon binary missing"))?,
-                    runtime_lease,
-                    child_capture_directory.as_deref(),
-                    cli.trace_max_output_bytes,
-                )
-                .map(|measurement| ScaleResult::IndexNative(Box::new(measurement))),
-            };
+            let measured = measure(
+                *tier,
+                cli.seed,
+                &cli.native_daemon_bin,
+                runtime_lease,
+                child_capture_directory.as_deref(),
+                cli.trace_max_output_bytes,
+            );
             match measured {
                 Ok(measurement) => measurements.push(measurement),
                 Err(error) => return Err(refuse(*tier, error)),
@@ -544,36 +466,16 @@ fn run_with_capture(
         // An all-tier run does not write earlier tier artifacts if a later tier
         // refuses source or wire admission.
         for measurement in &measurements {
-            let tier = match measurement {
-                #[cfg(feature = "legacy-bench")]
-                ScaleResult::Legacy(measurement) => measurement.tier,
-                ScaleResult::IndexNative(measurement) => measurement.tier,
-            };
+            let tier = measurement.tier;
             let out_dir = if cli.tiers.len() == 1 {
                 cli.out_dir.clone()
             } else {
                 cli.out_dir.join(tier.as_str())
             };
-            let written = trace_artifact_write(artifact_context.as_ref(), || match measurement {
-                #[cfg(feature = "legacy-bench")]
-                ScaleResult::Legacy(measurement) => {
-                    write_artifacts(measurement, &out_dir, (*git_head).clone(), (*host).clone())
-                }
-                ScaleResult::IndexNative(measurement) => write_index_native_artifacts(
-                    measurement,
-                    &out_dir,
-                    (*git_head).clone(),
-                    (*host).clone(),
-                ),
+            let written = trace_artifact_write(artifact_context.as_ref(), || {
+                write(measurement, &out_dir, (*git_head).clone(), (*host).clone())
             });
             if let Err(error) = written {
-                let error = match measurement {
-                    #[cfg(feature = "legacy-bench")]
-                    ScaleResult::Legacy(_) => error,
-                    ScaleResult::IndexNative(measurement) => {
-                        measurement.with_failure_capture_paths(error)
-                    }
-                };
                 return Err(refuse(tier, error));
             }
         }
@@ -601,11 +503,6 @@ fn trace_artifact_write<T>(
     let artifact = result?;
     let _span_finished = finished?;
     Ok(artifact)
-}
-
-#[cfg(feature = "legacy-bench")]
-fn format_cold_open_ms(value: Option<f64>) -> String {
-    value.map_or_else(|| "unavailable".to_string(), |ms| format!("{ms:.0}"))
 }
 
 #[expect(
@@ -642,64 +539,32 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    for measurement in &measurements {
-        match measurement {
-            ScaleResult::IndexNative(native) => {
-                println!(
-                    "scale-index-native[{}]: seed={} files={} source_bytes={} full_event_ack_ms={:.3} first_search_ms={:.3} total_ms={:.3} scope=index-only",
-                    native.tier.as_str(),
-                    native.seed,
-                    native.file_count,
-                    native.source_bytes,
-                    native
-                        .phases
-                        .get("full_event_ack")
-                        .map_or(0.0, |phase| phase.wall_ms),
-                    native.first_query_ms,
-                    native.total_ms,
-                );
-            }
-            #[cfg(feature = "legacy-bench")]
-            ScaleResult::Legacy(measurement) => {
-                println!(
-                    "scale[{}]: seed={} serving_owners=1 source_repos={} files={} build_ms={:.3} activation_ms={:.3} first_query_ms={:.3} warm_p50_ms={:.3} daemon_cold_open_ms={} adapter_open_ms={:.3} plan_ms={:.3} execute_ms={:.3} update_ms={:.3} noop_seal_ms={:.3} noop_activation_ms={:.3} reclaimed_bytes={} results={}",
-                    measurement.tier.as_str(),
-                    measurement.seed,
-                    measurement.source_repo_count,
-                    measurement.file_count,
-                    measurement.build_ms,
-                    measurement.activation_ms,
-                    measurement.first_query_ms,
-                    measurement.warm_query.p50_ms,
-                    format_cold_open_ms(measurement.daemon.cold_open_ms),
-                    measurement.adapter.open_ms,
-                    measurement.adapter.plan_ms,
-                    measurement.adapter.execute_ms,
-                    measurement.delta.update_ms,
-                    measurement.noop.seal_ms,
-                    measurement.noop.activation_ms,
-                    measurement.delta.reclaimed_bytes,
-                    measurement.result_count,
-                );
-                if let Some(cpu) = measurement.cpu {
-                    println!(
-                        "scale[{}] process_cpu: user_ms={:.3} system_ms={:.3} scope=harness+daemon-thread",
-                        measurement.tier.as_str(),
-                        cpu.user_ms,
-                        cpu.system_ms,
-                    );
-                }
-                if let Some(delete) = measurement.delete_reopen {
-                    println!(
-                        "scale[{}] delete_reopen: delete_seal_ms={:.3} activation_ms={:.3} same_process_reopen_ms={:.3} reopened_first_query_ms={:.3}",
-                        measurement.tier.as_str(),
-                        delete.delete_seal,
-                        delete.delete_activation,
-                        delete.same_process_reopen,
-                        delete.reopened_first_query,
-                    );
-                }
-            }
+    for native in &measurements {
+        if cli.native_quality {
+            println!(
+                "scale[{}]: backend=index-native seed={} files={} warm_samples={} warm_results={} matched={} total_ms={:.3}",
+                native.tier.as_str(),
+                native.seed,
+                native.file_count,
+                native.warm_samples_ms.len(),
+                native.warm_result_count.unwrap_or(0),
+                native.warm_matched.unwrap_or(0),
+                native.total_ms,
+            );
+        } else {
+            println!(
+                "scale-index-native[{}]: seed={} files={} source_bytes={} full_event_ack_ms={:.3} first_search_ms={:.3} total_ms={:.3} scope=index-only",
+                native.tier.as_str(),
+                native.seed,
+                native.file_count,
+                native.source_bytes,
+                native
+                    .phases
+                    .get("full_event_ack")
+                    .map_or(0.0, |phase| phase.wall_ms),
+                native.first_query_ms,
+                native.total_ms,
+            );
         }
     }
     println!(
@@ -711,17 +576,22 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt as _;
+    use std::path::{Path, PathBuf};
 
-    #[cfg(feature = "legacy-bench")]
-    use super::DiskObservationMode;
     use super::{
-        DiagnosticCaptureLimitsV1, DiagnosticCaptureV1, ScaleBackend, parse_args_from,
-        parse_client_timeout_ms, parse_history_max_bytes,
+        DiagnosticCaptureLimitsV1, DiagnosticCaptureV1, parse_args_from, parse_client_timeout_ms,
+        parse_history_max_bytes,
     };
 
-    #[cfg(not(feature = "legacy-bench"))]
+    fn fixture_daemon(directory: &Path) -> anyhow::Result<PathBuf> {
+        let executable = directory.join("searchd");
+        std::fs::write(&executable, b"#!/bin/sh\nexit 0\n")?;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))?;
+        Ok(executable)
+    }
+
     #[test]
-    fn native_only_default_requires_a_daemon_and_rejects_legacy_selection() {
+    fn native_default_requires_a_daemon() {
         let missing = parse_args_from(Vec::<String>::new(), false)
             .err()
             .expect("Native default must require an explicit executable");
@@ -730,24 +600,41 @@ mod tests {
                 .to_string()
                 .contains("--backend index-native requires --native-daemon-bin")
         );
-        assert!(parse_args_from(["--backend", "legacy"].map(str::to_owned), false).is_err());
     }
 
-    #[cfg(feature = "legacy-bench")]
     #[test]
-    fn explicit_legacy_selector_keeps_the_legacy_cli() {
-        let parsed = parse_args_from(["--backend", "legacy"].map(str::to_owned), false)
-            .expect("explicit legacy feature keeps its CLI");
-        assert_eq!(parsed.backend, ScaleBackend::Legacy);
+    fn legacy_backend_requires_the_archived_producer() {
+        for flags in [
+            &["--backend", "legacy"][..],
+            &["--backend", "legacy", "--native-quality"][..],
+        ] {
+            assert!(matches!(
+                parse_args_from(flags.iter().map(|flag| (*flag).to_owned()), false),
+                Err(error) if error.to_string() == "Legacy scale requires the archived producer and its source checkout"
+            ));
+        }
+    }
+
+    fn parse_native_args(
+        daemon: &Path,
+        flags: impl IntoIterator<Item = String>,
+        legacy_profile_enabled: bool,
+    ) -> anyhow::Result<super::CliArgs> {
+        parse_args_from(
+            [
+                "--native-daemon-bin".to_owned(),
+                daemon.to_string_lossy().into_owned(),
+            ]
+            .into_iter()
+            .chain(flags),
+            legacy_profile_enabled,
+        )
     }
 
     #[test]
     fn native_backend_requires_explicit_executable_and_refuses_legacy_policy() {
         let temp = tempfile::tempdir().expect("native test root");
-        let executable = temp.path().join("searchd");
-        std::fs::write(&executable, b"#!/bin/sh\nexit 0\n").expect("write fixture executable");
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-            .expect("mark fixture executable");
+        let executable = fixture_daemon(temp.path()).expect("fixture executable");
         let args = [
             "--backend".to_owned(),
             "index-native".to_owned(),
@@ -755,7 +642,27 @@ mod tests {
             executable.to_string_lossy().into_owned(),
         ];
         let parsed = parse_args_from(args.clone(), false).expect("explicit Native backend");
-        assert_eq!(parsed.backend, ScaleBackend::IndexNative);
+        assert_eq!(parsed.native_daemon_bin, executable);
+        assert!(!parsed.native_quality);
+        let default = parse_args_from(args.iter().skip(2).cloned(), false).expect("Native default");
+        assert_eq!(default.native_daemon_bin, executable);
+        let quality = parse_args_from(
+            args.clone()
+                .into_iter()
+                .chain(["--native-quality".to_owned()]),
+            false,
+        )
+        .expect("explicit Native quality selector");
+        assert!(quality.native_quality);
+        assert!(
+            parse_args_from(
+                args.clone()
+                    .into_iter()
+                    .chain(["--native-quality".to_owned(), "--native-quality".to_owned(),]),
+                false,
+            )
+            .is_err()
+        );
         assert!(parse_args_from(["--backend", "index-native"].map(str::to_owned), false).is_err());
         assert!(
             parse_args_from(
@@ -771,9 +678,7 @@ mod tests {
     fn native_record_default_small_keeps_child_captures_external_without_output_override()
     -> anyhow::Result<()> {
         let root = tempfile::tempdir()?;
-        let binary = root.path().join("searchd");
-        std::fs::write(&binary, b"#!/bin/sh\nexit 0\n")?;
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
+        let binary = fixture_daemon(root.path())?;
         let trace = root.path().join("record.jsonl");
         let cli = parse_args_from(
             [
@@ -817,43 +722,33 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "legacy-bench")]
     #[test]
-    fn disk_observation_parser_defaults_and_refuses_invalid_inputs() {
-        let default =
-            parse_args_from(Vec::<String>::new(), false).map(|args| args.disk_observation);
-        assert!(matches!(default, Ok(DiskObservationMode::BoundaryOnly)));
-
-        let periodic =
-            parse_args_from(["--disk-observation", "periodic"].map(str::to_owned), false)
-                .map(|args| args.disk_observation);
-        assert!(matches!(periodic, Ok(DiskObservationMode::Periodic)));
-
-        let explicit_boundary = parse_args_from(
+    fn native_scale_accepts_boundary_disk_observation_only() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let daemon = fixture_daemon(root.path())?;
+        let _default = parse_native_args(&daemon, [], false)?;
+        let _explicit = parse_native_args(
+            &daemon,
             ["--disk-observation", "boundary-only"].map(str::to_owned),
             false,
-        )
-        .map(|args| args.disk_observation);
+        )?;
+        assert!(
+            parse_native_args(
+                &daemon,
+                ["--disk-observation", "periodic"].map(str::to_owned),
+                false,
+            )
+            .is_err()
+        );
         assert!(matches!(
-            explicit_boundary,
-            Ok(DiskObservationMode::BoundaryOnly)
-        ));
-
-        assert!(matches!(
-            parse_args_from(["--disk-observation"].map(str::to_owned), false),
+            parse_native_args(&daemon, ["--disk-observation"].map(str::to_owned), false),
             Err(error) if error.to_string() == "--disk-observation requires a value"
         ));
         assert!(matches!(
-            parse_args_from(["--disk-observation", "sampled"].map(str::to_owned), false),
+            parse_native_args(&daemon, ["--disk-observation", "sampled"].map(str::to_owned), false),
             Err(error) if error.to_string() == "--disk-observation must be boundary-only or periodic"
         ));
-    }
-
-    #[cfg(feature = "legacy-bench")]
-    #[test]
-    fn absent_query_cold_open_is_not_printed_as_zero() {
-        assert_eq!(super::format_cold_open_ms(None), "unavailable");
-        assert_eq!(super::format_cold_open_ms(Some(0.0)), "0");
+        Ok(())
     }
 
     #[test]
@@ -882,16 +777,17 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "legacy-bench")]
     #[test]
     fn trace_mode_requires_one_new_external_output() {
         let root = tempfile::tempdir().expect("external output parent");
+        let daemon = fixture_daemon(root.path()).expect("fixture executable");
         let output = root.path().join("new-output");
         let trace = output.join("causal-timeline.jsonl");
         let root_flag = output.to_string_lossy().into_owned();
         let trace_flag = trace.to_string_lossy().into_owned();
         assert!(
-            parse_args_from(
+            parse_native_args(
+                &daemon,
                 [
                     "--out-dir".to_owned(),
                     root_flag.clone(),
@@ -905,7 +801,8 @@ mod tests {
             .is_ok()
         );
         assert!(
-            parse_args_from(
+            parse_native_args(
+                &daemon,
                 [
                     "--out-dir".to_owned(),
                     root_flag.clone(),
@@ -917,7 +814,8 @@ mod tests {
             .is_ok()
         );
         assert!(
-            parse_args_from(
+            parse_native_args(
+                &daemon,
                 [
                     "--out-dir".to_owned(),
                     root_flag.clone(),
@@ -929,7 +827,8 @@ mod tests {
             .is_err()
         );
         assert!(
-            parse_args_from(
+            parse_native_args(
+                &daemon,
                 [
                     "--out-dir".to_owned(),
                     root_flag,
@@ -942,10 +841,10 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "legacy-bench")]
     #[test]
     fn trace_output_limit_is_explicit_and_bounded() {
         let root = tempfile::tempdir().expect("external output parent");
+        let daemon = fixture_daemon(root.path()).expect("fixture executable");
         let output = root.path().join("new-output");
         let trace = output.join("causal-timeline.jsonl");
         let base = [
@@ -956,9 +855,10 @@ mod tests {
             "--trace-out".to_owned(),
             trace.to_string_lossy().into_owned(),
         ];
-        let default = parse_args_from(base.clone(), false).expect("default Record cap");
+        let default = parse_native_args(&daemon, base.clone(), false).expect("default Record cap");
         assert_eq!(default.trace_max_output_bytes, 67_108_864);
-        let selected = parse_args_from(
+        let selected = parse_native_args(
+            &daemon,
             base.clone().into_iter().chain([
                 "--trace-max-output-bytes".to_owned(),
                 "1073741824".to_owned(),
@@ -976,7 +876,8 @@ mod tests {
             "18446744073709551616",
         ] {
             assert!(
-                parse_args_from(
+                parse_native_args(
+                    &daemon,
                     base.clone()
                         .into_iter()
                         .chain(["--trace-max-output-bytes".to_owned(), invalid.to_owned(),]),
@@ -986,14 +887,16 @@ mod tests {
             );
         }
         assert!(
-            parse_args_from(
+            parse_native_args(
+                &daemon,
                 ["--trace-max-output-bytes", "6144"].map(str::to_owned),
                 false,
             )
             .is_err()
         );
         assert!(
-            parse_args_from(
+            parse_native_args(
+                &daemon,
                 base.into_iter().chain([
                     "--trace-max-output-bytes".to_owned(),
                     "6144".to_owned(),
@@ -1006,10 +909,10 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "legacy-bench")]
     #[test]
     fn legacy_stderr_profiling_cannot_contaminate_either_trace_mode() {
         let root = tempfile::tempdir().expect("external output parent");
+        let daemon = fixture_daemon(root.path()).expect("fixture executable");
         for mode in ["off", "record"] {
             let output = root.path().join(mode);
             let trace = root.path().join(format!("{mode}.jsonl"));
@@ -1025,9 +928,9 @@ mod tests {
                     trace.to_string_lossy().into_owned(),
                 ]);
             }
-            assert!(parse_args_from(args.clone(), false).is_ok());
+            assert!(parse_native_args(&daemon, args.clone(), false).is_ok());
             assert!(matches!(
-                parse_args_from(args, true),
+                parse_native_args(&daemon, args, true),
                 Err(error) if error.to_string().contains("unset QUANTA_INDEX_CAUSAL_PROFILE_V1")
             ));
             assert!(!output.exists());

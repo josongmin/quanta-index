@@ -891,7 +891,7 @@ fn native_text_refuses_unbounded_zero_and_forbidden_regex_before_connect()
     let client = NativeUdsClient::new(directory.path().join("absent.sock"));
     let result = text_result();
     let budget = RequestBudgetV1::for_duration(Duration::from_secs(2));
-    for source in ["needle count:all", "needle count:0", r"/(?<=foo)/"] {
+    for source in ["needle count:all", "needle count:0"] {
         let mut query = text_query(2);
         query.query_text = source.into();
         if !matches!(
@@ -905,6 +905,20 @@ fn native_text_refuses_unbounded_zero_and_forbidden_regex_before_connect()
         ) {
             return Err(format!("{source} was not refused before socket connection").into());
         }
+    }
+    let mut forbidden_regex = text_query(2);
+    forbidden_regex.query_text = r"/(?<=foo)/".into();
+    if !matches!(
+        client.search_text(
+            ViewSelection::Exact(result.view),
+            result.instance,
+            forbidden_regex,
+            &budget,
+        ),
+        Err(NativeUdsError::QueryRejected { code, message })
+            if code.as_wire_str() == "PARSE_FAIL" && !message.is_empty()
+    ) {
+        return Err("forbidden regex did not typed-refuse before socket connection".into());
     }
     let mut legal_regex = text_query(2);
     legal_regex.query_text = r"/\p{L}/".into();

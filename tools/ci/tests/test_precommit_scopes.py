@@ -356,6 +356,7 @@ def test_sourcegraph_parity_generates_and_checks_in_one_pass() -> None:
     command = "python3 tools/benchmark/sourcegraph_parity.py --check --write"
     assert workflow.count("tools/benchmark/sourcegraph_parity.py") == 1
     assert command in workflow
+    assert "git diff --exit-code docs/reference/sourcegraph-filter-parity.md" in workflow
     recipe = justfile.split("rust-bench-dsl-parity:\n", 1)[1].split("\n\n", 1)[0]
     assert recipe.count("tools/benchmark/sourcegraph_parity.py") == 1
     assert command in recipe

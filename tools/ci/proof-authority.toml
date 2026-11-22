@@ -33,7 +33,7 @@ description = "Owner-local positive, negative and recovery proof."
 
 [families.A]
 name = "real-adapter"
-description = "Real SQLite, Tantivy, Lance or RepoMap adapter proof."
+description = "Real SQLite, Native index, Lance or RepoMap adapter proof."
 
 [families.D]
 name = "daemon-consumer"
@@ -173,20 +173,25 @@ required_host = "any"
 id = "p03-candidate-activation"
 authority_state = "staged"
 execution_mode = "test-authority"
-staged_reason = "P03 owner and process targets exist; Linux fresh-release activation/recovery scope and complete raw recipe results are not qualified."
+staged_reason = "The Native activation and restart case is registered; fresh Linux release-daemon and prerequisite proof are required."
 ticket = "S21-02"
 family = "F"
 checkpoint = "M1"
 owner = "crates/quanta-index-repomap/src/store.rs"
-command = "just rust-profile test-daemon"
+command = "just proof-p03-candidate-activation"
 gate = "release"
-profile = "test-daemon"
+profile = "candidate-activation-release"
 target = "candidate-activation"
 filter = "none"
 source_binding = "exact"
+execution_source_binding = true
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = ["repomap-store-durability", "searchd-runtime-generation-activation-concurrency"]
+test_authority_scopes = ["candidate-activation-release"]
+test_authority_targets = ["searchd-runtime-native-product-process"]
+daemon_observation_tests = [
+  { event = "quanta-index-searchd-runtime::native_product_process$native_release::activation_readers_see_complete_views_and_reopen_the_published_head", file = "p03-native-activation.json", launches = 2 },
+]
 dependencies = ["p03-candidate-activation-owner"]
 artifact = "artifacts/proof-authority/p03-candidate-activation.json"
 required_host = "linux-production-like"
@@ -221,20 +226,26 @@ required_host = "any"
 id = "p04-read-view-lifetime"
 authority_state = "staged"
 execution_mode = "test-authority"
-staged_reason = "P04 owner lifetime scenarios exist; release coverage must include pinned lifetime/GC scenarios, not only read-view trace identity, on a Linux fresh daemon."
+staged_reason = "The Native product fixture binds pinned lifetime, retention, GC, and reopen to the selected executable. A fresh Linux release-daemon execution is required."
 ticket = "S21-05"
 family = "F"
 checkpoint = "M2"
 owner = "crates/quanta-index-search-plane/src/query_dispatcher/read_view/view.rs"
-command = "just rust-profile test-daemon"
+command = "just proof-p04-read-view-lifetime"
 gate = "release"
-profile = "test-daemon"
+profile = "read-view-lifetime"
 target = "read-view-lifetime"
 filter = "none"
 source_binding = "exact"
+execution_source_binding = true
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = ["searchd-runtime-e2e-read-view"]
+test_authority_scopes = ["read-view-lifetime"]
+test_authority_targets = ["searchd-runtime-native-product-process"]
+daemon_observation_tests = [
+  { event = "quanta-index-searchd-runtime::native_product_process$product_daemon_serves_native_publish_query_and_reopen", file = "p04-native-read-view.json", launches = 2 },
+  { event = "quanta-index-searchd-runtime::native_product_process$product_daemon_applies_retention_config_preserves_current_query_and_reopens", file = "p04-native-read-view-retention.json", launches = 2 },
+]
 dependencies = ["p04-read-view-lifetime-owner", "p03-candidate-activation"]
 artifact = "artifacts/proof-authority/p04-read-view-lifetime.json"
 required_host = "linux-production-like"
@@ -265,20 +276,25 @@ required_host = "any"
 id = "p05-query-truth"
 authority_state = "staged"
 execution_mode = "test-authority"
-staged_reason = "P05 fixture-based keyset oracles exist; complete quality recipe outcomes and Linux fresh-daemon source/binary binding remain unqualified."
+staged_reason = "The Native keyset case is registered; fresh Linux release-daemon and prerequisite proof are required."
 ticket = "S21-06"
 family = "Q"
 checkpoint = "M2"
 owner = "crates/quanta-index-contract-base/src/results/query_window.rs"
-command = "just rust-verify-quality-all"
+command = "just proof-p05-query-truth"
 gate = "release"
-profile = "quality-all"
+profile = "query-truth-release"
 target = "query-truth"
 filter = "none"
 source_binding = "exact"
+execution_source_binding = true
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = ["searchd-runtime-e2e-keyset-cursors"]
+test_authority_scopes = ["query-truth-release"]
+test_authority_targets = ["searchd-runtime-native-product-process"]
+daemon_observation_tests = [
+  { event = "quanta-index-searchd-runtime::native_product_process$native_release::retained_text_keysets_preserve_order_and_refuse_a_different_view_cursor", file = "p05-native-query-keysets.json", launches = 3 },
+]
 dependencies = ["p05-query-truth-owner", "p04-read-view-lifetime"]
 artifact = "artifacts/proof-authority/p05-query-truth.json"
 required_host = "linux-production-like"
@@ -309,20 +325,25 @@ required_host = "any"
 id = "p06-sdk-binding"
 authority_state = "staged"
 execution_mode = "test-authority"
-staged_reason = "P06 scripted response-binding owners and daemon frontdoor targets exist; Linux fresh-daemon release evidence is not qualified."
+staged_reason = "The Native SDK query binding case is registered; fresh Linux release-daemon and prerequisite proof are required."
 ticket = "S21-07"
 family = "D"
 checkpoint = "M2"
 owner = "crates/quanta-index-sdk/src/client.rs"
-command = "just rust-profile test-daemon"
+command = "just proof-p06-sdk-binding"
 gate = "release"
-profile = "test-daemon"
+profile = "sdk-binding-release"
 target = "sdk-binding"
 filter = "none"
 source_binding = "exact"
+execution_source_binding = true
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = ["searchd-runtime-sdk-frontdoor"]
+test_authority_scopes = ["sdk-binding-release"]
+test_authority_targets = ["searchd-runtime-native-product-process"]
+daemon_observation_tests = [
+  { event = "quanta-index-searchd-runtime::native_product_process$native_release::sdk_query_reply_stays_bound_to_the_configured_view_and_instance", file = "p06-native-sdk-binding.json", launches = 1 },
+]
 dependencies = ["p06-sdk-binding-owner", "p05-query-truth"]
 artifact = "artifacts/proof-authority/p06-sdk-binding.json"
 required_host = "linux-production-like"
@@ -353,20 +374,25 @@ required_host = "any"
 id = "p07-provider-boundary"
 authority_state = "staged"
 execution_mode = "test-authority"
-staged_reason = "P07 owner boundaries exist; approved real-provider identity/egress/budget/cancellation inputs and a concrete release target are missing."
+staged_reason = "The exact Native provider case requires a registered approved HTTPS config digest, its credential and fresh Linux release-daemon evidence."
 ticket = "S21-08"
 family = "X"
 checkpoint = "M3"
 owner = "crates/quanta-index-search-plane/src/query_embedder.rs"
-command = "just rust-profile test-integration-semantic"
+command = "just proof-p07-provider-boundary"
 gate = "release"
-profile = "test-integration-semantic"
+profile = "provider-boundary-release"
 target = "provider-boundary"
 filter = "none"
 source_binding = "exact"
+execution_source_binding = true
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["provider-boundary-release"]
+test_authority_targets = ["searchd-runtime-native-product-process"]
+daemon_observation_tests = [
+  { event = "quanta-index-searchd-runtime::native_product_process$native_release::native_provider_enforces_approved_budget_and_cancellation", file = "p07-native-provider.json", launches = 2 },
+]
 dependencies = ["p07-provider-boundary-owner", "p06-sdk-binding"]
 artifact = "artifacts/proof-authority/p07-provider-boundary.json"
 required_host = "linux-production-like"
@@ -397,20 +423,25 @@ required_host = "any"
 id = "p08-runtime-supervisor"
 authority_state = "staged"
 execution_mode = "test-authority"
-staged_reason = "P08 supervisor owner scenarios exist; actual release-daemon signal/child-loss/FD-residue process targets and Linux evidence are missing."
+staged_reason = "The Native signal, drain and required-maintenance failure case is registered; fresh Linux release-daemon and prerequisite proof are required."
 ticket = "S21-09"
 family = "P"
 checkpoint = "M3"
 owner = "crates/quanta-index-searchd-runtime/src/lib.rs"
-command = "just rust-profile test-daemon-all"
+command = "just proof-p08-runtime-supervisor"
 gate = "release"
-profile = "test-daemon-all"
+profile = "runtime-supervisor-release"
 target = "runtime-supervisor"
 filter = "none"
 source_binding = "exact"
+execution_source_binding = true
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["runtime-supervisor-release"]
+test_authority_targets = ["searchd-runtime-native-product-process"]
+daemon_observation_tests = [
+  { event = "quanta-index-searchd-runtime::native_product_process$native_release::native_signals_drain_peer_fds_and_required_maintenance_loss_stops_serving", file = "p08-native-supervisor.json", launches = 3 },
+]
 dependencies = ["p08-runtime-supervisor-owner", "p07-provider-boundary"]
 artifact = "artifacts/proof-authority/p08-runtime-supervisor.json"
 required_host = "linux-production-like"
@@ -441,20 +472,25 @@ required_host = "any"
 id = "p09-control-readiness"
 authority_state = "staged"
 execution_mode = "test-authority"
-staged_reason = "P09 still lacks a Linux release-daemon-fresh component-loss/readiness and bounded request-diagnostics process target."
+staged_reason = "The Native installation readiness case covers state-root loss and bounded diagnostics; fresh Linux release-daemon and prerequisite proof are required."
 ticket = "S21-10"
 family = "P"
 checkpoint = "M3"
 owner = "crates/quanta-index-search-plane/src/control_dispatcher.rs"
-command = "just rust-profile test-daemon"
+command = "just proof-p09-control-readiness"
 gate = "release"
-profile = "test-daemon"
+profile = "control-readiness-release"
 target = "control-readiness"
 filter = "none"
 source_binding = "exact"
+execution_source_binding = true
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["control-readiness-release"]
+test_authority_targets = ["searchd-runtime-native-product-process"]
+daemon_observation_tests = [
+  { event = "quanta-index-searchd-runtime::native_product_process$native_release::candidate_readiness_refuses_lost_root_with_bounded_diagnostics", file = "p09-native-readiness.json", launches = 1 },
+]
 dependencies = ["p09-control-readiness-owner", "p08-runtime-supervisor"]
 artifact = "artifacts/proof-authority/p09-control-readiness.json"
 required_host = "linux-production-like"
@@ -476,29 +512,122 @@ source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_scopes = ["state-migration-owner", "state-migration-owner-lib"]
-test_authority_targets = ["state-migration-owner-v1"]
+test_authority_targets = [
+  "runtime-supervisor-owner-v1",
+  "searchd-runtime-legacy-boot-refusal",
+  "searchd-runtime-legacy-offline-refusal",
+  "searchd-runtime-offline-state-custody",
+]
 dependencies = ["p09-control-readiness-owner"]
 artifact = "artifacts/proof-authority/p10-state-migration-owner.json"
 required_host = "any"
+
+# Names are relative to the target's registered Rust module, if it has one.
+# Legacy engine fault-injection bodies remain with the historical daemon source.
+[proofs.required_nextest_cases]
+runtime-supervisor-owner-v1 = [
+  "manifest_authority::a_symlinked_destination_is_refused",
+  "manifest_authority::atomic_cutover_never_replaces_an_existing_root",
+  "manifest_authority::atomic_cutover_preserves_existing_destination_symlink_and_its_target",
+  "manifest_authority::atomic_cutover_publishes_the_original_staging_inode",
+  "manifest_authority::atomic_cutover_rejects_a_symlink_staging_without_publishing",
+  "manifest_authority::audit_inventory_and_custody_refuse_noncanonical_names",
+  "manifest_authority::audit_manifest_decode_refuses_invalid_digests_and_ambiguous_paths",
+  "manifest_authority::audit_manifest_decode_refuses_noncanonical_authority",
+  "manifest_authority::audit_manifest_write_refuses_invalid_authority_before_creation",
+  "manifest_authority::backup_carries_committed_rows_a_raw_file_copy_cannot_reproduce",
+  "manifest_authority::broad_relative_and_traversing_targets_are_refused",
+  "manifest_authority::dangling_legacy_auxiliary_snapshot_is_not_classified_as_current",
+  "manifest_authority::legacy_root_format_manifest_is_rejected",
+  "manifest_authority::legacy_root_is_detected_and_refused_typed",
+  "manifest_authority::migrate_state_cli_is_rejected_before_opening_a_root",
+  "manifest_authority::old_migration_receipts_and_dangling_journals_refuse_mixed_roots",
+  "manifest_authority::the_engine_refuses_a_self_target_before_any_lease",
+]
+searchd-runtime-legacy-boot-refusal = [
+  "production_boot_refuses_a_legacy_root_instead_of_migrating",
+  "production_boot_refuses_auxiliary_snapshot_before_creating_catalog_or_lease",
+]
+searchd-runtime-legacy-offline-refusal = [
+  "a_live_lease_owner_excludes_an_offline_operation",
+  "a_non_empty_destination_and_a_self_destination_are_refused",
+  "a_non_private_source_root_is_refused",
+  "a_restored_current_root_with_a_manifest_is_not_refused",
+  "alias_symlink_and_hardlink_sources_are_refused",
+  "ambiguous_dangling_or_directory_authority_refuses_verify_and_restore",
+  "audit_backup_custody_refuses_linked_owned_sidecars",
+  "audit_backup_preserves_non_catalog_sidecar_names_and_subtrees",
+  "audit_verify_current_does_not_reset_non_catalog_custody",
+  "audit_verify_current_refuses_catalog_changed_after_catalog_read",
+  "audit_verify_current_refuses_root_replaced_after_custody",
+  "backup_refuses_legacy_source_without_publishing",
+  "backup_then_restore_reseals_manifest_with_activation_incarnation",
+  "existing_staging_file_and_directory_are_preserved",
+  "existing_staging_symlinks_preserve_external_and_source_bytes",
+  "manifest_authority_refuses_links_and_dangling_write_target",
+  "real_search_corpus_backup_refuses_missing_or_corrupt_pooled_native_body",
+  "real_search_corpus_backup_restore_preserves_file_and_native_queries",
+  "restore_refuses_a_backup_root_without_a_backup_manifest",
+  "restore_refuses_a_tampered_backup_manifest",
+  "restore_refuses_backup_inventory_changed_before_custody",
+  "restore_refuses_self_signed_wrong_catalog_rows_before_staging",
+  "restore_rotates_existing_activation_incarnation_and_reseals_manifest",
+  "the_backup_root_carries_the_backup_manifest_name_only",
+  "verify_state_refuses_a_missing_unadvertised_and_tampered_object",
+  "verify_state_refuses_a_root_that_advertises_no_manifest",
+  "verify_state_refuses_manifest_changed_after_catalog_verification",
+  "verify_state_refuses_object_changed_after_catalog_verification",
+  "verify_state_refuses_second_manifest_added_after_catalog_verification",
+  "verify_state_runs_from_the_command_surface_without_a_destination",
+  "verify_state_with_a_live_lease_refuses_state_root_in_use",
+]
+searchd-runtime-offline-state-custody = [
+  "a_restore_interrupted_before_the_manifest_leaves_the_destination_absent",
+  "backup_failure_and_interruption_keep_the_source_identical",
+  "backup_keeps_the_source_fingerprint_bit_identical",
+  "backup_manifest_replacement_after_custody_refuses_verify_and_restore",
+  "deleting_or_corrupting_one_published_object_fails_verification",
+  "kernel_file_limit_interrupts_offline_first_copy",
+  "offline_first_copied_object_refuses_tiny_capacity_before_file_birth",
+  "offline_missing_physical_profile_refuses_before_source_or_staging_open",
+  "pre_backup_source_byte_change_refuses_before_staging_birth",
+  "restore_keeps_the_backup_source_bit_identical",
+  "verify_state_refuses_a_frozen_root_whose_catalog_was_replaced",
+]
+
+[proofs.required_nextest_lib_cases]
+quanta-index-searchd = [
+  "app::runtime::tests::potion_code_profile_uses_one_model_for_query_and_corpus",
+  "app::state_format::before_manifest_sync_observes_the_complete_written_manifest",
+  "app::state_format::cutover::tests::expired_budget_refuses_before_staging_birth",
+  "app::state_format::cutover::tests::prepared_cutover_fault_precedes_parent_sync_and_the_held_inode_can_resync",
+  "app::state_format::cutover::tests::prepared_cutover_keeps_original_inode_and_refuses_existing_or_symlink_target",
+  "app::state_format::cutover::tests::prepared_cutover_refuses_replaced_staging_and_parent",
+]
 
 [[proofs]]
 id = "p10-state-migration"
 authority_state = "staged"
 execution_mode = "test-authority"
-staged_reason = "P10 needs exact-source current-format backup/restore/verify, old-root refusal, and rollback qualification after P09; legacy migration is retired."
+staged_reason = "The exact Native rebuild, offline verification, refusal and reopen case is registered. Approved Linux release-daemon execution and the P09 prerequisite are pending."
 ticket = "S21-11"
 family = "X"
 checkpoint = "M4"
 owner = "crates/quanta-index-searchd/src/cli/command.rs"
-command = "just rust-profile test-daemon-all"
+command = "just proof-p10-state-migration"
 gate = "release"
-profile = "test-daemon-all"
+profile = "state-migration-release"
 target = "state-migration"
 filter = "none"
 source_binding = "exact"
+execution_source_binding = true
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["state-migration-release"]
+test_authority_targets = ["searchd-runtime-native-product-process"]
+daemon_observation_tests = [
+  { event = "quanta-index-searchd-runtime::native_product_process$native_boot::native_cross_root_sdk_rebuild_refuses_unverified_switch", file = "native-p10-rebuild-daemon-witness.json", launches = 4 },
+]
 dependencies = ["p10-state-migration-owner", "p09-control-readiness"]
 artifact = "artifacts/proof-authority/p10-state-migration.json"
 required_host = "linux-production-like"
@@ -523,6 +652,10 @@ paired_dependency_lock = "packages/analysis/quanta-v2/Cargo.lock"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = []
+paired_execution_cases = [
+  { role = "caller", package = "quanta-runtime", features = "index-sdk-ingress,retrieval-authority-contract-surface", binary = "index_sdk_ingress_publish_contract_test", kind = "test", test = "index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1" },
+  { role = "kernel", package = "quanta-runtime-retrieval-kernel", features = "index-sdk-ingress-surface", binary = "quanta_runtime_retrieval_kernel", kind = "lib", test = "index_sdk_ingress::native_repomap_projection_v1::tests::native_repomap_terminal_rejects_changed_request_metadata_or_owner_v1" },
+]
 dependencies = ["p10-state-migration"]
 artifact = "artifacts/proof-authority/p11-cross-repo-cutover.json"
 required_host = "linux-production-like"
@@ -613,10 +746,22 @@ profile = "p12a-proof-infrastructure"
 target = "p12a-proof-infrastructure"
 filter = "none"
 source_binding = "exact"
+execution_source_binding = true
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_scopes = ["p12a-proof-infrastructure"]
-test_authority_targets = ["proof-aggregate-python-owner", "proof-handoff-cli-python-owner", "proof-handoff-chain-python-owner", "proof-authority-python-owner", "proof-manifest-python-owner", "proof-execution-result-python-owner", "proof-operational-result-python-owner", "proof-paired-cargo-resolution-python-owner", "proof-local-scope-runner-python-owner"]
+test_authority_targets = [
+  "proof-aggregate-python-owner",
+  "proof-handoff-cli-python-owner",
+  "proof-handoff-chain-python-owner",
+  "proof-authority-python-owner",
+  "proof-manifest-python-owner",
+  "proof-execution-result-python-owner",
+  "proof-operational-result-python-owner",
+  "proof-paired-cargo-resolution-python-owner",
+  "proof-paired-r5-result-python-owner",
+  "proof-local-scope-runner-python-owner",
+]
 dependencies = []
 artifact = "artifacts/proof-authority/p12a-proof-infrastructure.json"
 required_host = "any"

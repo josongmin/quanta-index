@@ -2,28 +2,50 @@
 
 use std::{
     fs,
-    os::unix::fs::PermissionsExt as _,
     path::Path,
     thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Result, ensure};
-use quanta_index_contract::TextQueryRequest;
-use quanta_index_contract::index::{Digest, SourceTextAdmission, ViewSelection};
+use quanta_index_contract::index::{Digest, SourceInput, SourceTextAdmission, ViewSelection};
+use quanta_index_contract::native_protocol::{NativeIndexRequest, NativeIndexResponse};
+use quanta_index_contract::{RepoId, TextQueryRequest};
 use quanta_index_core::RequestBudgetV1;
-use quanta_index_sdk::native_uds::{BorrowedSourceInput, NativeUdsClient};
+use quanta_index_sdk::native_uds::{NativeUdsClient, NativeUdsError};
 use serde_json::{Value, json};
 
 use super::retained_read::{QUERY_DEADLINE, text_query};
 use super::workload::{FIXED_FOREGROUND_WORK_LIMITS, NativeForegroundWorkload, NativeWorkloadMode};
 use super::{
-    NativeDaemon, NativeExecutable, PublicationAudit, PublicationLabel, advance_staged, budget,
+    NativeExecutable, NativeSession, PublicationAudit, PublicationLabel, advance_staged, budget,
     cold_source_mutations, configure_text_index, create_workspace, hex_sha256, native_config,
     operation, text_spec,
 };
 use crate::artifact::{LatencySummary, corpus_digest_refs};
-use crate::scenarios::{LEXICAL_CORPUS, NATIVE_TEXT_FILE_SCENARIOS, TOP_K, scenario_by_id};
+use crate::scenarios::{
+    FixtureKind, LEXICAL_CORPUS, NATIVE_TEXT_FILE_SCENARIOS, TOP_K, scenario_by_id,
+};
+
+#[derive(Clone, Copy)]
+enum NativeTextOracle {
+    Files(&'static [&'static str]),
+    ParseFail,
+}
+
+pub(super) const NATIVE_DSL_TEXT_REPOSITORY: &str = "native-dsl-fixture";
+
+/// Repository membership is an input, independent of a source's path or body.
+pub(super) fn native_text_fixture_digest() -> Result<String> {
+    let binding = json!({
+        "source_bytes_sha256": corpus_digest_refs("native-dsl-text", LEXICAL_CORPUS.iter().copied()),
+        "source_repo_id": NATIVE_DSL_TEXT_REPOSITORY,
+    });
+    Ok(format!(
+        "sha256:{}",
+        hex_sha256(&serde_json::to_vec(&binding)?)
+    ))
+}
 
 /// Each pass uses a new process and publishes the shared fixture before measuring.
 #[derive(Clone, Copy)]
@@ -72,12 +94,23 @@ pub fn measure_native_dsl_text(
         timing.passes > 0 && timing.samples > 0,
         "no DSL samples requested"
     );
-    let (_, expected_paths) = NATIVE_TEXT_FILE_SCENARIOS
+    let measured_queries = timing
+        .passes
+        .checked_mul(timing.samples)
+        .context("Native DSL measured query count overflow")?;
+    let expected_paths = NATIVE_TEXT_FILE_SCENARIOS
         .iter()
         .copied()
         .find(|(id, _)| *id == scenario_id)
-        .with_context(|| format!("scenario {scenario_id} has no Native file oracle"))?;
+        .map(|(_, paths)| paths);
     let scenario = scenario_by_id(scenario_id).context("Native file scenario is unregistered")?;
+    let oracle = match (expected_paths, scenario.expected_typed_error_code) {
+        (Some(paths), None) => NativeTextOracle::Files(paths),
+        (None, Some("PARSE_FAIL")) if scenario.fixture == FixtureKind::LexicalCorpus => {
+            NativeTextOracle::ParseFail
+        }
+        _ => anyhow::bail!("scenario {scenario_id} has no supported Native Text oracle"),
+    };
     let mut request = text_query(&scenario.query.resolve(), TOP_K);
     request.syntax = scenario.syntax.into();
     let executable = NativeExecutable::capture(daemon_bin)?;
@@ -87,11 +120,14 @@ pub fn measure_native_dsl_text(
     };
     let mut samples_ms = Vec::new();
     let mut published = Vec::new();
+    let mut daemon_peak_rss_bytes = None;
     for _ in 0..timing.passes {
-        let (samples, pass) = measure_pass(&executable, workload, &request, expected_paths, timing)
-            .with_context(|| format!("Native file DSL scenario {scenario_id}"))?;
+        let (samples, pass, peak_rss_bytes) =
+            measure_pass(&executable, workload, &request, oracle, timing)
+                .with_context(|| format!("Native file DSL scenario {scenario_id}"))?;
         samples_ms.extend(samples);
         published.push(pass);
+        daemon_peak_rss_bytes = daemon_peak_rss_bytes.max(peak_rss_bytes);
     }
     let latency = LatencySummary::from_samples_ms(&samples_ms).context("empty DSL sample set")?;
     let canonical_config = native_config(
@@ -99,16 +135,20 @@ pub fn measure_native_dsl_text(
         Path::new("/fixture.sock"),
         workload,
     );
-    Ok(json!({
-        "schema": "native-dsl-text-samples-v1",
+    let mut report = json!({
+        "schema": if matches!(oracle, NativeTextOracle::ParseFail) {
+            "native-dsl-error-samples-v1"
+        } else {
+            "native-dsl-text-samples-v1"
+        },
         "scenario_id": scenario_id,
         "query_text": request.query_text,
         "query_syntax": scenario.syntax.as_str(),
-        "result_unit": "file",
-        "matched_files": expected_paths,
         "daemon_sha256": executable.sha256(),
+        "daemon_peak_rss_bytes": daemon_peak_rss_bytes,
         "config_template_sha256": hex_sha256(&serde_json::to_vec(&canonical_config)?),
-        "fixture_sha256": corpus_digest_refs("native-dsl-text", LEXICAL_CORPUS.iter().copied()),
+        "fixture_sha256": native_text_fixture_digest()?,
+        "source_repo_id": NATIVE_DSL_TEXT_REPOSITORY,
         "query_deadline_ms": QUERY_DEADLINE.as_secs_f64() * 1000.0,
         "passes": timing.passes,
         "samples_per_pass": timing.samples,
@@ -118,51 +158,67 @@ pub fn measure_native_dsl_text(
         "published": published,
         "samples_ms": samples_ms,
         "latency": latency,
-    }))
+    });
+    match oracle {
+        NativeTextOracle::Files(paths) => {
+            report["result_unit"] = json!("file");
+            report["matched_files"] = json!(paths);
+        }
+        NativeTextOracle::ParseFail => {
+            report["result_shape"] = json!(scenario.expected_shape.as_str());
+            report["typed_error_code"] = json!("PARSE_FAIL");
+            report["error_count"] = json!(measured_queries);
+            report["engine_touched"] = json!([]);
+            report["measurement_scope"] = json!("client_preflight");
+        }
+    }
+    Ok(report)
 }
 
 fn measure_pass(
     executable: &NativeExecutable,
     workload: NativeForegroundWorkload,
     request: &TextQueryRequest,
-    expected_paths: &[&str],
+    oracle: NativeTextOracle,
     timing: NativeDslTiming,
-) -> Result<(Vec<f64>, Value)> {
-    let temp = tempfile::Builder::new()
-        .permissions(fs::Permissions::from_mode(0o700))
-        .tempdir()?;
-    let socket = temp.path().join("native.sock");
-    let config = temp.path().join("native.json");
-    let config_bytes = serde_json::to_vec(&native_config(
-        &temp.path().join("state"),
-        &socket,
-        workload,
-    ))?;
-    fs::write(&config, &config_bytes)?;
-    fs::set_permissions(&config, fs::Permissions::from_mode(0o600))?;
-    let stderr = temp.path().join("daemon.stderr");
+) -> Result<(Vec<f64>, Value, Option<u64>)> {
     // No recording: this runner times the SDK call with diagnostics disabled.
-    let daemon = NativeDaemon::start(executable, &config, &socket, None, 0, &stderr)?;
-    let run = (|| -> Result<(Vec<f64>, Value)> {
-        let client = NativeUdsClient::new(socket);
+    let daemon = NativeSession::start_owned_pinned(executable, |root, socket| {
+        Ok(native_config(root, socket, workload))
+    })?;
+    let config_bytes = daemon.config_bytes().to_vec();
+    let run = (|| -> Result<_> {
+        let client = NativeUdsClient::new(daemon.socket_path().to_path_buf());
         let mut publication = PublicationAudit::default();
         let genesis = create_workspace(&client)?;
         let configured = configure_text_index(&client, genesis, &mut publication)?;
         let ingress = client.begin_input(operation(2), &budget())?;
         let inputs = LEXICAL_CORPUS
             .iter()
-            .map(|&(path, text)| BorrowedSourceInput {
-                path,
-                bytes: text.as_bytes(),
+            .map(|&(path, text)| SourceInput {
+                path: path.into(),
+                bytes: text.as_bytes().to_vec(),
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([31; 32]),
                 },
                 language: None,
             })
             .collect::<Vec<_>>();
-        let refs = client.stage_sources_borrowed(ingress, &inputs, &budget())?;
+        let input_count = inputs.len();
+        let repository = RepoId::new(NATIVE_DSL_TEXT_REPOSITORY)?;
+        let NativeIndexResponse::StagedSources(refs) = client.request(
+            NativeIndexRequest::StageRepositorySources {
+                ingress,
+                repository,
+                inputs,
+            },
+            &budget(),
+        )?
+        else {
+            anyhow::bail!("Native DSL repository fixture staging returned an unexpected reply");
+        };
         ensure!(
-            refs.len() == inputs.len(),
+            refs.len() == input_count,
             "Native DSL fixture staging is incomplete"
         );
         let view = advance_staged(
@@ -184,42 +240,68 @@ fn measure_pass(
             let request = request.clone();
             let budget = RequestBudgetV1::for_duration(QUERY_DEADLINE);
             let started = Instant::now();
-            let result =
-                client.search_text(ViewSelection::Exact(view), instance, request, &budget)?;
+            let result = client.search_text(ViewSelection::Exact(view), instance, request, &budget);
             let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
-            let mut paths = result
-                .hits
-                .iter()
-                .map(|hit| hit.path.as_str())
-                .collect::<Vec<_>>();
-            paths.sort_unstable();
-            ensure!(
-                result.view == view
-                    && result.exhaustive
-                    && result.matched == u64::try_from(expected_paths.len())?
-                    && paths.as_slice() == expected_paths,
-                "Native DSL file oracle mismatch for {:?}: matched {}, paths {paths:?}",
-                query_text,
-                result.matched,
-            );
+            match oracle {
+                NativeTextOracle::Files(expected_paths) => {
+                    let result = result?;
+                    let mut paths = result
+                        .hits
+                        .iter()
+                        .map(|hit| hit.path.as_str())
+                        .collect::<Vec<_>>();
+                    paths.sort_unstable();
+                    ensure!(
+                        result.view == view
+                            && result.exhaustive
+                            && result.matched == u64::try_from(expected_paths.len())?
+                            && paths.as_slice() == expected_paths,
+                        "Native DSL file oracle mismatch for {:?}: matched {}, paths {paths:?}",
+                        query_text,
+                        result.matched,
+                    );
+                }
+                NativeTextOracle::ParseFail => match result {
+                    Err(NativeUdsError::QueryRejected { code, message }) => {
+                        ensure!(
+                            code.as_wire_str() == "PARSE_FAIL" && !message.is_empty(),
+                            "Native DSL typed parse oracle mismatch for {query_text:?}: {code}: {message}"
+                        );
+                    }
+                    Err(other) => anyhow::bail!(
+                        "Native DSL expected local PARSE_FAIL for {query_text:?}, got {other}"
+                    ),
+                    Ok(_) => anyhow::bail!(
+                        "Native DSL expected local PARSE_FAIL for {query_text:?}, got success"
+                    ),
+                },
+            }
             Ok(latency_ms)
         };
         let samples_ms = timing.sample_pass(sample)?;
+        let peak_rss_bytes = match oracle {
+            NativeTextOracle::Files(_) => daemon.linux_peak_rss_bytes()?,
+            NativeTextOracle::ParseFail => None,
+        };
         Ok((
             samples_ms,
             json!({"view": view, "source_cut": selected.source,
             "config_sha256": hex_sha256(&config_bytes),
             "operations": publication.detail()}),
+            peak_rss_bytes,
         ))
     })();
-    match (run, daemon.stop(&mut None)) {
-        (Ok(samples), Ok(())) => {
+    match (
+        run,
+        daemon.stop_with(|config| {
             ensure!(
-                fs::read(&config)? == config_bytes,
+                fs::read(config)? == config_bytes,
                 "Native DSL config changed during measurement"
             );
-            Ok(samples)
-        }
+            Ok(())
+        }),
+    ) {
+        (Ok(samples), Ok(())) => Ok(samples),
         (Err(cause), Ok(())) | (Ok(_), Err(cause)) => Err(cause),
         (Err(cause), Err(drain)) => {
             Err(cause.context(format!("Native daemon drain failed: {drain:#}")))

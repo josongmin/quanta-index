@@ -100,6 +100,10 @@ closed_names!(DiagnosticStageV1, known_stage_name, is_known_stage;
     DiagnosticStageV1::QueryEmbedding => "query_embedding",
     DiagnosticStageV1::QueryOverlayEmbedding => "query_overlay_embedding",
     DiagnosticStageV1::QueryCandidate => "query_candidate",
+    DiagnosticStageV1::QueryAnnFileSet => "query_ann_file_set",
+    DiagnosticStageV1::QueryAnnHydrate => "query_ann_hydrate",
+    DiagnosticStageV1::QueryAnnOpen => "query_ann_open",
+    DiagnosticStageV1::QueryAnnCandidate => "query_ann_candidate",
     DiagnosticStageV1::QueryVerify => "query_verify",
     DiagnosticStageV1::QueryRank => "query_rank",
     DiagnosticStageV1::QueryProject => "query_project",
@@ -384,6 +388,8 @@ fn normalize_kind(kind: Value) -> io::Result<Value> {
                         | "owned_renewal_refusal"
                         | "sync_aggregate"
                         | "object_install_aggregate"
+                        | "managed_install_census_batch"
+                        | "managed_install_census_entry"
                         | "object_kind_aggregate"
                         | "adoption_group_aggregate"
                         | "bm25_census_aggregate"

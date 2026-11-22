@@ -36,8 +36,8 @@ use std::{
 
 use quanta_index_core::index::{
     IndexError, MapBatchRequest, MapBatchWrite, MapEdit, MapPage, MapRoot, MapValue, MapWrite,
-    MemoryLease, MemoryLifetime, ObjectRef, OrdinalMapEdit, StagedMapRoots, StoredObject,
-    WorkBudget, WorkUsage,
+    MemoryCreditLimits, MemoryLease, MemoryLifetime, ObjectRef, OrdinalMapEdit, StagedMapRoots,
+    StoredObject, WorkBudget, WorkUsage,
     ports::{
         ImmutableObjectPort, MapEditCursor, ObjectWriteSink, PersistentMapPort, RootPackingMode,
         RootPackingPlan,
@@ -69,6 +69,87 @@ const MAX_EMPTY_STREAM_ROOTS: usize = MAX_INSTALL_BATCH_INPUTS;
 // node's complete physical children before depth validation on pop.
 const MAX_NODE_CHILDREN: usize = 17 * quanta_index_core::index::MAX_MAP_INLINE_CHILDREN;
 const MAX_INSTALL_PENDING: usize = 1 + MAX_NODE_CHILDREN * (MAX_NIBBLES + 1);
+
+/// Credit for one DFS over a same-attempt canonical radix map. A canonical
+/// tree with E values has fewer than 2E nodes (including packed nodes); the
+/// caller must prove its value count before selecting this optimized path.
+fn cold_scan_memory_credit_limits(
+    store: &FileObjectStore,
+    max_entries: usize,
+) -> Result<Option<MemoryCreditLimits>, IndexError> {
+    if max_entries == 0 {
+        return Ok(None);
+    }
+    let nodes = max_entries
+        .checked_mul(2)
+        .ok_or(IndexError::ResourceLimited)?;
+    let Some(read) =
+        store.canonical_map_read_memory_credit_limits(MAX_NODE_PAYLOAD, MAX_NODE_CHILDREN)?
+    else {
+        return Ok(None);
+    };
+    let per_node = MAX_NIBBLES
+        .checked_add(16 * MAX_INLINE_NIBBLES)
+        .and_then(|bytes| {
+            16_usize
+                .checked_mul(std::mem::size_of::<Branch>())
+                .and_then(|backing| bytes.checked_add(backing))
+        })
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Node>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PackedBranch>()))
+        .and_then(|bytes| {
+            17_usize
+                .checked_mul(std::mem::size_of::<retained_value::ManyChildren>())
+                .and_then(|backing| bytes.checked_add(backing))
+        })
+        .and_then(|bytes| {
+            17_usize
+                .checked_mul(std::mem::size_of::<[usize; 2]>())
+                .and_then(|backing| bytes.checked_add(backing))
+        })
+        .ok_or(IndexError::ResourceLimited)?;
+    // MapBuffer grows with old and new backings live. The stack's geometric
+    // next capacity can be twice its live depth, then coexist with the old.
+    let stack_peak = nodes
+        .checked_mul(4)
+        .and_then(|slots| slots.checked_mul(std::mem::size_of::<ScanFrame>()))
+        .ok_or(IndexError::ResourceLimited)?;
+    // A shared packed branch may copy one selected node while its original
+    // Arc remains on the traversal stack.
+    let temporary = nodes
+        .checked_add(1)
+        .and_then(|count| count.checked_mul(per_node))
+        .and_then(|bytes| bytes.checked_add(stack_peak))
+        .and_then(|bytes| bytes.checked_add(2 * MAX_NIBBLES))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ScanSuspend>()))
+        .ok_or(IndexError::ResourceLimited)?;
+    let retained = MapPage::allocation_bytes(1)?
+        .checked_add(u64::try_from(MAX_KEY_BYTES).map_err(|_error| IndexError::ResourceLimited)?)
+        .ok_or(IndexError::ResourceLimited)?;
+    // Per decoded node: prefix, branch vector, sixteen terminal tails,
+    // seventeen inline values and sixteen packed-branch Arc grants.
+    let temporary_leases = nodes
+        .checked_add(1)
+        .and_then(|count| count.checked_mul(51))
+        .and_then(|slots| slots.checked_add(5))
+        .ok_or(IndexError::ResourceLimited)?;
+    Ok(Some(MemoryCreditLimits {
+        temporary_data_bytes: u64::try_from(temporary)
+            .map_err(|_error| IndexError::ResourceLimited)?
+            .checked_add(read.temporary_data_bytes)
+            .ok_or(IndexError::ResourceLimited)?,
+        retained_data_bytes: retained
+            .checked_add(read.retained_data_bytes)
+            .ok_or(IndexError::ResourceLimited)?,
+        max_live_temporary_leases: u32::try_from(temporary_leases)
+            .map_err(|_error| IndexError::ResourceLimited)?
+            .checked_add(read.max_live_temporary_leases)
+            .ok_or(IndexError::ResourceLimited)?,
+        max_live_retained_leases: 2_u32
+            .checked_add(read.max_live_retained_leases)
+            .ok_or(IndexError::ResourceLimited)?,
+    }))
+}
 
 #[repr(C)]
 struct InstallFrame {
@@ -1847,6 +1928,77 @@ impl FileObjectStore {
             .ok_or_else(|| IndexError::BackendViolation("new map scan has no first page".into()))
     }
 
+    /// Seek the greatest entry by descending one rightmost branch per level.
+    /// No sibling is decoded or retained, regardless of map cardinality.
+    fn last_entry_with(
+        root: MapRoot,
+        budget: &mut WorkBudget,
+        mut read_node: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<Node, IndexError>,
+    ) -> Result<MapPage, IndexError> {
+        budget.checkpoint()?;
+        let mut page = ScanPageBuilder::new(usize::from(root.0.is_some()), budget)?;
+        let mut path = MapBuffer::<u8>::new(MAX_NIBBLES);
+        let Some(reference) = root.0 else {
+            return Ok(page.finish(false));
+        };
+        let mut node = read_node(reference, budget)?;
+        loop {
+            budget.checkpoint()?;
+            let length = path
+                .len()
+                .checked_add(node.prefix.len())
+                .filter(|length| *length <= MAX_NIBBLES)
+                .ok_or_else(|| IndexError::CorruptObject("map path exceeds key limit".into()))?;
+            budget.charge(WorkUsage {
+                bytes: u64::try_from(node.prefix.len())
+                    .map_err(|_error| IndexError::ResourceLimited)?,
+                ..WorkUsage::default()
+            })?;
+            path.extend_from_slice(&node.prefix, budget)?;
+            debug_assert_eq!(path.len(), length);
+
+            let mut rightmost = None;
+            for edge in (0..16).rev() {
+                if node.branches.get(edge)?.is_some() {
+                    rightmost = Some(edge);
+                    break;
+                }
+            }
+            if let Some(edge) = rightmost {
+                let length = path
+                    .len()
+                    .checked_add(1)
+                    .filter(|length| *length <= MAX_NIBBLES)
+                    .ok_or_else(|| {
+                        IndexError::CorruptObject("map branch exceeds key limit".into())
+                    })?;
+                budget.charge(WorkUsage {
+                    bytes: u64::try_from(length).map_err(|_error| IndexError::ResourceLimited)?,
+                    ..WorkUsage::default()
+                })?;
+                path.push(
+                    u8::try_from(edge).map_err(|_error| IndexError::ResourceLimited)?,
+                    budget,
+                )?;
+                let branch = node.branches.into_child(edge)?.ok_or_else(|| {
+                    IndexError::BackendViolation("rightmost map branch disappeared".into())
+                })?;
+                node = branch.into_node(budget, &mut read_node)?;
+                continue;
+            }
+            if !path.len().is_multiple_of(2) {
+                return Err(IndexError::CorruptObject(
+                    "map value ends at an incomplete byte".into(),
+                ));
+            }
+            let value = node.value.as_ref().ok_or_else(|| {
+                IndexError::CorruptObject("rightmost map node has no value".into())
+            })?;
+            scan_emit_value(&path, value, &mut page, budget)?;
+            return Ok(page.finish(false));
+        }
+    }
+
     /// The caller has already consumed `last`; only strictly later rows are
     /// scanned here after an optional DFS was discarded during child work.
     fn visit_scalar_scan_tail_with(
@@ -2491,6 +2643,13 @@ impl FileObjectStore {
 }
 
 impl PersistentMapPort for FileObjectStore {
+    fn cold_scan_memory_credit_limits(
+        &self,
+        max_entries: usize,
+    ) -> Result<Option<MemoryCreditLimits>, IndexError> {
+        cold_scan_memory_credit_limits(self, max_entries)
+    }
+
     fn scoped_reads<'a>(
         &'a self,
         budget: &WorkBudget,
@@ -2542,6 +2701,12 @@ impl PersistentMapPort for FileObjectStore {
         budget: &mut WorkBudget,
     ) -> Result<MapPage, IndexError> {
         Self::scan_with(root, after, limit, budget, |reference, budget| {
+            self.read_node(reference, budget)
+        })
+    }
+
+    fn last_entry(&self, root: MapRoot, budget: &mut WorkBudget) -> Result<MapPage, IndexError> {
+        Self::last_entry_with(root, budget, |reference, budget| {
             self.read_node(reference, budget)
         })
     }
@@ -4163,6 +4328,21 @@ mod tests {
         check_eq!(visited.usage(), scalar.usage());
         check_eq!(visited.first_denial(), None);
         check_eq!(grant.live.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn cold_scan_credit_counts_values_beyond_one_root_batch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let at_64 = cold_scan_memory_credit_limits(&store, 64)?.ok_or("64-value credit absent")?;
+        let at_65 = cold_scan_memory_credit_limits(&store, 65)?.ok_or("65-value credit absent")?;
+        let at_121 =
+            cold_scan_memory_credit_limits(&store, 121)?.ok_or("121-value credit absent")?;
+        check!(at_65.temporary_data_bytes > at_64.temporary_data_bytes);
+        check!(at_121.temporary_data_bytes > at_65.temporary_data_bytes);
+        check!(at_121.max_live_temporary_leases > at_65.max_live_temporary_leases);
         Ok(())
     }
 

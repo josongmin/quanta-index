@@ -252,11 +252,11 @@ def build_scale(cwd: Path, out_root: Path, *, backend: str = "legacy") -> dict:
         [
             str(paths["cargow"]),
             "--lane",
-            "release-lane",
+            "bench-lane" if backend == "index-native" else "release-lane",
             "metadata",
             "--format-version",
             "1",
-            "--all-features",
+            "--no-default-features" if backend == "index-native" else "--all-features",
             "--locked",
             "--offline",
         ],

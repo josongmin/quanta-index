@@ -354,6 +354,54 @@ fn root_observation_refuses_zero_nonce_foreign_selection_and_bad_digest()
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn repomap_graph_installation_admitted_checks_scope_and_sha_on_same_peer()
+-> Result<(), Box<dyn std::error::Error>> {
+    use quanta_index_contract::{
+        index::{IndexKind, SchemaId, StorageFormatId},
+        native_protocol::{NativeRepoMapGraphDescriptorV1, NativeRepoMapGraphInstallationV1},
+    };
+
+    let root = observation()?;
+    let selection = ViewSelection::Exact(root.view.identity);
+    let expected = NativeRepoMapGraphInstallationV1 {
+        root,
+        config_sha256: Digest([32; 32]),
+        descriptor: NativeRepoMapGraphDescriptorV1 {
+            kind: IndexKind([33; 16]),
+            schema: SchemaId([34; 16]),
+            format: StorageFormatId([35; 16]),
+        },
+    };
+    for (valid, measured) in [(true, expected.config_sha256), (false, Digest([0; 32]))] {
+        let (memory, active, _) = publication_scope(false);
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+        let response =
+            NativeIndexResponse::RepoMapGraphInstallationV1(NativeRepoMapGraphInstallationV1 {
+                config_sha256: measured,
+                ..expected.clone()
+            });
+        let (result, body_bytes) = exchange_request(
+            NativeIndexRequest::ObserveRepoMapGraphInstallationV1(selection),
+            Some(response.clone()),
+            |client| {
+                client.observe_repomap_graph_installation_admitted_v1(selection, &budget, &memory)
+            },
+        )?;
+        assert!(body_bytes > 0);
+        if valid {
+            let result = result?;
+            assert_eq!(result.response(), &response);
+            assert_eq!(result.peer_credentials().pid, Some(std::process::id()));
+        } else {
+            assert!(matches!(result, Err(NativeUdsError::Protocol(_))));
+        }
+        assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
+    }
+    Ok(())
+}
+
 #[test]
 fn root_observation_expiry_cancel_and_memory_denial_connect_no_socket()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -474,4 +522,114 @@ fn prewrite_peer_refusal_is_not_submit_unknown_v1() {
         matches!(admitted_write_error_v1(operation, NativeUdsError::Transport("response lost after send".into())),
         NativeUdsError::Unknown(actual) if actual == operation)
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn candidate_installation_admitted_keeps_same_connection_peer_and_refuses_invalid_identity_v1()
+-> Result<(), Box<dyn std::error::Error>> {
+    use quanta_index_contract::native_protocol::NativeCandidateInstallationV1;
+
+    let expected = NativeCandidateInstallationV1 {
+        config_sha256: Digest([41; 32]),
+        root_nonce: Digest([42; 32]),
+        root_device: 43,
+        root_inode: 44,
+    };
+    let request = NativeIndexRequest::ObserveCandidateInstallationV1;
+    let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+    let (memory, active, _) = publication_scope(false);
+    let (result, body_bytes) = exchange_request(
+        request.clone(),
+        Some(NativeIndexResponse::CandidateInstallationV1(expected)),
+        |client| client.observe_candidate_installation_admitted_v1(&budget, &memory),
+    )?;
+    let result = result?;
+    assert_eq!(*result.observation_v1(), expected);
+    assert_eq!(
+        result.peer_process_v1().credentials_v1().pid,
+        Some(std::process::id())
+    );
+    assert!(result.peer_process_v1().pidfd_v1().is_ok());
+    assert!(body_bytes > 0 && active.load(AtomicOrdering::SeqCst) > 0);
+    drop(result);
+    assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
+
+    for (case, observed) in [
+        (
+            "zero config",
+            NativeCandidateInstallationV1 {
+                config_sha256: Digest([0; 32]),
+                ..expected
+            },
+        ),
+        (
+            "zero nonce",
+            NativeCandidateInstallationV1 {
+                root_nonce: Digest([0; 32]),
+                ..expected
+            },
+        ),
+        (
+            "zero inode",
+            NativeCandidateInstallationV1 {
+                root_inode: 0,
+                ..expected
+            },
+        ),
+    ] {
+        let (memory, active, _) = publication_scope(false);
+        let (result, _) = exchange_request(
+            request.clone(),
+            Some(NativeIndexResponse::CandidateInstallationV1(observed)),
+            |client| client.observe_candidate_installation_admitted_v1(&budget, &memory),
+        )?;
+        assert!(matches!(result, Err(NativeUdsError::Protocol(_))), "{case}");
+        assert_eq!(active.load(AtomicOrdering::SeqCst), 0, "{case}");
+    }
+
+    let (memory, active, _) = publication_scope(false);
+    let (result, _) = exchange_request(
+        request.clone(),
+        Some(NativeIndexResponse::RootScopedView(observation()?)),
+        |client| client.observe_candidate_installation_admitted_v1(&budget, &memory),
+    )?;
+    assert!(matches!(result, Err(NativeUdsError::Protocol(_))));
+    assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
+
+    let refusal = NativeIndexWireError {
+        code: NativeIndexErrorCode::Conflict,
+        message: "candidate installation refused".into(),
+    };
+    let (memory, active, _) = publication_scope(false);
+    let (result, _) = exchange_request(
+        request,
+        Some(NativeIndexResponse::Error(refusal.clone())),
+        |client| client.observe_candidate_installation_admitted_v1(&budget, &memory),
+    )?;
+    assert!(matches!(result, Err(NativeUdsError::Refused(actual)) if actual == refusal));
+    assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn candidate_installation_admitted_decoder_accepts_fixed_wire_v1()
+-> Result<(), Box<dyn std::error::Error>> {
+    let envelope = NativeIndexResponseEnvelope {
+        request_id: 71,
+        payload: NativeIndexResponse::CandidateInstallationV1(
+            quanta_index_contract::native_protocol::NativeCandidateInstallationV1 {
+                config_sha256: Digest([41; 32]),
+                root_nonce: Digest([42; 32]),
+                root_device: 43,
+                root_inode: 44,
+            },
+        ),
+    };
+    let frame = quanta_index_ipc::encode_response(&envelope)?;
+    assert_eq!(
+        admitted_reply_v1::decode(frame.get(4..).ok_or("short frame")?)?,
+        envelope
+    );
+    Ok(())
 }

@@ -52,6 +52,7 @@ from evidence import (  # noqa: E402
     RawFile,
     RunStore,
     _read_control_file,
+    digest_bytes,
     digest_of,
     file_digest,
     parse_json,
@@ -195,6 +196,10 @@ def parse_args(
     )
     replay.add_argument("--family", help="select the newest valid run of this registered family")
     replay.add_argument(
+        "--require-signed-install", action="store_true",
+        help="require a published Native run with a verified installed approval",
+    )
+    replay.add_argument(
         "--evidence-root",
         type=Path,
         help="external benchmark root; defaults to $QUANTA_BENCH_EVIDENCE_ROOT",
@@ -225,6 +230,10 @@ def parse_args(
         child.add_argument("profile", choices=sorted(profiles))
         if command in {"run", "validate", "summarize"}:
             child.add_argument(
+                "--require-signed-install", action="store_true",
+                help="require an installed approval for native-file-capture",
+            )
+            child.add_argument(
                 "--evidence-root",
                 type=Path,
                 help=(
@@ -236,6 +245,11 @@ def parse_args(
             child.add_argument("--lexical-spec", type=Path)
             child.add_argument("--pair-spec", type=Path)
             child.add_argument("--native-plan", type=Path)
+            child.add_argument(
+                "--dsl-native-plan",
+                type=Path,
+                help="frozen Native DSL runner, daemon and Published History fixture pins",
+            )
             child.add_argument("--agent-recording", type=Path)
             child.add_argument("--scan-recording", type=Path)
             child.add_argument(
@@ -356,6 +370,7 @@ def admit_dsl_baselines(
     initial_head: str,
     capture_started_ns: int,
     preflight_digest: str,
+    capture_artifacts: dict[str, str],
 ) -> None:
     """Admit only artifacts freshly produced by this guarded DSL run."""
     families = manifest["families"]
@@ -390,7 +405,10 @@ def admit_dsl_baselines(
                 raise RuntimeError(f"DSL artifact is not a regular file: {artifact_path}")
             if min(artifact_stat.st_mtime_ns, artifact_stat.st_ctime_ns) < capture_started_ns:
                 raise RuntimeError(f"DSL artifact was not written by this run: {artifact_path}")
-            content = _read_control_file(artifact_path).decode("utf-8")
+            raw = _read_control_file(artifact_path)
+            if digest_bytes(raw) != capture_artifacts.get(relative_artifact):
+                raise RuntimeError(f"DSL artifact differs from this run's staged output: {artifact_path}")
+            content = raw.decode("utf-8")
             current_stat = artifact_path.lstat()
             if _file_identity(current_stat) != _file_identity(artifact_stat):
                 raise RuntimeError(f"DSL artifact changed after reading: {artifact_path}")
@@ -437,25 +455,10 @@ def publish_dsl_baseline_pair(prepared: list[tuple[Path, str]]) -> None:
     if prepared[1][0].parent != parent:
         raise RuntimeError("DSL baseline pair must share one directory")
     marker = parent / ".dsl-admission-pending"
-    prior: dict[Path, str | None] = {}
-    for destination, _ in prepared:
-        try:
-            require_no_pending_admission(destination)
-        except ArtifactRefused as exc:
-            raise RuntimeError(str(exc)) from exc
-        try:
-            destination_stat = destination.lstat()
-        except FileNotFoundError:
-            prior[destination] = None
-            continue
-        except OSError as exc:
-            raise RuntimeError(f"cannot inspect DSL baseline {destination}: {exc}") from exc
-        if not stat.S_ISREG(destination_stat.st_mode):
-            raise RuntimeError(f"DSL baseline is not a regular file: {destination}")
-        try:
-            prior[destination] = _read_control_file(destination).decode("utf-8")
-        except (OSError, ValueError) as exc:
-            raise RuntimeError(f"cannot preserve DSL baseline {destination}: {exc}") from exc
+    try:
+        require_no_pending_admission(prepared[0][0])
+    except ArtifactRefused as exc:
+        raise RuntimeError(str(exc)) from exc
 
     try:
         parent.mkdir(parents=True, exist_ok=True)
@@ -469,12 +472,24 @@ def publish_dsl_baseline_pair(prepared: list[tuple[Path, str]]) -> None:
     except OSError as exc:
         raise RuntimeError(f"cannot start DSL baseline pair publication: {exc}") from exc
 
+    prior: dict[Path, str | None] = {}
     written: list[Path] = []
     try:
+        # The marker serializes both snapshotting and replacing the pair.
+        for destination, _ in prepared:
+            try:
+                destination_stat = destination.lstat()
+            except FileNotFoundError:
+                prior[destination] = None
+                continue
+            if not stat.S_ISREG(destination_stat.st_mode):
+                raise ValueError(f"DSL baseline is not a regular file: {destination}")
+            prior[destination] = _read_control_file(destination).decode("utf-8")
         for destination, content in prepared:
             atomically_write_baseline(destination, content)
             written.append(destination)
-    except OSError as exc:
+        fsync_directory(parent)
+    except (OSError, ValueError) as exc:
         rollback_errors: list[str] = []
         for destination in reversed(written):
             try:
@@ -567,6 +582,14 @@ def preflight(
     ).returncode
 
 
+def dsl_comparison_identity(path: Path) -> tuple[int, int, int, int, int, int]:
+    try:
+        require_no_pending_admission(path)
+        return _file_identity(path.stat())
+    except (ArtifactRefused, OSError) as exc:
+        raise RuntimeError(f"cannot verify DSL comparison input {path}: {exc}") from exc
+
+
 def compare(repo_root: Path, profile: dict[str, object], manifest: dict[str, object]) -> int:
     """Run each explicitly declared comparator; profiles with no baseline are diagnostic-only."""
     raw_families = manifest["families"]
@@ -574,6 +597,7 @@ def compare(repo_root: Path, profile: dict[str, object], manifest: dict[str, obj
     family_names = profile["families"]
     assert isinstance(family_names, list)
     comparator = repo_root / "tools" / "benchmark" / "compare_dsl_bench.py"
+    comparisons: list[tuple[Path, Path]] = []
     for name in family_names:
         assert isinstance(name, str)
         family = raw_families.get(name)
@@ -586,18 +610,26 @@ def compare(repo_root: Path, profile: dict[str, object], manifest: dict[str, obj
         assert isinstance(baseline, dict)
         if baseline["comparator"] != "dsl-latency":
             raise RuntimeError(f"unregistered comparator for {name!r}")
+        comparisons.append((repo_root / baseline["path"], repo_root / family["artifact_glob"]))
+
+    # A publisher can replace both files and remove its marker between comparators.
+    inputs = {path: dsl_comparison_identity(path) for pair in comparisons for path in pair}
+    for baseline_path, current_path in comparisons:
         completed = subprocess.run(
             [
                 sys.executable,
                 str(comparator),
-                str(repo_root / baseline["path"]),
-                str(repo_root / family["artifact_glob"]),
+                str(baseline_path),
+                str(current_path),
             ],
             cwd=repo_root,
             check=False,
         )
         if completed.returncode:
             return completed.returncode
+        for path, expected in inputs.items():
+            if dsl_comparison_identity(path) != expected:
+                raise RuntimeError(f"DSL comparison inputs changed during comparison: {path}")
     return 0
 
 
@@ -665,10 +697,18 @@ def summarize(repo_root: Path, profile: dict[str, object], manifest: dict[str, o
 
 def resolve_evidence_root(explicit: Path | None) -> Path | None:
     """External benchmark root; never inside the checkout."""
-    if explicit is not None:
-        return explicit.resolve()
-    value = os.environ.get("QUANTA_BENCH_EVIDENCE_ROOT")
-    return Path(value).resolve() if value else None
+    if explicit is None:
+        value = os.environ.get("QUANTA_BENCH_EVIDENCE_ROOT")
+        if not value:
+            return None
+        explicit = Path(value)
+    try:
+        try:
+            return explicit.resolve(strict=True)
+        except FileNotFoundError:
+            return explicit.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise EvidenceError(f"cannot resolve benchmark evidence root {explicit}: {exc}") from exc
 
 
 def producer_command(repo_root: Path, registry_entry: dict[str, object], family: str) -> list[str]:
@@ -679,23 +719,143 @@ def producer_command(repo_root: Path, registry_entry: dict[str, object], family:
     if kind == "just-recipe":
         return ["just", str(registry_entry["recipe"])]
     if kind == "cargo-bench":
-        return [
-            str(repo_root / "scripts" / "cargow"),
-            "--lane",
-            "bench-lane",
-            "bench",
-            "-p",
-            str(registry_entry["package"]),
-            "--bench",
-            str(registry_entry["target"]),
-            "--all-features",
-            "--locked",
-        ]
+        from criterion_capture import cargo_bench_command
+
+        return cargo_bench_command(repo_root, registry_entry)
     if kind == "python-module":
         argv = registry_entry.get("argv") or []
         assert isinstance(argv, list)
         return [sys.executable, str(repo_root / str(registry_entry["module"])), *map(str, argv)]
     raise RuntimeError(f"family {family!r} has no runnable producer kind {kind!r}")
+
+
+def _read_dsl_native_plan(path: Path, head: str) -> tuple[RawFile, dict[str, RawFile]]:
+    plan = RawFile.capture(path)
+    payload = parse_json(_read_control_file(plan.path).decode("utf-8"))
+    inputs = ("warm_runner", "cold_runner", "daemon", "history_fixture")
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema", "git_head", *inputs}
+        or payload["schema"] != "native-dsl-authority-plan/v1"
+        or payload["git_head"] != head
+    ):
+        raise EvidenceError("Native DSL plan differs from the frozen checkout or schema")
+    pins: dict[str, RawFile] = {}
+    for name in inputs:
+        entry = payload[name]
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"path", "sha256"}
+            or not isinstance(entry["path"], str)
+            or not Path(entry["path"]).is_absolute()
+        ):
+            raise EvidenceError(f"Native DSL plan requires an absolute pinned {name} file")
+        pinned = RawFile.capture(Path(entry["path"]))
+        if pinned.sha256 != entry["sha256"]:
+            raise EvidenceError(f"Native DSL plan {name} digest differs")
+        pins[name] = pinned
+    if pins["warm_runner"].sha256 == pins["cold_runner"].sha256:
+        raise EvidenceError("Native DSL warm and cold runners must be distinct")
+    if RawFile.capture(plan.path) != plan:
+        raise EvidenceError("Native DSL plan changed during admission")
+    return plan, pins
+
+
+def _dsl_native_command(
+    producer: list[str],
+    repo_root: Path,
+    head: str,
+    mode: str,
+    pins: dict[str, RawFile],
+    out: Path,
+    samples: int | None,
+) -> list[str]:
+    runner = pins[f"{mode}_runner"]
+    daemon = pins["daemon"]
+    history = pins["history_fixture"]
+    command = [
+        *producer,
+        "--bin-cwd",
+        str(repo_root),
+        "--bin-head",
+        head,
+        "--native-runner",
+        str(runner.path),
+        "--bin-sha256",
+        runner.sha256,
+        "--native-daemon",
+        str(daemon.path),
+        "--native-daemon-sha256",
+        daemon.sha256,
+        "--native-history-fixture",
+        str(history.path),
+        "--native-history-sha256",
+        history.sha256,
+        "--out",
+        str(out),
+    ]
+    if mode == "cold" and samples is not None:
+        command += ["--samples", str(samples)]
+    return command
+
+
+def _publish_dsl_native_outputs(
+    repo_root: Path,
+    head: str,
+    manifest: dict[str, object],
+    staged: Path,
+    plan: RawFile,
+    pins: dict[str, RawFile],
+    preflight: Path,
+    preflight_digest: str,
+) -> dict[str, str]:
+    checker = _load_lint_module(repo_root)
+    prepared = []
+    artifact_digests = {}
+    for mode in ("warm", "cold"):
+        source = staged / f"{mode}-matrix.json"
+        dimension = f"dsl-{mode}"
+        raw = _read_control_file(source)
+        payload = checker.parse_artifact_bytes(raw)
+        refusals = checker.check_artifact(
+            payload,
+            dimension=dimension,
+            head=head,
+            require=True,
+            manifest=manifest,
+            artifact_path=source,
+        )
+        if refusals:
+            raise EvidenceError(f"Native DSL {mode} artifact refused: {'; '.join(refusals)}")
+        content = raw.decode("utf-8")
+        artifact = load_artifact(source, role="Native DSL producer", content=content)
+        require_complete_baseline_candidate(artifact)
+        require_clean_preflight(preflight, artifact)
+        detail = payload["detail"]
+        if (
+            not artifact.native_matrix
+            or artifact.qualification != "authority"
+            or artifact.git_head != head
+            or artifact.mode != mode
+            or any(row.samples < MIN_SAMPLES_FOR_AUTHORITY[mode] for row in artifact.rows.values())
+            or detail.get("runner_sha256") != pins[f"{mode}_runner"].sha256
+            or detail.get("daemon_sha256") != pins["daemon"].sha256
+            or detail.get("history_fixture_sha256") != pins["history_fixture"].sha256
+        ):
+            raise EvidenceError(
+                f"Native DSL {mode} output differs from its approved capture inputs"
+            )
+        relative_path = manifest["families"][dimension]["artifact_glob"]
+        prepared.append((repo_root / relative_path, content))
+        artifact_digests[relative_path] = digest_bytes(raw)
+    for supplied in (plan, *pins.values()):
+        if RawFile.capture(supplied.path) != supplied:
+            raise EvidenceError("Native DSL capture input changed before publication")
+    if file_digest(preflight)[0] != f"sha256:{preflight_digest}":
+        raise EvidenceError("Native DSL timing preflight changed during capture")
+    require_frozen_source(repo_root, head)
+    publish_dsl_baseline_pair(prepared)
+    return artifact_digests
 
 
 def plan_command(repo_root: Path, profile_name: str) -> int:
@@ -720,6 +880,20 @@ def plan_command(repo_root: Path, profile_name: str) -> int:
             )
             continue
         producer = producers[producer_id]
+        if profile_name == "dsl-authority":
+            steps.append(
+                {
+                    "family": family,
+                    "kind": producer["kind"],
+                    "runnable": False,
+                    "required_options": ["--dsl-native-plan"],
+                    "outputs": list(producer.get("outputs") or []),
+                    "host_policy": entry["host_policy"],
+                    "baseline": entry["baseline"],
+                    "closure": entry["closure"],
+                }
+            )
+            continue
         if family == "native-file-sdk-capture":
             steps.append(
                 {
@@ -782,39 +956,47 @@ def latest_run_for_family(store: object, family: str) -> str | None:
     return candidates[-1][1]
 
 
-def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) -> int:
+def replay_command(
+    repo_root: Path, reference: str, evidence_root: Path | None,
+    *, require_signed_install: bool = False,
+) -> int:
     """Fresh-process re-validation of one immutable run.
 
     Integrity is recomputed from raw bytes, and for a native `BenchArtifactV1`
     payload the independent artifact checker re-runs against the captured raw
     file. A changed input is refused; nothing is promoted.
     """
-    candidate = Path(reference)
-    if candidate.is_dir() and (candidate / "evidence.json").is_file():
-        run_dir = candidate.resolve()
-        store = RunStore(run_dir.parent.parent)
-        run_id = candidate.name
-    else:
-        root = resolve_evidence_root(evidence_root)
-        if root is None:
-            print(
-                "ERROR: replay needs a run directory or an --evidence-root/QUANTA_BENCH_EVIDENCE_ROOT",
-                file=sys.stderr,
-            )
-            return 2
-        store = RunStore(root)
-        run_id = reference
-        run_dir = store.run_dir(run_id)
+    registry_path = repo_root / "tools" / "benchmark" / "registry.toml"
+    registry = load_registry(registry_path, repo_root=repo_root)
     try:
-        evidence = store.load(run_id)
+        candidate = Path(reference)
+        if candidate.is_dir() and (candidate / "evidence.json").is_file():
+            run_dir = candidate.resolve(strict=True)
+            store = RunStore(run_dir.parent.parent)
+            run_id = candidate.name
+        else:
+            root = resolve_evidence_root(evidence_root)
+            if root is None:
+                print(
+                    "ERROR: replay needs a run directory or an --evidence-root/QUANTA_BENCH_EVIDENCE_ROOT",
+                    file=sys.stderr,
+                )
+                return 2
+            store = RunStore(root)
+            run_id = reference
+            run_dir = store.run_dir(run_id)
+        if require_signed_install:
+            from native_file_capture import load_published_run
+
+            evidence = load_published_run(store, run_id, registered_digest=registry_digest(registry))
+        else:
+            evidence = store.load(run_id)
         from evidence_bridge import verify_host_binding
 
         verify_host_binding(store, evidence)
     except (ValueError, OSError) as exc:
         print(f"ERROR: replay refused: {exc}", file=sys.stderr)
         return 2
-    registry_path = repo_root / "tools" / "benchmark" / "registry.toml"
-    registry = load_registry(registry_path, repo_root=repo_root)
     profile = registry["profiles"].get(evidence["profile"])
     if not isinstance(profile, dict) or evidence["family"] not in profile["families"]:
         print("ERROR: replay run family is not registered in its profile", file=sys.stderr)
@@ -864,7 +1046,7 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
         from native_file_capture import replay_run as replay_native_file
 
         try:
-            replay_native_file(store, evidence)
+            replay_native_file(store, evidence, require_signed_install=require_signed_install)
         except (ValueError, RuntimeError, OSError, UnicodeError, SystemExit) as exc:
             print(f"ERROR: Native file capture replay refused: {exc}", file=sys.stderr)
             return 2
@@ -958,6 +1140,8 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
     }
     if evidence["profile"] == "recorded":
         receipt["authenticity"] = "recorded_unauthenticated"
+    if require_signed_install:
+        receipt["signed_install_verified"] = True
     print(json.dumps(receipt, sort_keys=True, indent=2))
     return 0
 
@@ -1476,11 +1660,21 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     args = parse_args(argv, profiles, repo_root=repo_root)
     repo_root = args.repo_root.resolve()
+    require_signed_install = getattr(args, "require_signed_install", False)
+    if require_signed_install and args.command != "replay" and args.profile != "native-file-capture":
+        print("ERROR: --require-signed-install applies only to Native file capture", file=sys.stderr)
+        return 2
     if (
         getattr(args, "native_plan", None) is not None
         and getattr(args, "profile", None) != "native-file-capture"
     ):
         print("ERROR: --native-plan applies only to native-file-capture", file=sys.stderr)
+        return 2
+    if (
+        getattr(args, "dsl_native_plan", None) is not None
+        and getattr(args, "profile", None) != "dsl-authority"
+    ):
+        print("ERROR: --dsl-native-plan applies only to dsl-authority", file=sys.stderr)
         return 2
     if args.command == "code-search":
         try:
@@ -1621,6 +1815,9 @@ def main(argv: list[str] | None = None) -> int:
             print("ERROR: replay requires exactly one run reference or --family", file=sys.stderr)
             return 2
         reference = args.reference
+        if require_signed_install and args.family:
+            print("ERROR: signed Native replay requires an explicit run reference", file=sys.stderr)
+            return 2
         if args.family:
             evidence_root = resolve_evidence_root(args.evidence_root)
             if evidence_root is None:
@@ -1634,7 +1831,9 @@ def main(argv: list[str] | None = None) -> int:
             if reference is None:
                 print(f"ERROR: no promoted run for family {args.family!r}", file=sys.stderr)
                 return 2
-        return replay_command(repo_root, reference, args.evidence_root)
+        return replay_command(
+            repo_root, reference, args.evidence_root, require_signed_install=require_signed_install,
+        )
 
     profile = profiles[args.profile]
     if (
@@ -1809,12 +2008,13 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        root = resolve_evidence_root(args.evidence_root)
-        if root is None:
-            print("ERROR: Native file capture requires --evidence-root", file=sys.stderr)
-            return 2
-        registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
         try:
+            root = resolve_evidence_root(args.evidence_root)
+            if root is None:
+                print("ERROR: Native file capture requires --evidence-root", file=sys.stderr)
+                return 2
+            registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
+            signed_options = {"require_signed_install": True} if require_signed_install else {}
             if args.command == "run":
                 if args.native_plan is None:
                     raise EvidenceError("Native file capture requires --native-plan")
@@ -1835,9 +2035,11 @@ def main(argv: list[str] | None = None) -> int:
                 timeout = args.producer_timeout if args.producer_timeout is not None else 7200
                 if timeout < 1:
                     raise EvidenceError("Native producer timeout must be positive")
-                document = capture_native_file(repo_root, root, registry, timeout, args.native_plan)
+                document = capture_native_file(
+                    repo_root, root, registry, timeout, args.native_plan, **signed_options,
+                )
             else:
-                document = validate_native_file(repo_root, root, registry)
+                document = validate_native_file(repo_root, root, registry, **signed_options)
                 if args.command == "summarize":
                     document = {
                         "profile": args.profile,
@@ -1846,6 +2048,7 @@ def main(argv: list[str] | None = None) -> int:
                         "measurement_count": len(document["runs"]),
                         "scope": "controlled_execution_only",
                         "qualification": "not_run",
+                        **({"signed_install_verified": True} if require_signed_install else {}),
                     }
         except (ValueError, RuntimeError, OSError, UnicodeError, SystemExit) as exc:
             print(f"ERROR: Native file capture refused: {exc}", file=sys.stderr)
@@ -2174,6 +2377,7 @@ def _capture_native_run(
 
 
 def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
+    native_capture_artifacts = None
     if args.command == "run":
         requested_root = resolve_evidence_root(args.evidence_root)
         if requested_root is not None and (
@@ -2195,12 +2399,31 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
         if args.admit_baseline and args.profile != "dsl-authority":
             return refuse_capture("--admit-baseline is only valid for dsl-authority")
         capture_phase("source")
+        native_plan = None
+        native_commands = {}
         try:
             if not args.admit_baseline:
                 require_declared_baselines(repo_root, profile, manifest)
             require_clean_worktree(repo_root)
             initial_head = resolve_checkout_head(repo_root)
-        except RuntimeError as exc:
+            if args.profile == "dsl-authority":
+                if args.dsl_native_plan is None:
+                    return refuse_capture("dsl-authority requires --dsl-native-plan")
+                native_plan = _read_dsl_native_plan(args.dsl_native_plan, initial_head)
+                families = profile["families"]
+                if families != ["dsl-warm", "dsl-cold"]:
+                    return refuse_capture(
+                        "Native DSL authority requires the registered warm/cold pair"
+                    )
+                registry = load_registry(
+                    repo_root / "tools/benchmark/registry.toml", repo_root=repo_root
+                )
+                for family in families:
+                    entry = registry["families"][family]
+                    native_commands[family] = producer_command(
+                        repo_root, registry["producers"][entry["producer"]], family
+                    )
+        except (OSError, RuntimeError, ValueError) as exc:
             capture_error(exc)
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
@@ -2225,7 +2448,7 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
             print(f"ERROR: timing preflight receipt disappeared: {exc}", file=sys.stderr)
             return 2
         capture_phase("preparation", preflight_digest="sha256:" + preflight_digest)
-        recipes = profile["recipes"]
+        recipes = list(native_commands) if native_plan is not None else profile["recipes"]
         assert isinstance(recipes, list)
         if not recipes:
             return refuse_capture(f"profile {args.profile!r} has no registered producer")
@@ -2245,11 +2468,24 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
             except OSError as exc:
                 print(f"ERROR: cannot create command diagnostic root: {exc}", file=sys.stderr)
                 return 2
+        native_stage = None
+        if native_plan is not None:
+            stage_root = current_capture().work if requested_root is not None else command_logs
+            native_stage = stage_root / "native-dsl"
         for index, recipe in enumerate(recipes):
             assert isinstance(recipe, str)
             command = ["just", recipe]
-            if recipe == "rust-bench-dsl-cold" and cold_samples is not None:
-                command.append(str(cold_samples))
+            if native_plan is not None:
+                mode = recipe.removeprefix("dsl-")
+                command = _dsl_native_command(
+                    native_commands[recipe],
+                    repo_root,
+                    initial_head,
+                    mode,
+                    native_plan[1],
+                    native_stage / f"{mode}-matrix.json",
+                    cold_samples,
+                )
             log_dir = (
                 current_capture().work / "execution" / recipe
                 if requested_root is not None
@@ -2297,6 +2533,21 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
                 capture_error(exc)
                 print(f"ERROR: {exc}", file=sys.stderr)
                 return 2
+        if native_plan is not None:
+            try:
+                native_capture_artifacts = _publish_dsl_native_outputs(
+                    repo_root,
+                    initial_head,
+                    manifest,
+                    native_stage,
+                    *native_plan,
+                    receipt,
+                    preflight_digest,
+                )
+            except (ArtifactRefused, OSError, RuntimeError, ValueError) as exc:
+                capture_error(exc)
+                print(f"ERROR: Native DSL authority publication refused: {exc}", file=sys.stderr)
+                return 2
         execution = {
             "argv": [
                 sys.executable,
@@ -2338,13 +2589,17 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
             "use `plan` or an explicit --evidence-root"
         )
     validated_artifacts = None
-    if args.command == "run" and evidence_root is not None:
-        if evidence_root == repo_root or repo_root in evidence_root.parents:
+    if args.command == "run" and (evidence_root is not None or native_capture_artifacts is not None):
+        if evidence_root is not None and (
+            evidence_root == repo_root or repo_root in evidence_root.parents
+        ):
             return refuse_capture(
                 "--evidence-root must stay outside the checkout; run artifacts are external"
             )
         try:
             validated_artifacts = snapshot_profile_artifacts(repo_root, args.profile, manifest)
+            if native_capture_artifacts is not None and validated_artifacts != native_capture_artifacts:
+                raise RuntimeError("Native DSL artifacts differ from this run's staged outputs")
         except RuntimeError as exc:
             capture_error(exc)
             print(f"ERROR: {exc}", file=sys.stderr)
@@ -2353,6 +2608,7 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
         try:
             require_frozen_source(repo_root, initial_head)
             if args.admit_baseline:
+                assert native_capture_artifacts is not None
                 admit_dsl_baselines(
                     repo_root,
                     profile,
@@ -2361,6 +2617,7 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
                     initial_head,
                     capture_started_ns,
                     preflight_digest,
+                    native_capture_artifacts,
                 )
                 return 0
         except RuntimeError as exc:

@@ -10,6 +10,7 @@ use std::{
 };
 
 use quanta_index_contract::RepoId;
+use quanta_index_contract::native_protocol::{SourceStageReplayContextV1, SourceStageReplayReceiptV1};
 use quanta_index_core::DiagnosticStageV1;
 use quanta_index_core::index::{
     AdmissionOutcome, AttemptContext, AttemptRef, BootstrapRef, CatalogReadAttempt,
@@ -20,7 +21,8 @@ use quanta_index_core::index::{
     OWNED_WORK_PRODUCER, ObjectBatchInput, ObjectInstallScope, ObjectRef, OperationKey,
     OperationStatus, OrdinalMapEdit, OwnedReadyOutcome, OwnedWorkAssignment, OwnedWorkBegin,
     OwnedWorkGrant, OwnedWorkPolicy, OwnedWorkReport, OwnerCoverage, OwnerInputBinding, OwnerKey,
-    OwnerMemberBinding, OwnerMutation, OwnerMutationCursor, OwnerMutationSet, PreparedPublication,
+    OwnerMemberBinding, OwnerMutation, OwnerMutationCursor, OwnerMutationSet, PlanContext,
+    PreparedPublication,
     ProjectionBinding, ProjectionCertificate, ProjectionId, ProjectionOwnerContribution,
     ProjectionTransition, Refusal, RegisteredObject, SourceCut, SourceInput, SourceOperationMode,
     SourceRecord, SourceTextAdmission, StagedObjectReferences, SubmitOutcome, UpdateKind,
@@ -36,6 +38,7 @@ use quanta_index_core::index::{
 };
 use quanta_index_core::index::{
     MAX_NATIVE_STAGE_SOURCES_INPUTS, MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES,
+    WorkBudgetDenial,
 };
 
 use crate::{
@@ -73,6 +76,7 @@ impl OperationExecutionClass {
             | UpdateKind::ProjectionAdvance(_)
             | UpdateKind::HistoryAdvance(_)
             | UpdateKind::HistoryAppend(_)
+            | UpdateKind::CompactSourceLocal { .. }
             | UpdateKind::Reconfigure { .. } => Self::Core,
         }
     }
@@ -124,6 +128,7 @@ pub struct KernelServices<C: ControlCatalog + 'static> {
     scratch: Arc<dyn quanta_index_core::index::ScratchSpacePort>,
     read_session: Arc<dyn quanta_index_core::index::ReadSessionLease>,
     read_lease: Duration,
+    projection_validator: Option<Arc<dyn projection::ProjectionCommitValidator>>,
 }
 
 impl<C: ControlCatalog + 'static> KernelServices<C> {
@@ -144,6 +149,7 @@ impl<C: ControlCatalog + 'static> KernelServices<C> {
             scratch,
             read_session,
             read_lease,
+            projection_validator: None,
         })
     }
 
@@ -157,6 +163,15 @@ impl<C: ControlCatalog + 'static> KernelServices<C> {
         self.objects = backend.clone();
         self.maps = backend.clone();
         self.object_maps = Some(backend);
+        self
+    }
+
+    #[must_use]
+    pub fn with_projection_validator(
+        mut self,
+        validator: Arc<dyn projection::ProjectionCommitValidator>,
+    ) -> Self {
+        self.projection_validator = Some(validator);
         self
     }
 }
@@ -1271,21 +1286,6 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         self.stage_object(ingress, output, children, budget)
     }
 
-    fn validate_projection_output_children(children: &[ObjectRef]) -> Result<(), IndexError> {
-        if children.len() > quanta_index_core::index::MAX_RECLAIM_CHILDREN {
-            return Err(IndexError::ResourceLimited);
-        }
-        if children
-            .windows(2)
-            .any(|pair| matches!(pair, [left, right] if left >= right))
-        {
-            return Err(IndexError::InvalidInput(
-                "projection output children must be sorted and unique".into(),
-            ));
-        }
-        Ok(())
-    }
-
     /// Restore exact content-addressed bytes through the same admitted ingress.
     /// Physical closure and final source verification remain mandatory.
     pub fn stage_immutable_object_v1(
@@ -1299,6 +1299,21 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             return Err(IndexError::ResourceLimited);
         }
         self.stage_object(ingress, output, children, budget)
+    }
+
+    fn validate_projection_output_children(children: &[ObjectRef]) -> Result<(), IndexError> {
+        if children.len() > quanta_index_core::index::MAX_RECLAIM_CHILDREN {
+            return Err(IndexError::ResourceLimited);
+        }
+        if children
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left >= right))
+        {
+            return Err(IndexError::InvalidInput(
+                "projection output children must be sorted and unique".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn stage_projection_owner(
@@ -1462,6 +1477,29 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             ));
         }
         Ok(sealed)
+    }
+
+    pub fn seal_mutations_for_replay_v1(
+        &self,
+        ingress: IngressRef,
+        root: MapRoot,
+        count: u64,
+        context: SourceStageReplayContextV1,
+        budget: &mut WorkBudget,
+    ) -> Result<SourceStageReplayReceiptV1, IndexError> {
+        let owners = self.seal_mutations(ingress, root, count, budget)?;
+        let receipt = SourceStageReplayReceiptV1 { ingress, owners, context };
+        self.services.catalog.persist_source_stage_replay_receipt_v1(receipt, budget)?;
+        Ok(receipt)
+    }
+
+    pub fn read_sealed_mutations_for_replay_v1(
+        &self,
+        operation: OperationKey,
+        correlation: Digest,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<SourceStageReplayReceiptV1>, IndexError> {
+        self.services.catalog.read_source_stage_replay_receipt_v1(operation, correlation, budget)
     }
 
     /// Pin one immutable view and decode its profile once for all stages of
@@ -1875,6 +1913,59 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         ))
     }
 
+    /// Re-prove one selected source-local member root while its exact view pin
+    /// remains held. The callback runs only after the profile, member binding,
+    /// and root object have all been authenticated against the same ticket.
+    ///
+    /// A corrupt or missing root is reported as `intact == false` so a
+    /// maintenance owner can durably fence the selected view before opening
+    /// any child page. Other failures retain their original error.
+    pub fn with_reproved_source_member_artifact<T>(
+        &self,
+        selection: ViewSelection,
+        instance_id: IndexInstanceId,
+        budget: &mut WorkBudget,
+        observed: impl FnOnce(ObjectRef, bool, &mut WorkBudget) -> Result<T, IndexError>,
+    ) -> Result<T, IndexError> {
+        budget.checkpoint()?;
+        let ticket = self.pin_view(selection, budget)?;
+        let result = (|| {
+            ticket.validate_for_request(budget)?;
+            let profile = load_profile_object(
+                ticket.view().profile,
+                self.services.objects.as_ref(),
+                budget,
+            )?;
+            let instance = profile
+                .instances
+                .iter()
+                .find(|instance| instance.instance == instance_id)
+                .cloned()
+                .ok_or(IndexError::SnapshotUnavailable)?;
+            let member = {
+                let mut context = quanta_index_core::index::QueryReadContext {
+                    ticket: ticket.record(),
+                    instance: &instance,
+                    objects: self.services.objects.as_ref(),
+                    maps: self.services.maps.as_ref(),
+                    budget: &mut *budget,
+                };
+                context.source_member_binding()?
+            };
+            let artifact = member.artifact;
+            let intact = match self.services.objects.get(artifact, budget) {
+                Ok(stored) => stored.registration.reference == artifact,
+                Err(IndexError::CorruptObject(_)) => false,
+                Err(error) => return Err(error),
+            };
+            budget.checkpoint()?;
+            ticket.validate_for_request(budget)?;
+            budget.checkpoint()?;
+            observed(artifact, intact, budget)
+        })();
+        ticket.finish(result, budget)
+    }
+
     fn pin_materialization(
         &self,
         request: &UpdateRequest,
@@ -1888,6 +1979,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                     self.services.read_session.as_ref(),
                     request,
                     self.services.read_lease,
+                    budget,
                 )
             }),
         )?;
@@ -1914,26 +2006,43 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         let ticket = self.pin_view(selection, budget)?;
         let result = (|| {
             ticket.validate()?;
-            let reference = self.services.maps.lookup_object(
-                ticket.view().projections,
-                &projection::projection_key(projection_id),
-                budget,
-            )?;
-            let binding = reference
-                .map(|reference| {
-                    projection::read_binding_from(
-                        reference,
-                        projection_id,
-                        self.services.objects.as_ref(),
-                        budget,
-                    )
-                })
-                .transpose()?;
+            let binding = self.projection_at_view(ticket.view(), projection_id, budget)?
+                .map(|(_, binding)| binding);
             ticket.validate()?;
             budget.checkpoint()?;
             Ok((ticket.view().identity, binding))
         })();
         ticket.finish(result, budget)
+    }
+
+    /// Read the same projection authority through the caller's original
+    /// retained read attempt. The dispatcher finalizes that attempt on reply.
+    pub fn projection_for_read_attempt(
+        &self,
+        ticket: &ReadTicket,
+        attempt: &crate::TicketReadAttempt<'_>,
+        projection_id: ProjectionId,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<(ObjectRef, ProjectionBinding)>, IndexError> {
+        attempt.require_owner(ticket, budget)?;
+        self.projection_at_view(ticket.view(), projection_id, budget)
+    }
+
+    fn projection_at_view(
+        &self,
+        view: &CatalogView,
+        projection_id: ProjectionId,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<(ObjectRef, ProjectionBinding)>, IndexError> {
+        self.services.maps.lookup_object(
+            view.projections,
+            &projection::projection_key(projection_id),
+            budget,
+        )?.map(|reference| {
+            projection::read_binding_from(
+                reference, projection_id, self.services.objects.as_ref(), budget,
+            ).map(|binding| (reference, binding))
+        }).transpose()
     }
 
     /// Bounded, explicit recovery of sessions whose process lock is gone.
@@ -2303,12 +2412,23 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             )?
         } else {
             let admit_span = diagnostic::begin(budget, DiagnosticStageV1::SqliteWork);
-            diagnostic::finish(
-                admit_span,
-                self.services
-                    .catalog
-                    .admit(operation, ingress, events, budget),
-            )?
+            let result = if let UpdateKind::ProjectionAdvance(transition) = &request.kind {
+                self.services.catalog.admit_projection(
+                    operation,
+                    ingress,
+                    events,
+                    quanta_index_contract::index::ProjectionReplayStamp {
+                        expected_view: request.expected_view,
+                        projection: transition.projection,
+                        source: transition.target_source,
+                        context: transition.dependency_context,
+                    },
+                    budget,
+                )
+            } else {
+                self.services.catalog.admit(operation, ingress, events, budget)
+            };
+            diagnostic::finish(admit_span, result)?
         };
         match admitted {
             AdmissionOutcome::New(attempt) => self.drive(attempt, budget).await,
@@ -2431,6 +2551,13 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 Ok(SubmitOutcome::Terminal(OperationStatus::Refused(reason)))
             }
             Ok(OperationStatus::Pending(_) | OperationStatus::Unknown) => Ok(self.reconcile(key)),
+            // An elapsed attempt can roll back after admission. Keep its
+            // immutable pending request available to a later authorized retry.
+            Err(IndexError::ResourceLimited)
+                if budget.first_denial() == Some(WorkBudgetDenial::Deadline) =>
+            {
+                Ok(self.reconcile(key))
+            }
             Err(error) => refusal_for(&error).map_or_else(
                 || Ok(self.reconcile(key)),
                 |reason| match diagnostic::catalog_call(
@@ -2546,6 +2673,14 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             UpdateKind::SourceHistoryAdvance(transition) => Some(&transition.history),
             _ => None,
         };
+        let compaction = match &request.kind {
+            UpdateKind::CompactSourceLocal {
+                instance,
+                expected_artifact,
+                owner,
+            } => Some((*instance, *expected_artifact, *owner)),
+            _ => None,
+        };
         let (next_source, target_profile, delta, mut events, expected_source) = match &request.kind
         {
             UpdateKind::SourceAdvance(_) | UpdateKind::SourceHistoryAdvance(_) | UpdateKind::SourceResync { .. } => {
@@ -2570,6 +2705,13 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             UpdateKind::Reconfigure { profile } => (
                 base.source,
                 *profile,
+                None,
+                PreparedEvents::copy(&[], context.budget)?,
+                None,
+            ),
+            UpdateKind::CompactSourceLocal { .. } => (
+                base.source,
+                base.profile,
                 None,
                 PreparedEvents::copy(&[], context.budget)?,
                 None,
@@ -2630,6 +2772,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                         _ => None,
                     },
                     generation_advance,
+                    compaction,
                     sequence,
                     &mut phase_context,
                 )
@@ -2752,6 +2895,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         history_transition: Option<&HistoryTransition>,
         history_append: Option<&HistoryAppendV1>,
         history_generation: Option<&HistoryGenerationAdvanceV1>,
+        compaction: Option<(IndexInstanceId, ObjectRef, OwnerKey)>,
         next_view_sequence: u64,
         context: &mut AttemptContext<'_>,
     ) -> Result<(MapRoot, MapRoot, Option<WorkSpool>), IndexError> {
@@ -2760,6 +2904,17 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         let mut work_batch = WorkActionBatch::default();
         let prior = ProfileIndex::new(&prior_profile.instances, context.budget)?;
         let target = ProfileIndex::new(&profile.instances, context.budget)?;
+        if let Some((instance, _, _)) = compaction {
+            let supported = target.get(&instance).is_some_and(|spec| {
+                spec.activation == GroupActivation::CoreRequired
+                    && spec.input_domain == InputDomain::SourceLocal
+            });
+            if !supported {
+                return Err(IndexError::InvalidInput(
+                    "compaction requires one published SourceLocal member".into(),
+                ));
+            }
+        }
         if let Some(transition) = history_transition {
             history::validate_target_profile(&prior, &target, transition, context.budget)?;
         }
@@ -2918,7 +3073,28 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                         policy: spec.policy,
                         context: source_context,
                     };
-                    let binding = if delta.is_none()
+                    let binding = if let Some((_, expected, owner)) =
+                        compaction.filter(|(target, _, _)| *target == instance)
+                    {
+                        let prior = old_binding.ok_or_else(|| {
+                            IndexError::CorruptObject("compaction member is absent".into())
+                        })?;
+                        if prior.artifact != expected {
+                            return Err(IndexError::Conflict);
+                        }
+                        self.registry
+                            .compact_source_local(
+                                prior,
+                                owner,
+                                PlanContext {
+                                    instance: (**spec).clone(),
+                                    source,
+                                    input,
+                                },
+                                context,
+                            )?
+                            .await?
+                    } else if delta.is_none()
                         && prior.get(&instance).is_some_and(|prior| *prior == *spec)
                     {
                         // Unchanged required instances retain their exact member
@@ -3366,16 +3542,17 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                                 scratch: context.scratch,
                                 budget: &mut phase_budget,
                             };
-                            self.registry
-                                .prepare_searchable(
-                                    spec,
-                                    prior_coverage.as_ref(),
-                                    owners,
-                                    None,
-                                    self.services.object_maps.as_ref(),
-                                    &mut phase_context,
-                                )?
-                                .await
+                            match self.registry.prepare_searchable(
+                                spec,
+                                prior_coverage.as_ref(),
+                                owners,
+                                None,
+                                self.services.object_maps.as_ref(),
+                                &mut phase_context,
+                            ) {
+                                Ok(future) => future.await,
+                                Err(error) => Err(error),
+                            }
                         };
                         let searchable = search_stage.finish(context.budget, prepared)?;
                         let binding = CoverageBinding {
@@ -3445,9 +3622,9 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         }
         let delta = projection::apply_projection(
             attempt.operation,
-            base.projections,
-            base.source,
+            base,
             transition,
+            self.services.projection_validator.as_deref(),
             context,
         )?;
         let mut coverage_edits = MemberEdits::new(profile.instances.len(), context.budget)?;
@@ -5139,7 +5316,9 @@ fn charge_request_metadata(
             }
             (2, bytes)
         }
-        UpdateKind::Reconfigure { .. } => (2, FIXED_REQUEST_BYTES),
+        UpdateKind::Reconfigure { .. } | UpdateKind::CompactSourceLocal { .. } => {
+            (2, FIXED_REQUEST_BYTES)
+        }
         UpdateKind::Materialize { .. } => (3, FIXED_REQUEST_BYTES),
     };
     budget.charge(WorkUsage {

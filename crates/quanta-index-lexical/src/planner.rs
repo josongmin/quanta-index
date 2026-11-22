@@ -13,7 +13,10 @@ use quanta_index_core::LexicalPredicateV1;
 
 use crate::filters::{FilterPlannerError, plan_filters};
 use crate::phrase::{PhraseField, PhrasePlannerError, PhrasePolicy, plan_phrase};
-use crate::plan::{CandidateCap, EngineKind, LexicalPlan, PlanLeaf, PlanNode, PlanTraceNode};
+use crate::plan::{
+    CandidateCap, EngineKind, LexicalPlan, PlanLeaf, PlanNode, PlanTraceNode,
+    file_contains_raw_literal_supported,
+};
 use crate::predicate_registry::{
     PREDICATE_OWNER, PredicateKind, canonical_predicate_name, canonicalize_predicate_call, kind_of,
     parse_content_predicate_constraint, parse_content_scalar_arg, parse_file_contributor_arg,
@@ -89,7 +92,7 @@ impl std::error::Error for LexicalPlannerError {}
 ///
 /// The planner is a pure function from `LqQuery` to `LexicalPlan`; it owns
 /// no adapter state, no I/O, and no policy decisions other than engine
-/// selection. Concrete adapters (Tantivy, trigram, …) are referenced only
+/// selection. Concrete adapters (text, trigram, …) are referenced only
 /// indirectly via [`EngineKind`] on the produced plan.
 pub struct LexicalPlanner;
 
@@ -120,13 +123,6 @@ impl LexicalPlanner {
             options: query.options.clone(),
             directives: query.directives.clone(),
         })
-    }
-
-    #[cfg(feature = "legacy-tantivy")]
-    pub(crate) fn validate_expr(query: &LqQuery, expr: &LqExpr) -> Result<(), LexicalPlannerError> {
-        Self::validate_symbol_text(query, expr)?;
-        let _planned = Self::plan_expr(query, expr)?;
-        Ok(())
     }
 
     fn validate_symbol_text(query: &LqQuery, expr: &LqExpr) -> Result<(), LexicalPlannerError> {
@@ -259,6 +255,14 @@ impl LexicalPlanner {
         name: &str,
         args: &[LqPredicateArg],
     ) -> Result<PlanLeaf, LexicalPlannerError> {
+        if name == "file.contains"
+            && let [LqPredicateArg::RawString(needle)] = args
+            && file_contains_raw_literal_supported(needle)
+        {
+            return Ok(PlanLeaf::FileContains {
+                needle: needle.clone(),
+            });
+        }
         if let Some(predicate) = LexicalPredicateV1::from_canonical_name(name)
             && predicate
                 .exact_symbol_name_argument(args)
@@ -464,6 +468,7 @@ fn describe_leaf(leaf: &PlanLeaf) -> String {
         PlanLeaf::Content { term } => format!("content:{term}"),
         PlanLeaf::Path { pattern } => format!("path:{pattern}"),
         PlanLeaf::Predicate { name } => format!("predicate:{name}"),
+        PlanLeaf::FileContains { .. } => "predicate:file.contains".to_owned(),
         PlanLeaf::RepoHasFile { .. } => {
             format!("predicate:{}", LexicalPredicateV1::RepoHasFile.name())
         }
@@ -515,11 +520,11 @@ mod tests {
                 PlanNode::Leaf { leaf: PlanLeaf::Content { term }, .. } if term == "alpha"
             );
             assert!(matched_leaf, "expected content leaf, got {:?}", plan.root);
-            assert!(plan.engines.contains(&EngineKind::Tantivy));
+            assert!(plan.engines.contains(&EngineKind::Text));
             assert_eq!(plan.engines.len(), 1);
             let matched_trace = matches!(
                 &plan.trace,
-                PlanTraceNode::Leaf { engine: EngineKind::Tantivy, summary } if summary == "content:alpha"
+                PlanTraceNode::Leaf { engine: EngineKind::Text, summary } if summary == "content:alpha"
             );
             assert!(
                 matched_trace,
@@ -735,13 +740,13 @@ mod tests {
                         cap: None,
                     },
                 );
-                assert!(plan.engines.contains(&EngineKind::Tantivy));
+                assert!(plan.engines.contains(&EngineKind::Text));
             }
         }
     }
 
     #[test]
-    fn predicate_repo_has_content_plans_through_tantivy_route() {
+    fn predicate_repo_has_content_plans_through_text_route() {
         use quanta_index_contract::LqPredicateArg;
         let q = query_with_expr(LqExpr::Leaf(LqLeaf::Predicate {
             name: "repo.has.content".to_owned(),
@@ -760,12 +765,12 @@ mod tests {
                 "expected predicate leaf for repo.has.content, got {:?}",
                 plan.root
             );
-            assert!(plan.engines.contains(&EngineKind::Tantivy));
+            assert!(plan.engines.contains(&EngineKind::Text));
         }
     }
 
     #[test]
-    fn predicate_repo_has_commit_after_plans_through_tantivy_route() {
+    fn predicate_repo_has_commit_after_plans_through_text_route() {
         use quanta_index_contract::LqPredicateArg;
         let q = query_with_expr(LqExpr::Leaf(LqLeaf::Predicate {
             name: "repo.has.commit.after".to_owned(),
@@ -784,12 +789,12 @@ mod tests {
                 "expected predicate leaf for repo.has.commit.after, got {:?}",
                 plan.root
             );
-            assert!(plan.engines.contains(&EngineKind::Tantivy));
+            assert!(plan.engines.contains(&EngineKind::Text));
         }
     }
 
     #[test]
-    fn predicate_native_aliases_plan_through_canonical_tantivy_route() {
+    fn predicate_native_aliases_plan_through_canonical_text_route() {
         use quanta_index_contract::LqPredicateArg;
         for (name, args, expected_name) in [
             (
@@ -830,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn predicate_content_number_and_scope_shapes_plan_through_tantivy_route() {
+    fn predicate_content_number_and_scope_shapes_plan_through_text_route() {
         use quanta_index_contract::LqPredicateArg;
         for (name, args) in [
             ("file.contains", vec![LqPredicateArg::Number(1)]),

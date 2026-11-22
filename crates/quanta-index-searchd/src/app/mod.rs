@@ -9,6 +9,7 @@ pub mod process_memory;
 mod readiness;
 mod request_events;
 pub mod runtime;
+pub use runtime::native_dsl_structural_producer_v1;
 pub mod searchd;
 pub mod semantic_boot;
 pub mod server;

@@ -111,6 +111,23 @@ fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
 }
 
 #[test]
+fn inventory_distinguishes_missing_root_from_file_ancestor() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let missing = temp.path().join("missing");
+    let inventory = inventory_persisted_generations(&missing)?;
+    if !inventory.sealed.is_empty() || !inventory.quarantined.is_empty() {
+        return Err(format!("expected an empty inventory, got {inventory:?}").into());
+    }
+
+    let ancestor = temp.path().join("not-a-directory");
+    std::fs::write(&ancestor, b"not a directory")?;
+    match inventory_persisted_generations(&ancestor.join("semantic")) {
+        Err(CoreError::Storage(_)) => Ok(()),
+        other => Err(format!("expected a storage error for a file ancestor, got {other:?}").into()),
+    }
+}
+
+#[test]
 fn point_inventory_matches_full_inventory_for_digest_and_family_symlink() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().join("semantic");
@@ -996,6 +1013,9 @@ fn malformed_sealed_manifest_is_quarantined_after_reproof() -> TestResult {
                     format!("scrub did not quarantine malformed manifest: {report:?}").into(),
                 );
             }
+            if report.files_verified != 0 || report.bytes_read != 0 {
+                return Err(format!("scrub expanded a malformed manifest: {report:?}").into());
+            }
         } else if !matches!(
             adapter.quarantine_door_finding(&identity(generation))?,
             DoorFindingOutcome::Quarantined { .. }
@@ -1013,13 +1033,83 @@ fn malformed_sealed_manifest_is_quarantined_after_reproof() -> TestResult {
             return Err(format!("wrong malformed-manifest quarantine: {entry:?}").into());
         }
         std::fs::write(path, original)?;
+        drop(adapter);
+        let reopened = SemanticAdapter::with_state_root(root)?;
         expect_refused(
-            &knock(&adapter, generation),
-            "restored bytes remain quarantined",
+            &knock(&reopened, generation),
+            "restored bytes remain quarantined after reopen",
             SearchPlaneErrorCodeV2::GenerationQuarantined,
         )?;
     }
     Ok(())
+}
+
+#[test]
+fn long_manifest_artifact_name_leaves_a_bounded_quarantine_after_reopen() -> TestResult {
+    use sha2::{Digest, Sha256};
+
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    let adapter = SemanticAdapter::with_state_root(root.to_path_buf())?;
+    let generation = ManifestGeneration::new(5);
+    seal(&adapter, generation)?;
+    let directory = generation_dir(root, generation);
+    let path = directory.join(SEALED_MANIFEST);
+    let original = std::fs::read(&path)?;
+    let mut manifest: ciborium::Value = ciborium::from_reader(original.as_slice())?;
+    let ciborium::Value::Array(fields) = &mut manifest else {
+        return Err("the sealed manifest is not an array".into());
+    };
+    let Some(ciborium::Value::Array(artifacts)) = fields.get_mut(4) else {
+        return Err("the sealed manifest has no artifact commitments".into());
+    };
+    let Some(ciborium::Value::Array(artifact)) = artifacts.first_mut() else {
+        return Err("the fixture sealed no dataset artifact".into());
+    };
+    let Some(name) = artifact.first_mut() else {
+        return Err("the first dataset artifact has no name".into());
+    };
+    *name = ciborium::Value::Text(format!("dataset/{}", "x".repeat(70_000)));
+    let mut damaged = Vec::new();
+    ciborium::into_writer(&manifest, &mut damaged)?;
+    std::fs::write(&path, damaged)?;
+
+    let finding = match adapter.validate_generation_identity(&identity(generation)) {
+        Err(CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+            message,
+        }) if message.len() > 4 * 1024 => message,
+        outcome => return Err(format!("expected a long artifact finding, got {outcome:?}").into()),
+    };
+    let detail_digest = Sha256::digest(format!("a door found {finding}").as_bytes());
+    let digest_marker = format!("original_sha256={detail_digest:x}");
+    let DoorFindingOutcome::Quarantined { quarantined } =
+        adapter.quarantine_door_finding(&identity(generation))?
+    else {
+        return Err("door reproof did not quarantine the malformed artifact commitment".into());
+    };
+    if quarantined.path != directory
+        || quarantined.detail.len() > 4 * 1024
+        || !quarantined.detail.contains(&digest_marker)
+    {
+        return Err("the persisted diagnostic did not bound and identify the full finding".into());
+    }
+
+    std::fs::write(path, original)?;
+    drop(adapter);
+    let reopened = SemanticAdapter::with_state_root(root.to_path_buf())?;
+    let inventory = inventory_persisted_generations(root)?;
+    let [receipt] = inventory.quarantined.as_slice() else {
+        return Err(format!("expected one persisted quarantine, got {inventory:?}").into());
+    };
+    if receipt.path != directory || !receipt.detail.contains(&digest_marker) {
+        return Err("reopen did not read the same bounded quarantine from disk".into());
+    }
+    expect_refused(
+        &knock(&reopened, generation),
+        "restored artifact commitment remains quarantined after reopen",
+        SearchPlaneErrorCodeV2::GenerationQuarantined,
+    )
 }
 
 #[test]

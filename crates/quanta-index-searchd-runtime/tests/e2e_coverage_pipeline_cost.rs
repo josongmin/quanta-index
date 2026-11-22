@@ -2,22 +2,30 @@
 //!
 //! The lexical adapter probe accounts for its own reads. This probe also
 //! includes semantic publication, sealing, catalog writes and the IPC path.
-//! Run one ignored case per fresh process when comparing process high-water
-//! marks. The base is built in that process, so its high-water mark is still
-//! part of the reported value; it is not delta-only allocator evidence.
+//! Run one ignored case per fresh pinned daemon. The base is built in that
+//! child, so the daemon RSS observation includes its base high-water mark;
+//! it is not delta-only allocator evidence. SDK IPC is included in timing.
 
 #![forbid(unsafe_code)]
 
 use std::error::Error;
 use std::time::{Duration, Instant};
 
+use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, MetricsSnapshotV1, SearchCorpusTombstoneScope, TextQuerySyntax,
+    ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, MetricsSnapshotV1,
+    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SourceFileKey,
+    SourcePublicationEvent, TextQueryRequest, TextQuerySyntax,
 };
-use quanta_index_core::ProcessMemoryProbePort as _;
 use quanta_index_core::domains::generation::unique_inode_tree_bytes;
+use quanta_index_sdk::{BatchMode, ConnectOptions, PublishedBatchEvidence, QuantaIndex};
 use quanta_index_searchd::app::KernelResidentMemoryProbe;
-use quanta_index_searchd_harness::E2eRuntime;
+use quanta_index_searchd_harness::legacy_reference::{
+    LegacySearchdBinary, SearchdBinaryProcess, legacy_source_delta_from_chunks,
+    legacy_source_replacement_from_chunks, request_when_ready,
+};
+use quanta_index_searchd_harness::private_tempdir;
+use quanta_index_searchd_harness::scale_runtime_policy::DEFAULT_HISTORY_MAX_GENERATIONS;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -40,12 +48,74 @@ fn counter_delta(
         .ok_or_else(|| format!("daemon counter `{name}` regressed").into())
 }
 
-fn regular_file_bytes(rt: &E2eRuntime) -> Result<u64, Box<dyn Error>> {
+fn regular_file_bytes(root: &std::path::Path) -> Result<u64, Box<dyn Error>> {
     Ok(unique_inode_tree_bytes(
-        &[rt.state_root().to_path_buf()],
+        &[root.to_path_buf()],
         &|_| false,
         None,
     )?)
+}
+
+fn daemon_rss(snapshot: &MetricsSnapshotV1) -> Result<f64, Box<dyn Error>> {
+    // The production gauge calls the same KernelResidentMemoryProbe as the
+    // old in-process test. Its process is now the pinned child daemon.
+    let value = snapshot
+        .gauges
+        .iter()
+        .find(|point| point.name == "process_resident_bytes")
+        .ok_or("missing child daemon resident-memory gauge")?
+        .value;
+    if !value.is_finite() || value <= 0.0 {
+        return Err("invalid child daemon resident-memory gauge".into());
+    }
+    Ok(value)
+}
+
+fn source_chunk(path: &str, content: String) -> Result<ChunkRecord, Box<dyn Error>> {
+    Ok(ChunkRecord {
+        chunk_id: ChunkId::new(format!("e2e-idem-{path}")),
+        repo_relative_path: RepoRelativePath::new(path),
+        language: LanguageCode::new("rust").map_err(std::io::Error::other)?,
+        start_byte: 0,
+        end_byte: u32::try_from(content.len())?,
+        start_line: 1,
+        end_line: 2,
+        text: content.into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
+        source_repo_id: None,
+    })
+}
+
+fn source_event(sequence: usize, previous: Option<usize>) -> SourcePublicationEvent {
+    SourcePublicationEvent {
+        stream_id: "e2e-harness-source-v1".into(),
+        event_id: format!("e2e-source-event-{sequence}"),
+        expected_base_event_id: previous.map(|value| format!("e2e-source-event-{value}")),
+        payload_sha256: [0; 32],
+    }
+}
+
+fn query_count(
+    client: &QuantaIndex,
+    pin: &GenerationPin,
+    query: &str,
+) -> Result<usize, Box<dyn Error>> {
+    // The original harness sends this exact Native DTO and retries NotReady.
+    let request = TextQueryRequest {
+        syntax: TextQuerySyntax::Native,
+        query_text: query.to_owned(),
+        constraints: QueryConstraintSetV1::unconstrained(),
+        generation: Some(pin.clone()),
+        generation_selector: None,
+        top_k: 5,
+        cursor: None,
+    };
+    Ok(
+        request_when_ready(|| client.lexical().query_request(request.clone()))?
+            .results
+            .len(),
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -73,121 +143,170 @@ struct PhaseRead {
     page_bytes: u64,
 }
 
+fn measure_delta(files: usize, shape: DeltaShape) -> TestResult {
+    if files < 4 {
+        return Err("cost probe requires three edit candidates and one unaffected file".into());
+    }
+    let root = private_tempdir()?;
+    let state_root = std::fs::canonicalize(root.path())?;
+    let binary = LegacySearchdBinary::from_environment()?;
+    let mut command = binary.benchmark_command(&state_root, DEFAULT_HISTORY_MAX_GENERATIONS)?;
+    // The original E2eRuntime widened the per-pair history bound to 256 MiB.
+    let _configured = command.env(
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
+        (256 * 1024 * 1024).to_string(),
+    );
+    let process = SearchdBinaryProcess::start_with_pinned_command_and_timeout(
+        &state_root,
+        command,
+        Duration::from_secs(300),
+    )?;
+    let result = (|| -> TestResult {
+        let client = QuantaIndex::connect_legacy(
+            ConnectOptions::from_state_root(state_root.clone())
+                .with_request_io_timeout(Duration::from_secs(300)),
+        )?;
+        measure_delta_with_client(&client, &state_root, files, shape)
+    })();
+    let stopped = process.stop();
+    result?;
+    stopped?;
+    binary.verify()
+}
+
 #[expect(
     clippy::print_stdout,
     reason = "the manual QI-BB-006-EVIDENCE line must reach the diagnostic run log"
 )]
-fn measure_delta(files: usize, shape: DeltaShape) -> TestResult {
-    if files < 3 {
-        return Err("cost probe requires three distinct files".into());
-    }
-    let mut rt = E2eRuntime::boot_with_client_request_timeout(Duration::from_secs(300))?
-        .with_history_max_bytes(256 * 1024 * 1024);
-    rt.start()?;
-
-    let mut base = rt.text_search_corpus_batch(
-        "src/file_00000.rs",
-        "fn base_00000() { old_only_marker(); }",
+fn measure_delta_with_client(
+    client: &QuantaIndex,
+    state_root: &std::path::Path,
+    files: usize,
+    shape: DeltaShape,
+) -> TestResult {
+    let repo = RepoId::new("repo-e2e")?;
+    let revision = RevisionId::new("rev-e2e")?;
+    let initial_path = "src/file_00000.rs";
+    let initial = source_chunk(
+        initial_path,
+        "fn base_00000() { old_only_marker(); }".into(),
     )?;
-    let initial_file = base
-        .replace_scopes
-        .first()
-        .ok_or("missing initial coverage")?
-        .coverage
-        .source
-        .file
-        .clone();
-    let initial_semantic_scopes = base
-        .semantic_replace_scopes
-        .iter()
-        .map(|scope| scope.scope.clone())
-        .collect::<Vec<_>>();
-    let mut deleted_file = None;
-    let mut deleted_semantic_scopes = Vec::new();
+    let deleted_path = "src/file_00001.rs";
+    let mut base_chunks = vec![initial.clone()];
     for index in 1..files {
         let path = format!("src/file_{index:05}.rs");
         let content = format!("fn base_{index:05}() {{}}");
-        let next = rt.text_search_corpus_batch(&path, &content)?;
-        if index == 1 {
-            deleted_file = Some(
-                next.replace_scopes
-                    .first()
-                    .ok_or("missing deletion coverage")?
-                    .coverage
-                    .source
-                    .file
-                    .clone(),
-            );
-            deleted_semantic_scopes.extend(
-                next.semantic_replace_scopes
-                    .iter()
-                    .map(|scope| scope.scope.clone()),
-            );
-        }
-        base.replace_scopes.extend(next.replace_scopes);
-        base.semantic_replace_scopes
-            .extend(next.semantic_replace_scopes);
+        base_chunks.push(source_chunk(&path, content)?);
     }
-    rt.issue_fixture_source_event(&mut base)?;
-    base.validate_v1()?;
+    let deleted = base_chunks.get(1).ok_or("missing deletion target")?.clone();
+    // Each old text_search_corpus_batch consumed one event sequence, then
+    // issue_fixture_source_event stamped the complete G1 body as files + 1.
+    let base_event = files + 1;
+    let base = legacy_source_replacement_from_chunks(&repo, &revision, 1, base_chunks)?
+        .source_event(source_event(base_event, None));
     let started = Instant::now();
-    rt.publish_search_corpus_batch(base)?;
+    let base_outcome = client.search_corpus().publish_outcome(&base)?;
     let base_ms = started.elapsed().as_millis();
-    rt.activate_last_sealed_generation()?;
-    let before = rt.metrics_snapshot()?;
-    let base_disk_bytes = regular_file_bytes(&rt)?;
-    let base_process_rss = KernelResidentMemoryProbe.resident_bytes()?;
+    if !base_outcome.receipt.applied || base_outcome.receipt.durable_sequence == 0 {
+        return Err("G1 Source publication was not durable".into());
+    }
+    let active_g1 = client
+        .search_corpus()
+        .activate_published(&PublishedBatchEvidence::from(&base_outcome), None)?
+        .active;
+    if client
+        .generations()
+        .active_head(repo.clone(), revision.clone())?
+        != Some(active_g1.clone())
+    {
+        return Err("G1 Source active head differs from activation".into());
+    }
+    let before = client.observability().metrics_snapshot()?;
+    let base_disk_bytes = regular_file_bytes(state_root)?;
+    let base_process_rss = daemon_rss(&before)?;
 
-    let mut delta =
-        rt.text_search_corpus_batch("src/file_00000.rs", "fn base_00000() { changed_needle(); }")?;
+    let updated = source_chunk(initial_path, "fn base_00000() { changed_needle(); }".into())?;
+    let mut replacements = if matches!(shape, DeltaShape::Delete) {
+        Vec::new()
+    } else {
+        vec![updated]
+    };
+    let mut deleted_files = Vec::new();
+    let mut retired = Vec::new();
     if matches!(shape, DeltaShape::Delete) {
-        delta.replace_scopes.clear();
-        delta.semantic_replace_scopes.clear();
-        delta
-            .tombstone_scopes
-            .push(SearchCorpusTombstoneScope { file: initial_file });
-        delta
-            .semantic_tombstone_scopes
-            .extend(initial_semantic_scopes);
+        deleted_files.push(SourceFileKey {
+            source_repo_id: repo.clone(),
+            repo_relative_path: initial.repo_relative_path.clone(),
+        });
+        retired.push(initial);
     }
     if matches!(shape, DeltaShape::Mixed) {
-        let second = rt.text_search_corpus_batch(
+        replacements.push(source_chunk(
             "src/file_00002.rs",
-            "fn replacement_00002() { second_changed_needle(); }",
-        )?;
-        delta.replace_scopes.extend(second.replace_scopes);
-        delta
-            .semantic_replace_scopes
-            .extend(second.semantic_replace_scopes);
-        delta.tombstone_scopes.push(SearchCorpusTombstoneScope {
-            file: deleted_file.ok_or("missing deletion target")?,
+            "fn replacement_00002() { second_changed_needle(); }".into(),
+        )?);
+        deleted_files.push(SourceFileKey {
+            source_repo_id: repo.clone(),
+            repo_relative_path: RepoRelativePath::new(deleted_path),
         });
-        delta
-            .semantic_tombstone_scopes
-            .extend(deleted_semantic_scopes);
+        retired.push(deleted);
     }
-    if delta.mode != BatchIngestMode::Delta {
+    // G2's draft consumes one sequence; Mixed's second draft consumes one
+    // more. The final complete Source event is then stamped once.
+    let delta_event = files
+        + if matches!(shape, DeltaShape::Mixed) {
+            4
+        } else {
+            3
+        };
+    let delta = legacy_source_delta_from_chunks(
+        &repo,
+        &revision,
+        2,
+        &retired,
+        &deleted_files,
+        replacements,
+    )?
+    .source_event(source_event(delta_event, Some(base_event)));
+    if delta.mode() != BatchMode::Delta
+        || delta.base_generation() != Some(ManifestGeneration::new(1))
+    {
         return Err("successor must be a delta".into());
     }
-    rt.issue_fixture_source_event(&mut delta)?;
-    delta.validate_v1()?;
     let started = Instant::now();
-    rt.publish_search_corpus_batch(delta)?;
+    let delta_outcome = client.search_corpus().publish_outcome(&delta)?;
     let delta_ms = started.elapsed().as_millis();
-    let after = rt.metrics_snapshot()?;
-    let delta_disk_bytes = regular_file_bytes(&rt)?;
-    let delta_process_rss = KernelResidentMemoryProbe.resident_bytes()?;
-
-    rt.activate_last_sealed_generation()?;
-    let result = rt.query_text(TextQuerySyntax::Native, "changed_needle", 5);
-    if let Some(error) = result.typed_error {
-        return Err(format!("delta query failed: {error}").into());
+    if !delta_outcome.receipt.applied
+        || delta_outcome.receipt.durable_sequence <= base_outcome.receipt.durable_sequence
+    {
+        return Err("G2 Source publication was not a new durable apply".into());
     }
+    // Preserve the original boundary: metrics, inode bytes and RSS are read
+    // after the G2 seal but before its active-head CAS.
+    let after = client.observability().metrics_snapshot()?;
+    let delta_disk_bytes = regular_file_bytes(state_root)?;
+    let delta_process_rss = daemon_rss(&after)?;
+
+    let active_g2 = client
+        .search_corpus()
+        .activate_published(
+            &PublishedBatchEvidence::from(&delta_outcome),
+            Some(active_g1),
+        )?
+        .active;
+    if client
+        .generations()
+        .active_head(repo.clone(), revision.clone())?
+        != Some(active_g2)
+    {
+        return Err("G2 Source active head differs from activation".into());
+    }
+    let pin = GenerationPin::new(repo, revision, ManifestGeneration::new(2));
     let expected_changed = usize::from(!matches!(shape, DeltaShape::Delete));
-    if result.candidate_ids.len() != expected_changed {
+    let changed = query_count(client, &pin, "changed_needle")?;
+    if changed != expected_changed {
         return Err(format!(
-            "expected {expected_changed} changed chunks, got {} candidates",
-            result.candidate_ids.len()
+            "expected {expected_changed} changed chunks, got {changed} candidates",
         )
         .into());
     }
@@ -203,16 +322,9 @@ fn measure_delta(files: usize, shape: DeltaShape) -> TestResult {
         ),
         ("base_00003", 1),
     ] {
-        let result = rt.query_text(TextQuerySyntax::Native, query, 5);
-        if let Some(error) = result.typed_error {
-            return Err(format!("{query} query failed: {error}").into());
-        }
-        if result.candidate_ids.len() != expected {
-            return Err(format!(
-                "{query}: expected {expected} candidates, got {}",
-                result.candidate_ids.len()
-            )
-            .into());
+        let count = query_count(client, &pin, query)?;
+        if count != expected {
+            return Err(format!("{query}: expected {expected} candidates, got {count}").into());
         }
     }
 
@@ -268,7 +380,7 @@ fn measure_delta(files: usize, shape: DeltaShape) -> TestResult {
         .into());
     }
     println!(
-        "QI-BB-006-EVIDENCE kind=daemon_total_pipeline shape={} files={files} base_ms={base_ms} delta_ms={delta_ms} coverage_pages_read={pages} coverage_rows_decoded={rows} coverage_root_bytes_read={root_bytes} coverage_page_bytes_read={page_bytes} coverage_phase_order=before_intent,under_lock,build,open coverage_phase_reads={phase_reads:?} lexical_seal_bytes_hashed={seal_bytes} base_disk_bytes={base_disk_bytes} delta_disk_bytes={delta_disk_bytes} base_process_rss_bytes={base_process_rss} delta_process_rss_bytes={delta_process_rss} rss_semantics={}",
+        "QI-BB-006-EVIDENCE kind=daemon_total_pipeline shape={} files={files} base_ms={base_ms} delta_ms={delta_ms} coverage_pages_read={pages} coverage_rows_decoded={rows} coverage_root_bytes_read={root_bytes} coverage_page_bytes_read={page_bytes} coverage_phase_order=before_intent,under_lock,build,open coverage_phase_reads={phase_reads:?} lexical_seal_bytes_hashed={seal_bytes} base_disk_bytes={base_disk_bytes} delta_disk_bytes={delta_disk_bytes} base_process_rss_bytes={base_process_rss:.0} delta_process_rss_bytes={delta_process_rss:.0} rss_scope=child_daemon rss_semantics={} timing_scope=external_sdk_publish",
         shape.name(),
         KernelResidentMemoryProbe::semantics(),
     );

@@ -102,10 +102,10 @@ impl Serialize for CompiledRepoMapProjectionEntryV1 {
     }
 }
 
-/// Checks decoded length before making a retained `String` copy.
+/// Checks decoded length before retaining UTF-8 text.
 ///
-/// Borrowed UTF-8 is checked before the copy. The containing object/request
-/// has a separate byte cap for readers that own their input buffer.
+/// Borrowed UTF-8 is checked before copying; owned text is validated before
+/// adoption. The containing object/request separately caps its input buffer.
 struct LimitedText<const MAX: usize>(String);
 
 impl<'de, const MAX: usize> Deserialize<'de> for LimitedText<MAX> {
@@ -133,7 +133,7 @@ impl<'de, const MAX: usize> Deserialize<'de> for LimitedText<MAX> {
                 Ok(LimitedText(value))
             }
         }
-        deserializer.deserialize_str(Text::<MAX>)
+        deserializer.deserialize_string(Text::<MAX>)
     }
 }
 

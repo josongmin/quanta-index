@@ -102,6 +102,25 @@ fn query_ids(
 }
 
 #[test]
+fn initially_empty_text_publication_reopens_as_the_same_queryable_view() -> TestResult {
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let service = NativeServiceGuard::start(bind_native_text_service(root.path(), &socket)?);
+    let client = NativeUdsClient::new(socket.clone());
+    let configured = configured_text_view(&client)?;
+    let ingress = client.begin_input(operation(2), &budget())?;
+    let empty = advance_text_owners(&client, configured, 2, ingress, Vec::new())?;
+    assert_ne!(empty, configured);
+    let before = query_ids(&client, empty, "needle", &[])?;
+    service.stop()?;
+
+    let reopened = NativeServiceGuard::start(bind_native_text_service(root.path(), &socket)?);
+    let after = query_ids(&client, empty, "needle", &[])?;
+    assert_eq!(after, before);
+    reopened.stop()
+}
+
+#[test]
 fn native_text_dsl_fixture_returns_exact_published_files() -> TestResult {
     use std::fmt::Write as _;
 
@@ -129,7 +148,17 @@ fn native_text_dsl_fixture_returns_exact_published_files() -> TestResult {
             language: None,
         })
         .collect();
-    let staged = client.stage_sources(ingress, sources, &budget())?;
+    let NativeIndexResponse::StagedSources(staged) = client.request(
+        NativeIndexRequest::StageRepositorySources {
+            ingress,
+            repository: quanta_index_contract::RepoId::new("native-dsl-fixture")?,
+            inputs: sources,
+        },
+        &budget(),
+    )?
+    else {
+        return Err("text DSL repository fixture staging returned an unexpected reply".into());
+    };
     assert_eq!(staged.len(), LEXICAL_CORPUS.len());
     let mutations = staged
         .into_iter()
@@ -389,6 +418,79 @@ fn cold_multiblock_owner_queries_first_middle_last_after_reopen() -> TestResult 
     let reopened = NativeServiceGuard::start(bind_native_text_service(root.path(), &socket)?);
     for (term, original) in ["term000", "term128", "term256"].into_iter().zip(before) {
         let result = query_ids(&client, view, term, &[1])?;
+        assert_eq!(result.hits, original.hits, "reopened {term} differs");
+    }
+    reopened.stop()
+}
+
+#[test]
+fn cold_multipage_postings_query_all_owners_after_reopen() -> TestResult {
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let service = NativeServiceGuard::start(bind_native_text_service(root.path(), &socket)?);
+    let client = NativeUdsClient::new(socket.clone());
+    let configured = configured_text_view(&client)?;
+    let ingress = client.begin_input(operation(2), &budget())?;
+    // Four owners share 257 words: at least 514 case keys and 2,056 posting edits.
+    // The sorted phase-0 stream crosses the 1,772-row packet boundary.
+    let body = (0..257_u16)
+        .map(|ordinal| format!("term{ordinal:03}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let sources = (1..=4_u8)
+        .map(|owner| SourceInput {
+            path: format!("multipage-{owner}.rs").into(),
+            bytes: body.as_bytes().to_vec(),
+            text: SourceTextAdmission::Utf8 {
+                policy: Digest([31; 32]),
+            },
+            language: None,
+        })
+        .collect();
+    let staged = client.stage_sources(ingress, sources, &budget())?;
+    assert_eq!(staged.len(), 4);
+    let mutations = staged
+        .into_iter()
+        .enumerate()
+        .map(|(index, source)| -> TestResult<OwnerMutation> {
+            let owner = u8::try_from(index + 1)?;
+            Ok(OwnerMutation {
+                owner: OwnerKey {
+                    producer: operation(2).producer,
+                    stable_id: StableOwnerId([owner; 16]),
+                },
+                expected: None,
+                next: Some(source),
+            })
+        })
+        .collect::<TestResult<Vec<_>>>()?;
+    let view = advance_text_owners(&client, configured, 2, ingress, mutations)?;
+    let expected_paths = [
+        "multipage-1.rs",
+        "multipage-2.rs",
+        "multipage-3.rs",
+        "multipage-4.rs",
+    ];
+    let terms = [
+        "term000", "TERM000", "term128", "TERM128", "term256", "TERM256",
+    ];
+    let mut before = Vec::new();
+    for term in terms {
+        let result = query_ids(&client, view, term, &[1, 2, 3, 4])?;
+        let mut paths = result
+            .hits
+            .iter()
+            .map(|hit| hit.path.as_str())
+            .collect::<Vec<_>>();
+        paths.sort_unstable();
+        assert_eq!(paths, expected_paths, "{term} paths differ");
+        before.push(result);
+    }
+    service.stop()?;
+
+    let reopened = NativeServiceGuard::start(bind_native_text_service(root.path(), &socket)?);
+    for (term, original) in terms.into_iter().zip(before) {
+        let result = query_ids(&client, view, term, &[1, 2, 3, 4])?;
         assert_eq!(result.hits, original.hits, "reopened {term} differs");
     }
     reopened.stop()

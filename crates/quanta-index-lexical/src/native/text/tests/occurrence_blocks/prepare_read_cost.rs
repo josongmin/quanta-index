@@ -43,6 +43,50 @@ impl DiagnosticClockV1 for Tick {
 }
 
 impl PostingTrace {
+    fn check_nested_flush_parent(&self) -> Result<(), IndexError> {
+        let events = self
+            .0
+            .lock()
+            .map_err(|_error| IndexError::Storage("posting trace lock".into()))?;
+        let mut active_posting_write = None;
+        let mut nested_flush = false;
+        for event in events.iter() {
+            match event.kind {
+                DiagnosticEventKindV1::SpanBegin {
+                    stage: DiagnosticStageV1::NativeTextPostings,
+                    lane: DiagnosticLaneV1(38),
+                    span_id,
+                    ..
+                } => {
+                    check!(active_posting_write.replace(span_id).is_none());
+                }
+                DiagnosticEventKindV1::SpanBegin {
+                    stage: DiagnosticStageV1::NativeTextPostings,
+                    lane: DiagnosticLaneV1(39),
+                    parent_span_id,
+                    ..
+                } => {
+                    if let Some(parent) = active_posting_write {
+                        check!(
+                            parent_span_id == Some(parent),
+                            "nested posting flush lost its active Work parent"
+                        );
+                        nested_flush = true;
+                    }
+                }
+                DiagnosticEventKindV1::SpanEnd { span_id, .. }
+                    if active_posting_write == Some(span_id) =>
+                {
+                    active_posting_write = None;
+                }
+                _ => {}
+            }
+        }
+        check!(active_posting_write.is_none());
+        check!(nested_flush, "fixture did not flush inside posting writes");
+        Ok(())
+    }
+
     fn first_root_work(&self) -> Result<u64, IndexError> {
         self.stage_work(
             DiagnosticStageV1::NativeTextPostings,
@@ -85,6 +129,44 @@ impl PostingTrace {
             })
             .ok_or_else(|| IndexError::BackendViolation("expected Work counter absent".into()))
     }
+}
+
+fn published_terms(
+    objects: &CanonicalObjects,
+    maps: &CanonicalMaps,
+    root: MapRoot,
+    expected_terms: usize,
+    budget: &mut WorkBudget,
+) -> Result<Rows, IndexError> {
+    let pages = maps.rows(root)?;
+    // Page count depends on encoded key/value bytes and distinct children,
+    // not only row count. Exact terms and interval/registration checks below
+    // remain the semantic oracle; fixed wire-boundary tests cover splitting.
+    check!(!pages.is_empty());
+    check!(pages.len() <= expected_terms);
+    let mut terms = Rows::new();
+    let mut prior_fence: Option<Vec<u8>> = None;
+    for (fence, value) in pages {
+        if let Some(prior) = &prior_fence {
+            check!(prior < &fence);
+        }
+        let reference = value.object_ref()?;
+        let stored = objects.get(reference, budget)?;
+        check!(stored.payload.len() <= 16 * 1024);
+        check!(stored.registration.children.len() <= 255);
+        let page = term_dictionary::CheckedPage::parse(stored, reference, budget)?;
+        page.validate_fence(&fence)?;
+        if let Some(prior) = &prior_fence {
+            check!(page.first_key()? > prior.as_slice());
+        }
+        for slot in 0..page.len() {
+            let (key, posting) = page.entry(slot)?;
+            check!(terms.insert(key.to_vec(), posting).is_none());
+        }
+        prior_fence = Some(fence);
+    }
+    check_eq!(terms.len(), expected_terms);
+    Ok(terms)
 }
 
 fn posting_prepare(tail_width: usize) -> Result<(i32, u64, u64), IndexError> {
@@ -148,8 +230,7 @@ fn posting_prepare(tail_width: usize) -> Result<(i32, u64, u64), IndexError> {
     parent
         .finish(DiagnosticTerminalV1::Ok)
         .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
-    let terms = maps.rows(root.terms)?;
-    check_eq!(terms.len(), 67);
+    let terms = published_terms(&objects, &maps, root.terms, 67, context.budget)?;
     let value = MapValue::inline(&owner, Some(occurrence))?;
     for key in rows.keys() {
         check_eq!(terms.get(key), Some(&value));
@@ -186,8 +267,15 @@ fn posting_prepare(tail_width: usize) -> Result<(i32, u64, u64), IndexError> {
         moved.to_vec(),
         MapValue::inline(&new_owner, Some(new_occurrence))?,
     );
-    check_eq!(maps.rows(root.terms)?, expected);
-    check_eq!(maps.rows(old_root.terms)?, terms);
+    check_eq!(
+        published_terms(&objects, &maps, root.terms, expected.len(), context.budget)?,
+        expected
+    );
+    check_eq!(
+        published_terms(&objects, &maps, old_root.terms, terms.len(), context.budget)?,
+        terms
+    );
+    trace.check_nested_flush_parent()?;
     Ok((
         after
             .checked_sub(before)
@@ -282,9 +370,10 @@ fn posting_shared_block_binds_case_slots_and_preserves_staged_object_posting()
         budget: &mut budget,
     };
     apply_postings(&mut root, &mut context, &spool, None)?;
-    check_eq!(objects.batch_inputs.load(Ordering::Relaxed), 1);
-    let terms = maps.rows(root.terms)?;
-    check_eq!(terms.len(), 5);
+    // One Small posting block and one canonical dictionary page are the two
+    // physical inputs; the four case slots still share the Small child below.
+    check_eq!(objects.batch_inputs.load(Ordering::Relaxed), 2);
+    let terms = published_terms(&objects, &maps, root.terms, 5, context.budget)?;
     check_eq!(
         terms.get(b"\x01staged".as_slice()).copied(),
         Some(confirmed.into())
@@ -713,6 +802,7 @@ fn multiblock_prepare(
                     prepared.indexed_tokens
                 },
                 alias: Some(alias),
+                shared: false,
             },
         },
         context.budget,
@@ -720,6 +810,7 @@ fn multiblock_prepare(
     batch.ready.push(ReadyTextNext::default(), context.budget)?;
     batch.bases.push(EntryMap::default(), context.budget)?;
     batch.counts.push(alias.anchors, context.budget)?;
+    batch.directory_receipts.push(None, context.budget)?;
     batch.attempt = Some(context.attempt);
     let before_maps = maps.applies.load(Ordering::Relaxed);
     let trace = Arc::new(PostingTrace::default());
@@ -853,6 +944,7 @@ fn multiblock_prepare(
                             },
                             tokens: second_prepared.indexed_tokens,
                             alias: Some(second_alias),
+                            shared: false,
                         },
                     },
                     context.budget,
@@ -860,6 +952,7 @@ fn multiblock_prepare(
                 batch.ready.push(ReadyTextNext::default(), context.budget)?;
                 batch.bases.push(EntryMap::default(), context.budget)?;
                 batch.counts.push(second_alias.anchors, context.budget)?;
+                batch.directory_receipts.push(None, context.budget)?;
                 batch.attempt = Some(context.attempt);
                 ready_phase(
                     "second inventory batch",
@@ -892,8 +985,7 @@ fn multiblock_prepare(
             } else {
                 apply_postings(&mut root, &mut context, &spool, None)?;
             }
-            let terms = probe.maps.rows(root.terms)?;
-            check_eq!(terms.len(), 514);
+            let terms = published_terms(objects, maps, root.terms, 514, context.budget)?;
             let contribution_value = if reuse_confirmed {
                 ready_phase(
                     "first owner lookup",

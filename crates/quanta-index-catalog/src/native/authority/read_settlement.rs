@@ -2,7 +2,7 @@
 //! No empty cursor or GC queue page is treated as a debt-zero certificate.
 
 use quanta_index_core::index::{
-    CatalogReadSettlementPort, Digest, IndexError, NativeReadReleaseObservation,
+    CatalogReadSettlementPort, Digest, IndexError, MemoryLifetime, NativeReadReleaseObservation,
     NativeReadSettlement, NativeReadSettlementBlocker, NativeReadSettlementScope,
     NativeReadSettlementStatus, ObjectRef, ReadSessionLease, ReadTicketLease, WorkBudget,
     WorkUsage,
@@ -218,7 +218,9 @@ impl CatalogReadSettlementPort for SqliteCatalog {
         if (session_row.2, session_row.3) != concrete.inode {
             return Err(IndexError::Storage("read session inode mismatch".into()));
         }
-        let pin = lifetime::checked_pin(&transaction, ticket)?;
+        let pin_scratch =
+            lifetime::PinReadScratch::reserve(Some(budget), MemoryLifetime::Temporary)?;
+        let pin = lifetime::checked_pin(&transaction, ticket, &pin_scratch)?;
         if pin.5 != workspace_key(scope.workspace)?
             || pin.6 != int(scope.epoch)?
             || pin.7 != int(scope.target.sequence)?
@@ -226,6 +228,7 @@ impl CatalogReadSettlementPort for SqliteCatalog {
             return Err(IndexError::SnapshotUnavailable);
         }
         let _view = retention::charged_exact_view(&transaction, scope.target, budget)?;
+        self.require_pin_integrity(&transaction, budget)?;
         let changed = transaction
             .execute(
                 "DELETE FROM native_pin_v1 WHERE ticket=?1 AND fence=?2",
@@ -294,6 +297,7 @@ impl CatalogReadSettlementPort for SqliteCatalog {
         }
         let exact_floor =
             retention::exact_floor_for_epoch(&transaction, scope.workspace, scope.epoch)?;
+        self.require_pin_integrity(&transaction, budget)?;
         let workspace = workspace_key(scope.workspace)?;
         let epoch = int(scope.epoch)?;
         let sequence = int(scope.target.sequence)?;

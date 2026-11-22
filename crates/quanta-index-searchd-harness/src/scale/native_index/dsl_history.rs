@@ -29,10 +29,12 @@ use super::{
     retained_read::{QUERY_DEADLINE, text_query},
 };
 use crate::{
-    artifact::{BenchSyntax, LatencySummary, ResultShape},
+    artifact::{BenchSyntax, GitHeadV1, LatencySummary, ResultShape},
     history_fixture::HISTORY_LEDGER,
-    scenarios::{FixtureKind, TOP_K, scenario_by_id},
+    scenarios::{DslBenchScenario, FixtureKind, TOP_K, scenario_by_id},
 };
+
+pub(super) const HISTORY_SAMPLES_SCHEMA: &str = "native-dsl-history-samples-v2";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,6 +55,7 @@ struct ColdHistoryFixture {
     daemon_sha256: String,
     config: PathBuf,
     config_sha256: String,
+    source_git_head: Option<String>,
 }
 
 fn read_native_config(path: &Path) -> Result<Vec<u8>> {
@@ -117,6 +120,12 @@ fn measure_reopened_history(
     schema: &'static str,
 ) -> Result<Value> {
     let input: ColdHistoryFixture = serde_json::from_reader(File::open(input_path)?)?;
+    if let Some(head) = input.source_git_head.as_deref() {
+        ensure!(
+            GitHeadV1::parse(head)?.as_str() == head,
+            "Native History source HEAD must be canonical"
+        );
+    }
     ensure!(
         input.config.is_absolute() && input.history.socket.is_absolute(),
         "Native History config and socket must be absolute",
@@ -160,9 +169,10 @@ fn measure_reopened_history(
         0,
         &stderr,
     )?;
-    let measured = measure_published_history(&input.history, scenario_id, timing);
+    let measured = measure_published_history(&input.history, scenario_id, timing)
+        .and_then(|report| Ok((report, daemon.linux_peak_rss_bytes()?)));
     match (measured, daemon.stop(&mut None)) {
-        (Ok(report), Ok(())) => {
+        (Ok((report, peak_rss_bytes)), Ok(())) => {
             ensure!(
                 read_native_config(&input.config)? == config_bytes,
                 "Native History config changed during measurement"
@@ -170,6 +180,7 @@ fn measure_reopened_history(
             Ok(json!({
                 "schema": schema,
                 "daemon_sha256": input.daemon_sha256,
+                "daemon_peak_rss_bytes": peak_rss_bytes,
                 "config_sha256": input.config_sha256,
                 "history": report,
             }))
@@ -198,6 +209,19 @@ fn new_open_key(seed: [u8; 32]) -> Result<[u8; 32]> {
     Ok(key.into())
 }
 
+pub(super) fn history_query(scenario: &DslBenchScenario) -> HistoryQueryRequest {
+    let mut text_query = text_query(&scenario.query.resolve(), TOP_K);
+    text_query.syntax = match scenario.syntax {
+        BenchSyntax::Native => TextQuerySyntax::Native,
+        BenchSyntax::Sourcegraph => TextQuerySyntax::Sourcegraph,
+    };
+    HistoryQueryRequest {
+        text_query,
+        order: HistoryOrderV1::Recency,
+        cursor: None,
+    }
+}
+
 fn measure_published_history(
     input: &PublishedHistoryFixture,
     scenario_id: &str,
@@ -218,16 +242,7 @@ fn measure_published_history(
         generation.revision_id.clone(),
         generation.generation,
     )?;
-    let mut text_query = text_query(&scenario.query.resolve(), TOP_K);
-    text_query.syntax = match scenario.syntax {
-        BenchSyntax::Native => TextQuerySyntax::Native,
-        BenchSyntax::Sourcegraph => TextQuerySyntax::Sourcegraph,
-    };
-    let query = HistoryQueryRequest {
-        text_query,
-        order: HistoryOrderV1::Recency,
-        cursor: None,
-    };
+    let query = history_query(scenario);
     let sdk = QuantaIndex::connect_query_only(ConnectOptions::from_native_socket(
         &input.socket,
         ViewSelection::Exact(input.view),
@@ -240,6 +255,7 @@ fn measure_published_history(
     let run = (|| -> Result<Value> {
         let _profile = session.load_profile(&budget())?;
         let mut witness = None;
+        let mut observed_page = None;
         let mut samples_ms = Vec::new();
         let keep_warm_session = timing.prime_queries > 0;
         let request_timeout_ms = u64::try_from(QUERY_DEADLINE.as_millis())?;
@@ -272,17 +288,21 @@ fn measure_published_history(
                     .context("missing Published History witness")?;
                 verify_sample(&page, pinned, &fixture, scenario.expected_shape)
                     .with_context(|| format!("Native History DSL scenario {scenario_id}"))?;
+                // The pass ends with measured queries, after any priming.
+                // Keep one page so the reported witness is from a timed query.
+                observed_page = Some(page);
                 Ok(latency_ms)
             })?);
         }
         let latency =
             LatencySummary::from_samples_ms(&samples_ms).context("empty History sample set")?;
         Ok(json!({
-            "schema": "native-dsl-history-samples-v1",
+            "schema": HISTORY_SAMPLES_SCHEMA,
             "scenario_id": scenario_id,
             "query": query,
             "result_shape": scenario.expected_shape.as_str(),
             "published": witness.context("missing Published History witness")?,
+            "observed_page": observed_page.context("missing verified History page")?,
             "passes": timing.passes,
             "samples_per_pass": timing.samples,
             "prime_queries": timing.prime_queries,
@@ -302,7 +322,7 @@ fn measure_published_history(
     }
 }
 
-fn verify_sample(
+pub(super) fn verify_sample(
     page: &NativeHistoryPage,
     witness: &NativeReadSessionHistoryCutV1,
     fixture: &HistoryIngestBatch,

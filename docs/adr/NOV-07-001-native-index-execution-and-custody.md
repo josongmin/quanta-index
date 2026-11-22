@@ -153,6 +153,53 @@ admission and the original product DoD remain required. See
 [Catalog](../../crates/quanta-index-catalog/src/native/authority.rs) and
 [Storage boundary](../../crates/quanta-index-storage/Cargo.toml).
 
+## Prepared searchable installation
+
+The existing [Core preparation](../../crates/quanta-index-core/src/index/searchable.rs),
+[Kernel coverage caller](../../crates/quanta-index-kernel/src/update.rs) and
+[Semantic directory](../../crates/quanta-index-semantic/src/native/embedding/ann_directory.rs)
+share one attempt-bound searchable child and coverage parent. Provisional refs
+are canonical parent-encoding inputs; they grant no readable object, pin or
+Catalog publication authority. Root/default/non-ANN scalar paths retain their
+original wire, registered children and identity.
+
+For eligible ordinary non-seal ANN updates, delta COW, descriptor and coverage
+use one preparation scope. `ObjectMapBatchPort::prepare_one_map` owns the selected
+backend, original base, resident COW stage, AttemptRef and allocation custody.
+Consumption rechecks attempt, sink scope and coverage base before physical I/O.
+The original child-first reserve → physical sync → confirm, returned ordinal/ref
+validation and final Catalog CAS remain. The non-seal packet retains at most
+2 opaque DATA objects and 2 short-key roots. Independent separate-sequence
+oracles compare canonical bytes, identity, child closure, selected results,
+logical usage/peak admission and actual reserve/confirm counts.
+Counterexamples retain wrong attempt/base/return order, funding/confirm/partial
+failure and reopen checks.
+
+The same-attempt [owner scope](../../crates/quanta-index-core/src/index/ports.rs)
+retains installed artifact frontiers, same-operation artifact reuse and
+provisional metadata plus owners/missing original bases and old/current roots.
+Its [ResidentStage](../../crates/quanta-index-storage/src/map/resident.rs)
+lends canonical wire/map/selected-member/recipe/children reads only for that
+scope's provisional refs. Seal/readback, projected reverse-map, retirement
+unlink and other paths needing physical I/O flush before the first real write.
+Prepared, transferred and installed remain distinct. Without an early flush,
+owner completion retains at most 4 DATA objects and 4 independent roots. The
+[physical walker](../../crates/quanta-index-storage/src/object.rs) keeps the
+256-object/64 MiB split and verifies base and child→parent reachability before
+durable reserve. Source/Projection/reconfigure callers consume the same identity
+and ordered-return checks.
+
+Failure, cancellation or funding refusal publishes no prepared prefix. Partial
+physical installation remains charged to the original attempt's abort/reclaim
+custody; token drop performs no I/O. Preserve original payload/wire grants,
+deadline/cancel/error priority, physical base, old pins, delete/ABA fencing and
+Catalog CAS. A selected backend error does not choose another engine. Fewer
+install groups are measured on the actual source/branch; they establish neither
+one COMMIT nor lower wall time nor current ANN4K/product acceptance.
+
+Historical implementation results and unchanged product gates remain in
+[E04](../plans/oct-22-finalizing/E04-semantic-ann.md#implemented-source-contract--reuse-no-new-ticket).
+
 ## Consolidated implementation boundaries
 
 - **Logical identity across Text compaction.** Repacking may change the physical
@@ -226,6 +273,44 @@ precedes the Catalog root CAS. Keep child order, ref/ordinal, EOF and old-root
 checks, with the persistent Catalog write transaction outside file I/O.
 [Install path](../../crates/quanta-index-lexical/src/native/text/dense_posting/write.rs)
 
+The current terms map stores upper full-case-key fences to immutable
+`QITXTD01` pages, each bounded by 16 KiB and the wire's 255 distinct children.
+Greedy filling uses actual encoded bytes; the row ceiling is derived from the
+seven-byte minimum valid row, not the unrelated 64-row write batch. Pages retain
+the exact full keys, posting values and first-use physical child references. A
+bounded deterministic child index verifies complete references after collisions;
+hashing, probes, comparisons and slot writes retain their Work charges. Readers
+allocate only the authenticated count's row offsets and reject duplicate child
+slots through the same index. Cold and
+warm writers use the same representation. Warm edits rewrite only the selected
+old page, check each term's expected value, and stage changed fences; owner
+edits join those fences in the existing atomic multi-root apply. A failed page
+install poisons the disposable anchor stream before publication. The output
+policy rejects both the previous per-term map and fixed-64-row policies; there
+is no parallel reader.
+Durable queries and overlay membership select authenticated upper-fence pages.
+Overlay DF adjustment resolves one immutable term posting across its masked
+owners while retaining each owner's inventory, source and occurrence checks.
+[Term dictionary](../../crates/quanta-index-lexical/src/native/text/term_dictionary.rs) ·
+[COW writer](../../crates/quanta-index-lexical/src/native/text/term_dictionary_write.rs)
+
+Confirmed cold dense roots use the existing bounded direct cache followed by
+an attempt-local scratch lookup. Only completely confirmed installations enter
+the table. A SQL hit must match the newly derived canonical physical root
+before it can replace a draft; the scratch row alone grants no authority.
+Lookups, canonical reconstruction and actual installations retain their
+original fees. These code decisions do not qualify the fixed-budget SDK until
+the final binary executes the original inputs.
+
+Frozen-source qualification keeps the wrapper's checkout-local artifact
+namespace. A different checkout's target cannot be preserved as a cache
+shortcut: matching source digests and binary dep-info do not authenticate
+reused transitive metadata. Snapshot copies preserve content while renewing
+freshness inputs, and the selected package/source/artifact origins are checked
+before promotion. A current, separately pinned Nextest configuration owns the
+test profile. Compilation, test execution and original SDK acceptance remain
+distinct results. [Cargo path-cache failure mode](https://github.com/rust-lang/cargo/issues/12516)
+
 The cold cursor retains an ephemeral 8-byte row in two words. It bounds key
 offset, length and position before encoding and charges actual row backing.
 An admitted Unicode upper bound permits one fill. The exact census and SQL
@@ -233,6 +318,64 @@ paths handle cases outside that admission. Preserve canonical normalization,
 case keys and positions, packed occurrence wire and existing logical fees.
 Cumulative Work bytes remain charged after the arena is released.
 [Cold token builder](../../crates/quanta-index-lexical/src/native/text/cold_tokens.rs)
+
+Prefix programs retain flat slab ownership and checked8-byte locators. A
+producer-built minimum position for each256-row chunk skips only chunks whose
+entire position range is outside the proved prefix; selected row count must
+still equal the current cursor's prefix census. Merging the selected prefix
+with a new suffix uses an exact exponential/binary boundary for consecutive
+suffix keys below the current prefix key. Equal keys retain prefix-before-suffix
+position order. Extra row/key probes, locator copies and chunk metadata work
+remain charged. This can cost more on interleaved keys; the original1,421-file
+component comparison is the adoption check, not a universal timing claim.
+
+The bounded prefix cache retains the lower-bound search's exact neighboring
+LCPs and insertion position. An exclusive cache borrow owns that lookup plan;
+preparation owns the same immutable normalized source cursor until insertion
+or rewind. LRU eviction adjusts the retained insertion position without a
+second search. Key backing is funded before suffix mutation and copied once
+only for a nonempty completed program. Optional admission failure keeps the
+original arena and rewinds the cursor before any suffix mutation. The original
+1,421-file component preserves token/position/wire outputs and mutation work
+while removing 6,129,674B of duplicate scans; SDK acceptance remains separate.
+
+The bounded cold-owner tournament borrows authenticated keys and establishes
+full canonical key order, using owner rank to break ties. The current path
+retains exact winner/loser LCPs and compares only an unproved suffix during
+replacement. Successor LCP computation and retained metadata reads/writes remain
+charged; this is not a full-key comparison followed by a billing discount.
+Winner replacement repairs only its tournament path. The attempted 8-byte prefix cache was removed after
+the original corpus increased measured work; it is not part of this decision.
+The independent cursor seals, counts and EOF remain required.
+
+The owner-head window and negotiated posting-writer width are separate bounds.
+Local Original credit uses the actual64/128-row writer: its last backing growth
+can retain96/192 rows, and long-key data and live-lease slots scale with that
+width before any posting effect. These private construction changes preserve
+the wire, logical tariffs and fixed SDK limits. Focused correctness and credit
+regressions do not qualify original SDK or quiet Off acceptance; the
+[Text packet](../plans/nov-12-native-cutover/tickets/NC-TEXT-build-final.md)
+owns their current verification state.
+
+A current-attempt canonical cold cursor and inline alias visitor derive counts
+from the same independently fetched and fully parsed immutable block. They do
+not issue an immediate second logical retained read of that block. The private
+borrowed map-block stream keeps its checked DATA through EOF instead of renewing
+it at artificial 64-row boundaries. Unsealed/Ready count admission and public
+page continuation keep their retained-read contracts. Every requested retained
+read still uses the original wire/decode tariff; the optimization removes whole
+duplicate calls, not their charges. Initial get/parse, attempt binding,
+key/count/descriptor seals, EOF, cancellation, poisoning and Original custody
+remain necessary before owner completion or publication.
+
+Cold Literal source seals factor the expected owner prefix once per block,
+then front-code the virtual `(gram3, owner_suffix)` keys using borrowed slices.
+The producer validates every source key against that prefix. Readback checks
+the exact expected V4 header, decodes every key, verifies canonical order and
+omissions, and reaches EOF before accepting the seal. Header and endpoint hints
+alone cannot authenticate a middle key. The new cold hash domain and its
+width/prefix input are charged; the warm transcript and persisted wire remain
+unchanged. This removes repeated hash input without removing validation.
 
 The posting packet authenticates local order and its fences and EOF. The range
 reader saves a charged tail key at packet turnover and compares it with the
@@ -412,6 +555,31 @@ keeps source-only intake, original Source/Host/SDK joins, signed normal and
 postpublication/ACK-loss/restart acceptance separate. Genuine Linux producer
 custody, loss0/duplicate0/head0 and the original P11 gates still require their
 own actual nonzero-body evidence; local refusal and component PASS do not close them.
+
+### Initial Source and completed Watch admission
+
+The ordinary initial Source association comes from the producer's persisted
+transition, CompletionPointer, physical target Source and snapshot. It is
+retained through V9 and the signed reader before FD6 borrows it. The
+[canonical join](../../crates/quanta-index-contract/src/native_cutover_source_join_v1.rs)
+and [Q receiver](../../crates/quanta-index-searchd-runtime/src/native_recovery/facts.rs)
+check all four fresh Source axes. This initial path does not manufacture a
+pending SDK ACK or derive historical bindings from FreshSdk. Native initial
+FULL retains its own immutable Source association.
+
+Completed Watch inputs use the existing bounded content-addressed intent and
+closeout readers plus Original-admitted typed decoding. Retain decoded DATA,
+backing and typed failure through reader/Source close, then join the actual
+operation, verified batch/event IDs and settled Native V9. Host retained units
+are occupancy, not inflight count. Signed event membership, terminal/cursor
+and disposition checks remain required; absence of a GC'd Host row is not a
+missing Source completion. Live Host echo or a recovery label grants no
+settlement authority. Prior-Native ancestry is checked against the held old
+root and candidate before selection publication, as above.
+
+The [active D packet](../plans/nov-12-native-cutover/tickets/NC-D-boot.md#d-current-disposition-20261116)
+retains affected S/Q owning, CP2 mixed and signed Linux acceptance. These
+supplied paths retire the old API-missing dispatch, not those execution gates.
 
 ## Existing-only Semantic recovery verification
 

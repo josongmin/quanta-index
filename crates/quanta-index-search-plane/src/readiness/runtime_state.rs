@@ -5,7 +5,7 @@
 //! retain superseded epoch snapshots at the cost of the deltas alone
 //! (QI-BB-020 W2); see `history_state`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use imbl::OrdMap;
@@ -295,6 +295,18 @@ pub(crate) fn enforce_runtime_catalog_batch_order(
     let Some(current_epoch) = state.catalog_overlay_epoch_ms() else {
         return Ok(());
     };
+    enforce_runtime_catalog_epoch_v1(
+        current_epoch,
+        batch,
+        state.catalog_batch_digest() == Some(batch.batch_digest.as_str()),
+    )
+}
+
+pub fn enforce_runtime_catalog_epoch_v1(
+    current_epoch: u64,
+    batch: &RuntimeCatalogIngestBatch,
+    same_digest: bool,
+) -> Result<(), CoreError> {
     if batch.overlay_epoch_ms < current_epoch {
         return Err(runtime_catalog_typed(
             ERR_RUNTIME_CATALOG_STALE_BATCH,
@@ -304,9 +316,7 @@ pub(crate) fn enforce_runtime_catalog_batch_order(
             ),
         ));
     }
-    if batch.overlay_epoch_ms == current_epoch
-        && state.catalog_batch_digest() != Some(batch.batch_digest.as_str())
-    {
+    if batch.overlay_epoch_ms == current_epoch && !same_digest {
         return Err(runtime_catalog_typed(
             ERR_RUNTIME_CATALOG_CONFLICTING_BATCH,
             format!(
@@ -318,35 +328,72 @@ pub(crate) fn enforce_runtime_catalog_batch_order(
     Ok(())
 }
 
-pub(crate) fn validate_runtime_catalog_doc_ids(
+pub fn runtime_catalog_chunk_ids_v1(
     batch: &RuntimeCatalogIngestBatch,
-    chunk_universe: &BTreeSet<ChunkId>,
-) -> Result<(), CoreError> {
-    for doc_id in batch
+) -> impl Iterator<Item = &ChunkId> {
+    batch
         .changed_entries
         .iter()
         .map(|record| &record.doc_id)
         .chain(batch.facet_entries.iter().map(|record| &record.doc_id))
-        .chain(
-            batch
-                .snapshot_entries
-                .iter()
-                .flat_map(|record| record.doc_ids.iter()),
-        )
-        .chain(
-            batch
-                .affected_entries
-                .iter()
-                .flat_map(|record| record.doc_ids.iter()),
-        )
-        .chain(
-            batch
-                .invalidated_by_entries
-                .iter()
-                .flat_map(|record| record.doc_ids.iter()),
-        )
-    {
-        if !chunk_universe.contains(doc_id) {
+        .chain(batch.snapshot_entries.iter().flat_map(|record| &record.doc_ids))
+        .chain(batch.affected_entries.iter().flat_map(|record| &record.doc_ids))
+        .chain(batch.invalidated_by_entries.iter().flat_map(|record| &record.doc_ids))
+}
+
+pub fn validate_runtime_catalog_keys_v1(batch: &RuntimeCatalogIngestBatch) -> Result<(), CoreError> {
+    validate_runtime_catalog_keys_with_checkpoint(batch, || Ok(()))
+}
+
+pub(crate) fn validate_runtime_catalog_keys_with_checkpoint(
+    batch: &RuntimeCatalogIngestBatch,
+    mut checkpoint: impl FnMut() -> Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    fn consistent<'a, K: Ord + ?Sized + 'a, V: Eq + 'a>(
+        rows: &'a [V],
+        key: impl Fn(&'a V) -> &'a K,
+        checkpoint: &mut impl FnMut() -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        let mut seen = BTreeMap::new();
+        for row in rows {
+            checkpoint()?;
+            if seen.insert(key(row), row).is_some_and(|prior| prior != row) {
+                return Err(CoreError::InvalidContract(
+                    "runtime catalog ingest: conflicting authority key".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+    checkpoint()?;
+    consistent(&batch.changed_entries, |row| &row.doc_id, &mut checkpoint)?;
+    consistent(&batch.facet_entries, |row| &row.doc_id, &mut checkpoint)?;
+    consistent(
+        &batch.snapshot_entries,
+        |row| row.name.as_str(),
+        &mut checkpoint,
+    )?;
+    consistent(
+        &batch.affected_entries,
+        |row| row.key.as_str(),
+        &mut checkpoint,
+    )?;
+    consistent(
+        &batch.invalidated_by_entries,
+        |row| row.key.as_str(),
+        &mut checkpoint,
+    )
+}
+
+pub(crate) fn validate_runtime_catalog_doc_ids(
+    batch: &RuntimeCatalogIngestBatch,
+    contains_chunk: impl Fn(&ChunkId) -> bool,
+    checkpoint: &mut impl FnMut() -> Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    validate_runtime_catalog_keys_with_checkpoint(batch, &mut *checkpoint)?;
+    for doc_id in runtime_catalog_chunk_ids_v1(batch) {
+        checkpoint()?;
+        if !contains_chunk(doc_id) {
             return Err(runtime_catalog_typed(
                 ERR_RUNTIME_CATALOG_UNKNOWN_DOC_ID,
                 format!(

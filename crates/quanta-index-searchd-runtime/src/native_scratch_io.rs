@@ -332,8 +332,11 @@ impl CatalogReadOnlyIoAdmission for NativeScratchIo {
     fn enter_read_only_scope(
         &self,
         request: &quanta_index_core::RequestBudgetV1,
+        main_bytes: u64,
+        wal_bytes: u64,
     ) -> Box<dyn CatalogIoScope> {
-        self.vfs.enter_read_only_scope(request)
+        self.vfs
+            .enter_read_only_scope(request, main_bytes, wal_bytes)
     }
 }
 

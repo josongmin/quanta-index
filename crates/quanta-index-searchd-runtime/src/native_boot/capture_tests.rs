@@ -573,6 +573,7 @@ fn actual_stale_catalog_without_ast_refuses_missing_current_native_row() -> Test
     };
     let service = bind(
         &fixture.config,
+        fixture.config_digest,
         compose(&fixture.config)?,
         None,
         &request(),

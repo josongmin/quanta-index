@@ -22,6 +22,7 @@ pub use environment::{DEFAULT_HISTORY_MAX_GENERATIONS, apply_searchd_env};
 #[cfg(any(target_os = "macos", test))]
 pub use process::peak_rss_from_darwin_metrics;
 pub use process::{SearchdBinaryProcess, daemon_socket_paths};
+pub(crate) use source::source_event;
 pub use source::{
     legacy_source_batch, legacy_source_delta_from_chunks, legacy_source_replacement_from_chunks,
     legacy_source_replacement_from_chunks_and_symbols, publish_legacy_source,

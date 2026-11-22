@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -204,6 +205,23 @@ def test_repository_registry_is_complete() -> None:
     assert MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH) == []
 
 
+@pytest.mark.parametrize(("field", "value", "message"), [
+    ("required_host", "any", "P04 release proof must use its exact Native read-view scope"),
+    ("binary_binding", "none", "P04 release proof must use its exact Native read-view scope"),
+    ("command", "just rust-profile test-read-view-lifetime", "P04 release proof must use its exact Native read-view scope"),
+    ("launches", 1, "invalid P04 executable observation test"),
+])
+def test_p04_registry_refuses_weaker_release_authority(field, value, message) -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof = next(proof for proof in registry["proofs"] if proof["id"] == "p04-read-view-lifetime")
+    if field == "launches":
+        proof["daemon_observation_tests"][0][field] = value
+    else:
+        proof[field] = value
+    findings = MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH)
+    assert message in _messages(findings)
+
+
 def test_registry_refuses_a_missing_family() -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
     broken = copy.deepcopy(registry)
@@ -292,6 +310,35 @@ def test_dependency_archive_refuses_duplicate_status_even_with_correct_digest(
     assert any("duplicate proof JSON key: status" in finding.message for finding in findings)
 
 
+def test_replay_uses_the_recorded_schema_for_each_dependency_node(tmp_path, monkeypatch):
+    proofs, payloads = _dependency_diamond(tmp_path)
+    schemas = {}
+    for proof_id, proof in proofs.items():
+        path = f"tools/ci/{proof_id}.schema.json"
+        proof["artifact_schema"] = path
+        schema = json.loads(SCHEMA_PATH.read_bytes())
+        schema["properties"]["proof_id"] = {"const": proof_id}
+        schemas[path] = json.dumps(schema).encode()
+    monkeypatch.setattr(MODULE, "committed_proof_authorities", lambda root, head: proofs)
+
+    def recorded_files(root, head, paths):
+        return {path: schemas[path] for path in paths}
+
+    monkeypatch.setattr(MODULE, "committed_source_files", recorded_files)
+    payload, path, _ = payloads["root"]
+    findings = MODULE.check_manifest(
+        payload,
+        manifest_path=tmp_path / path,
+        proof=proofs["root"],
+        schema={"not": {}},
+        root=tmp_path,
+        bind_source=False,
+        proof_by_id=proofs,
+        replay_authority=True,
+    )
+    assert findings == []
+
+
 @pytest.mark.parametrize("depth", [1, 3, 6])
 def test_dependency_diamond_parses_each_content_once(
     tmp_path: Path, monkeypatch, depth: int
@@ -299,9 +346,11 @@ def test_dependency_diamond_parses_each_content_once(
     schema = json.loads(SCHEMA_PATH.read_text())
     proofs, payloads = _dependency_diamond(tmp_path, depth)
     observed = []
-    original = MODULE.jsonschema.Draft202012Validator
+    original = jsonschema.Draft202012Validator
 
     class CountingValidator:
+        check_schema = staticmethod(original.check_schema)
+
         def __init__(self, *args, **kwargs):
             self.validator = original(*args, **kwargs)
 
@@ -309,7 +358,7 @@ def test_dependency_diamond_parses_each_content_once(
             observed.append(payload["proof_id"])
             return self.validator.iter_errors(payload)
 
-    monkeypatch.setattr(MODULE.jsonschema, "Draft202012Validator", CountingValidator)
+    monkeypatch.setattr(jsonschema, "Draft202012Validator", CountingValidator)
     assert (
         MODULE.check_manifest(
             payloads["root"][0],
@@ -919,6 +968,22 @@ def test_dirty_digest_binds_staged_unstaged_and_scoped_untracked_bytes(
     assert MODULE.dirty_digest(tmp_path, excluded_paths=excluded) == with_untracked
 
 
+def test_generated_output_exclusion_still_hashes_tracked_source(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    actor = tmp_path / "artifacts/proof-authority/observers/pre.py"
+    actor.parent.mkdir(parents=True)
+    actor.write_bytes(b"# registered observer\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", str(actor)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "observer"], check=True)
+    excluded = [Path("artifacts/proof-authority"), actor]
+    clean = MODULE.dirty_digest(tmp_path, excluded_paths=excluded)
+    actor.write_bytes(b"# modified observer\n")
+    unstaged = MODULE.dirty_digest(tmp_path, excluded_paths=excluded)
+    assert unstaged != clean
+    subprocess.run(["git", "-C", str(tmp_path), "add", str(actor)], check=True)
+    assert MODULE.dirty_digest(tmp_path, excluded_paths=excluded) not in {clean, unstaged}
+
+
 def test_dirty_digest_batches_staged_index_reads(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1180,6 +1245,29 @@ def test_source_snapshot_rejects_source_change_during_capture(
         MODULE.source_snapshot(tmp_path)
 
 
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_source_snapshot_refuses_edits_hidden_by_the_git_index(tmp_path: Path, flag: str) -> None:
+    _init_repo(tmp_path)
+    before = MODULE.source_snapshot(tmp_path)
+    subprocess.run(["git", "-C", str(tmp_path), "update-index", flag, "--", "tracked"], check=True)
+    (tmp_path / "tracked").write_bytes(b"hidden working source\n")
+    assert not subprocess.check_output(["git", "-C", str(tmp_path), "status", "--porcelain"])
+    with pytest.raises(RuntimeError, match="Git index hides proof source: tracked"):
+        MODULE.source_snapshot(tmp_path)
+    subprocess.run(["git", "-C", str(tmp_path), "update-index", "--no-" + flag[2:], "--", "tracked"], check=True)
+    assert MODULE.source_snapshot(tmp_path)["dirty_digest"] != before["dirty_digest"]
+
+
+def test_source_snapshot_refuses_git_replacement_refs(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    head = subprocess.check_output(["git", "-C", str(tmp_path), "rev-parse", "HEAD"], text=True).strip()
+    (tmp_path / "tracked").write_bytes(b"replacement source\n")
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-a", "-qm", "replacement"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "replace", head, "HEAD"], check=True)
+    with pytest.raises(RuntimeError, match="Git replacement refs alter proof source identity"):
+        MODULE.source_snapshot(tmp_path)
+
+
 def test_merge_base_distinguishes_disconnected_history_from_git_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1348,6 +1436,15 @@ def test_aggregate_closure_is_registry_driven_and_includes_infrastructure() -> N
     assert len(closure) == len(set(closure))
 
 
+def test_registry_refuses_to_remove_p11_pair_binding() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof = next(entry for entry in registry["proofs"] if entry["id"] == "p11-cross-repo-cutover")
+    proof["source_binding"] = "exact"
+    del proof["paired_repository"], proof["paired_dependency_lock"]
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("P11 requires exact-pair" in message for message in messages), messages
+
+
 def test_code_gate_selects_only_canonical_code_proofs_and_prerequisites() -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
     selected = MODULE.code_qualified_proof_ids(registry)
@@ -1425,6 +1522,28 @@ def test_executable_test_proof_requires_scope_that_selects_registered_targets() 
     assert not any("test_authority_scopes" in message for message in messages)
     assert not any("targets are not selected" in message for message in messages)
     assert not any("command/profile binding differs" in message for message in messages)
+
+
+def test_p10_owner_requires_the_migrated_case_roster() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof = next(item for item in registry["proofs"] if item["id"] == "p10-state-migration-owner")
+    cases = proof["required_nextest_cases"]
+    assert sum(len(names) for names in cases.values()) == 61
+    assert "backup_failure_and_interruption_keep_the_source_identical" in cases[
+        "searchd-runtime-offline-state-custody"
+    ]
+    assert "kernel_file_limit_interrupts_offline_first_copy" in cases[
+        "searchd-runtime-offline-state-custody"
+    ]
+    cases.pop("searchd-runtime-offline-state-custody")
+    lib_cases = proof.pop("required_nextest_lib_cases")
+    assert "app::runtime::tests::potion_code_profile_uses_one_model_for_query_and_corpus" in lib_cases[
+        "quanta-index-searchd"
+    ]
+
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("requires nextest cases for every registered target" in msg for msg in messages)
+    assert any("requires nextest lib cases for every declared library package" in msg for msg in messages)
 
 
 def test_executable_dedicated_proof_requires_existing_scope_bound_recipe() -> None:
@@ -1582,6 +1701,26 @@ def test_python_target_requires_exact_junit_module_path() -> None:
     )
 
 
+def test_required_nextest_cases_must_pass_in_the_registered_mount() -> None:
+    target = "offline-state-custody"
+    prefix = "runtime::readiness$offline_state_custody::"
+    required = ["backup_refuses", "restore_refuses"]
+    partial_passes = {
+        ("nextest-jsonl", f"{prefix}backup_refuses"),
+        ("nextest-jsonl", f"{prefix}restore_refuses_in_other_condition"),
+        ("nextest-jsonl", "runtime::readiness$other_mount::restore_refuses"),
+    }
+    with pytest.raises(ValueError, match="registered nextest cases did not pass.*restore_refuses"):
+        MODULE._require_passing_nextest_target(target, prefix, required, partial_passes)
+
+    MODULE._require_passing_nextest_target(
+        target,
+        prefix,
+        required,
+        partial_passes | {("nextest-jsonl", f"{prefix}restore_refuses")},
+    )
+
+
 def test_p12a_registry_refuses_last_failed_recipe(monkeypatch) -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
     authority = MODULE._read_toml(REPO_ROOT / "tools/ci/test-authority.toml")
@@ -1599,6 +1738,22 @@ def test_p12a_registry_refuses_last_failed_recipe(monkeypatch) -> None:
     )
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
     assert any("does not execute Python targets" in message for message in messages)
+
+
+def test_p12a_registry_refuses_catalog_scope_drift(monkeypatch) -> None:
+    read = MODULE._read_toml
+
+    def read_without_authority(path):
+        result = read(path)
+        if path == REPO_ROOT / "tools/ci/test-authority.toml":
+            scope = result["python_scopes"]["p12a-proof-infrastructure"]
+            scope["targets"].remove("proof-paired-r5-result-python-owner")
+        return result
+
+    registry = read(REGISTRY_PATH)
+    monkeypatch.setattr(MODULE, "_read_toml", read_without_authority)
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert "P12A test authority targets differ from the fixed infrastructure set" in messages
 
 
 def test_python_proof_recipes_refuse_addopts_before_running() -> None:
@@ -1626,6 +1781,7 @@ def test_aggregate_refuses_source_and_release_daemon_identity_drift(tmp_path: Pa
     messages = _messages(
         MODULE.check_aggregate(
             {"proof-a": payload_a, "proof-b": payload_b},
+            selected_digests={},
             proof_by_id={"proof-a": proof_a, "proof-b": proof_b},
             path=tmp_path / "registry.toml",
         )
@@ -1653,6 +1809,7 @@ def test_aggregate_refuses_primary_source_drift_from_exact_pair(tmp_path: Path) 
     messages = _messages(
         MODULE.check_aggregate(
             {"proof-a": payload_a, "proof-b": payload_b},
+            selected_digests={},
             proof_by_id={"proof-a": proof_a, "proof-b": proof_b},
             path=tmp_path / "registry.toml",
         )
@@ -1845,3 +2002,29 @@ def test_require_all_refuses_absent_manifests(tmp_path: Path, capsys) -> None:
     stderr = capsys.readouterr().err
     assert "required proof 'p03-candidate-activation' is staged" in stderr
     assert "p03-candidate-activation.json: required proof manifest is missing" not in stderr
+
+
+def test_p04_release_scope_distinguishes_whole_binary_and_module_selection(monkeypatch):
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof = next(p for p in registry["proofs"] if p["id"] == "p04-read-view-lifetime")
+    proof.update(authority_state="executable")
+    proof.pop("staged_reason")
+    assert MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH) == []
+    authority = MODULE._read_toml(REPO_ROOT / "tools/ci/test-authority.toml")
+    authority["local_scopes"]["read-view-lifetime"] = {
+        "lane": "fixture",
+        "test_threads": 1,
+        "module_targets": ["searchd-runtime-e2e-read-view"],
+    }
+    original = MODULE._read_toml
+    monkeypatch.setattr(
+        MODULE,
+        "_read_toml",
+        lambda path: authority if path.name == "test-authority.toml" else original(path),
+    )
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any(
+        "targets are not selected by declared scopes: ['searchd-runtime-native-product-process']"
+        in msg
+        for msg in messages
+    )

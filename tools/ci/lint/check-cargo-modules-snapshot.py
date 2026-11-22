@@ -64,6 +64,7 @@ def default_cache_root() -> Path:
 
 def cargo_env(default_lane: str) -> dict[str, str]:
     env = os.environ.copy()
+    env.pop("CARGO_BUILD_BUILD_DIR", None)
     cache_root = default_cache_root()
     env.setdefault("QUANTA_INDEX_CACHE_ROOT", str(cache_root))
     env.setdefault("QUANTA_INDEX_REPO_ROOT", str(ROOT))

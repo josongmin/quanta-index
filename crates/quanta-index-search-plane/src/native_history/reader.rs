@@ -1,6 +1,9 @@
 //! Existing typed query-port bridge; no new read-context or ticket authority.
 use super::*;
-use quanta_index_contract::{HistoryCursor, HistoryOrderV1, HistoryQueryRequest, LqQuery};
+use quanta_index_contract::{
+    HistoryCursor, HistoryOrderV1, HistoryQueryRequest, LqQuery, index::IndexInstanceId,
+    native_protocol::NativeHistoryCursor,
+};
 use quanta_index_core::index::{IndexQueryPort, QueryOutcome, effort::ResourceNeed};
 
 /// The Runtime admits and lowers the public request under its original DATA
@@ -34,11 +37,11 @@ impl PlannedNativeHistoryReadV1 {
 }
 
 /// Public request lowering through the existing parser/IR and original budget.
-/// The service validates the Native cursor's view/query binding before calling
-/// this function; the reader validates its member and actual rank afterward.
+/// Cursor hashing follows bounded lowering under the same Control grant; the
+/// reader validates its member and actual rank afterward.
 pub fn plan_native_history_read_v1(
     request: &HistoryQueryRequest,
-    after: Option<(ObjectRef, HistoryCursor)>,
+    after: Option<(ViewRef, IndexInstanceId, NativeHistoryCursor)>,
     budget: &mut WorkBudget,
 ) -> Result<PlannedNativeHistoryReadV1, CoreError> {
     quanta_index_contract::native_protocol::validate_native_history_query(request)
@@ -67,7 +70,7 @@ pub fn plan_native_history_read_v1(
     })?;
     let boundary_bytes = after
         .as_ref()
-        .and_then(|(_, boundary)| boundary.file_path.as_ref())
+        .and_then(|(_, _, cursor)| cursor.boundary.file_path.as_ref())
         .map_or(0, String::len);
     let bound = length
         .checked_mul(128)
@@ -78,6 +81,17 @@ pub fn plan_native_history_read_v1(
         .reserve_memory(bound, MemoryLifetime::Retained)
         .map_err(|error| history_work_error(budget, error))?;
     let lowered = crate::lower_lexical_text_query(&request.text_query)?;
+    budget
+        .checkpoint()
+        .map_err(|error| history_work_error(budget, error))?;
+    let after = if let Some((view, instance, cursor)) = after {
+        cursor
+            .validate_request(view, instance, request)
+            .map_err(|error| invalid(&error))?;
+        Some((cursor.member, cursor.boundary))
+    } else {
+        None
+    };
     budget
         .checkpoint()
         .map_err(|error| history_work_error(budget, error))?;
@@ -154,7 +168,11 @@ impl IndexQueryPort<PlannedNativeHistoryReadV1, NativeHistoryQueryResultV1>
 mod tests {
     use super::*;
     use quanta_index_contract::{
-        LqFilter, LqType, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
+        HistoryCursorOrderV1, LqFilter, LqType, QueryConstraintSetV1, SearchPlaneErrorCodeV2,
+        TextQueryRequest, TextQuerySyntax,
+        index::{CollectionId, SlotId, TenantId, WorkspaceKey, WorktreeId},
+        lex::CommitSha,
+        native_protocol::native_history_query_digest,
     };
     use quanta_index_core::index::{WorkBudgetDenial, WorkLimits};
     use std::time::{Duration, Instant};
@@ -184,6 +202,72 @@ mod tests {
             },
             Instant::now() + Duration::from_secs(60),
         )
+    }
+
+    #[test]
+    fn native_history_cursor_digest_follows_budgeted_bounded_lowering() -> Result<(), CoreError> {
+        let request = request();
+        let view = ViewRef {
+            workspace: WorkspaceKey {
+                tenant: TenantId([1; 16]),
+                collection: CollectionId([2; 16]),
+                worktree: WorktreeId([3; 16]),
+                slot: SlotId([4; 16]),
+            },
+            epoch: 1,
+            sequence: 9,
+            digest: Digest([5; 32]),
+        };
+        let instance = IndexInstanceId([8; 16]);
+        let boundary = HistoryCursor {
+            order: HistoryCursorOrderV1::Recency,
+            committer_time_ms: 1000,
+            sha: CommitSha::from_bytes([1; 20]),
+            file_path: None,
+            aux_epoch: AuxEpochV1::new(3),
+        };
+        let mut cursor = NativeHistoryCursor {
+            view,
+            instance,
+            member: ObjectRef(Digest([7; 32])),
+            query: Digest([9; 32]),
+            boundary: boundary.clone(),
+        };
+        let mut exhausted = budget(0);
+        let error = plan_native_history_read_v1(
+            &request,
+            Some((view, instance, cursor.clone())),
+            &mut exhausted,
+        )
+        .err()
+        .expect("byte refusal precedes cursor digest mismatch");
+        assert!(matches!(
+            error,
+            CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::ServerOverloaded,
+                ..
+            }
+        ));
+        assert_eq!(exhausted.first_denial(), Some(WorkBudgetDenial::Bytes));
+
+        let error = plan_native_history_read_v1(
+            &request,
+            Some((view, instance, cursor.clone())),
+            &mut budget(512 * 1024 * 1024),
+        )
+        .err()
+        .expect("funded cursor digest mismatch is invalid input");
+        assert!(matches!(error, CoreError::InvalidContract(_)));
+
+        cursor.query =
+            native_history_query_digest(instance, &request).map_err(|error| invalid(&error))?;
+        let plan = plan_native_history_read_v1(
+            &request,
+            Some((view, instance, cursor.clone())),
+            &mut budget(512 * 1024 * 1024),
+        )?;
+        assert_eq!(plan.after, Some((cursor.member, boundary)));
+        Ok(())
     }
 
     #[test]

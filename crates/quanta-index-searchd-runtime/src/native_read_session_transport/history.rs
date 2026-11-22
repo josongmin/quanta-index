@@ -125,19 +125,12 @@ pub(super) fn search(
 ) -> Result<ScopedNativeHistoryPage, IndexError> {
     work.bind_memory_scope(control.memory_scope());
     timer.mark(super::ReadFailureStage::QueryPreparation);
-    quanta_index_contract::native_protocol::validate_native_history_query(query)
-        .map_err(IndexError::InvalidInput)?;
-    if let Some(cursor) = &after {
-        cursor
-            .validate_request(ticket.view().identity, instance, query)
-            .map_err(IndexError::InvalidInput)?;
-    }
     let prior = after
         .as_ref()
         .map(|cursor| (cursor.member, cursor.boundary.aux_epoch));
     let planned = quanta_index_search_plane::native_history::plan_native_history_read_v1(
         query,
-        after.map(|cursor| (cursor.member, cursor.boundary)),
+        after.map(|cursor| (ticket.view().identity, instance, cursor)),
         work,
     )
     .map_err(|error| match work.first_denial() {

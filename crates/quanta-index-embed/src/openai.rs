@@ -795,7 +795,7 @@ impl OpenAiEmbeddingProvider {
         self
     }
 
-    /// Construct the Legacy paid provider from an exact grant and a funded
+    /// Construct a paid provider from an exact grant and a funded
     /// HTTP budget. All Source and query sends use this budget. Its metric
     /// source describes the same installed policy as the transport.
     pub fn new_approved(
@@ -1107,23 +1107,23 @@ impl OpenAiEmbeddingProvider {
         // ends or the supervised drain escalates it by name.
         let run = move || {
             let _copy_memory = request_copy_memory;
-            // Scheduling may consume the remaining request budget. Check on
-            // the physical worker before committing spend or opening HTTP.
-            attempt_budget.checkpoint(EMBED_CHECKPOINT)?;
-            let timeout = configured_timeout.min(attempt_budget.remaining());
-            if timeout.is_zero() {
-                return Err(attempt_budget
-                    .interrupted_at(EMBED_CHECKPOINT)
-                    .unwrap_or_else(|| {
-                        typed(
-                            LexicalErrorCode::SemProviderTransport,
-                            "openai: no time left in the request budget for an attempt",
-                        )
-                    })
-                    .into());
-            }
-            drop(attempt_budget);
-            let send = || {
+            let timeout_at_dispatch = move || {
+                attempt_budget.checkpoint(EMBED_CHECKPOINT)?;
+                let timeout = configured_timeout.min(attempt_budget.remaining());
+                if timeout.is_zero() {
+                    return Err(attempt_budget
+                        .interrupted_at(EMBED_CHECKPOINT)
+                        .unwrap_or_else(|| {
+                            typed(
+                                LexicalErrorCode::SemProviderTransport,
+                                "openai: no time left in the request budget for an attempt",
+                            )
+                        }));
+                }
+                drop(attempt_budget);
+                Ok(timeout)
+            };
+            let send = |timeout| {
                 if retry_index != 0 {
                     telemetry::record_retry();
                 }
@@ -1163,9 +1163,10 @@ impl OpenAiEmbeddingProvider {
                     observation.input_bytes,
                     retry_index,
                     policy.quote,
+                    timeout_at_dispatch,
                     send,
                 )?,
-                None => send(),
+                None => send(timeout_at_dispatch()?),
             }
         };
         let (sequence, outcome) =

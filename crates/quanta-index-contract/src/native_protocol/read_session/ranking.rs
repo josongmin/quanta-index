@@ -2,10 +2,26 @@
 
 use super::{NativeHybridFileHit, NativeSemanticFileHit, NativeTextHit};
 use crate::{
-    FiniteScore, SemanticQueryRequest, TextQueryRequest,
+    FiniteScore, RepoId, SemanticQueryRequest, TextQueryRequest,
     index::{Digest, IndexInstanceId, OwnerKey},
 };
 use sha2::{Digest as _, Sha256};
+use std::cmp::Ordering;
+
+/// Canonical order of `select:path` groups under the same published text view.
+/// The representative owner is selected inside a group and cannot break ties
+/// between groups. Repository and path are compared by their canonical bytes.
+pub fn compare_native_text_path_rank_v1(
+    left: (FiniteScore, &RepoId, &str),
+    right: (FiniteScore, &RepoId, &str),
+) -> Ordering {
+    right
+        .0
+        .get()
+        .total_cmp(&left.0.get())
+        .then_with(|| left.1.as_str().cmp(right.1.as_str()))
+        .then_with(|| left.2.cmp(right.2))
+}
 
 /// Hash the exact canonical request representation without a temporary buffer.
 /// A page-size or filter change deliberately invalidates the continuation.

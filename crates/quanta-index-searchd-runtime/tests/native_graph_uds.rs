@@ -281,6 +281,7 @@ fn node(path: &str) -> RepoMapNodeRef {
 fn graph_output() -> GraphOwnerOutput {
     GraphOwnerOutput {
         projection: Vec::new(),
+        facts: None,
         nodes: vec![
             GraphNode {
                 identity: node("src/a.rs"),

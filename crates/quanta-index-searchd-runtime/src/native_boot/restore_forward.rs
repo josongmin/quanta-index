@@ -628,9 +628,12 @@ pub(in crate::native_product) fn publish_v1(
         locked.prepare_recovery_witness_v1(
             installed_history.as_ref().map(|selected| &selected.value),
             authority.lease.observe_current_root_inode_v1()?,
-            Some(crate::deployment_selection::LegacyPublishedRecoveryWitnessV1::from_publication_v1(
-                publication, budget,
-            )?),
+            Some(
+                crate::deployment_selection::LegacyPublishedRecoveryWitnessV1::from_publication_v1(
+                    publication,
+                    budget,
+                )?,
+            ),
             &publication.repomap,
             budget,
         )?;
@@ -801,10 +804,10 @@ fn verify_preserved_repomap_disposition_v1(
     locked: &LockedDeploymentSelectionV1,
     budget: &mut WorkBudget,
 ) -> Result<Option<VerifiedLegacyRepoMapV1>> {
-    let expected = &source
+    let publication = source
         .legacy_publication
-        .ok_or(MissingLegacyPublicationInputV1)?
-        .repomap;
+        .ok_or(MissingLegacyPublicationInputV1)?;
+    let expected = &publication.repomap;
     match expected {
         RepoMap::Required {
             state_root,

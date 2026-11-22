@@ -54,8 +54,7 @@ impl<'a> EmptyStream<'a> {
             if position.key().len() > MAX_KEY_BYTES
                 || self.previous.as_ref().is_some_and(|prior| {
                     prior.root() > position.root()
-                        || (prior.root() == position.root()
-                            && prior.key() >= position.key())
+                        || (prior.root() == position.root() && prior.key() >= position.key())
                 })
             {
                 return Err(IndexError::InvalidInput(

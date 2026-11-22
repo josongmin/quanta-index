@@ -53,15 +53,17 @@ WORKSPACE_TOML = ROOT / "Cargo.toml"
 BASELINE = ROOT / "tools" / "ci" / "lint" / "baselines" / "module-cycles.txt"
 
 IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
+VISIBILITY = r"(?:pub(?:[ \t]*\([^()\n]+\))?\s+)?"
 DEFINITION_RE = re.compile(
-    r"^[ \t]*(?:pub(?:\([a-z ]+\))?\s+)?(?:(?:const|async|unsafe)\s+)*"
+    r"^[ \t]*" + VISIBILITY + r"(?:(?:const|async|unsafe)\s+)*"
     r"(?:fn|struct|enum|trait|type|const|static|mod|union)\s+(" + IDENT + r")",
     re.M,
 )
 MACRO_RE = re.compile(r"^[ \t]*macro_rules!\s+(" + IDENT + r")", re.M)
-MOD_DECL_RE = re.compile(r"^[ \t]*(?:pub(?:\([a-z ]+\))?\s+)?mod\s+(" + IDENT + r")\s*;", re.M)
-PATH_MOD_DECL_RE = re.compile(r'#\[path\s*=\s*"([^"\n]+)"\]\s*mod\s+(' + IDENT + r")\s*;")
-PATH_INLINE_MOD_DECL_RE = re.compile(r'#\[path\s*=\s*"([^"\n]+)"\]\s*mod\s+(' + IDENT + r")\s*\{")
+MOD_DECL_RE = re.compile(r"^[ \t]*" + VISIBILITY + r"mod\s+(" + IDENT + r")\s*;", re.M)
+PATH_MOD_PREFIX = r'#\[path\s*=\s*"([^"\n]+)"\]\s*' + VISIBILITY + r"mod\s+(" + IDENT + r")\s*"
+PATH_MOD_DECL_RE = re.compile(PATH_MOD_PREFIX + r";")
+PATH_INLINE_MOD_DECL_RE = re.compile(PATH_MOD_PREFIX + r"\{")
 INLINE_MOD_DECL_RE = re.compile(r"\bmod\s+(" + IDENT + r")\s*\{")
 
 
@@ -277,7 +279,15 @@ def enclosing_inline_modules(code: str, offset: int) -> tuple[str, ...]:
     return tuple(names)
 
 
-def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
+def reparent_module(owner: str, original: str, alias: str) -> str:
+    if owner == original or owner.startswith(original + "::"):
+        return alias + owner[len(original) :]
+    return owner
+
+
+def load_crate(
+    crate_dir: Path, root_file: str | None = None, *, workspace_roots: tuple[Path, ...] = ()
+) -> Crate:
     src = crate_dir / "src"
     if not src.is_dir() or not any(src.rglob("*.rs")):
         raise ValueError(f"missing Rust source inventory for {crate_dir}")
@@ -287,6 +297,7 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
         raise ValueError(f"missing Rust crate root {root_file} for {crate_dir}")
     crate = Crate(crate_dir.name)
     raw: dict[str, str] = {}
+    pending: deque[tuple[Path, str, frozenset[Path]]] = deque()
     for file in sorted(src.rglob("*.rs")):
         if file.name in {"lib.rs", "main.rs"} and file.parent == src and file.name != root_file:
             continue
@@ -297,17 +308,17 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
             raise ValueError(f"duplicate Rust module source for {crate_dir.name}::{path}")
         code = blank_non_code(file.read_text(encoding="utf-8"))
         raw[path] = raw.get(path, "") + "\n" + code
+        pending.append((file, path, frozenset({file.resolve()})))
     # Rust's #[path] names a module by the declaration, not by the target
     # filename. Preserve that ownership in the graph instead of treating the
     # declared child as missing or silently dropping its edges.
-    pending = deque(
-        (file, module_path_of(src, file), frozenset({file.resolve()}))
-        for file in sorted(src.rglob("*.rs"))
-    )
+    sibling_paths: list[tuple[str, str]] = []
+    aliases: list[tuple[str, str]] = []
+    declared_sources: set[Path] = set()
+    crate_root = crate_dir.resolve()
+    resolved_src = src.resolve()
     while pending:
         file, parent, ancestors = pending.popleft()
-        if parent is None:
-            continue
         source = file.read_text(encoding="utf-8")
         code = blank_non_code(source)
         path_inline_scopes = [
@@ -321,6 +332,7 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
             if any(start < match.start() < end for start, end in path_inline_scopes):
                 raise ValueError(f"unsupported Rust inline module path override: {file}")
             inline = enclosing_inline_modules(code, match.start())
+            child = "::".join((*([parent] if parent else []), *inline, match.group(2)))
             # In a non-inline module #[path] is relative to its source file.
             # An inline module adds its module directory (and a non-root
             # source file's stem) before the declared relative path.
@@ -330,16 +342,27 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
                     base /= file.stem
                 base = base.joinpath(*inline)
             target = (base / match.group(1)).resolve()
-            if not target.is_relative_to(crate_dir.resolve()) or not target.is_file():
-                raise ValueError(
-                    f"declared Rust path module has no source: {file}:{match.group(1)}"
-                )
+            missing = f"declared Rust path module has no source: {file}:{match.group(1)}"
+            if not target.is_relative_to(crate_root):
+                if (
+                    not any(target.is_relative_to(root) for root in workspace_roots)
+                    or not target.is_file()
+                ):
+                    raise ValueError(missing)
+                if not any(
+                    start <= match.start() < end for start, end in top_level_cfg_test_spans(code)
+                ):
+                    sibling_paths.append((parent, missing))
+                continue
+            if not target.is_file():
+                raise ValueError(missing)
             if target in ancestors:
                 raise ValueError(f"recursive Rust path module source: {file}:{match.group(1)}")
             source_key = (
-                module_path_of(src, target) if target.is_relative_to(src.resolve()) else None
+                module_path_of(resolved_src, target)
+                if target.is_relative_to(resolved_src)
+                else None
             )
-            child = "::".join((*([parent] if parent else []), *inline, match.group(2)))
             if source_key is None:
                 # A declared fixture can live in tests/support outside src.
                 # Keep its declaration's ownership; cfg(test) subtree removal
@@ -349,10 +372,18 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
                 raw[child] = blank_non_code(target.read_text(encoding="utf-8"))
                 pending.append((target, child, ancestors | {target}))
                 continue
+            for original, alias in aliases:
+                source_key = reparent_module(source_key, original, alias)
             if source_key not in raw:
+                raise ValueError(missing)
+            # An ancestor alias can move this source before its declaration.
+            # A second declaration cannot transfer an already assigned owner.
+            if target in declared_sources and child != source_key:
                 raise ValueError(
-                    f"declared Rust path module has no source: {file}:{match.group(1)}"
+                    f"Rust path module source already owned: {target}: "
+                    f"{crate.name}::{source_key}, {crate.name}::{child}"
                 )
+            declared_sources.add(target)
             if child != source_key:
                 # A path alias also owns the target file's descendants. Those
                 # descendants may already have been scanned under the physical
@@ -368,20 +399,20 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
                 for old in moved:
                     del raw[old]
                 raw.update(contents)
+                aliases.append((source_key, child))
+
                 pending = deque(
                     (
                         queued_file,
-                        child + queued_parent[len(source_key) :]
-                        if queued_parent is not None
-                        and (
-                            queued_parent == source_key
-                            or queued_parent.startswith(source_key + "::")
-                        )
-                        else queued_parent,
+                        reparent_module(queued_parent, source_key, child),
                         queued_ancestors,
                     )
                     for queued_file, queued_parent, queued_ancestors in pending
                 )
+                sibling_paths = [
+                    (reparent_module(owner, source_key, child), message)
+                    for owner, message in sibling_paths
+                ]
     # modules declared under #[cfg(test)] are test code, with their subtree
     test_modules: set[str] = set()
     for path, code in raw.items():
@@ -398,6 +429,12 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
 
     def is_test(path: str) -> bool:
         return any(path == t or path.startswith(t + "::") for t in test_modules)
+
+    # Only a test-only module may use an existing fixture from a sibling
+    # workspace crate. Resolve the declaring module's aliases before deciding.
+    for owner, message in sibling_paths:
+        if not is_test(owner):
+            raise ValueError(message)
 
     for path, code in raw.items():
         if is_test(path):
@@ -546,6 +583,7 @@ def find_cycles(crate_dirs: list[Path]) -> list[Cycle]:
     # Root attributes and declarations belong to distinct compilation units.
     # Analyze each root independently, retaining the existing crate/module keys.
     found: dict[str, Cycle] = {}
+    workspace_roots = tuple(crate_dir.resolve() for crate_dir in crate_dirs)
     for crate_dir in crate_dirs:
         src = crate_dir / "src"
         if not src.is_dir() or not any(src.rglob("*.rs")):
@@ -556,7 +594,7 @@ def find_cycles(crate_dirs: list[Path]) -> list[Cycle]:
         if not root_files:
             raise ValueError(f"missing Rust crate root for {crate_dir}")
         for root_file in root_files:
-            crate = load_crate(crate_dir, root_file)
+            crate = load_crate(crate_dir, root_file, workspace_roots=workspace_roots)
             edges = module_graph(crate)
             for component in cycles(edges):
                 members = set(component)

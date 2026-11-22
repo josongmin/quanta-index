@@ -1443,7 +1443,11 @@ impl<
 
 impl HistoryQueryBuilder<'_, true, true, true, true> {
     pub fn execute(self) -> Result<SearchPlaneHistoryQueryResponse, SdkError> {
-        let text_query = self.state.build_request("history")?;
+        let text_query = self.state.build_request(
+            self.client,
+            crate::LegacyQueryCapabilityV1::History,
+            "history",
+        )?;
         let order = self
             .order
             .ok_or_else(|| SdkError::Usage("history order is required".to_string()))?;

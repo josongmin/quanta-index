@@ -8,8 +8,8 @@
 use std::fmt;
 
 use imbl::OrdMap;
-use quanta_index_contract::AuxEpochV1;
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
+use quanta_index_contract::{AuxEpochV1, HistoryDiffHunkUpsert, HistoryRefMutation};
 use quanta_index_core::{AuxiliaryGenerationKeyV1, CoreError};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -65,24 +65,27 @@ impl HistoryAuthorityState {
     /// Apply a validated delta: the transition already checked every
     /// record against the state it was computed from, so the rows land
     /// as they are and the meta is the delta's.
-    pub(crate) fn apply_delta(&mut self, delta: &HistoryDelta) {
-        for record in &delta.commits {
+    pub(crate) fn apply_delta(&mut self, delta: &HistoryDelta<'_>) {
+        for record in delta.commits {
             self.restore_commit(record.sha, record.clone());
         }
-        for (changes, map) in [(&delta.refs, &mut self.refs), (&delta.tags, &mut self.tags)] {
+        for (changes, map) in [(delta.refs, &mut self.refs), (delta.tags, &mut self.tags)] {
             for change in changes {
                 match change {
-                    RefChange::Upsert(name, sha) => {
-                        let _previous = map.insert(name.clone(), *sha);
+                    HistoryRefMutation::Upsert(update) => {
+                        let _previous = map.insert(update.name.clone(), update.sha);
                     }
-                    RefChange::Delete(name) => {
-                        let _removed = map.remove(name.as_ref());
+                    HistoryRefMutation::Delete(update) => {
+                        let _removed = map.remove(update.name.as_ref());
                     }
                 }
             }
         }
-        for (key, record) in &delta.diff_hunks {
-            self.restore_diff_hunk(key.clone(), record.clone());
+        for hunk in delta.diff_hunks {
+            self.restore_diff_hunk(
+                HistoryDiffKey::new(hunk.commit_sha, &hunk.file_path),
+                hunk.record.clone(),
+            );
         }
         self.restore_meta(delta.meta);
     }
@@ -229,14 +232,30 @@ impl HistoryDiffKey {
 /// text is the hunk scored on it.
 #[must_use]
 pub(crate) fn history_diff_search_text(key: &HistoryDiffKey, record: &DiffHunkRecord) -> String {
-    format!(
-        "{}\n{}\n{}\n{}\n{}",
+    history_diff_search_parts(key, record).join("\n")
+}
+
+pub(crate) fn history_diff_search_text_len(
+    key: &HistoryDiffKey,
+    record: &DiffHunkRecord,
+) -> Option<usize> {
+    let parts = history_diff_search_parts(key, record);
+    parts
+        .iter()
+        .try_fold(parts.len() - 1, |bytes, part| bytes.checked_add(part.len()))
+}
+
+fn history_diff_search_parts<'a>(
+    key: &'a HistoryDiffKey,
+    record: &'a DiffHunkRecord,
+) -> [&'a str; 5] {
+    [
         key.file_path(),
-        record.hunk_header,
-        record.added_text,
-        record.removed_text,
-        record.touched_text
-    )
+        &record.hunk_header,
+        &record.added_text,
+        &record.removed_text,
+        &record.touched_text,
+    ]
 }
 
 impl_struct_serde!(HistoryStateMeta {
@@ -261,24 +280,17 @@ impl_struct_serde!(HistoryDiffKey {
     file_path: Box<str>,
 });
 
-/// One ref or tag change.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum RefChange {
-    Upsert(Box<str>, CommitSha),
-    Delete(Box<str>),
-}
-
 /// What one history batch changes, validated against the state it will
 /// apply to.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct HistoryDelta {
+pub(crate) struct HistoryDelta<'a> {
     pub(crate) generation: AuxiliaryGenerationKeyV1,
     /// The epoch the snapshot after this delta has.
     pub(crate) epoch: AuxEpochV1,
-    pub(crate) commits: Vec<CommitRecord>,
-    pub(crate) refs: Vec<RefChange>,
-    pub(crate) tags: Vec<RefChange>,
-    pub(crate) diff_hunks: Vec<(HistoryDiffKey, DiffHunkRecord)>,
+    pub(crate) commits: &'a [CommitRecord],
+    pub(crate) refs: &'a [HistoryRefMutation],
+    pub(crate) tags: &'a [HistoryRefMutation],
+    pub(crate) diff_hunks: &'a [HistoryDiffHunkUpsert],
     /// The materialization flags after the batch.
     pub(crate) meta: HistoryStateMeta,
 }

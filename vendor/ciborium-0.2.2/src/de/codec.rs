@@ -47,6 +47,7 @@ struct Deserializer<'b, R: Read, S: SemanticReasonV3 = String> {
     recurse: usize,
     semantic_reason: core::marker::PhantomData<S>,
     parser_allocation_v3: Option<&'b mut dyn FiniteParserAllocationAdmissionV3>,
+    slice_len: Option<usize>,
 }
 
 /// Finite signal that the caller-owned parser allocation authority refused.
@@ -151,6 +152,20 @@ impl<R: Read, S: SemanticReasonV3> Deserializer<'_, R, S>
 where
     R::Error: core::fmt::Debug,
 {
+    fn definite_scalar_capacity(
+        &mut self,
+        length: Option<usize>,
+    ) -> Result<usize, Error<R::Error, S>> {
+        let (Some(input_len), Some(length)) = (self.slice_len, length) else {
+            return Ok(0);
+        };
+        let offset = self.decoder.offset();
+        if length > input_len.saturating_sub(offset) {
+            return Err(Error::Syntax(offset));
+        }
+        Ok(length)
+    }
+
     fn visit_definite_text_v3<'de, V: de::Visitor<'de>>(
         &mut self,
         length: usize,
@@ -549,6 +564,11 @@ where
             if let Header::Text(len) = header {
                 self.check_text_length_v3(len)?;
                 let mut buffer = String::new();
+                buffer
+                    .try_reserve_exact(self.definite_scalar_capacity(len)?)
+                    .map_err(|_error| {
+                        Error::semantic(None, "CBOR text backing allocation refused")
+                    })?;
 
                 let allocation_v3 = &mut self.parser_allocation_v3;
                 let mut segments = self.decoder.text(len);
@@ -619,6 +639,11 @@ where
             if let Header::Bytes(len) = header {
                 self.check_bytes_length_v3(len)?;
                 let mut buffer = Vec::new();
+                buffer
+                    .try_reserve_exact(self.definite_scalar_capacity(len)?)
+                    .map_err(|_error| {
+                        Error::semantic(None, "CBOR byte backing allocation refused")
+                    })?;
 
                 let allocation_v3 = &mut self.parser_allocation_v3;
                 let mut segments = self.decoder.bytes(len);
@@ -672,6 +697,11 @@ where
                 self.check_bytes_length_v3(len)?;
                 self.check_sequence_length_v3(len)?;
                 let mut buffer = Vec::new();
+                buffer
+                    .try_reserve_exact(self.definite_scalar_capacity(len)?)
+                    .map_err(|_error| {
+                        Error::semantic(None, "CBOR byte backing allocation refused")
+                    })?;
 
                 let allocation_v3 = &mut self.parser_allocation_v3;
                 let mut segments = self.decoder.bytes(len);
@@ -1122,9 +1152,31 @@ where
         recurse: 256,
         semantic_reason: core::marker::PhantomData,
         parser_allocation_v3: None,
+        slice_len: None,
     };
 
     T::deserialize(&mut reader)
+}
+
+/// Decode one value from a finite slice and return the bytes consumed.
+/// Owned definite-length text and byte strings reserve their backing once,
+/// after checking the declared length against the remaining slice. Indefinite
+/// strings keep the reader decoder's incremental allocation behavior.
+#[inline]
+pub fn from_slice_with_definite_scalars<T: de::DeserializeOwned>(
+    bytes: &[u8],
+) -> Result<(T, usize), Error<<&[u8] as Read>::Error>> {
+    let mut scratch = [0; 4096];
+    let mut reader = Deserializer::<_, String> {
+        decoder: bytes.into(),
+        scratch: &mut scratch,
+        recurse: 256,
+        semantic_reason: core::marker::PhantomData,
+        parser_allocation_v3: None,
+        slice_len: Some(bytes.len()),
+    };
+    let value = T::deserialize(&mut reader)?;
+    Ok((value, reader.decoder.offset()))
 }
 
 /// Deserializes CBOR with a specified recursion limit.
@@ -1149,6 +1201,7 @@ where
         recurse: recurse_limit,
         semantic_reason: core::marker::PhantomData,
         parser_allocation_v3: None,
+        slice_len: None,
     };
 
     T::deserialize(&mut reader)
@@ -1170,6 +1223,7 @@ where
         recurse: 256,
         semantic_reason: core::marker::PhantomData,
         parser_allocation_v3: None,
+        slice_len: None,
     };
     T::deserialize(&mut reader)
 }
@@ -1319,6 +1373,7 @@ where
                 recurse: 256,
                 semantic_reason: core::marker::PhantomData,
                 parser_allocation_v3: Some(&mut *attempt.owner),
+                slice_len: None,
             };
             seed.deserialize(&mut decoder)?
         };

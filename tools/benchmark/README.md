@@ -37,7 +37,7 @@ Use `--family FAMILY` with `replay` to replay that family's captured cases.
 | Profile | Required input / execution |
 | --- | --- |
 | `dsl-authority` | Quiet canonical Linux host, warm/cold producers and admitted baselines; see below. |
-| `quality-core`, `quality-full`, `systems`, `semantic-ab` | Registered native Just producers and artifact checks. Inspect `plan` for prerequisites. |
+| `quality-core`, `quality-full`, `systems` | Registered native Just producers and artifact checks. Inspect `plan` for prerequisites. |
 | `micro`, `dsl-diagnostic` | Criterion captures; diagnostic timings. |
 | `retrieval-contract` | Contract and real-daemon SDK tests; correctness proof. |
 | `retrieval-diagnostic` | External `--pair-spec`; live Quanta–Semble diagnostic. |
@@ -80,6 +80,11 @@ python3 tools/benchmark/benchctl.py validate quality-full --evidence-root /exter
 
 `quality-core` selects relevance, ambiguity, snippet, scale and tail. `quality-full`
 adds ANN, concurrency, freshness, open-loop, operator and UI contract producers.
+Relevance, tail, concurrency, freshness, open-loop, operator and UI runs require
+`QUANTA_INDEX_LEGACY_SEARCHD_BIN` and `QUANTA_INDEX_LEGACY_SEARCHD_SHA256` for their
+pinned Legacy reference. The relevance, tail, load and freshness reports record the
+executable digest and daemon peak resident bytes. Native relevance acceptance
+uses the separate SDK holdout on the Native candidate.
 Use the plan's artifact paths to inspect each dimension independently. Local
 fixtures and advisory timings do not supply external gold or large-tier capacity
 measurements.
@@ -95,6 +100,14 @@ Options: `--criterion-samples` (default 100), `--criterion-warmup` (3 seconds),
 `--criterion-measurement` (5 seconds), `--criterion-resamples` and
 `--producer-timeout`. At least ten samples are required. Use fresh outputs;
 interrupted or incomplete captures cannot be validated as complete profiles.
+
+The `dsl-diagnostic` profile runs the shared warm fixture against a pinned
+Legacy daemon over SDK IPC. Set `QUANTA_INDEX_LEGACY_SEARCHD_BIN` and
+`QUANTA_INDEX_LEGACY_SEARCHD_SHA256` to the approved executable and digest.
+Its optional matrix is stored as `dsl-diagnostic.json` in the capture. It
+measures an SDK round trip and carries a distinct configuration digest from
+older in-process Criterion runs. `dsl-authority` has its own producers and
+baseline admission.
 
 ## Archived OpenAI A/B diagnostic
 
@@ -207,15 +220,42 @@ use `dsl-diagnostic` for local diagnostic measurements.
 ```sh
 just rust-bench-dsl-truth
 python3 tools/benchmark/benchctl.py plan dsl-authority
-python3 tools/benchmark/benchctl.py run dsl-authority --admit-baseline
-python3 tools/benchmark/benchctl.py run dsl-authority
+python3 tools/benchmark/benchctl.py run dsl-authority --dsl-native-plan "$QUANTA_DSL_NATIVE_PLAN" --admit-baseline
+python3 tools/benchmark/benchctl.py run dsl-authority --dsl-native-plan "$QUANTA_DSL_NATIVE_PLAN"
 python3 tools/benchmark/benchctl.py compare dsl-authority
 just rust-bench-dsl-refresh 20
 ```
 
-The first guarded command captures both baseline candidates. Review metrics and
-scenario behavior before committing them. Subsequent runs require admitted
-compatible baselines. Do not run warm and cold producers concurrently.
+Set `QUANTA_DSL_NATIVE_PLAN` to a JSON control file for the approved candidate.
+Its exact fields are `schema` (`native-dsl-authority-plan/v1`), `git_head`
+(the full frozen checkout commit), `warm_runner`, `cold_runner`, `daemon`,
+and `history_fixture`. Each file entry contains an absolute `path` and a
+`sha256` string in `sha256:<lowercase-hex>` form. Use the two NoFeatures
+Linux runners and the approved Native daemon from the same candidate build,
+and the Published History fixture for that daemon.
+
+Prepare the History fixture from that frozen checkout using the existing
+Runtime selector. Supply the approved Linux old-Q path and its lowercase
+SHA-256 through `QUANTA_INDEX_LEGACY_SEARCHD_BIN` and
+`QUANTA_INDEX_LEGACY_SEARCHD_SHA256`. Both daemon SHA arguments for this
+preparation use raw lowercase hex.
+
+```sh
+just rust-prepare-native-dsl-history "$history_export_root" "$native_daemon" "$native_daemon_sha256"
+```
+
+Use a short, new absolute export directory outside the checkout. The exporter
+publishes `cold-fixture.json` after verifying its seven History scenarios through
+warm queries and fresh daemon processes. Use that file's path and SHA-256 in
+the plan and keep its referenced state and config in place for both modes.
+Both collectors require the fixture's recorded `source_git_head` to match the
+frozen checkout and use the exact Published view, cut and instance.
+
+The first guarded run captures both baseline candidates on the same host.
+The profile publishes the warm and cold pair after validating both staged
+artifacts and their preflight and input pins. Review metrics and scenario
+behavior before committing the baselines. Subsequent runs require compatible
+Native baselines.
 
 Warm controls: `DSL_BENCH_WARM_SAMPLES=100`, `DSL_BENCH_WARM_REPEATS=5`,
 `DSL_BENCH_WARM_COOLDOWN_MS=10`, `DSL_BENCH_WARM_PASS_SETTLE_MS=5`, and
@@ -235,8 +275,10 @@ python3 tools/benchmark/run_dsl_cold_matrix.py --bin-mode warm \
 ```
 
 Use the original release build receipt to verify that the executable was
-built from the supplied commit. The replay checks the provided commitments and
-the emitted artifact. Baseline admission still uses the guarded authority run.
+built from the supplied commit. Each capture runs a private executable copy
+checked against the supplied digest. The runner verifies the checkout, original
+executable, and output artifact before publication. Baseline admission still
+uses the guarded authority run.
 
 For manual artifact inspection:
 
@@ -254,14 +296,19 @@ stopped. The runner obtains the case list from the pinned Rust binary. A
 complete result uses `native-dsl-matrix-v1` and is diagnostic. The existing
 `dsl-authority` profile owns Linux comparison baseline admission.
 
+History samples use `native-dsl-history-samples-v2` and carry a typed page
+from a timed query. Collection binds the page to the pinned Published view,
+History cut and instance. Assembly verifies the exact fixture rows and rejects
+a capture that mixes published members or cuts.
+
 Add `--native-artifact --bin-cwd <frozen-checkout> --bin-head <full-commit>`
 after `<out>` to assemble the same collected bytes through the pinned Rust
 `BenchArtifactV1` writer. Assembly requires a clean checkout and a matching
 runner. The common artifact preserves the raw matrix and all 33 registry rows.
-The 19 remaining migrations carry an unmeasured reason and the artifact keeps
-its diagnostic qualification. The existing baseline admission refuses that
-qualification. Each mode writes its final output only after input and artifact
-validation completes.
+The default keeps diagnostic qualification. The official profile requests
+authority from its pinned producer and requires Linux, the configured sample
+floors, and measured daemon RSS on daemon-backed reports. Each mode writes its
+staged output after input and artifact validation completes.
 
 Comparator options: `--rel-threshold`, `--abs-threshold-ms`,
 `--p95-rel-threshold`, `--p95-abs-threshold-ms`. Exit codes: `0` accepted,
@@ -283,6 +330,10 @@ just rust-verify-hellgate-all
 just benchmark-policy-local
 python3 tools/benchmark/sourcegraph_parity.py --write --check
 ```
+
+`rust-verify-hellgate-all` runs the fast and broad functional checks before the
+DSL authority refresh. The refresh validates the committed baseline pair and
+checkout before starting the timed producers.
 
 Sourcegraph coverage output is [the generated reference](../../docs/reference/sourcegraph-filter-parity.md).
 The recorded scan-vs-index experiment can be reproduced using the binary

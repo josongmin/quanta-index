@@ -1,12 +1,15 @@
 version = 1
 status = "declared_proof_inventory"
+# proof_status names a declared owner/carrier, not an executed or passing test.
+# proof_rail preserves historical IDs, including removed e2e_full_corpus and
+# Tantivy targets. Current proof requires a registered source and body receipt.
 # Historical inventory date; not a current test receipt.
 date = "2026-06-02"
 authority_spec = "../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md"
 
 [[entry]]
 surface = "Keyword"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = ["runtime_native_content_term", "runtime_sourcegraph_patterntype_standard_casefold", "runtime_sourcegraph_patterntype_keyword_casefold", "runtime_sourcegraph_patterntype_literal_casefold_hit"]
@@ -14,7 +17,7 @@ expected_live_behavior = "keyword search executes on lexical text rail with exac
 
 [[entry]]
 surface = "Phrase"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = ["runtime_sourcegraph_phrase_positive", "runtime_sourcegraph_phrase_negative", "e2e_lexical_full_fidelity:phrase_exact_adjacent_matches"]
@@ -22,21 +25,21 @@ expected_live_behavior = "public phrase query surface is runtime-proved and pari
 
 [[entry]]
 surface = "RawString"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_raw_substring"]
 expected_live_behavior = "raw substring executes on lexical raw-substring path"
 
 [[entry]]
 surface = "Regex"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_regex", "runtime_sourcegraph_regexp_option"]
 expected_live_behavior = "regex executes on lexical regex route"
 
 [[entry]]
 surface = "StructuralBlock"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = ["runtime_native_structural_root_kind", "runtime_native_structural_root_capture", "runtime_sourcegraph_patterntype_structural_named_hole", "runtime_native_structural_where", "runtime_native_structural_inside", "runtime_native_structural_outside", "runtime_native_structural_variadic", "runtime_native_structural_typed_expr", "runtime_native_structural_typed_item", "runtime_native_structural_typed_stmt", "runtime_native_structural_typed_type", "runtime_native_structural_unsupported_lang"]
@@ -44,7 +47,7 @@ expected_live_behavior = "runtime subset is live on structural route with exact 
 
 [[entry]]
 surface = "Predicate repo.has.file(...)"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = [
   "runtime_sourcegraph_repo_has_file_miss",
@@ -72,7 +75,7 @@ expected_live_behavior = "repo-wide existence gate is runtime-proved via miss an
 
 [[entry]]
 surface = "Predicate repo.has.content(...)"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = [
@@ -99,7 +102,7 @@ expected_live_behavior = "repo-wide content existence gate is runtime-proved on 
 
 [[entry]]
 surface = "Predicate file.contains(...)"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = [
@@ -148,7 +151,7 @@ expected_live_behavior = "native dotted predicate surface executes on the shared
 
 [[entry]]
 surface = "Predicate file.has.content(...)"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = [
@@ -185,56 +188,56 @@ expected_live_behavior = "empty query stays parser shape only"
 
 [[entry]]
 surface = "Not"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_boolean_not"]
 expected_live_behavior = "lexical boolean negation executes with exact ordered ids"
 
 [[entry]]
 surface = "All"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_boolean_and"]
 expected_live_behavior = "lexical boolean AND executes on text rail"
 
 [[entry]]
 surface = "Any"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_boolean_or"]
 expected_live_behavior = "lexical boolean OR executes on text rail"
 
 [[entry]]
 surface = "patterntype:literal"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_sourcegraph_patterntype_literal_casefold_hit"]
 expected_live_behavior = "literal mode executes on lexical text rail"
 
 [[entry]]
 surface = "patterntype:keyword"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_sourcegraph_patterntype_keyword_casefold"]
 expected_live_behavior = "keyword mode executes on lexical text rail"
 
 [[entry]]
 surface = "patterntype:standard"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_sourcegraph_patterntype_standard_casefold"]
 expected_live_behavior = "standard mode executes on lexical text rail"
 
 [[entry]]
 surface = "patterntype:regexp"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_sourcegraph_regexp_option"]
 expected_live_behavior = "regexp mode executes on lexical regex route"
 
 [[entry]]
 surface = "patterntype:structural"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = ["runtime_sourcegraph_patterntype_structural_named_hole", "e2e_dual_syntax_lowering_parity"]
@@ -242,28 +245,28 @@ expected_live_behavior = "structural mode is runtime-proved on the dedicated str
 
 [[entry]]
 surface = "case"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_case_sensitive_miss"]
 expected_live_behavior = "case-sensitive mismatch is asserted on runtime rail"
 
 [[entry]]
 surface = "count:N"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_count_bound"]
 expected_live_behavior = "bounded count truncation is asserted with exact ordered ids"
 
 [[entry]]
 surface = "count:all"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_sourcegraph_count_all", "tantivy_count_all_ignores_request_top_k_and_returns_full_recall"]
 expected_live_behavior = "count:all bypasses request top_k and returns full recall"
 
 [[entry]]
 surface = "timeout"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = ["runtime_native_timeout_typed", "e2e_perf_chaos", "sdk_frontdoor", "end_to_end"]
@@ -271,7 +274,7 @@ expected_live_behavior = "runtime rail proves typed lexical timeout and recovery
 
 [[entry]]
 surface = "repo:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = [
   "runtime_sourcegraph_repo_miss",
@@ -285,175 +288,175 @@ expected_live_behavior = "repo: allow-list matches indexed source_repo_id facets
 
 [[entry]]
 surface = "file:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_file_filter"]
 expected_live_behavior = "file filter narrows content hits by path"
 
 [[entry]]
 surface = "path:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_sourcegraph_path_filter"]
 expected_live_behavior = "path filter executes on runtime text rail"
 
 [[entry]]
 surface = "lang:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_lang_filter"]
 expected_live_behavior = "language filter executes on runtime text rail"
 
 [[entry]]
 surface = "rev:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = ["runtime_sourcegraph_history_commit_rev_ref", "runtime_sourcegraph_history_commit_rev_tag"]
 expected_live_behavior = "rev is live on history type:commit"
 
 [[entry]]
 surface = "type:file"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_type_file_excludes_symbol_only"]
 expected_live_behavior = "file type excludes symbol-only matches"
 
 [[entry]]
 surface = "type:path"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_type_path_projection"]
 expected_live_behavior = "path type collapses same-path multi-chunk hits to one representative"
 
 [[entry]]
 surface = "type:symbol"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_type_symbol"]
 expected_live_behavior = "symbol type routes to symbol docs"
 
 [[entry]]
 surface = "type:commit"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = ["runtime_sourcegraph_history_commit", "runtime_native_history_author", "runtime_native_history_committer", "runtime_native_history_message", "sdk_frontdoor:native_history_missing_type_invalid_request", "sdk_frontdoor:native_history_commit_file_invalid_request", "sdk_frontdoor:native_history_predicate_leaf_not_implemented", "end_to_end:history_missing_type_invalid_request", "end_to_end:history_commit_file_invalid_request", "e2e_perf_chaos:history_missing_type_rejects_typed_and_does_not_poison_next_query", "e2e_perf_chaos:history_commit_file_filter_rejects_typed_and_does_not_poison_next_query", "e2e_perf_chaos:history_predicate_leaf_rejects_typed_and_does_not_poison_next_query"]
 expected_live_behavior = "commit history route executes with exact ids; history requires explicit type:commit or type:diff and rejects file:/diff.* or predicate-leaf misuse fail-closed"
 
 [[entry]]
 surface = "type:diff"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = ["runtime_native_history_diff", "end_to_end:history_diff_added_positive", "end_to_end:history_diff_removed_positive", "end_to_end:history_diff_touched_positive", "e2e_perf_chaos:history_after_until_and_diff_filters_execute_and_do_not_poison_next_query"]
 expected_live_behavior = "diff history route executes on live runtime rail and owns file:/diff.* narrowing"
 
 [[entry]]
 surface = "type:repo"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_type_repo", "tantivy_type_repo_collapses_to_repo_representative"]
 expected_live_behavior = "repo type collapses to one deterministic representative per repo"
 
 [[entry]]
 surface = "select:repo"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_select_repo", "tantivy_select_repo_uses_canonical_representative_when_scores_tie"]
 expected_live_behavior = "repo projection collapses to one representative"
 
 [[entry]]
 surface = "select:file"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_select_file_projection", "tantivy_select_file_collapses_multiple_chunks_per_path"]
 expected_live_behavior = "file projection collapses same-path multi-chunk hits to one representative"
 
 [[entry]]
 surface = "select:path"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_select_path_projection", "tantivy_select_path_collapses_multiple_chunks_per_path"]
 expected_live_behavior = "path projection collapses same-path multi-chunk hits to one representative"
 
 [[entry]]
 surface = "select:symbol"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_sourcegraph_select_symbol"]
 expected_live_behavior = "symbol projection executes through live symbol carrier"
 
 [[entry]]
 surface = "select:content"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_select_content_projection"]
 expected_live_behavior = "content projection is asserted with exact ids, paths, and snippets"
 
 [[entry]]
 surface = "select:content.match"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_select_content_match_projection"]
 expected_live_behavior = "content-match projection is asserted with exact ids, paths, and snippets"
 
 [[entry]]
 surface = "fork:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "split_runtime_and_companion"
 proof_rail = ["runtime_native_fork_filter_only_miss", "runtime_sourcegraph_fork_typed_unavailable"]
 expected_live_behavior = "metadata-backed exclusion is live and producerless path stays typed"
 
 [[entry]]
 surface = "archived:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "split_runtime_and_companion"
 proof_rail = ["runtime_sourcegraph_archived_filter_only_miss", "dsl_scenarios", "end_to_end"]
 expected_live_behavior = "metadata-backed exclusion is runtime-proved and positive path stays on companion rails"
 
 [[entry]]
 surface = "visibility:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "split_runtime_and_companion"
 proof_rail = ["runtime_sourcegraph_visibility_filter_miss", "runtime_sourcegraph_visibility_typed_unavailable"]
 expected_live_behavior = "mismatched visibility excludes hits and producerless path stays typed"
 
 [[entry]]
 surface = "context:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "split_runtime_and_companion"
 proof_rail = ["runtime_sourcegraph_context_filter_miss", "dsl_scenarios", "end_to_end"]
 expected_live_behavior = "context mismatch exclusion is runtime-proved and positive path stays on companion rails"
 
 [[entry]]
 surface = "content:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 proof_rail = ["runtime_native_content_filter_positive", "runtime_native_content_filter_miss"]
 expected_live_behavior = "content filter has direct positive and path-leak negative proof"
 
 [[entry]]
 surface = "author:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = ["runtime_native_history_author"]
 expected_live_behavior = "commit author filter executes on history route"
 
 [[entry]]
 surface = "committer:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = ["runtime_native_history_committer"]
 expected_live_behavior = "commit committer filter executes on history route"
 
 [[entry]]
 surface = "message:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = ["runtime_native_history_message"]
 expected_live_behavior = "commit message filter executes on history route"
 
 [[entry]]
 surface = "before:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = [
   "runtime_native_history_before",
@@ -466,7 +469,7 @@ expected_live_behavior = "committer_time_ms upper bound executes on history rout
 
 [[entry]]
 surface = "after:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = [
   "runtime_native_history_after",
@@ -479,7 +482,7 @@ expected_live_behavior = "committer_time_ms lower bound executes on history rout
 
 [[entry]]
 surface = "since:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = [
   "runtime_native_history_since",
@@ -493,7 +496,7 @@ expected_live_behavior = "since: is inclusive lower bound on committer_time_ms; 
 
 [[entry]]
 surface = "until:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = [
   "runtime_native_history_until",
@@ -506,7 +509,7 @@ expected_live_behavior = "bare until: is inclusive upper bound on committer_time
 
 [[entry]]
 surface = "diff.added:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = [
   "runtime_native_history_diff_added",
@@ -518,7 +521,7 @@ expected_live_behavior = "diff.added narrows against added_text only"
 
 [[entry]]
 surface = "diff.removed:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = [
   "runtime_native_history_diff_removed",
@@ -531,7 +534,7 @@ expected_live_behavior = "diff.removed narrows against removed_text only"
 
 [[entry]]
 surface = "diff.touched:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "history_runtime"
 proof_rail = [
   "runtime_native_history_diff_touched",
@@ -545,7 +548,7 @@ expected_live_behavior = "diff.touched narrows against touched_text only"
 
 [[entry]]
 surface = "dirty:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_metadata"
 proof_rail = [
   "runtime_sourcegraph_runtime_dirty",
@@ -560,7 +563,7 @@ expected_live_behavior = "runtime-metadata route executes dirty:yes over dirty_d
 
 [[entry]]
 surface = "changed:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_metadata"
 proof_rail = [
   "runtime_sourcegraph_runtime_changed_positive",
@@ -575,7 +578,7 @@ expected_live_behavior = "changed:since=<timeref> matches generation-pinned chan
 
 [[entry]]
 surface = "stale:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_metadata"
 proof_rail = [
   "runtime_sourcegraph_runtime_stale_positive",
@@ -590,7 +593,7 @@ expected_live_behavior = "stale:before=<timeref> matches when generation_materia
 
 [[entry]]
 surface = "affected:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_metadata"
 proof_rail = [
   "runtime_sourcegraph_runtime_affected_positive",
@@ -605,7 +608,7 @@ expected_live_behavior = "affected:<scope> matches generation-pinned edge-author
 
 [[entry]]
 surface = "invalidated_by:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_metadata"
 proof_rail = [
   "runtime_sourcegraph_runtime_invalidated_by_positive",
@@ -621,7 +624,7 @@ expected_live_behavior = "invalidated_by:<source> matches generation-pinned edge
 
 [[entry]]
 surface = "snapshot:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_metadata"
 proof_rail = [
   "runtime_sourcegraph_runtime_snapshot_active",
@@ -638,7 +641,7 @@ expected_live_behavior = "snapshot:<name> matches persisted snapshot membership;
 
 [[entry]]
 surface = "meta.owner:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_metadata"
 proof_rail = [
   "runtime_sourcegraph_runtime_meta_owner",
@@ -653,7 +656,7 @@ expected_live_behavior = "meta.owner:<id> requires exact owner facet match on do
 
 [[entry]]
 surface = "meta.service:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_metadata"
 proof_rail = [
   "runtime_sourcegraph_runtime_meta_service",
@@ -669,7 +672,7 @@ expected_live_behavior = "meta.service:<id> requires exact service facet match o
 
 [[entry]]
 surface = "meta.layer:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_metadata"
 proof_rail = [
   "runtime_sourcegraph_runtime_meta_layer",
@@ -685,7 +688,7 @@ expected_live_behavior = "meta.layer:<id> requires exact layer facet match on do
 
 [[entry]]
 surface = "meta.surface:"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_metadata"
 proof_rail = [
   "runtime_sourcegraph_runtime_meta_surface",
@@ -701,7 +704,7 @@ expected_live_behavior = "meta.surface:<id> requires exact surface facet match o
 
 [[entry]]
 surface = "structural root-kind and root capture"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = ["runtime_native_structural_root_kind", "runtime_native_structural_root_capture"]
@@ -709,7 +712,7 @@ expected_live_behavior = "root-kind and root-capture subset is runtime-proved wi
 
 [[entry]]
 surface = "where"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = ["runtime_native_structural_where"]
@@ -717,7 +720,7 @@ expected_live_behavior = "constraint matching is runtime-proved with exact bindi
 
 [[entry]]
 surface = "inside"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = ["runtime_native_structural_inside"]
@@ -725,7 +728,7 @@ expected_live_behavior = "inside scope matching is runtime-proved with exact bin
 
 [[entry]]
 surface = "outside"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = ["runtime_native_structural_outside"]
@@ -733,7 +736,7 @@ expected_live_behavior = "outside scope matching is runtime-proved with exact bi
 
 [[entry]]
 surface = "named/anonymous/variadic holes"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = ["runtime_sourcegraph_patterntype_structural_named_hole", "runtime_native_structural_anonymous_wildcard", "runtime_native_structural_variadic"]
@@ -741,7 +744,7 @@ expected_live_behavior = "named capture, anonymous wildcard, and variadic tree-w
 
 [[entry]]
 surface = "typed holes"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
 proof_rail = ["runtime_native_structural_typed_expr", "runtime_native_structural_typed_item", "runtime_native_structural_typed_stmt", "runtime_native_structural_typed_type", "e2e_dual_syntax_lowering_parity"]
@@ -749,7 +752,7 @@ expected_live_behavior = "typed-hole subset is runtime-proved for expr, item, st
 
 [[entry]]
 surface = "mixed lexical + structural boolean AND"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "search_plane_planner"
 proof_rail = [
   "runtime_native_structural_mixed_lexical_and",
@@ -762,7 +765,7 @@ expected_live_behavior = "mixed-domain AND intersects lexical and structural can
 
 [[entry]]
 surface = "mixed lexical + structural boolean OR"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "search_plane_planner"
 proof_rail = [
   "runtime_native_structural_mixed_lexical_or",
@@ -777,7 +780,7 @@ expected_live_behavior = "mixed-domain OR unions lexical and structural candidat
 
 [[entry]]
 surface = "SG structural mixed RawString sibling (ADV-02)"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "search_plane_planner"
 proof_rail = [
   "quanta-index-search-plane lowering sourcegraph_structural_route_preserves_raw_string_in_mixed_boolean_or",
@@ -792,7 +795,7 @@ expected_live_behavior = "RawString leaves (reachable via file:contains('...')) 
 
 [[entry]]
 surface = "SG structural mixed Predicate sibling (ADV-02)"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "search_plane_planner"
 proof_rail = [
   "quanta-index-search-plane lowering sourcegraph_structural_route_preserves_predicate_sibling_in_mixed_boolean",
@@ -809,7 +812,7 @@ expected_live_behavior = "Predicate leaves are preserved as lexical siblings of 
 
 [[entry]]
 surface = "mixed lexical + structural boolean AND NOT"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "search_plane_planner"
 proof_rail = [
   "runtime_native_structural_mixed_lexical_and_not",
@@ -826,7 +829,7 @@ expected_live_behavior = "mixed-domain bounded NOT subtracts structural matches 
 
 [[entry]]
 surface = "pure negative structural root"
-proof_status = "active_runtime"
+proof_status = "declared_runtime"
 authority_owner = "search_plane_planner"
 proof_rail = [
   "runtime_native_structural_pure_negative_root",
@@ -839,7 +842,7 @@ expected_live_behavior = "pure-negative structural root subtracts from generatio
 
 [[entry]]
 surface = "into:codeql"
-proof_status = "active_owner_local"
+proof_status = "declared_owner_local"
 authority_owner = "bridge"
 carrier_kind = "bridge_packet"
 proof_rail = ["bridge_directive_packet", "golden_bridge"]
@@ -847,7 +850,7 @@ expected_live_behavior = "bridge export is live on companion rail"
 
 [[entry]]
 surface = "scope:results"
-proof_status = "active_owner_local"
+proof_status = "declared_owner_local"
 authority_owner = "bridge"
 carrier_kind = "bridge_packet"
 proof_rail = ["bridge_directive_packet", "golden_bridge"]
@@ -855,7 +858,7 @@ expected_live_behavior = "directive carrier is proved on bridge rail"
 
 [[entry]]
 surface = "with:lexical"
-proof_status = "active_owner_local"
+proof_status = "declared_owner_local"
 authority_owner = "bridge"
 carrier_kind = "bridge_packet"
 proof_rail = ["bridge_directive_packet", "golden_bridge"]

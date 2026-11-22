@@ -158,6 +158,7 @@ impl SearchPlaneDispatcher {
             epochs,
             request.text_query.top_k,
             boundary,
+            |_| Ok(true),
         )?;
         let window = pageable_window_v2(page.window, "runtime_metadata")?;
         let next_cursor = page
@@ -257,7 +258,7 @@ fn ensure_runtime_catalog_ready(state: &RuntimeMetadataState) -> Result<(), Core
     }
 }
 
-fn ensure_runtime_snapshot_names_known(
+pub(crate) fn ensure_runtime_snapshot_names_known(
     query: &LqQuery,
     state: &RuntimeMetadataState,
 ) -> Result<(), CoreError> {
@@ -455,6 +456,7 @@ pub(crate) fn execute_runtime_metadata_query(
     epochs: RuntimeMetadataEpochs,
     top_k: u32,
     cursor: Option<&RuntimeMetadataCursorV1>,
+    mut admits_chunk: impl FnMut(&ChunkRecord) -> Result<bool, CoreError>,
 ) -> Result<RuntimeMetadataPage, CoreError> {
     let driver = runtime_driver(query, runtime_state, structural_state)?;
     let after = cursor.map(|cursor| ChunkId::new(cursor.candidate_id.clone()));
@@ -470,7 +472,7 @@ pub(crate) fn execute_runtime_metadata_query(
                 chunk_id.as_str()
             ))
         })?;
-        if !runtime_chunk_matches(query, runtime_state, chunk_id, chunk)? {
+        if !admits_chunk(chunk)? || !runtime_chunk_matches(query, runtime_state, chunk_id, chunk)? {
             continue;
         }
         collector.offer(chunk_id);

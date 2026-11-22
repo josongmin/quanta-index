@@ -12,6 +12,7 @@
 use std::collections::VecDeque;
 use std::num::NonZeroU64;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_contract::lex::LexicalErrorCode;
@@ -404,12 +405,17 @@ impl ProviderBudgetLedger {
     /// Admit one actual HTTP send and hold request and byte capacity until
     /// it returns. A failed admission changes no counter. The approved cost
     /// bound is spent even when the outcome is ambiguous.
+    ///
+    /// Check the request's live timeout after waiting for the ledger, before
+    /// committing spend. The timeout probe must be bounded. The send itself
+    /// runs after the ledger lock is released.
     pub fn with_http_attempt<T>(
         &self,
         input_bytes: u64,
         retry_index: u32,
         cost_micros: NonZeroU64,
-        send: impl FnOnce() -> T,
+        timeout_at_dispatch: impl FnOnce() -> Result<Duration, CoreError>,
+        send: impl FnOnce(Duration) -> T,
     ) -> Result<T, CoreError> {
         struct Inflight<'a> {
             ledger: &'a ProviderBudgetLedger,
@@ -457,6 +463,7 @@ impl ProviderBudgetLedger {
         if committed > self.budget.total_cost_micros_ceiling {
             return Err(Self::exhausted("cost cap"));
         }
+        let timeout = timeout_at_dispatch()?;
         inner.inflight_http_requests = requests;
         inner.inflight_http_bytes = bytes;
         inner.snapshot.spent_cost_micros = spent;
@@ -465,7 +472,7 @@ impl ProviderBudgetLedger {
             ledger: self,
             bytes: input_bytes,
         };
-        Ok(send())
+        Ok(send(timeout))
     }
 
     /// Reserve one admitted request's work (S21-08 step 4).
@@ -868,6 +875,57 @@ mod tests {
     }
 
     #[test]
+    fn http_admission_refuses_cancellation_before_commit() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        };
+
+        use crate::request_budget::{REQUEST_CANCELLED_CODE, RequestBudgetV1};
+
+        let ledger = ProviderBudgetLedger::new(test_budget()).expect("valid budget");
+        let budget = RequestBudgetV1::unbounded();
+        let cancel = budget.cancel_handle();
+        let sends = AtomicUsize::new(0);
+        let locked = ledger.inner.lock().expect("hold the dispatch ledger");
+        let (dispatching, waiting) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                budget
+                    .checkpoint("semantic:embed")
+                    .expect("worker starts live");
+                dispatching.send(()).expect("report the first checkpoint");
+                ledger.with_http_attempt(
+                    1,
+                    0,
+                    NonZeroU64::MIN,
+                    || {
+                        budget.checkpoint("semantic:embed")?;
+                        Ok(Duration::from_secs(1))
+                    },
+                    |_| {
+                        let _ = sends.fetch_add(1, Ordering::SeqCst);
+                    },
+                )
+            });
+            waiting
+                .recv_timeout(Duration::from_secs(5))
+                .expect("worker reached dispatch");
+            cancel.cancel();
+            drop(locked);
+            let result = worker.join().expect("worker returned");
+            let spent = ledger.snapshot().expect("read spend").spent_cost_micros;
+            assert!(
+                matches!(&result, Err(CoreError::Typed { code, .. }) if *code == REQUEST_CANCELLED_CODE),
+                "cancelled attempt returned {result:?}, sent {}, spent {spent}",
+                sends.load(Ordering::SeqCst),
+            );
+            assert_eq!(sends.load(Ordering::SeqCst), 0);
+            assert_eq!(spent, 0);
+        });
+    }
+
+    #[test]
     fn http_admission_holds_slots_and_bytes_and_keeps_committed_spend() {
         let ledger = ProviderBudgetLedger::new(ProviderWorkBudgetV1 {
             inflight_requests_cap: 2,
@@ -877,21 +935,46 @@ mod tests {
         })
         .expect("valid budget");
         let quote = NonZeroU64::new(2).expect("positive quote");
-        assert!(ledger.with_http_attempt(1, 2, quote, || {}).is_err());
-        assert!(ledger.with_http_attempt(9, 0, quote, || {}).is_err());
+        let timeout = Duration::from_secs(1);
+        let allowed = || Ok(timeout);
+        assert!(
+            ledger
+                .with_http_attempt(1, 2, quote, allowed, |_| {})
+                .is_err()
+        );
+        assert!(
+            ledger
+                .with_http_attempt(9, 0, quote, allowed, |_| {})
+                .is_err()
+        );
         ledger
-            .with_http_attempt(7, 0, quote, || {
-                assert!(ledger.with_http_attempt(2, 0, quote, || {}).is_err());
+            .with_http_attempt(7, 0, quote, allowed, |dispatch_timeout| {
+                assert_eq!(dispatch_timeout, timeout);
+                assert!(
+                    ledger
+                        .with_http_attempt(2, 0, quote, allowed, |_| {})
+                        .is_err()
+                );
                 ledger
-                    .with_http_attempt(1, 0, quote, || {
-                        assert!(ledger.with_http_attempt(0, 0, quote, || {}).is_err());
+                    .with_http_attempt(1, 0, quote, allowed, |_| {
+                        assert!(
+                            ledger
+                                .with_http_attempt(0, 0, quote, allowed, |_| {})
+                                .is_err()
+                        );
                         assert_eq!(ledger.snapshot().expect("counters").spent_cost_micros, 4);
                     })
                     .expect("query");
             })
             .expect("Source");
-        ledger.with_http_attempt(7, 1, quote, || {}).expect("retry");
-        assert!(ledger.with_http_attempt(1, 0, quote, || {}).is_err());
+        ledger
+            .with_http_attempt(7, 1, quote, allowed, |_| {})
+            .expect("retry");
+        assert!(
+            ledger
+                .with_http_attempt(1, 0, quote, allowed, |_| {})
+                .is_err()
+        );
         assert_eq!(ledger.snapshot().expect("counters").spent_cost_micros, 6);
     }
 

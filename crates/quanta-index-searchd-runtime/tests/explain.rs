@@ -2,7 +2,7 @@
 //!
 //! previously returned by a lexical query is in the index, as a typed field
 //! decided by exact lookup (QI-BB-022); the scored explain is covered by
-//! `e2e_explain_score_trace.rs`.
+//! `legacy_explain_score_trace.rs`.
 
 #![forbid(unsafe_code)]
 #![expect(
@@ -32,50 +32,37 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
-use quanta_index_searchd_harness::{E2eRuntime, SourceCorpusFixture};
+use quanta_index_searchd_harness::{
+    SourceCorpusFixture,
+    legacy_reference::{LegacySearchdBinary, daemon_socket_paths},
+    private_tempdir,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Harness-owned three-socket scenario fixture (TOPT-03: runtime fixture
-/// ownership).
-///
-/// The daemon's tempdir, three-socket builder, and driver thread all live in
-/// [`E2eRuntime`]: boot binds query/control/ingest and waits for all three,
-/// and dropping the runtime performs the acknowledged lease-release (signal
-/// the driver, join it — which drops the old runtime and releases the
-/// state-root lease — before the tempdir is removed). Tests therefore
-/// return `Err(..)` directly on failure paths with no manual
-/// shutdown/join bookkeeping; teardown is owned by the harness.
 struct ScenarioFixture {
-    #[expect(
-        dead_code,
-        reason = "held for drop-order ownership only: the daemon's lifetime is the fixture's, and dropping it performs the acknowledged lease-release"
-    )]
-    runtime: E2eRuntime,
     query_socket: std::path::PathBuf,
     ingest_socket: std::path::PathBuf,
 }
 
-impl ScenarioFixture {
-    fn boot() -> Result<Self, Box<dyn Error>> {
-        let mut runtime = E2eRuntime::boot()?;
-        // Eager start surfaces a boot refusal here and binds all three
-        // sockets before any byte is published.
-        runtime.start()?;
-        let (query_socket, ingest_socket) = {
-            let (query, _, ingest) = runtime
-                .socket_paths()
-                .ok_or_else(|| "fixture: driver started without socket paths".to_string())?;
-            (query.to_path_buf(), ingest.to_path_buf())
-        };
-        Ok(Self {
-            runtime,
-            query_socket,
-            ingest_socket,
-        })
-    }
+fn with_fixture(check: impl FnOnce(&ScenarioFixture) -> TestResult) -> TestResult {
+    let parent = private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let binary = LegacySearchdBinary::from_environment()?;
+    let process = binary.start(&state_root, 8)?;
+    let [query_socket, _, ingest_socket] = daemon_socket_paths(&state_root);
+    let fixture = ScenarioFixture {
+        query_socket,
+        ingest_socket,
+    };
+    let result = check(&fixture);
+    let stopped = process.stop();
+    let verified = binary.verify();
+    result?;
+    stopped?;
+    verified
 }
 
 fn repo() -> RepoId {
@@ -174,135 +161,139 @@ fn seal_lexical(socket: &Path, corpus: &mut SourceCorpusFixture) -> TestResult {
 
 #[test]
 fn explain_reports_present_candidate() -> TestResult {
-    let fixture = ScenarioFixture::boot()?;
-    let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
-    let mut corpus = SourceCorpusFixture::new(
-        repo(),
-        revision(),
-        generation(),
-        format!(
-            "fixture-event-{}",
-            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-        ),
-    );
-    publish_chunk(
-        &mut corpus,
-        chunk_record("explain-c1", "quick brown fox jumps")?,
-    )?;
-    seal_lexical(&ingest_socket, &mut corpus)?;
+    with_fixture(|fixture| {
+        let socket = fixture.query_socket.clone();
+        let ingest_socket = fixture.ingest_socket.clone();
+        let mut corpus = SourceCorpusFixture::new(
+            repo(),
+            revision(),
+            generation(),
+            format!(
+                "fixture-event-{}",
+                NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+        );
+        publish_chunk(
+            &mut corpus,
+            chunk_record("explain-c1", "quick brown fox jumps")?,
+        )?;
+        seal_lexical(&ingest_socket, &mut corpus)?;
 
-    let pin = GenerationPin::new(repo(), revision(), generation());
-    if !wait_until(READINESS_TIMEOUT, || {
-        send_query_request(&socket, &lex_query("quick", pin.clone()))
-            .map(|r| !matches!(r.payload, SearchPlaneQueryIpcResponse::Error(_)))
-            .unwrap_or(false)
-    }) {
-        return Err("dispatcher never sealed".into());
-    }
-
-    let lex_resp = send_query_request(&socket, &lex_query("quick", pin.clone()))?;
-    let candidate = match lex_resp.payload {
-        SearchPlaneQueryIpcResponse::Text(lex) => lex
-            .results
-            .into_iter()
-            .next()
-            .ok_or_else(|| Box::<dyn Error>::from("lexical query returned zero candidates"))?,
-        other => {
-            return Err(format!("expected Lexical, got {other:?}").into());
+        let pin = GenerationPin::new(repo(), revision(), generation());
+        if !wait_until(READINESS_TIMEOUT, || {
+            send_query_request(&socket, &lex_query("quick", pin.clone()))
+                .map(|r| !matches!(r.payload, SearchPlaneQueryIpcResponse::Error(_)))
+                .unwrap_or(false)
+        }) {
+            return Err("dispatcher never sealed".into());
         }
-    };
-    if candidate.candidate_id != "explain-c1" {
-        return Err(format!("expected explain-c1, got {}", candidate.candidate_id).into());
-    }
 
-    let explain_resp = send_query_request(&socket, &explain_request(pin, candidate))?;
-    let (presence, explanation) = match explain_resp.payload {
-        SearchPlaneQueryIpcResponse::Explain(exp) => (exp.presence, exp.explanation),
-        other => {
-            return Err(format!("expected Explain, got {other:?}").into());
+        let lex_resp = send_query_request(&socket, &lex_query("quick", pin.clone()))?;
+        let candidate = match lex_resp.payload {
+            SearchPlaneQueryIpcResponse::Text(lex) => {
+                lex.results.into_iter().next().ok_or_else(|| {
+                    Box::<dyn Error>::from("lexical query returned zero candidates")
+                })?
+            }
+            other => {
+                return Err(format!("expected Lexical, got {other:?}").into());
+            }
+        };
+        if candidate.candidate_id != "explain-c1" {
+            return Err(format!("expected explain-c1, got {}", candidate.candidate_id).into());
         }
-    };
-    if presence != quanta_index_contract::CandidatePresenceV1::Indexed
-        || explanation.strategy != "presence_lookup"
-    {
-        return Err(format!(
-            "expected a typed indexed presence from an exact lookup, got {presence:?} / {}",
-            explanation.strategy
-        )
-        .into());
-    }
-    if !explanation.summary.contains("present") {
-        return Err(format!(
-            "expected 'present' in explanation summary, got: {}",
-            explanation.summary
-        )
-        .into());
-    }
-    if !explanation.summary.contains("explain-c1") {
-        return Err(format!(
-            "expected candidate id in summary, got: {}",
-            explanation.summary
-        )
-        .into());
-    }
 
-    Ok(())
+        let explain_resp = send_query_request(&socket, &explain_request(pin, candidate))?;
+        let (presence, explanation) = match explain_resp.payload {
+            SearchPlaneQueryIpcResponse::Explain(exp) => (exp.presence, exp.explanation),
+            other => {
+                return Err(format!("expected Explain, got {other:?}").into());
+            }
+        };
+        if presence != quanta_index_contract::CandidatePresenceV1::Indexed
+            || explanation.strategy != "presence_lookup"
+        {
+            return Err(format!(
+                "expected a typed indexed presence from an exact lookup, got {presence:?} / {}",
+                explanation.strategy
+            )
+            .into());
+        }
+        if !explanation.summary.contains("present") {
+            return Err(format!(
+                "expected 'present' in explanation summary, got: {}",
+                explanation.summary
+            )
+            .into());
+        }
+        if !explanation.summary.contains("explain-c1") {
+            return Err(format!(
+                "expected candidate id in summary, got: {}",
+                explanation.summary
+            )
+            .into());
+        }
+
+        Ok(())
+    })
 }
 
 #[test]
 fn explain_rejects_generation_mismatch() -> TestResult {
-    let fixture = ScenarioFixture::boot()?;
-    let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
-    let mut corpus = SourceCorpusFixture::new(
-        repo(),
-        revision(),
-        generation(),
-        format!(
-            "fixture-event-{}",
-            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-        ),
-    );
-    publish_chunk(
-        &mut corpus,
-        chunk_record("c-mismatch", "alpha bravo charlie")?,
-    )?;
-    seal_lexical(&ingest_socket, &mut corpus)?;
+    with_fixture(|fixture| {
+        let socket = fixture.query_socket.clone();
+        let ingest_socket = fixture.ingest_socket.clone();
+        let mut corpus = SourceCorpusFixture::new(
+            repo(),
+            revision(),
+            generation(),
+            format!(
+                "fixture-event-{}",
+                NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+        );
+        publish_chunk(
+            &mut corpus,
+            chunk_record("c-mismatch", "alpha bravo charlie")?,
+        )?;
+        seal_lexical(&ingest_socket, &mut corpus)?;
 
-    let pin = GenerationPin::new(repo(), revision(), generation());
-    if !wait_until(READINESS_TIMEOUT, || {
-        send_query_request(&socket, &lex_query("alpha", pin.clone()))
-            .map(|r| !matches!(r.payload, SearchPlaneQueryIpcResponse::Error(_)))
-            .unwrap_or(false)
-    }) {
-        return Err("dispatcher never sealed".into());
-    }
-
-    // Start with a real response so the generation is the only stale field.
-    let lex_resp = send_query_request(&socket, &lex_query("alpha", pin.clone()))?;
-    let mut stale_candidate = match lex_resp.payload {
-        SearchPlaneQueryIpcResponse::Text(lex) => lex
-            .results
-            .into_iter()
-            .next()
-            .ok_or_else(|| Box::<dyn Error>::from("lexical query returned zero candidates"))?,
-        other => return Err(format!("expected Lexical, got {other:?}").into()),
-    };
-    if stale_candidate.candidate_id != "c-mismatch" {
-        return Err(format!("expected c-mismatch, got {}", stale_candidate.candidate_id).into());
-    }
-    stale_candidate.manifest_generation = ManifestGeneration::new(99);
-    let resp = send_query_request(&socket, &explain_request(pin, stale_candidate))?;
-    let err = match resp.payload {
-        SearchPlaneQueryIpcResponse::Error(e) => e,
-        other => {
-            return Err(format!("expected Error, got {other:?}").into());
+        let pin = GenerationPin::new(repo(), revision(), generation());
+        if !wait_until(READINESS_TIMEOUT, || {
+            send_query_request(&socket, &lex_query("alpha", pin.clone()))
+                .map(|r| !matches!(r.payload, SearchPlaneQueryIpcResponse::Error(_)))
+                .unwrap_or(false)
+        }) {
+            return Err("dispatcher never sealed".into());
         }
-    };
-    if err.code.as_wire_str() != "INVALID_REQUEST" {
-        return Err(format!("expected INVALID_REQUEST, got {}", err.code).into());
-    }
 
-    Ok(())
+        // Start with a real response so the generation is the only stale field.
+        let lex_resp = send_query_request(&socket, &lex_query("alpha", pin.clone()))?;
+        let mut stale_candidate = match lex_resp.payload {
+            SearchPlaneQueryIpcResponse::Text(lex) => {
+                lex.results.into_iter().next().ok_or_else(|| {
+                    Box::<dyn Error>::from("lexical query returned zero candidates")
+                })?
+            }
+            other => return Err(format!("expected Lexical, got {other:?}").into()),
+        };
+        if stale_candidate.candidate_id != "c-mismatch" {
+            return Err(
+                format!("expected c-mismatch, got {}", stale_candidate.candidate_id).into(),
+            );
+        }
+        stale_candidate.manifest_generation = ManifestGeneration::new(99);
+        let resp = send_query_request(&socket, &explain_request(pin, stale_candidate))?;
+        let err = match resp.payload {
+            SearchPlaneQueryIpcResponse::Error(e) => e,
+            other => {
+                return Err(format!("expected Error, got {other:?}").into());
+            }
+        };
+        if err.code.as_wire_str() != "INVALID_REQUEST" {
+            return Err(format!("expected INVALID_REQUEST, got {}", err.code).into());
+        }
+
+        Ok(())
+    })
 }

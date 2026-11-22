@@ -116,3 +116,64 @@ pub fn tier_manifest_json() -> Value {
         "tiers": TIER_MANIFEST.iter().map(tier_params_json).collect::<Vec<_>>(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Context as _;
+
+    #[test]
+    fn scoped_digest_binds_source_repo_identity_and_source_bytes() -> Result<()> {
+        let files = generate_scoped_corpus(ScaleTier::Medium, 11)?;
+        let original = scoped_corpus_digest(DIMENSION, &files);
+        let mut changed_repo = files.clone();
+        changed_repo
+            .first_mut()
+            .context("seeded fixture is empty")?
+            .source_repo_id = "repo2".to_string();
+        assert_ne!(original, scoped_corpus_digest(DIMENSION, &changed_repo));
+        let mut changed_content = files;
+        changed_content
+            .first_mut()
+            .context("seeded fixture is empty")?
+            .content
+            .push_str("// changed\n");
+        assert_ne!(original, scoped_corpus_digest(DIMENSION, &changed_content));
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_json_schema_is_well_formed() -> Result<()> {
+        let value = tier_manifest_json();
+        assert_eq!(value["kind"], "quanta-index-scale-tier-manifest");
+        assert_eq!(value["manifest_schema_version"], 2);
+        assert_eq!(value["dimension"], "scale");
+        assert_eq!(value["query_token"], SCALE_QUERY_TOKEN);
+        let tiers = value["tiers"].as_array().context("tiers is an array")?;
+        assert_eq!(tiers.len(), 4);
+        for row in tiers {
+            assert!(row["tier"].is_string());
+            assert!(row["repo_count"].is_u64());
+            assert!(row["files_per_repo"].is_u64());
+            assert!(row["avg_file_lines"].is_u64());
+            assert!(row["hit_density_per_mille"].is_u64());
+            assert!(row["symbol_density_per_mille"].is_u64());
+            assert!(row["total_files"].is_u64());
+            assert!(row["default_run"].is_boolean());
+            assert_eq!(row["selectable"], true);
+            assert_eq!(row["serving_owner_count"], 1);
+            assert_eq!(row["source_repo_count"], row["repo_count"]);
+        }
+        // Exactly the small tier is measured here.
+        let measured: Vec<&Value> = tiers
+            .iter()
+            .filter(|r| r["default_run"] == Value::Bool(true))
+            .collect();
+        assert_eq!(measured.len(), 1, "only the small tier is measured here");
+        let default_tier = measured
+            .first()
+            .context("default measured tier is absent")?;
+        assert_eq!(default_tier["tier"], "small");
+        Ok(())
+    }
+}

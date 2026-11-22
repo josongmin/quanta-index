@@ -463,7 +463,7 @@ fn widened_cold_tokens_match_sql_groups_and_packed_wire() -> Result<(), IndexErr
         check_eq!(body.len(), body_bytes);
         check!(body.is_ascii());
         let census = exact_canonical_census(&body, &mut work)?;
-        let mut cold = super::super::cold_tokens::ColdTokens::try_new(census, &work)?
+        let mut cold = super::super::cold_tokens::ColdTokens::try_new(&census, &work)?
             .ok_or(IndexError::ResourceLimited)?;
         let indexed = visit_indexed_token_batches(&body, &mut work, |batch, budget| {
             spool.token_batch(batch, budget)?;
@@ -564,7 +564,7 @@ fn cold_tokens_beyond_u16_key_arena_match_sql_and_packed_wire() -> Result<(), In
     // 8-byte rows per run. The old body bound requested 2,867,228 bytes.
     check_eq!(census.arena_bytes()?, 84_000);
     check_eq!(body.len() * 28, 2_867_228);
-    let mut cold = super::super::cold_tokens::ColdTokens::try_new(census, &work)?
+    let mut cold = super::super::cold_tokens::ColdTokens::try_new(&census, &work)?
         .ok_or(IndexError::ResourceLimited)?;
     check_eq!(
         visit_indexed_token_batches(&body, &mut work, |batch, budget| {
@@ -636,7 +636,7 @@ fn widened_cold_optional_memory_denial_leaves_sql_fallback_fundable() -> Result<
         work.reserve_memory(81_000, quanta_index_core::index::MemoryLifetime::Temporary)?;
     let census = exact_canonical_census(&body, &mut work)?;
     check_eq!(census.arena_bytes()?, 19_968);
-    check!(super::super::cold_tokens::ColdTokens::try_new(census, &work)?.is_none());
+    check!(super::super::cold_tokens::ColdTokens::try_new(&census, &work)?.is_none());
     check!(work.first_denial().is_none());
     drop(occupied);
     let scratch = TestScratch::default();
@@ -702,32 +702,22 @@ fn cold_selection_keeps_mandatory_token_packet_fundable() -> Result<(), IndexErr
     drop(sql_spool);
     check_eq!(sql_memory.live.load(Ordering::Relaxed), 0);
 
-    // The new caller funds the cursor and packet first. Its exact arena fits
-    // the same ceiling and must preserve the SQL token groups.
+    // Direct cold fill fits the same ceiling and preserves the SQL groups.
     let scratch = TestScratch::default();
     let mut selected_work = packet_budget()?;
     let selected_spool = TextSpool::new(&scratch, &mut selected_work)?;
     let selected_memory = bind(&mut selected_work);
-    let (mut cursor, mut token_rows) = prepare_indexed_token_input(&body, &mut selected_work)?;
+    let mut cursor = prepare_indexed_token_cursor(&body, &mut selected_work)?;
     let census = super::super::cold_tokens::CanonicalTokenCensus::count(
         &mut cursor,
         body.len(),
         &mut selected_work,
     )?
     .ok_or(IndexError::ResourceLimited)?;
-    check!(token_rows.try_prepare_cold_keys(census.packet_key_bytes(), &selected_work)?);
-    let mut cold = super::super::cold_tokens::ColdTokens::try_new(census, &selected_work)?
+    let mut cold = super::super::cold_tokens::ColdTokens::try_new(&census, &selected_work)?
         .ok_or(IndexError::ResourceLimited)?;
     check!(selected_work.first_denial().is_none());
-    check_eq!(
-        visit_prepared_token_batches(
-            &mut cursor,
-            &mut token_rows,
-            &mut selected_work,
-            |batch, budget| cold.push_batch(batch, budget),
-        )?,
-        1
-    );
+    check_eq!(cold.fill_from_cursor(&mut cursor, &mut selected_work)?, 1);
     cold.sort_and_validate(&selected_work)?;
     let mut selected = BTreeMap::new();
     cold.visit_groups(8192, &mut selected_work, |key, positions, _budget| {
@@ -736,7 +726,6 @@ fn cold_selection_keeps_mandatory_token_packet_fundable() -> Result<(), IndexErr
     })?;
     check_eq!(selected, expected);
     drop(cold);
-    drop(token_rows);
     drop(cursor);
     drop(selected_spool);
     check_eq!(selected_memory.live.load(Ordering::Relaxed), 0);
@@ -754,27 +743,17 @@ fn cold_arena_does_not_starve_mandatory_packed_output() -> Result<(), IndexError
     // for the first owned key but one byte short of the encoded block. This
     // ceiling is derived from canonical output, not an arbitrary memory size.
     let (mut calibration, calibration_memory) = funded_output_budget(1_000_000)?;
-    let (mut cursor, mut packet) = prepare_indexed_token_input(&body, &mut calibration)?;
+    let mut cursor = prepare_indexed_token_cursor(&body, &mut calibration)?;
     let census = super::super::cold_tokens::CanonicalTokenCensus::count(
         &mut cursor,
         body.len(),
         &mut calibration,
     )?
     .ok_or(IndexError::ResourceLimited)?;
-    check!(packet.try_prepare_cold_keys(census.packet_key_bytes(), &calibration)?);
-    let mut cold = super::super::cold_tokens::ColdTokens::try_new(census, &calibration)?
+    let mut cold = super::super::cold_tokens::ColdTokens::try_new(&census, &calibration)?
         .ok_or(IndexError::ResourceLimited)?;
-    check_eq!(
-        visit_prepared_token_batches(
-            &mut cursor,
-            &mut packet,
-            &mut calibration,
-            |batch, budget| { cold.push_batch(batch, budget) }
-        )?,
-        500
-    );
+    check_eq!(cold.fill_from_cursor(&mut cursor, &mut calibration)?, 500);
     cold.sort_and_validate(&calibration)?;
-    drop(packet);
     drop(cursor);
     let alias = cold.try_packed_alias(&mut calibration)?.ok_or_else(|| {
         IndexError::BackendViolation("alias memory fixture has no complete packed candidate".into())
@@ -921,15 +900,12 @@ fn nonalias_cold_output_keeps_sql_baseline_admissible_at_same_memory_ceiling()
     let workspace = visitor_fixture()?.ticket.view.identity.workspace;
     let (mut census_work, _census_memory) = funded_output_budget(1_000_000)?;
     let census = exact_canonical_census(&body, &mut census_work)?;
-    let packet_bytes =
-        u64::try_from(census.packet_key_bytes()).map_err(|_error| IndexError::ResourceLimited)?;
     let arena_bytes =
         u64::try_from(census.arena_bytes()?).map_err(|_error| IndexError::ResourceLimited)?;
-    // All lane-34 input grants fit; only 4 KiB remains while the optional
-    // arena is live. The same ceiling must fund the original SQL output.
+    // The cold path keeps only its arena. Leave enough room for the ordinary
+    // SQL row packet and 4 KiB while still denying its optional output.
     let ceiling = token_row_backing()?
-        .checked_add(packet_bytes)
-        .and_then(|bytes| bytes.checked_add(arena_bytes))
+        .checked_add(arena_bytes)
         .and_then(|bytes| bytes.checked_add(4_096))
         .ok_or(IndexError::ResourceLimited)?;
 
@@ -1187,24 +1163,17 @@ fn token_lane_records_sql_writes_without_changing_off_mode_work_or_groups() -> R
             DiagnosticLaneV1(34),
             |_child, context| {
                 if use_cold {
-                    let (mut cursor, mut batch) =
-                        prepare_indexed_token_input(&body, context.budget)?;
+                    let mut cursor = prepare_indexed_token_cursor(&body, context.budget)?;
                     let census = super::super::cold_tokens::CanonicalTokenCensus::count(
                         &mut cursor,
                         body.len(),
                         context.budget,
                     )?
                     .ok_or(IndexError::ResourceLimited)?;
-                    check!(batch.try_prepare_cold_keys(census.packet_key_bytes(), context.budget)?);
                     let mut tokens =
-                        super::super::cold_tokens::ColdTokens::try_new(census, context.budget)?
+                        super::super::cold_tokens::ColdTokens::try_new(&census, context.budget)?
                             .ok_or(IndexError::ResourceLimited)?;
-                    let _indexed = visit_prepared_token_batches(
-                        &mut cursor,
-                        &mut batch,
-                        context.budget,
-                        |rows, budget| tokens.push_batch(rows, budget),
-                    )?;
+                    let _indexed = tokens.fill_from_cursor(&mut cursor, context.budget)?;
                     tokens.sort_and_validate(context.budget)?;
                     Ok(Some(tokens))
                 } else {
@@ -1280,7 +1249,7 @@ fn unicode_cold_groups_and_packed_wire_match_fixed_goldens_and_sql() -> Result<(
     let (mut work, memory) = funded_group_reader_budget(1_000_000)?;
     let scratch = TestScratch::default();
     let spool = TextSpool::new(&scratch, &mut work)?;
-    let (mut cursor, mut packet) = prepare_indexed_token_input(body, &mut work)?;
+    let mut cursor = prepare_indexed_token_cursor(body, &mut work)?;
     check_eq!(cursor.text(), "A İ ΟΣ ß café नमस्ते");
     let normalized = cursor.text().as_ptr();
     let census =
@@ -1289,17 +1258,10 @@ fn unicode_cold_groups_and_packed_wire_match_fixed_goldens_and_sql() -> Result<(
     // Six runs emit 12 eight-byte rows. The fixed case keys contain 77 UTF-8 bytes.
     check_eq!(census.arena_bytes()?, 173);
     check_eq!(cursor.text().as_ptr(), normalized);
-    check!(packet.try_prepare_cold_keys(census.packet_key_bytes(), &work)?);
-    let mut cold = super::super::cold_tokens::ColdTokens::try_new(census, &work)?
+    let mut cold = super::super::cold_tokens::ColdTokens::try_new(&census, &work)?
         .ok_or(IndexError::ResourceLimited)?;
-    check_eq!(
-        visit_prepared_token_batches(&mut cursor, &mut packet, &mut work, |rows, budget| {
-            cold.push_batch(rows, budget)
-        })?,
-        6
-    );
+    check_eq!(cold.fill_from_cursor(&mut cursor, &mut work)?, 6);
     cold.sort_and_validate(&work)?;
-    drop(packet);
     drop(cursor);
 
     let expected = BTreeMap::from([
@@ -1387,14 +1349,12 @@ fn unicode_optional_arena_denial_uses_original_sql_without_terminal_denial()
     // 1,024-write packet budget can therefore validate the original path.
     let body = format!("{}cafe\u{301}", "İ ".repeat(400));
     let census = exact_canonical_census(&body, &mut packet_budget()?)?;
-    let packet_bytes =
-        u64::try_from(census.packet_key_bytes()).map_err(|_error| IndexError::ResourceLimited)?;
     let arena_bytes =
         u64::try_from(census.arena_bytes()?).map_err(|_error| IndexError::ResourceLimited)?;
-    let ceiling = token_row_backing()?
-        .checked_add(packet_bytes)
-        .and_then(|bytes| bytes.checked_add(arena_bytes))
-        .and_then(|bytes| bytes.checked_sub(1))
+    // Exactly one byte below the direct arena grant; SQL remains independently
+    // fundable because it never retains the whole canonical arena.
+    let ceiling = arena_bytes
+        .checked_sub(1)
         .ok_or(IndexError::ResourceLimited)?;
 
     // Establish the independent ordinary SQL result at the same memory and
@@ -1427,14 +1387,13 @@ fn unicode_optional_arena_denial_uses_original_sql_without_terminal_denial()
     let (mut work, memory) = funded_group_reader_budget(ceiling)?;
     let scratch = TestScratch::default();
     let spool = TextSpool::new(&scratch, &mut work)?;
-    let (mut cursor, mut packet) = prepare_indexed_token_input(&body, &mut work)?;
+    let mut cursor = prepare_indexed_token_cursor(&body, &mut work)?;
     let census =
         super::super::cold_tokens::CanonicalTokenCensus::count(&mut cursor, body.len(), &mut work)?
             .ok_or(IndexError::ResourceLimited)?;
-    check!(packet.try_prepare_cold_keys(census.packet_key_bytes(), &work)?);
-    check!(super::super::cold_tokens::ColdTokens::try_new(census, &work)?.is_none());
+    check!(super::super::cold_tokens::ColdTokens::try_new(&census, &work)?.is_none());
     check!(work.first_denial().is_none());
-    packet.discard_cold_keys();
+    let mut packet = TokenBatch::new(&work)?;
     spool.reset_tokens(&mut work)?;
     check_eq!(
         visit_prepared_token_batches(&mut cursor, &mut packet, &mut work, |rows, budget| {

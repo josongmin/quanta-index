@@ -2,11 +2,11 @@
 //! The durable member remains immutable; no source or index object is published.
 
 use super::text::{
-    MAX_POSITIONS_PER_TERM, NativeTextIndex, PreparedPositions, Root, TextReadContext, TextRecipe,
-    TextStatistics, selected_overlay_prior, validate_overlay_term_membership,
-    visit_indexed_token_batches,
+    NativeTextIndex, OverlayPrior, OverlayPriorReader, OverlayTermMembership, SelectedTextRoot,
+    TextReadContext, TextRecipe, TextStatistics, visit_indexed_token_batches,
 };
 use super::text_memory::{PreparedKey, PreparedRows};
+use super::text_occurrence::positions::{MAX_POSITIONS_PER_TERM, PreparedPositions};
 use quanta_index_core::index::{
     Digest, IndexError, MemberBinding, OwnerKey, ViewRef, WorkBudget, WorkUsage,
 };
@@ -40,7 +40,7 @@ struct OverlayTerm {
 struct OverlayOwner {
     owner: OwnerKey,
     revision: u64,
-    old_inventory: Option<super::text::EntryMap>,
+    prior: Option<OverlayPrior>,
     new_indexed_tokens: Option<u64>,
     body_digest: Option<Digest>,
     terms: PreparedRows<OverlayTerm>,
@@ -72,7 +72,7 @@ pub struct TextOverlayCorpus {
     statistics: TextStatistics,
     view: ViewRef,
     member: MemberBinding,
-    root: Root,
+    root: SelectedTextRoot,
     recipe: TextRecipe,
 }
 
@@ -166,8 +166,7 @@ impl TextOverlayCorpus {
         })
     }
 
-    /// Adjust a validated durable term DF using only the selected owners'
-    /// admitted contribution inventories. Call after complete durable traversal.
+    /// Adjust the validated durable term DF for owners selected by this overlay.
     pub fn adjusted_df(
         &self,
         member: &MemberBinding,
@@ -176,20 +175,21 @@ impl TextOverlayCorpus {
         context: &mut TextReadContext<'_>,
     ) -> Result<u64, IndexError> {
         self.validate_binding(context.ticket.view.identity, member)?;
+        let mut membership = None;
         let mut df = durable_df;
         for owner in self.owners.as_slice() {
             context.budget.checkpoint()?;
-            if let Some(inventory) = owner.old_inventory {
-                let inventory_ref =
-                    inventory.lookup(context.objects, context.maps, key, context.budget)?;
-                if validate_overlay_term_membership(
-                    self.root,
-                    self.recipe,
-                    owner.owner,
-                    key,
-                    inventory_ref,
-                    context,
-                )? {
+            if let Some(prior) = owner.prior {
+                let selected = match membership.as_mut() {
+                    Some(selected) => selected,
+                    None => membership.insert(OverlayTermMembership::new(
+                        self.root,
+                        self.recipe,
+                        key,
+                        context,
+                    )?),
+                };
+                if selected.validate(owner.owner, prior, context)? {
                     df = df.checked_sub(1).ok_or_else(|| {
                         IndexError::CorruptObject(
                             "overlay removal exceeds durable term frequency".into(),
@@ -264,24 +264,19 @@ impl NativeTextIndex {
             }
         }
         let root = self.pinned_root(member, context)?;
-        let (_, docs, indexed_tokens) = root.owner_universe();
-        let mut statistics = TextStatistics {
-            docs,
-            indexed_tokens,
-        };
+        let mut statistics = root.statistics();
         let mut owners = PreparedRows::new(MAX_TEXT_OVERLAY_DOCUMENTS)?;
+        let mut reader = OverlayPriorReader::new(root, self.recipe());
         for input in inputs {
             context.budget.checkpoint()?;
-            let prior = selected_overlay_prior(root, self.recipe(), input.owner, context)?;
-            let (old_inventory, old_indexed_tokens) =
-                prior.map_or((None, 0), |(inventory, tokens)| (Some(inventory), tokens));
-            if prior.is_some() {
+            let prior = reader.prior(input.owner, context)?;
+            if let Some(prior) = prior {
                 statistics.docs = statistics.docs.checked_sub(1).ok_or_else(|| {
                     IndexError::CorruptObject("overlay removal exceeds durable documents".into())
                 })?;
                 statistics.indexed_tokens = statistics
                     .indexed_tokens
-                    .checked_sub(old_indexed_tokens)
+                    .checked_sub(prior.indexed_tokens)
                     .ok_or_else(|| {
                         IndexError::CorruptObject("overlay removal exceeds durable tokens".into())
                     })?;
@@ -310,7 +305,7 @@ impl NativeTextIndex {
                 OverlayOwner {
                     owner: input.owner,
                     revision: input.revision,
-                    old_inventory,
+                    prior,
                     new_indexed_tokens,
                     body_digest,
                     terms,

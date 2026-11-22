@@ -241,6 +241,9 @@ impl SearchdCommand {
                 }
             }
         }
+        if selected_command.is_none() {
+            return Err(anyhow::anyhow!("searchd requires an explicit subcommand"));
+        }
         if diagnostic_trace_max_output_bytes.is_some() && diagnostic_trace_path.is_none() {
             return Err(anyhow::anyhow!(
                 "--trace-max-output-bytes requires --diagnostic-trace"
@@ -827,9 +830,9 @@ mod tests {
                 .is_some_and(|command| command.settle_published_only)
         );
 
-        args.push("--settle-published-only".into());
-        ensure!(SearchdCommand::from_args(args.clone()).is_err());
-        ensure!(args.pop().as_deref() == Some("--settle-published-only"));
+        let mut duplicate = args.clone();
+        duplicate.push("--settle-published-only".into());
+        ensure!(SearchdCommand::from_args(duplicate).is_err());
         args.push("true".into());
         ensure!(SearchdCommand::from_args(args).is_err());
         ensure!(
@@ -987,17 +990,33 @@ mod tests {
 
     #[test]
     fn single_serve_modes_keep_their_config_boundary() -> Result<()> {
-        let implicit = parse(&[])?;
-        ensure!(implicit.offline_operation().is_none());
-        ensure!(implicit.native_config_path().is_none());
         let legacy = parse(&["serve", "--state-root", "/tmp/state"])?;
         ensure!(legacy.state_root_override == Some(PathBuf::from("/tmp/state")));
         ensure!(legacy.offline_operation().is_none());
+        let flags_first = parse(&["--state-root", "/tmp/state", "serve"])?;
+        ensure!(flags_first.state_root_override == legacy.state_root_override);
         let native = parse(&["serve-native", "--config", "/tmp/native.json"])?;
         ensure!(native.native_config_path() == Some(&PathBuf::from("/tmp/native.json")));
         ensure!(native.offline_operation().is_none());
         ensure!(native.into_config().is_err());
         Ok(())
+    }
+
+    #[test]
+    fn missing_subcommand_never_selects_legacy_serve() {
+        for args in [
+            Vec::<&str>::new(),
+            vec!["--state-root", "/tmp/state"],
+            vec!["--diagnostic-trace", "/tmp/trace.jsonl"],
+        ] {
+            let error = parse(&args).expect_err("an explicit subcommand is required");
+            assert!(
+                error
+                    .to_string()
+                    .contains("requires an explicit subcommand"),
+                "{args:?}: {error}"
+            );
+        }
     }
 
     #[test]

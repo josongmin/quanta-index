@@ -31,6 +31,17 @@ impl GoTestTraceFrameClassV1 {
     }
 }
 
+impl GoTestTraceSourceFramesV1 {
+    #[must_use]
+    pub fn frame_class(&self) -> GoTestTraceFrameClassV1 {
+        match self.paths().len() {
+            0 => GoTestTraceFrameClassV1::Unresolved,
+            1 => GoTestTraceFrameClassV1::Exact,
+            _ => GoTestTraceFrameClassV1::Ambiguous,
+        }
+    }
+}
+
 /// First returned chunk of a file in one lane; ranks are one-based.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -3,7 +3,11 @@
 
 use quanta_index_scratch_sqlite::{MapEditPage as EditPage, read_map_edit_budgeted as read_edit};
 
+pub(super) use super::text_memory::{MAX_TERM_KEY_BYTES, check_term_key};
+use super::text_inventory_descriptor::inventory_reference;
 use super::text_memory::PreparedKey;
+use super::text_occurrence::positions::{MAX_POSITIONS_PER_TERM, PreparedPositions};
+use super::text_token_batch::TokenBatch;
 use quanta_index_core::index::{
     AttemptRef, Digest, IndexError, MapEdit, MapValue, MemoryCreditLimits, MemoryLease,
     MemoryLifetime, ObjectRef, OrdinalMapEdit, ScratchAllocation, ScratchRequest, ScratchSpacePort,
@@ -21,11 +25,12 @@ mod confirmed_batch;
 pub(super) use confirmed_batch::ConfirmedOccurrencePrograms;
 mod packed_runs;
 mod posting_case_pages;
+mod term_anchors;
+pub(super) use packed_runs::OrderedColdRun;
 use packed_runs::{PackedRangeCursor, PostingPacketCache, PostingRow, PostingRuns};
 mod token_groups;
 pub(super) use posting_case_pages::PostingCasePages;
 
-pub(super) const MAX_TERM_KEY_BYTES: u64 = 1_024;
 pub(super) const SCRATCH_MAX_BYTES: u64 = 4_294_967_296;
 const SCRATCH_INITIAL_BYTES: u64 = 256 * 1024;
 const PAGE: usize = 64;
@@ -64,6 +69,7 @@ pub(super) struct TextSpool {
     inventory_packet_memory_reserved: Cell<bool>,
     inventory_receipt: Cell<Option<AttemptRef>>,
     inventory_poisoned: Cell<bool>,
+    term_anchor_state: Cell<term_anchors::State>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -419,8 +425,13 @@ impl<'spool> ReadyInventoryReadLease<'spool> {
         fn value_wire(value: ValueRef<'_>) -> Result<Option<&[u8]>, IndexError> {
             match value {
                 ValueRef::Null => Ok(None),
-                value => bounded_blob(value, quanta_index_core::index::MAX_MAP_VALUE_WIRE_BYTES)
-                    .map(Some),
+                value @ (ValueRef::Integer(_)
+                | ValueRef::Real(_)
+                | ValueRef::Text(_)
+                | ValueRef::Blob(_)) => {
+                    bounded_blob(value, quanta_index_core::index::MAX_MAP_VALUE_WIRE_BYTES)
+                        .map(Some)
+                }
             }
         }
 
@@ -654,7 +665,7 @@ impl TermPage {
     fn counted(source: Rc<PostingPageSource>, budget: &WorkBudget) -> Result<Self, IndexError> {
         let memory = budget.reserve_memory(
             u64::try_from(std::mem::size_of::<TermPageCounts>())
-                .map_err(|_| IndexError::ResourceLimited)?,
+                .map_err(|_error| IndexError::ResourceLimited)?,
             MemoryLifetime::Temporary,
         )?;
         Ok(Self {
@@ -685,10 +696,13 @@ impl TermPage {
         }
         let slot = self.keys.len();
         self.push_key(bytes, budget)?;
-        self.counts
+        *self
+            .counts
             .as_mut()
             .ok_or(IndexError::ResourceLimited)?
-            .deltas[slot] = delta;
+            .deltas
+            .get_mut(slot)
+            .ok_or(IndexError::ResourceLimited)? = delta;
         Ok(())
     }
 
@@ -718,10 +732,15 @@ impl TermPage {
         // The fixed page has at most64 rows; keys and their counts move together.
         for slot in 1..self.keys.len() {
             let mut at = slot;
-            while at > 0 && self.keys[at - 1].as_slice() > self.keys[at].as_slice() {
-                self.keys.swap(at - 1, at);
-                counts.deltas.swap(at - 1, at);
-                at -= 1;
+            while let Some(prior) = at.checked_sub(1) {
+                let previous = self.keys.get(prior).ok_or(IndexError::ResourceLimited)?;
+                let current = self.keys.get(at).ok_or(IndexError::ResourceLimited)?;
+                if previous.as_slice() <= current.as_slice() {
+                    break;
+                }
+                self.keys.swap(prior, at);
+                counts.deltas.swap(prior, at);
+                at = prior;
             }
         }
         Ok(())
@@ -1067,6 +1086,8 @@ impl TextSpool {
                  PRIMARY KEY(surface,k)) WITHOUT ROWID;
              CREATE TABLE confirmed_occurrence(
                  ref BLOB PRIMARY KEY, validated_count INTEGER) WITHOUT ROWID;
+             CREATE TABLE confirmed_cold_root(
+                 k BLOB PRIMARY KEY, root BLOB NOT NULL) WITHOUT ROWID;
              BEGIN IMMEDIATE;",
         )
         .map_err(|error| sql(&error))?;
@@ -1099,6 +1120,7 @@ impl TextSpool {
             inventory_packet_memory_reserved: Cell::new(false),
             inventory_receipt: Cell::new(None),
             inventory_poisoned: Cell::new(false),
+            term_anchor_state: Cell::new(term_anchors::State::Empty),
         })
     }
 
@@ -1325,6 +1347,171 @@ impl TextSpool {
         })
     }
 
+    /// A disposable same-attempt DATA index of completely installed cold
+    /// dense roots. The caller still owns the content proof and catalog
+    /// publication. Exact 32-byte keys and canonical object references are
+    /// checked again on every SQL hit.
+    pub(super) fn confirmed_cold_roots_lookup(
+        &self,
+        keys: &[Option<[u8; 32]>],
+        found: &mut [Option<ObjectRef>],
+        attempt: AttemptRef,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        budget.checkpoint()?;
+        self.check_posting_usable()?;
+        self.postings.check_page_source(self)?;
+        self.check_confirmed_attempt(attempt)?;
+        if keys.len() != found.len() || keys.len() > PAGE {
+            return Err(IndexError::InvalidInput(
+                "confirmed cold root lookup exceeds page".into(),
+            ));
+        }
+        let db = self.db.scoped(budget)?;
+        let mut query = db
+            .prepare_cached("SELECT k,root FROM confirmed_cold_root WHERE k=?1")
+            .map_err(|error| sql(&error))?;
+        for (key, output) in keys.iter().zip(found) {
+            budget.checkpoint()?;
+            if output.is_some() {
+                return Err(IndexError::BackendViolation(
+                    "confirmed cold root lookup output was not empty".into(),
+                ));
+            }
+            let Some(key) = key else { continue };
+            budget.charge(WorkUsage {
+                reads: 1,
+                bytes: 65,
+                ..WorkUsage::default()
+            })?;
+            let mut rows = query
+                .query(params![key.as_slice()])
+                .map_err(|error| sql(&error))?;
+            if let Some(row) = rows.next().map_err(|error| sql(&error))? {
+                let stored_key = quanta_index_scratch_sqlite::fixed_blob::<32>(
+                    row.get_ref(0).map_err(|error| sql(&error))?,
+                )?;
+                if stored_key != *key {
+                    return Err(IndexError::CorruptObject(
+                        "confirmed cold root scratch key differs".into(),
+                    ));
+                }
+                let wire = quanta_index_scratch_sqlite::fixed_blob::<33>(
+                    row.get_ref(1).map_err(|error| sql(&error))?,
+                )?;
+                let MapValue::Object(root) = MapValue::decode(&wire)? else {
+                    return Err(IndexError::CorruptObject(
+                        "confirmed cold root scratch value differs".into(),
+                    ));
+                };
+                if rows.next().map_err(|error| sql(&error))?.is_some() {
+                    return Err(IndexError::CorruptObject(
+                        "confirmed cold root scratch repeats a key".into(),
+                    ));
+                }
+                *output = Some(root);
+            }
+        }
+        budget.checkpoint()
+    }
+
+    /// Record only caller-verified install results, in one admitted scratch
+    /// write group. A conflicting previously recorded identity is an error.
+    pub(super) fn record_confirmed_cold_roots(
+        &self,
+        keys: &[Option<[u8; 32]>],
+        roots: &[Option<ObjectRef>],
+        attempt: AttemptRef,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        budget.checkpoint()?;
+        self.check_posting_usable()?;
+        self.postings.check_page_source(self)?;
+        self.check_confirmed_attempt(attempt)?;
+        if keys.len() != roots.len() || keys.len() > PAGE {
+            return Err(IndexError::InvalidInput(
+                "confirmed cold root record exceeds page".into(),
+            ));
+        }
+        let mut count = 0_u64;
+        for (key, root) in keys.iter().zip(roots) {
+            budget.checkpoint()?;
+            match (key, root) {
+                (Some(_), Some(root)) => {
+                    let _wire = reference_fixed_bytes(root)?;
+                    count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(IndexError::BackendViolation(
+                        "confirmed cold root record loses an installed ordinal".into(),
+                    ));
+                }
+            }
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        let db = self.db.scoped(budget)?;
+        let scratch_bytes = count.checked_mul(128).ok_or(IndexError::ResourceLimited)?;
+        quanta_index_scratch_sqlite::reserve_for_write(
+            &db,
+            self.allocation.as_ref(),
+            scratch_bytes,
+            budget,
+        )?;
+        budget.charge(WorkUsage {
+            writes: count,
+            bytes: scratch_bytes,
+            ..WorkUsage::default()
+        })?;
+        let mut insert = db
+            .prepare_cached("INSERT OR IGNORE INTO confirmed_cold_root(k,root) VALUES(?1,?2)")
+            .map_err(|error| sql(&error))?;
+        let mut existing = db
+            .prepare_cached("SELECT root FROM confirmed_cold_root WHERE k=?1")
+            .map_err(|error| sql(&error))?;
+        for (key, root) in keys.iter().zip(roots) {
+            budget.checkpoint()?;
+            let (Some(key), Some(root)) = (key, root) else {
+                continue;
+            };
+            let wire = reference_fixed_bytes(root)?;
+            let changed = insert
+                .execute(params![key.as_slice(), wire.as_slice()])
+                .map_err(|error| sql(&error))?;
+            if changed == 1 {
+                continue;
+            }
+            if changed != 0 {
+                return Err(IndexError::BackendViolation(
+                    "confirmed cold root inserted multiple rows".into(),
+                ));
+            }
+            budget.charge(WorkUsage {
+                reads: 1,
+                bytes: 33,
+                ..WorkUsage::default()
+            })?;
+            let mut rows = existing
+                .query(params![key.as_slice()])
+                .map_err(|error| sql(&error))?;
+            let row = rows.next().map_err(|error| sql(&error))?.ok_or_else(|| {
+                IndexError::CorruptObject("confirmed cold root scratch conflict vanished".into())
+            })?;
+            let stored = quanta_index_scratch_sqlite::fixed_blob::<33>(
+                row.get_ref(0).map_err(|error| sql(&error))?,
+            )?;
+            if rows.next().map_err(|error| sql(&error))?.is_some() || stored != wire {
+                return Err(IndexError::BackendViolation(
+                    "confirmed cold posting identity changed".into(),
+                ));
+            }
+        }
+        self.postings.accept_top_changes(self)?;
+        budget.checkpoint()
+    }
+
     /// A disposable positive memo of objects already confirmed by this attempt.
     /// It cannot grant publication or bypass a first physical installation.
     pub(super) fn confirmed_occurrence_contains(
@@ -1379,7 +1566,7 @@ impl TextSpool {
             rusqlite::types::ValueRef::Integer(value)
                 if value > 0
                     && u64::try_from(value)
-                        .is_ok_and(|count| count <= super::text::MAX_POSITIONS_PER_TERM) =>
+                        .is_ok_and(|count| count <= MAX_POSITIONS_PER_TERM) =>
             {
                 ConfirmedOccurrenceCount::Validated(
                     u64::try_from(value).map_err(|_error| IndexError::ResourceLimited)?,
@@ -1415,7 +1602,7 @@ impl TextSpool {
     ) -> Result<(), IndexError> {
         budget.checkpoint()?;
         self.check_confirmed_attempt(attempt)?;
-        if count == 0 || count > super::text::MAX_POSITIONS_PER_TERM {
+        if count == 0 || count > MAX_POSITIONS_PER_TERM {
             return Err(IndexError::CorruptObject(
                 "confirmed occurrence count is outside the leaf envelope".into(),
             ));
@@ -1570,7 +1757,7 @@ impl TextSpool {
 
     pub(super) fn token_batch(
         &self,
-        batch: &super::text::TokenBatch,
+        batch: &TokenBatch,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         self.token_rows(
@@ -1713,7 +1900,7 @@ impl TextSpool {
         budget: &mut WorkBudget,
         consume: impl FnMut(
             PreparedKey,
-            super::text::PreparedPositions,
+            PreparedPositions,
             &mut WorkBudget,
         ) -> Result<(), IndexError>,
     ) -> Result<(), IndexError> {
@@ -1741,8 +1928,8 @@ impl TextSpool {
         term: &[u8],
         limit: usize,
         budget: &mut WorkBudget,
-    ) -> Result<super::text::PreparedPositions, IndexError> {
-        let mut result = super::text::PreparedPositions::new(limit)?;
+    ) -> Result<PreparedPositions, IndexError> {
+        let mut result = PreparedPositions::new(limit)?;
         let io_scope = self.db.scoped(budget)?;
         let mut statement = io_scope
             .prepare_cached("SELECT pos FROM tokens WHERE term=?1 ORDER BY pos")
@@ -1804,10 +1991,10 @@ impl TextSpool {
                         "planned inventory lacks an occurrence reference".into(),
                     )
                 })?;
-                let reference = super::text::inventory_reference(next)?;
+                let reference = inventory_reference(next)?;
                 delta.include(&self.inventory_packet.borrow(), reference)?;
             } else if let Some(next) = edit.next {
-                let _reference = super::text::inventory_reference(next)?;
+                let _reference = inventory_reference(next)?;
             }
         }
         self.inventory_packet.borrow().check_delta(&delta)?;
@@ -1954,6 +2141,47 @@ impl TextSpool {
         )
     }
 
+    pub(super) fn begin_ordered_cold_run(
+        &self,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<OrderedColdRun<'_>>, IndexError> {
+        self.postings.begin_ordered_cold_run(self, budget)
+    }
+
+    pub(super) fn finish_owner_major_posting_run(
+        &self,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        self.postings.finish_owner_major_run(self, budget)
+    }
+
+    pub(super) fn prepare_ordered_cold_run_parent(
+        &self,
+        budget: &mut WorkBudget,
+    ) -> Result<bool, IndexError> {
+        self.postings.prepare_ordered_cold_run_parent(self, budget)
+    }
+
+    pub(super) fn ordered_cold_run_credit_limits() -> Result<MemoryCreditLimits, IndexError> {
+        PostingRuns::ordered_cold_run_credit_limits()
+    }
+
+    #[cfg(test)]
+    pub(in crate::native) fn posting_packet_layout(
+        &self,
+        budget: &WorkBudget,
+    ) -> Result<Vec<(i64, i64, i64)>, IndexError> {
+        let db = self.db.scoped(budget)?;
+        let mut statement = db
+            .prepare("SELECT phase,run,page FROM posting_packet ORDER BY phase,run,page")
+            .map_err(|error| sql(&error))?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|error| sql(&error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| sql(&error))
+    }
+
     #[cfg(test)]
     pub(super) fn posting_batch(
         &self,
@@ -2073,11 +2301,11 @@ impl MapEditCursor for InventoryCursor<'_> {
             if self.page.complete() {
                 return Ok(None);
             }
-            let prior_root = self.after.as_ref().map(|position| position.root());
+            let prior_root = self.after.as_ref().map(OrdinalMapEdit::root);
             let prior_key = self
                 .after
                 .as_ref()
-                .map(|position| position.key())
+                .map(OrdinalMapEdit::key)
                 .unwrap_or_default();
             let bounds: [&dyn rusqlite::ToSql; 2] = [&prior_root, &prior_key];
             let (query, parameters): (&str, &[&dyn rusqlite::ToSql]) = if self.after.is_some() {
@@ -2142,7 +2370,7 @@ impl MapEditCursor for RootCursor<'_> {
             }
             let root = self.root;
             let db = self.spool.db.scoped(budget)?;
-            let after = self.after.as_ref().map(|row| row.key());
+            let after = self.after.as_ref().map(OrdinalMapEdit::key);
             let query = if after.is_some() {
                 INVENTORY_ROOT_NEXT_SQL
             } else {
@@ -2177,7 +2405,7 @@ pub(super) struct PostingRootCursors<'a> {
     lengths: [u8; PAGE],
     offsets: [usize; PAGE],
     rows: Vec<Option<OrdinalMapEdit>>,
-    _row_memory: Option<quanta_index_core::index::MemoryLease>,
+    row_memory: Option<quanta_index_core::index::MemoryLease>,
     shared: Rc<RefCell<SharedRange<'a>>>,
 }
 
@@ -2185,7 +2413,13 @@ impl<'a> PostingRootCursors<'a> {
     fn fallback(spool: &'a TextSpool, budget: &WorkBudget) -> Result<Self, IndexError> {
         let memory = budget.reserve_memory(
             u64::try_from(
-                std::mem::size_of::<SharedRange<'a>>() + 2 * std::mem::size_of::<usize>(),
+                std::mem::size_of::<SharedRange<'a>>()
+                    .checked_add(
+                        std::mem::size_of::<usize>()
+                            .checked_mul(2)
+                            .ok_or(IndexError::ResourceLimited)?,
+                    )
+                    .ok_or(IndexError::ResourceLimited)?,
             )
             .map_err(|_error| IndexError::ResourceLimited)?,
             MemoryLifetime::Temporary,
@@ -2197,7 +2431,7 @@ impl<'a> PostingRootCursors<'a> {
             lengths: [0; PAGE],
             offsets: [0; PAGE],
             rows: Vec::new(),
-            _row_memory: None,
+            row_memory: None,
             shared: Rc::new(RefCell::new(SharedRange::new(spool, memory))),
         })
     }
@@ -2232,12 +2466,12 @@ impl<'a> PostingRootCursors<'a> {
                 if let Some(witness_slot) = shared.witness_slot {
                     let same_replay = slot == floor && witness_slot == floor;
                     if same_replay {
-                        if shared.witness_term() != term {
+                        if shared.witness_term()? != term {
                             return Err(IndexError::CorruptObject(
                                 "posting root replay term differs".into(),
                             ));
                         }
-                    } else if slot > witness_slot && term <= shared.witness_term() {
+                    } else if slot > witness_slot && term <= shared.witness_term()? {
                         return Err(IndexError::CorruptObject(
                             "posting root order differs".into(),
                         ));
@@ -2245,7 +2479,7 @@ impl<'a> PostingRootCursors<'a> {
                 }
             }
             let crossed_case = shared.witness_slot.is_some_and(|previous| slot > previous)
-                && shared.witness_term().first() != term.first();
+                && shared.witness_term()?.first() != term.first();
             if shared.last_completed == Some(slot) || shared.retry_slot == Some(slot) {
                 shared.cursor.clear();
                 shared.lookahead = None;
@@ -2325,7 +2559,7 @@ struct SharedRange<'a> {
     db_changes: Option<u64>,
     poisoned: bool,
     _memory: Option<MemoryLease>,
-    _cursor_memory: Option<MemoryLease>,
+    cursor_memory: Option<MemoryLease>,
 }
 
 impl<'a> SharedRange<'a> {
@@ -2343,16 +2577,18 @@ impl<'a> SharedRange<'a> {
             db_changes: None,
             poisoned: false,
             _memory: memory,
-            _cursor_memory: None,
+            cursor_memory: None,
         }
     }
-    fn witness_term(&self) -> &[u8] {
-        &self.witness[..self.witness_len]
+    fn witness_term(&self) -> Result<&[u8], IndexError> {
+        self.witness
+            .get(..self.witness_len)
+            .ok_or(IndexError::ResourceLimited)
     }
     fn bind_active_term(&mut self, term: &[u8], budget: &mut WorkBudget) -> Result<(), IndexError> {
         let slot = self.active.ok_or(IndexError::ResourceLimited)?;
         if self.witness_slot == Some(slot) {
-            if self.witness_term() != term {
+            if self.witness_term()? != term {
                 return Err(IndexError::CorruptObject(
                     "posting active root term differs".into(),
                 ));
@@ -2366,7 +2602,10 @@ impl<'a> SharedRange<'a> {
             bytes: u64::try_from(term.len()).map_err(|_error| IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
-        self.witness[..term.len()].copy_from_slice(term);
+        self.witness
+            .get_mut(..term.len())
+            .ok_or(IndexError::ResourceLimited)?
+            .copy_from_slice(term);
         self.witness_len = term.len();
         self.witness_slot = Some(slot);
         Ok(())
@@ -2390,7 +2629,7 @@ impl<'a> SharedRange<'a> {
         }
     }
     fn complete(&mut self, slot: usize, term: &[u8]) -> Result<(), IndexError> {
-        if self.witness_slot != Some(slot) || self.witness_term() != term {
+        if self.witness_slot != Some(slot) || self.witness_term()? != term {
             return Err(IndexError::CorruptObject(
                 "posting completed root term differs".into(),
             ));
@@ -2449,7 +2688,7 @@ impl MapEditCursor for SharedPostingRootCursor<'_> {
                         shared.cursor = Vec::new();
                         return Err(IndexError::ResourceLimited);
                     }
-                    shared._cursor_memory = memory;
+                    shared.cursor_memory = memory;
                 }
                 shared
                     .cursor
@@ -2498,15 +2737,14 @@ impl Drop for SharedPostingRootCursor<'_> {
     fn drop(&mut self) {
         if !self.finished
             && let Ok(mut shared) = self.shared.try_borrow_mut()
+            && !shared.poisoned
         {
-            if !shared.poisoned {
-                // A warm-page probe may legitimately stop after one row. A
-                // subsequent same-slot request restarts with full Work charge.
-                shared.cursor.clear();
-                shared.lookahead = None;
-                shared.active = None;
-                shared.retry_slot = Some(self.slot);
-            }
+            // A warm-page probe may legitimately stop after one row. A
+            // subsequent same-slot request restarts with full Work charge.
+            shared.cursor.clear();
+            shared.lookahead = None;
+            shared.active = None;
+            shared.retry_slot = Some(self.slot);
         }
     }
 }
@@ -2549,20 +2787,6 @@ impl MapEditCursor for PostingRootCursor<'_> {
             }
         }
     }
-}
-
-pub(super) fn check_term_key(key: &[u8]) -> Result<(), IndexError> {
-    if key.len() < 2
-        || u64::try_from(key.len()).map_err(|_error| IndexError::ResourceLimited)?
-            > MAX_TERM_KEY_BYTES
-        || !matches!(key.first(), Some(0 | 1))
-        || key
-            .get(1..)
-            .is_none_or(|term| std::str::from_utf8(term).is_err())
-    {
-        return Err(IndexError::CorruptObject("invalid native term key".into()));
-    }
-    Ok(())
 }
 
 pub(super) struct PostingCursor<'a> {
@@ -2779,7 +3003,11 @@ impl MapEditCursor for TopCursor<'_> {
             let mut statement = db
                 .prepare_cached(TOP_NEXT_SQL)
                 .map_err(|error| sql(&error))?;
-            let after = self.after.as_ref().map(|row| row.key()).unwrap_or_default();
+            let after = self
+                .after
+                .as_ref()
+                .map(OrdinalMapEdit::key)
+                .unwrap_or_default();
             self.page = EditPage::read(
                 &mut statement,
                 &[&self.surface, &after],

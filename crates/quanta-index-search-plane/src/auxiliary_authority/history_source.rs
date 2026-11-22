@@ -9,7 +9,7 @@ use quanta_index_core::index::{
 use quanta_index_ipc::{
     CanonicalBatchDigestProgressError, CborPayloadLengthProgressErrorV1,
     canonical_batch_digest_with_progress_v1, cbor_payload_len_with_progress_v1,
-    matches_batch_digest_token_v1,
+    history_replay_advance_with_progress_v1, matches_batch_digest_token_v1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -37,6 +37,28 @@ pub(crate) struct ReplayCustody {
     generation_identity: Option<MemoryLease>,
 }
 impl ReplayCustody {
+    pub(crate) fn for_generation(
+        repo: &RepoId,
+        revision: &RevisionId,
+        manifest: Option<&str>,
+        budget: &WorkBudget,
+    ) -> Result<Self, CoreError> {
+        let bytes = repo
+            .as_str()
+            .len()
+            .checked_add(revision.as_str().len())
+            .and_then(|bytes| bytes.checked_add(manifest.map_or(0, str::len)))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| corrupt_history("History generation identity allocation overflow"))?;
+        let generation_identity = budget
+            .reserve_memory(bytes, MemoryLifetime::Retained)
+            .map_err(|error| history_work_error(budget, error))?;
+        Ok(Self {
+            generation_identity,
+            ..Self::default()
+        })
+    }
+
     pub(crate) fn replace(
         &mut self,
         family: AuxiliaryRowFamilyV1,
@@ -174,13 +196,12 @@ impl ReplayedHistorySourceV1 {
         {
             return Err(corrupt_history("Native History generation does not succeed the prior scope"));
         }
-        let identity_bytes = batch.repo_id.as_str().len()
-            .checked_add(batch.revision_id.as_str().len())
-            .and_then(|size| size.checked_add(manifest.len()))
-            .and_then(|size| u64::try_from(size).ok())
-            .ok_or_else(|| corrupt_history("Native History successor identity overflow"))?;
-        let identity_memory = budget.reserve_memory(identity_bytes, MemoryLifetime::Retained)
-            .map_err(|error| history_work_error(budget, error))?;
+        let identity = ReplayCustody::for_generation(
+            &batch.repo_id,
+            &batch.revision_id,
+            Some(manifest),
+            budget,
+        )?;
         let generation = generation_key(&batch.repo_id, &batch.revision_id, batch.generation);
         let epoch = AuxEpochV1::new(1);
         let body = read_history_batch(batch, budget)?;
@@ -199,7 +220,7 @@ impl ReplayedHistorySourceV1 {
         self.cut = HistorySourceCutV1 { generation, durable_epoch: epoch, snapshot_digest: snapshot, replay_start: replay };
         self.sequence = next_view_sequence;
         self.manifest_digest = Some(manifest.to_owned());
-        self._custody.generation_identity = identity_memory;
+        self._custody.generation_identity = identity.generation_identity;
         Ok(self)
     }
 
@@ -267,9 +288,9 @@ impl HistorySourceReplayV1 {
         })
     }
 
-    /// The enclosing source validator authenticates `(ordinal, before, after)`
-    /// against its complete inventory. This function additionally checks the
-    /// actual canonical body, the full ACK and every History transition.
+    /// The enclosing source validator authenticates the inventory and its
+    /// starting position. The fold binds every advance to the original batch
+    /// and ACK before applying the History transition.
     pub fn apply(
         mut self,
         ordinal: u64,
@@ -291,8 +312,9 @@ impl HistorySourceReplayV1 {
             || before != self.replay
             || after == Digest([0; 32])
             || after == before
-            || generation_key(&batch.repo_id, &batch.revision_id, batch.generation)
-                != self.fence.generation
+            || batch.repo_id != self.fence.generation.repo_id
+            || batch.revision_id != self.fence.generation.revision_id
+            || batch.generation != self.fence.generation.generation
             || batch.manifest_digest != self.fence.manifest_digest
             || ack.generation != batch.generation
             || ack.manifest_digest != batch.manifest_digest
@@ -317,6 +339,26 @@ impl HistorySourceReplayV1 {
                 "History ACK scope counts differ from its body",
             ));
         }
+        let expected =
+            history_replay_advance_with_progress_v1(before, ordinal, batch, ack, &mut |bytes| {
+                budget.charge(WorkUsage {
+                    bytes: u64::try_from(bytes).map_err(|_| IndexError::ResourceLimited)?,
+                    ..WorkUsage::default()
+                })
+            })
+            .map_err(|error| match error {
+                CanonicalBatchDigestProgressError::Progress(error) => {
+                    history_work_error(budget, error)
+                }
+                CanonicalBatchDigestProgressError::Encode(error) => {
+                    CoreError::Storage(error.to_string())
+                }
+            })?;
+        if expected != after {
+            return Err(corrupt_history(
+                "History replay advance differs from the original batch and ACK",
+            ));
+        }
         apply_history_body(
             &mut self.state,
             &mut self.custody,
@@ -331,7 +373,7 @@ impl HistorySourceReplayV1 {
         Ok(self)
     }
 
-    pub fn finish(self, budget: &mut WorkBudget) -> Result<ReplayedHistorySourceV1, CoreError> {
+    pub fn finish(mut self, budget: &mut WorkBudget) -> Result<ReplayedHistorySourceV1, CoreError> {
         if self.ordinal != self.fence.publication_count
             || self.sequence != self.fence.final_durable_sequence
             || self.replay != self.fence.final_replay
@@ -342,6 +384,17 @@ impl HistorySourceReplayV1 {
         }
         let epoch = AuxEpochV1::new(self.ordinal);
         let snapshot = history_snapshot_digest(&self.fence.generation, epoch, &self.state, budget)?;
+        // A resumed fold already owns the exact same generation identity.
+        // A fresh fold must fund its identity before it leaves the input loan.
+        if self.custody.generation_identity.is_none() {
+            let identity = ReplayCustody::for_generation(
+                &self.fence.generation.repo_id,
+                &self.fence.generation.revision_id,
+                self.fence.manifest_digest.as_deref(),
+                budget,
+            )?;
+            self.custody.generation_identity = identity.generation_identity;
+        }
         Ok(ReplayedHistorySourceV1 {
             state: self.state,
             cut: HistorySourceCutV1 {
@@ -359,7 +412,6 @@ impl HistorySourceReplayV1 {
 
 struct HistoryBatchFacts {
     digest: [u8; 32],
-    encoded_bytes: u64,
     replaces: usize,
     deletes: usize,
 }
@@ -368,13 +420,9 @@ fn read_history_batch(
     batch: &HistoryIngestBatch,
     budget: &mut WorkBudget,
 ) -> Result<HistoryBatchFacts, CoreError> {
-    let mut encoded_bytes = 0_u64;
     let digest = canonical_batch_digest_with_progress_v1(batch, &mut |bytes| {
         let bytes = u64::try_from(bytes)
             .map_err(|_| quanta_index_core::index::IndexError::ResourceLimited)?;
-        encoded_bytes = encoded_bytes
-            .checked_add(bytes)
-            .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
         budget.charge(WorkUsage {
             bytes,
             ..WorkUsage::default()
@@ -411,7 +459,6 @@ fn read_history_batch(
     }
     Ok(HistoryBatchFacts {
         digest,
-        encoded_bytes,
         replaces,
         deletes,
     })
@@ -425,61 +472,57 @@ fn apply_history_body(
     body: &HistoryBatchFacts,
     budget: &mut WorkBudget,
 ) -> Result<(), CoreError> {
-    let HistoryBatchFacts {
-        encoded_bytes,
-        replaces,
-        deletes,
-        ..
-    } = *body;
-    // The batch scratch grant covers transition/row-encoding clones and
-    // transient COW paths. Escaping state rows receive their own grants;
-    // repeated ref moves must not retain every superseded batch's grant.
-    let bound = encoded_bytes
-        .checked_mul(20)
-        .and_then(|n| n.checked_add(65_536))
-        .ok_or_else(|| corrupt_history("History replay allocation bound overflow"))?;
-    let _scratch_memory = budget
-        .reserve_memory(bound, MemoryLifetime::Temporary)
-        .map_err(|error| history_work_error(budget, error))?;
+    let count = body
+        .replaces
+        .checked_add(body.deletes)
+        .and_then(|count| count.checked_add(1))
+        .and_then(|count| u64::try_from(count).ok())
+        .ok_or_else(|| corrupt_history("History work count overflow"))?;
     budget
         .charge(WorkUsage {
-            reads: u64::try_from(replaces)
-                .ok()
-                .and_then(|n| n.checked_add(u64::try_from(deletes).ok()?))
-                .and_then(|n| n.checked_add(1))
-                .ok_or_else(|| corrupt_history("History work count overflow"))?,
-            mutations: u64::try_from(replaces)
-                .ok()
-                .and_then(|n| n.checked_add(u64::try_from(deletes).ok()?))
-                .and_then(|n| n.checked_add(1))
-                .ok_or_else(|| corrupt_history("History work count overflow"))?,
+            reads: count,
+            mutations: count,
             ..WorkUsage::default()
         })
         .map_err(|error| history_work_error(budget, error))?;
     let epoch = AuxEpochV1::new(ordinal);
-    let delta = history_transition(Some(state), epoch, batch)?;
-    for mutation in history_delta_rows(&delta)?.rows {
-        match mutation {
-            AuxiliaryRowMutationV1::Upsert(row) => {
-                let bytes = u64::try_from(row.value.len())
-                    .ok()
-                    .and_then(|bytes| bytes.checked_mul(16))
-                    .and_then(|bytes| bytes.checked_add(u64::try_from(row.key.row_key.len()).ok()?))
-                    .and_then(|bytes| bytes.checked_add(4096))
-                    .ok_or_else(|| corrupt_history("History state allocation bound overflow"))?;
-                let memory = budget
-                    .reserve_memory(bytes, MemoryLifetime::Retained)
-                    .map_err(|error| history_work_error(budget, error))?;
-                custody.replace(row.key.family, row.key.row_key, memory);
-            }
-            AuxiliaryRowMutationV1::Delete(key) => custody.remove(key.family, key.row_key),
-            _ => {
-                return Err(corrupt_history(
-                    "unexpected whole-family mutation in History replay",
-                ));
-            }
-        }
-    }
+    let generation_bytes = batch
+        .repo_id
+        .as_str()
+        .len()
+        .checked_add(batch.revision_id.as_str().len())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| corrupt_history("History validation allocation bound overflow"))?;
+    let _generation = budget
+        .reserve_memory(generation_bytes, MemoryLifetime::Temporary)
+        .map_err(|error| history_work_error(budget, error))?;
+    let delta = {
+        let longest_ref = batch
+            .refs
+            .iter()
+            .chain(&batch.tags)
+            .filter_map(|mutation| match mutation {
+                HistoryRefMutation::Upsert(update) => Some(update.name.len()),
+                HistoryRefMutation::Delete(_) => None,
+            })
+            .max()
+            .unwrap_or(0);
+        // The validation set and a rejection diagnostic are the only
+        // scratch allocations. The validated delta borrows the records.
+        let scratch = batch
+            .commits
+            .len()
+            .checked_mul(128)
+            .and_then(|bytes| bytes.checked_add(longest_ref.checked_mul(2)?))
+            .and_then(|bytes| bytes.checked_add(4096))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| corrupt_history("History validation allocation bound overflow"))?;
+        let _validation = budget
+            .reserve_memory(scratch, MemoryLifetime::Temporary)
+            .map_err(|error| history_work_error(budget, error))?;
+        history_transition(Some(state), epoch, batch)?
+    };
+    admit_history_delta(&delta, custody, budget)?;
     state.apply_delta(&delta);
     // Only after the old records are destroyed may their grants retire.
     custody.settle();
@@ -487,6 +530,127 @@ fn apply_history_body(
         .checkpoint()
         .map_err(|error| history_work_error(budget, error))?;
     Ok(())
+}
+
+fn admit_history_delta(
+    delta: &HistoryDelta<'_>,
+    custody: &mut ReplayCustody,
+    budget: &WorkBudget,
+) -> Result<(), CoreError> {
+    for record in delta.commits {
+        let mut bytes = StateRowBacking::new(COMMIT_SHA_LEN)?;
+        for text in [
+            Some(record.author.as_ref()),
+            record.author_name.as_deref(),
+            record.author_email.as_deref(),
+            Some(record.committer.as_ref()),
+            record.committer_name.as_deref(),
+            record.committer_email.as_deref(),
+            Some(record.message.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            bytes.add(text.len())?;
+        }
+        bytes.add_items::<CommitSha>(record.parents.len())?;
+        bytes.add_items::<Box<str>>(record.tags.len())?;
+        for tag in &record.tags {
+            bytes.add(tag.len())?;
+        }
+        let memory = bytes.reserve(budget)?;
+        custody.replace(
+            AuxiliaryRowFamilyV1::Commit,
+            record.sha.as_bytes().to_vec(),
+            memory,
+        );
+    }
+    for (family, changes) in [
+        (AuxiliaryRowFamilyV1::Ref, delta.refs),
+        (AuxiliaryRowFamilyV1::Tag, delta.tags),
+    ] {
+        for change in changes {
+            match change {
+                HistoryRefMutation::Upsert(update) => {
+                    let memory = StateRowBacking::new(update.name.len())?.reserve(budget)?;
+                    custody.replace(family, update.name.as_bytes().to_vec(), memory);
+                }
+                HistoryRefMutation::Delete(update) => {
+                    let bytes = u64::try_from(update.name.len())
+                        .map_err(|_| corrupt_history("History state allocation bound overflow"))?;
+                    let _key = if bytes == 0 {
+                        None
+                    } else {
+                        budget
+                            .reserve_memory(bytes, MemoryLifetime::Temporary)
+                            .map_err(|error| history_work_error(budget, error))?
+                    };
+                    custody.remove(family, update.name.as_bytes().to_vec());
+                }
+            }
+        }
+    }
+    for hunk in delta.diff_hunks {
+        let key_bytes = hunk
+            .file_path
+            .len()
+            .checked_add(COMMIT_SHA_LEN + 1)
+            .ok_or_else(|| corrupt_history("History state allocation bound overflow"))?;
+        let mut bytes = StateRowBacking::new(key_bytes)?;
+        for text in [
+            &hunk.record.hunk_header,
+            &hunk.record.added_text,
+            &hunk.record.removed_text,
+            &hunk.record.touched_text,
+        ] {
+            bytes.add(text.len())?;
+        }
+        let memory = bytes.reserve(budget)?;
+        custody.replace(
+            AuxiliaryRowFamilyV1::DiffHunk,
+            history_diff_row_key(hunk.commit_sha, &hunk.file_path),
+            memory,
+        );
+    }
+    Ok(())
+}
+
+struct StateRowBacking(usize);
+
+impl StateRowBacking {
+    fn new(key_bytes: usize) -> Result<Self, CoreError> {
+        // Typed key, custody key and a tree separator, plus inline values and
+        // container nodes. Record payloads are copied exactly once below.
+        key_bytes
+            .checked_mul(3)
+            .and_then(|bytes| bytes.checked_add(4096))
+            .map(Self)
+            .ok_or_else(|| corrupt_history("History state allocation bound overflow"))
+    }
+
+    fn add(&mut self, bytes: usize) -> Result<(), CoreError> {
+        self.0 = self
+            .0
+            .checked_add(bytes)
+            .ok_or_else(|| corrupt_history("History state allocation bound overflow"))?;
+        Ok(())
+    }
+
+    fn add_items<T>(&mut self, count: usize) -> Result<(), CoreError> {
+        self.add(
+            count
+                .checked_mul(std::mem::size_of::<T>())
+                .ok_or_else(|| corrupt_history("History state allocation bound overflow"))?,
+        )
+    }
+
+    fn reserve(self, budget: &WorkBudget) -> Result<Option<MemoryLease>, CoreError> {
+        let bytes = u64::try_from(self.0)
+            .map_err(|_| corrupt_history("History state allocation bound overflow"))?;
+        budget
+            .reserve_memory(bytes, MemoryLifetime::Retained)
+            .map_err(|error| history_work_error(budget, error))
+    }
 }
 
 fn history_snapshot_digest(

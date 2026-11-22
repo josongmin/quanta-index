@@ -20,10 +20,12 @@ use std::{
     os::unix::fs::{MetadataExt as _, PermissionsExt as _},
 };
 
-#[path = "../../tests/common/native_physical_profile.rs"]
-mod native_physical_profile;
+#[path = "legacy_candidate_tests/candidate_resume_tests.rs"]
+mod candidate_resume_tests;
 #[path = "../../tests/common/legacy_physical_fixture.rs"]
 mod legacy_physical_fixture;
+#[path = "../../tests/common/native_physical_profile.rs"]
+mod native_physical_profile;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn Error>>;
 fn require(condition: bool, message: &str) -> TestResult {
@@ -189,7 +191,14 @@ fn prepare_native_fixture() -> TestResult<PreparedNativeFixture> {
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
     let config_digest = Digest(Sha256::digest(&config_bytes).into());
     let config = read_config_checked(&config_path, Some(config_digest))?;
-    let service = bind(&config, compose(&config)?, None, &request(), false)?;
+    let service = bind(
+        &config,
+        config_digest,
+        compose(&config)?,
+        None,
+        &request(),
+        false,
+    )?;
     let shutdown = service.shutdown_handle();
     let running = RunningFixture {
         shutdown,

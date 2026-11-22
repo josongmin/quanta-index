@@ -35,21 +35,15 @@ Publication and activation are separate operations. Typed input must be publishe
 
 ## Run the daemon
 
-Use the pinned toolchain and repository build wrapper. Keep runtime state outside the checkout.
+Use the pinned toolchain and repository build wrapper. Keep the Native configuration and runtime state outside the checkout.
 
 ```sh
-./scripts/cargow --lane daemon-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
-./scripts/cargow --lane daemon-lane run -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked -- serve --state-root /absolute/state-root
+./scripts/cargow --lane daemon-lane run -p quanta-index-searchd-runtime --bin quanta-index-searchd --no-default-features --locked -- serve-native --config /absolute/native-config.json
 ```
 
-The command above starts the Legacy generation service. Publish typed producer
-input through the SDK before querying an active generation. Unsupported stored
-formats require a rebuild; see the state operations guide.
-
-The explicit Native product uses `serve-native`, its admitted configuration and
-selected-view SDK/CLI contracts. `just rust-profile release-native-daemon` builds
-this daemon without linking Tantivy. Start that binary with
-`serve-native --config /absolute/native-config.json`. The
+`just rust-profile release-daemon` builds the same Native command as an optimized
+candidate and checks its Cargo artifacts for Tantivy dependencies. Start that binary
+with `serve-native --config /absolute/native-config.json`. The
 [Native cutover plan](docs/plans/nov-12-native-cutover/README.md) tracks default
 routing and installed verification. See the
 [Native ADR](docs/adr/NOV-12-001-native-query-and-semantic-engine.md) for the query contract.
@@ -57,21 +51,25 @@ routing and installed verification. See the
 
 Then publish through the [typed SDK](crates/quanta-index-sdk/README.md) and query through the [operator CLI](crates/quanta-index-searchctl/README.md). Backup, restore, validation, and rebuild procedures are in the [state cutover runbook](docs/operator/state-cutover-runbook.md).
 
-## Inspect and query a generation
+## Inspect and query a published view
 
-The operator CLI uses the same explicit state root as the daemon. After publishing and activating your generation:
+After publishing and activating a Native view, use the daemon's configured socket.
+The producer supplies the workspace ID, epoch, and Text index instance ID.
 
 ```sh
 ./scripts/cargow --lane dev-lane run -p quanta-index-searchctl --locked -- \
-  --state-root /absolute/state-root --output json readiness
+  read-view --socket /absolute/native.sock \
+  --workspace "$workspace_hex" --epoch "$workspace_epoch" --output json
 
 ./scripts/cargow --lane dev-lane run -p quanta-index-searchctl --locked -- \
-  --state-root /absolute/state-root --output json lexical \
-  --repo-id my-repo --revision-id pinned-revision --manifest-generation 1 \
-  --syntax sourcegraph --query-text 'file:src main' --top-k 20
+  search-text --socket /absolute/native.sock \
+  --workspace "$workspace_hex" --epoch "$workspace_epoch" \
+  --instance "$text_instance_hex" --query-text 'main' --top-k 20 --output json
 ```
 
-`my-repo`, `pinned-revision`, and `1` are example identities; use the values from your publication. Inspect readiness/verdict fields as well as the process exit code. The [CLI guide](crates/quanta-index-searchctl/README.md) defines response kinds, diagnostics, and exit codes.
+The workspace ID is 128 hex characters, the Text instance ID is 32 hex
+characters, and the epoch is a decimal integer. The [CLI guide](crates/quanta-index-searchctl/README.md)
+defines response kinds, diagnostics, and exit codes.
 
 ## Workspace map
 

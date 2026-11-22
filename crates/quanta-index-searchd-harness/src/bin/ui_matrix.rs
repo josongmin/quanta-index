@@ -10,7 +10,9 @@
 //! Fail-closed: a missing / out-of-range / wrong anchor trips the gate honestly;
 //! the rail never fabricates an anchor to force a pass.
 
-use std::path::PathBuf;
+#[path = "common/artifact_out_dir.rs"]
+mod artifact_out_dir;
+
 use std::process::ExitCode;
 
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
@@ -26,21 +28,22 @@ fn provenance()
     ))
 }
 
-fn parse_out_dir() -> PathBuf {
-    let mut args = std::env::args().skip(1);
-    match (args.next().as_deref(), args.next()) {
-        (Some("--out-dir"), Some(path)) => PathBuf::from(path),
-        _ => PathBuf::from("artifacts/search-quality/ui/latest"),
-    }
-}
-
 #[expect(
     clippy::print_stderr,
     clippy::print_stdout,
     reason = "rail binary reports rail status on stdout/stderr by design"
 )]
 fn main() -> ExitCode {
-    let out_dir = parse_out_dir();
+    let out_dir = match artifact_out_dir::parse(
+        std::env::args_os().skip(1),
+        "artifacts/search-quality/ui/latest",
+    ) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("ui_matrix: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let (git_head, host) = match provenance() {
         Ok(value) => value,
         Err(err) => {

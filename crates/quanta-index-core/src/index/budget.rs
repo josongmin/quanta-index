@@ -1,3 +1,4 @@
+use self::scoped_memory::ScopedMemoryBudget;
 use super::IndexError;
 use std::{
     any::Any,
@@ -8,6 +9,8 @@ use std::{
     },
     time::Instant,
 };
+
+pub(super) mod scoped_memory;
 
 const DENIAL_NONE: u8 = 0;
 const DENIAL_CANCELLED: u8 = 1;
@@ -165,6 +168,9 @@ pub struct WorkBudget {
     // During scoped credit, optional allocations use only the original
     // authority's unreserved capacity, never the mandatory child credit.
     optional_memory: Option<super::MemoryScope>,
+    // An optional read records a memory refusal locally until its caller
+    // decides whether that refusal is a soft miss or a hard failure.
+    optional_read: bool,
     // One revocable, privately owned optimization. It never owns work usage.
     discardable_memory: Mutex<Option<Box<dyn Any + Send>>>,
     // This is a bounded diagnostic for the first local refusal, not a claim
@@ -213,6 +219,7 @@ impl WorkBudget {
             request,
             memory: None,
             optional_memory: None,
+            optional_read: false,
             discardable_memory: Mutex::new(None),
             first_denial: AtomicU8::new(DENIAL_NONE),
             denied_checkpoint: OnceLock::new(),
@@ -345,6 +352,111 @@ impl WorkBudget {
         Ok(())
     }
 
+    /// Run an optional read after all mandatory work for its result is done.
+    /// Accepted work remains charged to the original global limits even when
+    /// the read misses. Only a local read, byte or memory refusal is optional;
+    /// writes, mutations, cancellation and backend failures remain hard.
+    /// The callback must return a failed budgeted read immediately.
+    pub fn try_optional_read<T>(
+        &mut self,
+        read: impl FnOnce(&mut Self) -> Result<T, IndexError>,
+    ) -> Result<Option<T>, IndexError> {
+        struct Scope<'a> {
+            parent: &'a mut WorkBudget,
+            child: WorkBudget,
+            hard: bool,
+        }
+        impl Drop for Scope<'_> {
+            fn drop(&mut self) {
+                self.parent.usage = self.child.usage;
+                if let Some(external) = self.child.external_resource_refusal.take() {
+                    let _recorded = self.parent.external_resource_refusal.set(external);
+                }
+                if !self.hard {
+                    return;
+                }
+                let denial = self.child.first_denial.load(Ordering::Acquire);
+                if denial != DENIAL_NONE && self.parent.record_denial(denial) {
+                    if let Some(checkpoint) = self.child.denied_checkpoint.take() {
+                        let _recorded = self.parent.denied_checkpoint.set(checkpoint);
+                    }
+                    if let Some(charge) = self.child.denied_charge.take() {
+                        let _recorded = self.parent.denied_charge.set(charge);
+                    }
+                    if let Some(memory) = self.child.denied_memory.take() {
+                        if let Some(scope) = &self.child.memory
+                            && !self.parent.optional_read
+                        {
+                            scope.observe_refusal(memory.attempted, memory.lifetime);
+                        }
+                        let _recorded = self.parent.denied_memory.set(memory);
+                    }
+                }
+                if let Some(stage) = self.child.failed_stage.take() {
+                    let _recorded = self.parent.failed_stage.set(stage);
+                }
+            }
+        }
+        self.checkpoint()?;
+        let mut child = Self::with_request(
+            WorkLimits {
+                reads: self.limits.reads,
+                writes: self.usage.writes,
+                bytes: self.limits.bytes,
+                mutations: self.usage.mutations,
+            },
+            self.request.clone(),
+        );
+        child.usage = self.usage;
+        child.memory = self
+            .optional_memory
+            .as_ref()
+            .or(self.memory.as_ref())
+            .cloned();
+        child.optional_read = true;
+        let mut scope = Scope {
+            parent: self,
+            child,
+            hard: false,
+        };
+        let result = read(&mut scope.child);
+        let checkpoint = if matches!(&result, Ok(_) | Err(IndexError::ResourceLimited)) {
+            // The original request owns terminal interruption diagnostics.
+            // Check it before a child's earlier optional axis refusal can be
+            // propagated as the parent's first denial.
+            scope.parent.checkpoint()
+        } else {
+            Ok(())
+        };
+        let request_interrupted = checkpoint.is_err();
+        let result = checkpoint.and(result);
+        let denial = scope.child.first_denial();
+        let result = match (result, denial) {
+            (Ok(_), Some(WorkBudgetDenial::Cancelled)) => Err(IndexError::Cancelled),
+            (Ok(_), Some(WorkBudgetDenial::Deadline)) => Err(IndexError::ResourceLimited),
+            (result, _) => result,
+        };
+        let hard_write = matches!(
+            denial,
+            Some(WorkBudgetDenial::Writes | WorkBudgetDenial::Mutations)
+        );
+        let soft = !request_interrupted
+            && matches!(&result, Err(IndexError::ResourceLimited))
+            && matches!(
+                denial,
+                Some(WorkBudgetDenial::Reads | WorkBudgetDenial::Bytes | WorkBudgetDenial::Memory)
+            )
+            && scope.child.external_resource_refusal.get().is_none();
+        scope.hard = !soft && (result.is_err() || hard_write);
+        if soft {
+            Ok(None)
+        } else if hard_write && result.is_ok() {
+            Err(IndexError::ResourceLimited)
+        } else {
+            result.map(Some)
+        }
+    }
+
     /// Bind the actual current stage without replacing the original work
     /// usage/deadline. None is the explicit standalone allocation contract.
     pub fn bind_memory_scope(&mut self, memory: Option<super::MemoryScope>) {
@@ -397,6 +509,39 @@ impl WorkBudget {
         (result, state)
     }
 
+    /// Transfer the currently guarded optimization to its caller. This is
+    /// useful when a read callback needs the cache after the guarded read
+    /// completes. The caller owns its real leases and may drop them before
+    /// subsequent mandatory allocation; the enclosing guard then returns
+    /// `None`. A wrong type is the same internal invariant failure as the
+    /// guard's final downcast, and its state is dropped outside the mutex.
+    pub fn take_discardable_memory<T: Any + Send>(&mut self) -> Option<Box<T>> {
+        let state = self
+            .discardable_memory
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
+        state.map(|state| {
+            state.downcast::<T>().unwrap_or_else(|_other| {
+                unreachable!("discardable memory type changed inside its scope")
+            })
+        })
+    }
+
+    /// Use the current optimization without transferring its ownership.
+    /// The callback runs under the slot lock and must not call budget APIs
+    /// that reserve, replace, or access discardable memory.
+    pub fn with_discardable_memory_mut<T: Any + Send, R>(
+        &self,
+        access: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        let mut slot = self
+            .discardable_memory
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        slot.as_deref_mut()?.downcast_mut::<T>().map(access)
+    }
+
     fn discard_optional_memory(&self) -> bool {
         let state = self
             .discardable_memory
@@ -439,7 +584,9 @@ impl WorkBudget {
                         lifetime,
                         caller: std::panic::Location::caller(),
                     });
-                    if let Some(scope) = &self.memory {
+                    if let Some(scope) = &self.memory
+                        && !self.optional_read
+                    {
                         scope.observe_refusal(bytes, lifetime);
                     }
                 }
@@ -463,19 +610,36 @@ impl WorkBudget {
         bytes: u64,
         lifetime: super::MemoryLifetime,
     ) -> Result<Option<super::MemoryLease>, IndexError> {
+        self.try_reserve_optional_memory(bytes, lifetime, true)
+    }
+
+    /// Reserve spare capacity for an optimization that has a smaller
+    /// mandatory fallback. An optional miss preserves the discardable cache.
+    pub fn try_reserve_spare_memory(
+        &self,
+        bytes: u64,
+        lifetime: super::MemoryLifetime,
+    ) -> Result<Option<super::MemoryLease>, IndexError> {
+        self.try_reserve_optional_memory(bytes, lifetime, false)
+    }
+
+    fn try_reserve_optional_memory(
+        &self,
+        bytes: u64,
+        lifetime: super::MemoryLifetime,
+        reclaim_discardable: bool,
+    ) -> Result<Option<super::MemoryLease>, IndexError> {
         self.checkpoint()?;
-        let mut result = self
-            .optional_memory
-            .as_ref()
-            .or(self.memory.as_ref())
+        let scope = self.optional_memory.as_ref().or(self.memory.as_ref());
+        let mut result = scope
             .map(|scope| scope.reserve(bytes, lifetime))
             .transpose();
-        if matches!(&result, Err(IndexError::ResourceLimited)) && self.discard_optional_memory() {
+        if reclaim_discardable
+            && matches!(&result, Err(IndexError::ResourceLimited))
+            && self.discard_optional_memory()
+        {
             self.checkpoint()?;
-            result = self
-                .optional_memory
-                .as_ref()
-                .or(self.memory.as_ref())
+            result = scope
                 .map(|scope| scope.reserve(bytes, lifetime))
                 .transpose();
         }
@@ -493,7 +657,7 @@ impl WorkBudget {
     pub fn try_scoped_memory_credit(
         &mut self,
         limits: super::MemoryCreditLimits,
-    ) -> Result<Option<super::ScopedMemoryBudget<'_>>, IndexError> {
+    ) -> Result<Option<ScopedMemoryBudget<'_>>, IndexError> {
         self.checkpoint()?;
         limits.validate()?;
         let Some(parent) = self.memory.as_ref() else {
@@ -516,7 +680,7 @@ impl WorkBudget {
         let previous = self.memory.replace(child);
         let previous_optional = self.optional_memory.take();
         self.optional_memory = previous_optional.clone().or_else(|| previous.clone());
-        Ok(Some(super::ScopedMemoryBudget {
+        Ok(Some(ScopedMemoryBudget {
             budget: self,
             previous,
             previous_optional,
@@ -524,7 +688,7 @@ impl WorkBudget {
         }))
     }
 
-    pub(super) fn restore_scoped_memory_credit(
+    fn restore_scoped_memory_credit(
         &mut self,
         mandatory: Option<super::MemoryScope>,
         optional: Option<super::MemoryScope>,
@@ -1579,6 +1743,100 @@ mod tests {
     }
 
     #[test]
+    fn discardable_memory_handoff_releases_cache_before_mandatory_reservation()
+    -> Result<(), IndexError> {
+        let used = Arc::new(AtomicU64::new(0));
+        let calls = Arc::new(AtomicU64::new(0));
+        let mut budget = WorkBudget::new(
+            limits(),
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        budget.bind_memory_scope(Some(super::super::MemoryScope::new(Arc::new(
+            PressureMemoryScope {
+                used: Arc::clone(&used),
+                calls: Arc::clone(&calls),
+                limit: 10,
+            },
+        ))));
+        budget.charge(WorkUsage {
+            reads: 1,
+            ..WorkUsage::default()
+        })?;
+        let cache = budget
+            .reserve_memory(7, super::super::MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let (result, remaining) = budget.with_discardable_memory(Box::new(cache), |budget| {
+            let transferred = budget
+                .take_discardable_memory::<super::super::MemoryLease>()
+                .ok_or(IndexError::ResourceLimited)?;
+            check_eq!(used.load(Ordering::SeqCst), 7);
+            drop(transferred);
+            budget.reserve_memory(4, super::super::MemoryLifetime::Temporary)
+        });
+        check!(remaining.is_none());
+        let mandatory = result?.ok_or(IndexError::ResourceLimited)?;
+        check_eq!(used.load(Ordering::SeqCst), 4);
+        check_eq!(calls.load(Ordering::SeqCst), 2);
+        check_eq!(budget.usage().reads, 1);
+        check_eq!(budget.first_denial(), None);
+        drop(mandatory);
+        check_eq!(used.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn discardable_memory_handoff_obeys_nested_and_wrong_type_invariants() -> Result<(), IndexError>
+    {
+        let used = Arc::new(AtomicU64::new(0));
+        let calls = Arc::new(AtomicU64::new(0));
+        let mut budget = WorkBudget::new(
+            limits(),
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        budget.bind_memory_scope(Some(super::super::MemoryScope::new(Arc::new(
+            PressureMemoryScope {
+                used: Arc::clone(&used),
+                calls,
+                limit: 10,
+            },
+        ))));
+        let outer = budget
+            .reserve_memory(7, super::super::MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let ((), outer) = budget.with_discardable_memory(Box::new(outer), |budget| {
+            let inner = budget
+                .reserve_memory(2, super::super::MemoryLifetime::Temporary)
+                .expect("nested memory fits")
+                .expect("scope is bound");
+            let ((), remaining) = budget.with_discardable_memory(Box::new(inner), |budget| {
+                let transferred = budget
+                    .take_discardable_memory::<super::super::MemoryLease>()
+                    .expect("inner state is present");
+                drop(transferred);
+            });
+            assert!(remaining.is_none());
+        });
+        check!(outer.is_none());
+        check_eq!(used.load(Ordering::SeqCst), 0);
+        let wrong = budget
+            .reserve_memory(7, super::super::MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(budget.with_discardable_memory(Box::new(wrong), |budget| {
+                drop(budget.take_discardable_memory::<u64>());
+            }));
+        }));
+        check!(unwound.is_err());
+        check_eq!(used.load(Ordering::SeqCst), 0);
+        check_eq!(budget.first_denial(), None);
+        Ok(())
+    }
+
+    #[test]
     fn discardable_memory_preserves_genuine_refusal_and_optional_miss_semantics()
     -> Result<(), IndexError> {
         let used = Arc::new(AtomicU64::new(0));
@@ -1937,6 +2195,261 @@ mod tests {
         check_eq!(calls.load(Ordering::SeqCst), 1);
         budget.bind_memory_scope(None);
         check_eq!(budget.checkpoint(), Err(IndexError::Cancelled));
+        Ok(())
+    }
+
+    #[test]
+    fn optional_read_keeps_accepted_prefix_and_soft_refusal_off_parent() -> Result<(), IndexError> {
+        let request = crate::RequestBudgetV1::for_duration(Duration::from_secs(30));
+        let mut budget = WorkBudget::with_request(limits(), request.clone());
+        budget.charge(WorkUsage {
+            reads: 1,
+            bytes: 2,
+            ..WorkUsage::default()
+        })?;
+        let result = budget.try_optional_read(|child| {
+            check!(child.request().same_request_as(&request));
+            check_eq!(child.request().deadline(), request.deadline());
+            child.charge(WorkUsage {
+                reads: 1,
+                bytes: 3,
+                ..WorkUsage::default()
+            })?;
+            child.charge(WorkUsage {
+                reads: 2,
+                ..WorkUsage::default()
+            })?;
+            Ok(7_u8)
+        })?;
+        check_eq!(result, None);
+        check_eq!(
+            budget.usage(),
+            WorkUsage {
+                reads: 2,
+                bytes: 5,
+                ..WorkUsage::default()
+            }
+        );
+        check_eq!(budget.first_denial(), None);
+        check!(budget.denied_charge.get().is_none());
+        check_eq!(
+            budget.try_optional_read(|child| {
+                child.charge(WorkUsage {
+                    bytes: 5,
+                    ..WorkUsage::default()
+                })?;
+                Ok(9_u8)
+            })?,
+            Some(9)
+        );
+        check_eq!(budget.usage().bytes, 10);
+        check_eq!(
+            budget.try_optional_read(|child| {
+                child.charge(WorkUsage {
+                    bytes: 1,
+                    ..WorkUsage::default()
+                })?;
+                Ok(11_u8)
+            })?,
+            None
+        );
+        check_eq!(budget.first_denial(), None);
+        check_eq!(budget.usage().bytes, 10);
+        Ok(())
+    }
+
+    #[test]
+    fn optional_read_memory_miss_and_write_mutation_refusals() -> Result<(), IndexError> {
+        let observed = Arc::new(AtomicU64::new(0));
+        let mut budget = WorkBudget::with_request(
+            limits(),
+            crate::RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        );
+        budget.bind_memory_scope(Some(super::super::MemoryScope::new(Arc::new(
+            ObservedRefusalScope(Arc::clone(&observed)),
+        ))));
+        check_eq!(
+            budget.try_optional_read(|child| {
+                child.charge(WorkUsage {
+                    reads: 1,
+                    ..WorkUsage::default()
+                })?;
+                let _lease = child.reserve_memory(1, super::super::MemoryLifetime::Temporary)?;
+                Ok(1_u8)
+            })?,
+            None
+        );
+        check_eq!(budget.usage().reads, 1);
+        check_eq!(budget.first_denial(), None);
+        check!(budget.denied_memory.get().is_none());
+        check_eq!(observed.load(Ordering::SeqCst), 0);
+        check_eq!(
+            budget.try_optional_read(|child| {
+                child.charge(WorkUsage {
+                    writes: 1,
+                    ..WorkUsage::default()
+                })?;
+                Ok(2_u8)
+            }),
+            Err(IndexError::ResourceLimited)
+        );
+        check_eq!(budget.first_denial(), Some(WorkBudgetDenial::Writes));
+        check_eq!(budget.usage().writes, 0);
+        let mut mutations = WorkBudget::with_request(
+            limits(),
+            crate::RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        );
+        check_eq!(
+            mutations.try_optional_read(|child| {
+                child.charge(WorkUsage {
+                    mutations: 1,
+                    ..WorkUsage::default()
+                })?;
+                Ok(3_u8)
+            }),
+            Err(IndexError::ResourceLimited)
+        );
+        check_eq!(mutations.first_denial(), Some(WorkBudgetDenial::Mutations));
+        check_eq!(mutations.usage().mutations, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn optional_read_uses_original_spare_memory_outside_mandatory_credit() -> Result<(), IndexError>
+    {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let released = Arc::new(AtomicU64::new(0));
+        let mut budget = WorkBudget::with_request(
+            limits(),
+            crate::RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        );
+        budget.bind_memory_scope(Some(super::super::MemoryScope::new(Arc::new(
+            CreditRouteScope {
+                depth: 0,
+                observed: Arc::clone(&observed),
+                released: Arc::clone(&released),
+            },
+        ))));
+        let mut mandatory = budget
+            .try_scoped_memory_credit(super::super::MemoryCreditLimits {
+                temporary_data_bytes: 1,
+                retained_data_bytes: 0,
+                max_live_temporary_leases: 1,
+                max_live_retained_leases: 0,
+            })?
+            .ok_or(IndexError::ResourceLimited)?;
+        check_eq!(
+            mandatory.try_optional_read(|child| {
+                drop(child.reserve_memory(1, super::super::MemoryLifetime::Temporary)?);
+                Ok(())
+            })?,
+            Some(())
+        );
+        drop(mandatory);
+        check_eq!(
+            *observed
+                .lock()
+                .map_err(|_poison| IndexError::BackendViolation("credit route lock".into()))?,
+            [0]
+        );
+        check_eq!(released.load(Ordering::SeqCst), 1);
+        check_eq!(budget.first_denial(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn optional_read_keeps_raw_integrity_external_and_interruption_hard() -> Result<(), IndexError>
+    {
+        let mut budget = WorkBudget::with_request(
+            limits(),
+            crate::RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        );
+        check_eq!(
+            budget.try_optional_read(|child| {
+                child.charge(WorkUsage {
+                    reads: 1,
+                    ..WorkUsage::default()
+                })?;
+                Err::<(), IndexError>(IndexError::ResourceLimited)
+            }),
+            Err(IndexError::ResourceLimited)
+        );
+        check_eq!(budget.usage().reads, 1);
+        check_eq!(budget.first_denial(), None);
+        let integrity = IndexError::CorruptObject("selected leaf differs".into());
+        check_eq!(
+            budget.try_optional_read(|child| {
+                child.charge(WorkUsage {
+                    bytes: 2,
+                    ..WorkUsage::default()
+                })?;
+                Err::<(), IndexError>(integrity.clone())
+            }),
+            Err(integrity)
+        );
+        check_eq!(budget.usage().bytes, 2);
+        check_eq!(
+            budget.try_optional_read(|child| {
+                child.record_external_resource_refusal("object_io", "read admission");
+                child.charge(WorkUsage {
+                    reads: 3,
+                    ..WorkUsage::default()
+                })?;
+                Err::<(), IndexError>(IndexError::ResourceLimited)
+            }),
+            Err(IndexError::ResourceLimited)
+        );
+        check_eq!(
+            budget
+                .external_resource_refusal
+                .get()
+                .map(|item| item.boundary),
+            Some("object_io")
+        );
+        check_eq!(budget.first_denial(), Some(WorkBudgetDenial::Reads));
+        let request = crate::RequestBudgetV1::for_duration(Duration::from_secs(30));
+        let mut cancelled = WorkBudget::with_request(limits(), request.clone());
+        check_eq!(
+            cancelled.try_optional_read(|child| {
+                child.charge(WorkUsage {
+                    reads: 1,
+                    ..WorkUsage::default()
+                })?;
+                request.cancel_handle().cancel();
+                child.checkpoint()?;
+                Ok(())
+            }),
+            Err(IndexError::Cancelled)
+        );
+        check_eq!(cancelled.usage().reads, 1);
+        check_eq!(cancelled.first_denial(), Some(WorkBudgetDenial::Cancelled));
+        let interrupted_request = crate::RequestBudgetV1::for_duration(Duration::from_secs(30));
+        let mut after_local_miss = WorkBudget::with_request(limits(), interrupted_request.clone());
+        check_eq!(
+            after_local_miss.try_optional_read(|child| {
+                check_eq!(
+                    child.charge(WorkUsage {
+                        reads: 4,
+                        ..WorkUsage::default()
+                    }),
+                    Err(IndexError::ResourceLimited)
+                );
+                interrupted_request.cancel_handle().cancel();
+                Err::<(), IndexError>(IndexError::ResourceLimited)
+            }),
+            Err(IndexError::Cancelled)
+        );
+        check_eq!(
+            after_local_miss.first_denial(),
+            Some(WorkBudgetDenial::Cancelled)
+        );
+        check!(after_local_miss.denied_charge.get().is_none());
+        let mut expired = WorkBudget::new(limits(), Instant::now());
+        check_eq!(
+            expired.try_optional_read(|_child| Ok(())),
+            Err(IndexError::ResourceLimited)
+        );
+        check_eq!(expired.first_denial(), Some(WorkBudgetDenial::Deadline));
         Ok(())
     }
 }

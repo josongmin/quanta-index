@@ -461,7 +461,7 @@ def test_capture_retains_real_execution_failure_and_does_not_invent_terminal(tmp
                 argv,
                 cwd=tmp_path,
                 env=dict(os.environ),
-                timeout=1,
+                timeout=1 if mode == "timeout" else 20,
                 log_dir=epoch.work / "execution",
             )
     failure = json.loads((root / "failures/failed.json").read_text())
@@ -482,7 +482,7 @@ def test_capture_retains_real_execution_failure_and_does_not_invent_terminal(tmp
         else:
             assert "FileNotFoundError" in (Path(observed["log_dir"]) / "stderr").read_text()
     else:
-        assert terminal["command"]["exit_code"] != 0
+        assert terminal["command"]["exit_code"] == 7
     assert not (root / "profiles").exists()
 
 
@@ -546,6 +546,36 @@ def test_publish_replay_and_gc_pin(tmp_path):
     add_run(tmp_path, "unreferenced")
     assert store.collect([]) == ["unreferenced"]
     assert store.load("r1")["case_id"] == "case"
+
+
+def test_run_load_refuses_a_resealed_record_with_the_wrong_expected_digest(tmp_path):
+    store = add_run(tmp_path)
+    original = store.load("r1")
+    replacement = copy.deepcopy(original)
+    replacement["command"]["wall_ms"] += 1
+    replacement = evidence.seal(replacement)
+    (store.run_dir("r1") / "evidence.json").write_text(evidence.to_canonical_json(replacement))
+
+    assert store.load("r1")["digest"] == replacement["digest"]
+    with pytest.raises(evidence.EvidenceError, match="expected capture reference"):
+        store.load("r1", expected_digest=original["digest"])
+
+
+@pytest.mark.parametrize("expected", [None, "sha256:invalid"])
+def test_commit_refuses_a_malformed_replayed_digest(tmp_path, expected):
+    add_run(tmp_path)
+    with pytest.raises(evidence.EvidenceError, match="replayed run digest inventory"):
+        capture.commit_capture(
+            tmp_path,
+            capture_id="capture1",
+            profile="profile",
+            registry_digest=evidence.digest_bytes(b"registry"),
+            expected_cases={"family": ["case"]},
+            run_ids=["r1"],
+            expected_run_digests={"r1": expected},
+        )
+    assert not (tmp_path / "captures/capture1.json").exists()
+    assert not (tmp_path / "profiles/profile.json").exists()
 
 
 def test_partial_capture_does_not_publish(tmp_path):
@@ -936,6 +966,37 @@ def test_domain_replay_failure_cannot_replace_profile(tmp_path):
     assert failure["observations"]["run_id"] == "r3"
     assert failure["commit_state"] == "not_started"
     assert failure["error"]["message"] == "independent domain replay failed"
+
+
+def test_publication_refuses_run_replaced_after_domain_replay(tmp_path):
+    store = add_run(tmp_path)
+    prior = publish(tmp_path)
+    source_checks = 0
+    original_digest = None
+
+    def verify_source():
+        nonlocal source_checks, original_digest
+        source_checks += 1
+        if source_checks == 3:
+            record = store.load("r2")
+            original_digest = record["digest"]
+            replacement = copy.deepcopy(record)
+            replacement["command"]["wall_ms"] += 1
+            replacement = evidence.seal(replacement)
+            (store.run_dir("r2") / "evidence.json").write_text(
+                evidence.to_canonical_json(replacement)
+            )
+            assert store.load("r2")["digest"] != original_digest
+
+    with pytest.raises(evidence.EvidenceError, match="expected capture reference"):
+        publish_prepared(tmp_path, verify_source=verify_source)
+    assert source_checks == 3
+    assert original_digest is not None
+    assert not (tmp_path / "captures/capture2.json").exists()
+    assert (
+        capture.load_capture(tmp_path, profile="profile", registry_digest=prior["registry_digest"])
+        == prior
+    )
 
 
 @pytest.mark.parametrize("boundary", ["source", "replay", "final-source"])

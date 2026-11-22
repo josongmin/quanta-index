@@ -43,7 +43,13 @@ fn first_directory_after(
     let mut hi = directory.len();
     while lo < hi {
         budget.checkpoint()?;
-        let mid = lo + (hi - lo) / 2;
+        let mid = lo
+            .checked_add(
+                hi.checked_sub(lo)
+                    .ok_or(IndexError::ResourceLimited)?
+                    .div_euclid(2),
+            )
+            .ok_or(IndexError::ResourceLimited)?;
         let (fence, _) = directory.descriptor(mid)?;
         let before = if strict {
             fence.last.as_slice() <= key
@@ -69,7 +75,13 @@ fn first_row_after(
     let mut hi = page.len();
     while lo < hi {
         budget.checkpoint()?;
-        let mid = lo + (hi - lo) / 2;
+        let mid = lo
+            .checked_add(
+                hi.checked_sub(lo)
+                    .ok_or(IndexError::ResourceLimited)?
+                    .div_euclid(2),
+            )
+            .ok_or(IndexError::ResourceLimited)?;
         let row = page.row(mid)?;
         let before = if strict {
             row.owner.as_slice() <= key
@@ -218,7 +230,7 @@ pub(in crate::native::text) fn scan(
         &page,
         first,
         usize::try_from(limit).map_err(|_error| IndexError::ResourceLimited)?,
-        slot + 1 < directory.len(),
+        slot.checked_add(1).ok_or(IndexError::ResourceLimited)? < directory.len(),
         budget,
     )
 }
@@ -277,7 +289,10 @@ impl PackedCursor {
             .page
             .as_ref()
             .is_some_and(|page| self.row_slot == page.len());
-        let slot = self.page_slot + usize::from(exhausted);
+        let slot = self
+            .page_slot
+            .checked_add(usize::from(exhausted))
+            .ok_or(IndexError::ResourceLimited)?;
         if slot >= self.directory.len() {
             return Err(corrupt(
                 "dense posting directory ended before declared total",
@@ -307,7 +322,7 @@ impl PackedCursor {
             current,
             start,
             usize::try_from(limit).map_err(|_error| IndexError::ResourceLimited)?,
-            slot + 1 < self.directory.len(),
+            slot.checked_add(1).ok_or(IndexError::ResourceLimited)? < self.directory.len(),
             budget,
         )?;
         let emitted = self

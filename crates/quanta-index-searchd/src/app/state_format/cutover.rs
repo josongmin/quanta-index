@@ -12,8 +12,9 @@ use rustix::fs::{
 };
 
 use super::{
-    OfflineRootRoleV1, refuse, refuse_broad_offline_target_v1, staging_directory_for_v1, storage,
-    typed,
+    NoStateMigrationFaultsV1, OfflineRootRoleV1, StateMigrationFaultPointV1,
+    StateMigrationFaultPort, refuse, refuse_broad_offline_target_v1, staging_directory_for_v1,
+    storage, typed,
 };
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -178,19 +179,53 @@ impl PreparedStateRootV1 {
         Ok(())
     }
 
+    fn require_published_entry(&self) -> Result<(), CoreError> {
+        require_parent_identity(&self.parent_path, self.parent_identity)?;
+        if entry(&self.parent, &self.destination_name, &self.destination_path)?
+            != Some(self.staging_identity)
+            || entry(&self.parent, &self.staging_name, &self.staging_path)?.is_some()
+        {
+            return Err(refuse(
+                SearchPlaneErrorCodeV2::StateRootInsecure,
+                format!(
+                    "published cutover {} does not match original staging inode",
+                    self.destination_path.display()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// Publish the original directory without replacing any target entry.
     /// A post-rename proof or sync failure reports failure while leaving the
     /// already-published namespace intact. Repeating this call with the same
     /// held capability can resync only that exact original inode.
     pub fn publish_noreplace(&self) -> Result<(), CoreError> {
+        self.publish_noreplace_with_fault(&NoStateMigrationFaultsV1)
+    }
+
+    /// Interrupt the original cutover after its checked rename and before
+    /// syncing the parent. A retry just resyncs the already-named inode.
+    pub fn publish_noreplace_with_fault(
+        &self,
+        fault: &dyn StateMigrationFaultPort,
+    ) -> Result<(), CoreError> {
+        self.publish_and_sync_parent(fault, File::sync_all)
+    }
+
+    fn publish_and_sync_parent(
+        &self,
+        fault: &dyn StateMigrationFaultPort,
+        sync_parent: impl FnOnce(&File) -> std::io::Result<()>,
+    ) -> Result<(), CoreError> {
         self.require_original_fd()?;
         let source = entry(&self.parent, &self.staging_name, &self.staging_path)?;
         let target = entry(&self.parent, &self.destination_name, &self.destination_path)?;
         if source.is_none() && target == Some(self.staging_identity) {
-            self.parent.sync_all().map_err(|error| {
+            sync_parent(&self.parent).map_err(|error| {
                 storage("resync held cutover parent", &self.parent_path, &error)
             })?;
-            return require_parent_identity(&self.parent_path, self.parent_identity);
+            return self.require_published_entry();
         }
         if source != Some(self.staging_identity) {
             return Err(refuse(
@@ -236,22 +271,11 @@ impl PreparedStateRootV1 {
                 )
             }
         })?;
-        if entry(&self.parent, &self.destination_name, &self.destination_path)?
-            != Some(self.staging_identity)
-            || entry(&self.parent, &self.staging_name, &self.staging_path)?.is_some()
-        {
-            return Err(refuse(
-                SearchPlaneErrorCodeV2::StateRootInsecure,
-                format!(
-                    "published cutover {} does not match original staging inode",
-                    self.destination_path.display()
-                ),
-            ));
-        }
-        self.parent
-            .sync_all()
+        self.require_published_entry()?;
+        fault.reach(StateMigrationFaultPointV1::AfterCutoverRename)?;
+        sync_parent(&self.parent)
             .map_err(|error| storage("fsync held cutover parent", &self.parent_path, &error))?;
-        require_parent_identity(&self.parent_path, self.parent_identity)
+        self.require_published_entry()
     }
 }
 
@@ -381,20 +405,81 @@ pub fn prepare_staging_root_v1(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::fs;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{MetadataExt as _, symlink};
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     use anyhow::{Context as _, Result, ensure};
-    use quanta_index_core::RequestBudgetV1;
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    use quanta_index_core::{CoreError, RequestBudgetV1};
 
-    use super::prepare_staging_root_v1;
+    use super::{
+        NoStateMigrationFaultsV1, StateMigrationFaultPointV1, StateMigrationFaultPort,
+        prepare_staging_root_v1,
+    };
 
     fn target() -> Result<(tempfile::TempDir, std::path::PathBuf)> {
         let temp = tempfile::tempdir()?;
         let parent = temp.path().join("held-parent");
         fs::create_dir(&parent)?;
         Ok((temp, parent.join("published")))
+    }
+
+    #[test]
+    fn prepared_cutover_fault_precedes_parent_sync_and_the_held_inode_can_resync() -> Result<()> {
+        const INTERRUPTED: &str = "stop after the checked rename";
+        struct Interrupt<'a> {
+            staging: &'a Path,
+            destination: &'a Path,
+        }
+        impl StateMigrationFaultPort for Interrupt<'_> {
+            fn reach(&self, point: StateMigrationFaultPointV1) -> Result<(), CoreError> {
+                if point != StateMigrationFaultPointV1::AfterCutoverRename
+                    || self.staging.exists()
+                    || !self.destination.is_dir()
+                {
+                    return Err(CoreError::InvalidContract(
+                        "fault ran before the namespace moved".to_owned(),
+                    ));
+                }
+                Err(CoreError::Storage(INTERRUPTED.to_owned()))
+            }
+        }
+
+        let (_temp, destination) = target()?;
+        let prepared = prepare_staging_root_v1(&destination, &RequestBudgetV1::unbounded())?;
+        let original = fs::metadata(prepared.path())?;
+        fs::write(prepared.path().join("fixed-object"), b"abc")?;
+        let fault = Interrupt {
+            staging: prepared.path(),
+            destination: &destination,
+        };
+        let synced = Cell::new(false);
+        let result = prepared.publish_and_sync_parent(&fault, |_| {
+            synced.set(true);
+            Ok(())
+        });
+        ensure!(
+            result == Err(CoreError::Storage(INTERRUPTED.to_owned())),
+            "the named fault was not returned after rename: {result:?}"
+        );
+        ensure!(!synced.get(), "parent sync ran before the fault returned");
+
+        prepared.publish_and_sync_parent(&fault, |parent| {
+            parent.sync_all()?;
+            synced.set(true);
+            Ok(())
+        })?;
+        ensure!(synced.get(), "retry did not sync the held parent");
+        let published = fs::metadata(&destination)?;
+        ensure!(
+            (published.dev(), published.ino()) == (original.dev(), original.ino())
+                && fs::read(destination.join("fixed-object"))? == b"abc",
+            "retry must resync the same published inode"
+        );
+        Ok(())
     }
 
     #[test]
@@ -471,6 +556,39 @@ mod tests {
             "replaced parent received a cutover"
         );
         ensure!(displaced_parent.is_dir(), "original pinned parent was lost");
+
+        // The parent can stay pinned while the destination entry changes.
+        // Exercise both the first publication and the held-inode retry.
+        for already_published in [false, true] {
+            let (_temp, destination) = target()?;
+            let prepared = prepare_staging_root_v1(&destination, &RequestBudgetV1::unbounded())?;
+            fs::write(prepared.path().join("original-object"), b"original")?;
+            if already_published {
+                prepared.publish_noreplace()?;
+            }
+            let displaced = destination.with_file_name("displaced-published");
+            let result = prepared.publish_and_sync_parent(&NoStateMigrationFaultsV1, |parent| {
+                fs::rename(&destination, &displaced)?;
+                fs::create_dir(&destination)?;
+                fs::write(destination.join("foreign-object"), b"foreign")?;
+                parent.sync_all()
+            });
+            ensure!(
+                matches!(
+                    &result,
+                    Err(CoreError::Typed {
+                        code: SearchPlaneErrorCodeV2::StateRootInsecure,
+                        ..
+                    })
+                ),
+                "replacement at parent sync must refuse cutover (retry={already_published}): {result:?}"
+            );
+            ensure!(
+                fs::read(displaced.join("original-object"))? == b"original"
+                    && fs::read(destination.join("foreign-object"))? == b"foreign",
+                "cutover refusal changed one of the namespace entries"
+            );
+        }
         Ok(())
     }
 

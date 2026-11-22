@@ -9,41 +9,42 @@
 use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use quanta_index_contract::lex::{
     LanguageCode, LexicalErrorCode, SymbolKindCode, SymbolKindFamily, SymbolRecord,
-    SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
+    compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin,
-    GenerationSelector, HistoryOrderV1, HistoryQueryRequest, HybridSeedQueryRequest,
-    ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2, RepoMapChunkExactness,
-    RepoMapChunkNode, RepoMapContainsEdge, RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary,
-    RepoMapFileNode, RepoMapFocusSubjectDto, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
+    ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin, GenerationSelector,
+    HistoryOrderV1, HistoryQueryRequest, HybridSeedQueryRequest, ManifestGeneration, RepoId,
+    RepoMapActivateGenerationRequestV2, RepoMapChunkExactness, RepoMapChunkNode,
+    RepoMapContainsEdge, RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary, RepoMapFileNode,
+    RepoMapFocusSubjectDto, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
     RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge,
     RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
     RepoMapSymbolNode, RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord,
     RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest,
     RuntimeSnapshotRecord, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
-    SearchCorpusGenerationReservationRequestV1, SearchCorpusIngestBatch, SearchPlaneErrorCodeV2,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
-    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
-    SourceFileKey, SourcePublicationEvent, StructuralQueryRequest, SymbolId, SymbolQueryRequest,
-    TextQueryRequest, TextQuerySyntax,
+    SearchPlaneErrorCodeV2, SearchPlaneTrackKind, SemanticQueryRequest, SourceFileKey,
+    SourcePublicationEvent, StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest,
+    TextQuerySyntax,
 };
-use quanta_index_ipc::send_request;
+use quanta_index_core::IntegrityScrubPolicyV1;
 use quanta_index_sdk::{
-    CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord,
-    FileContributorBatch, FileOwnershipBatch, ParseNode, ParseRoleTag, ParseTreeRecord,
-    QuantaIndex, RepoCommitRecencyBatch, RepoDescriptionBatch, RepoMetaBatch, RepoRelativePath,
-    RepoTopicBatch, SdkError, SearchCorpusBatch, SearchScopeKey, SearchScopeSurface,
-    StructuralBatch,
+    CommitRecord, CommitSha, DiffHunkRecord, DirtyBatch, DirtyRecord, FileContributorBatch,
+    FileOwnershipBatch, ParseNode, ParseRoleTag, ParseTreeRecord, QuantaIndex,
+    RepoCommitRecencyBatch, RepoDescriptionBatch, RepoMetaBatch, RepoRelativePath, RepoTopicBatch,
+    SdkError, SearchCorpusBatch, SearchScopeKey, SearchScopeSurface, StructuralBatch,
 };
 use quanta_index_searchd_harness::{
-    E2eRuntime, fixture_source_scope_v1, semantic_source_scopes_for_chunk_records,
+    fixture_source_scope_v1,
+    legacy_reference::{LegacySearchdBinary, SearchdBinaryProcess},
+    private_tempdir,
+    scale_runtime_policy::DEFAULT_HISTORY_MAX_GENERATIONS,
+    semantic_source_scopes_for_chunk_records,
 };
 
 use crate::fail_closed_wait::{
@@ -52,7 +53,7 @@ use crate::fail_closed_wait::{
 use crate::frontdoor_scenarios::{
     SDK_FRONTDOOR_SCENARIOS, SdkFrontdoorExpectation, SdkFrontdoorSurface,
 };
-use crate::searchd_binary_process::SearchdBinaryProcess;
+use crate::sdk_frontdoor_lexical_fixture::symbol_record;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -62,68 +63,51 @@ fn code_search_uses_separate_fixture<T>() -> Result<T, SdkError> {
     ))
 }
 
-static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn next_request_id() -> u64 {
-    let id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-    assert_ne!(id, 0, "test request IDs must remain nonzero");
-    id
-}
-
-/// Harness-owned SDK frontdoor fixture (TOPT-06: the last direct-runtime
-///
-/// builder joins the TOPT-03 owner; waits over it are fail-closed per
-/// TH-1). Boot binds query/control/ingest under the same retention
-/// policy the old `build_config` spelled out; explicit `stop` surfaces
-/// a driver failure, drop owns unwind cleanup — no manual shutdown tails.
+/// SDK frontdoor fixture over one pinned Legacy daemon and its real sockets.
 struct SdkFrontdoorRuntime {
-    runtime: E2eRuntime,
+    process: SearchdBinaryProcess,
+    binary: LegacySearchdBinary,
     client: QuantaIndex,
-    ingest_socket: PathBuf,
+    _owned_root: Option<tempfile::TempDir>,
 }
 
 impl SdkFrontdoorRuntime {
     fn start() -> Result<Self, Box<dyn Error>> {
-        let mut runtime = E2eRuntime::boot()?;
-        runtime.start()?;
-        Self::connect(runtime)
+        let root = private_tempdir()?;
+        let mut fixture = Self::start_at(root.path())?;
+        fixture._owned_root = Some(root);
+        Ok(fixture)
     }
 
     /// Serve a caller-owned root (the multigen restart): the directory
     /// outlives each boot, so stop plus start replays a restart.
     fn start_at(state_root: &Path) -> Result<Self, Box<dyn Error>> {
-        let mut runtime = E2eRuntime::boot_in(state_root)?;
-        runtime.start()?;
-        Self::connect(runtime)
-    }
-
-    fn connect(runtime: E2eRuntime) -> Result<Self, Box<dyn Error>> {
-        let (query, control, ingest) = runtime
-            .socket_paths()
-            .ok_or_else(|| "fixture: driver started without socket paths".to_string())
-            .map(|(query, control, ingest)| {
-                (
-                    query.to_path_buf(),
-                    control.to_path_buf(),
-                    ingest.to_path_buf(),
-                )
-            })?;
-        let client = QuantaIndex::connect_legacy(
-            ConnectOptions::from_state_root(runtime.state_root())
-                .with_query_socket(query)
-                .with_control_socket(control)
-                .with_ingest_socket(ingest.clone()),
-        )?;
+        let binary = LegacySearchdBinary::from_environment()?;
+        let mut command = binary.benchmark_command(state_root, DEFAULT_HISTORY_MAX_GENERATIONS)?;
+        let _configured = command
+            .env("QUANTA_INDEX_MAINTENANCE_TICK_MS", "50")
+            .env("QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS", "86400000")
+            .env(
+                "QUANTA_INDEX_INTEGRITY_SCRUB_MAX_BYTES_PER_STEP",
+                IntegrityScrubPolicyV1::DEFAULT
+                    .max_bytes_per_step
+                    .to_string(),
+            );
+        let process = SearchdBinaryProcess::start_with_pinned_command(state_root, command)?;
+        let client = process.connect()?;
         Ok(Self {
-            runtime,
+            process,
+            binary,
             client,
-            ingest_socket: ingest,
+            _owned_root: None,
         })
     }
 
     fn stop(self) -> TestResult {
-        Ok(self.runtime.stop()?)
+        self.process.stop()?;
+        self.binary.verify()
     }
 }
 
@@ -160,41 +144,6 @@ fn commit_sha() -> CommitSha {
         0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
         0xef, 0x01, 0x23, 0x45, 0x67,
     ])
-}
-
-fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestResult {
-    // Like every producer, stamp the canonical batch digest before sending
-    // (QI-BB-032); the search plane refuses any other digest.
-    let payload = quanta_index_searchd_harness::stamped_ingest_request(payload)?;
-    let response: SearchPlaneIngestIpcResponseEnvelope = send_request(
-        socket,
-        &SearchPlaneIngestIpcRequestEnvelope {
-            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
-            request_id: next_request_id(),
-            payload,
-        },
-        quanta_index_ipc::ClientIoPolicy::default(),
-    )?;
-    match response.payload {
-        SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => {
-            Err("ingest publish returned an upload acknowledgement without a receipt".into())
-        }
-        SearchPlaneIngestIpcResponse::Error(err) => {
-            Err(format!("ingest failed code={} message={}", err.code, err.message).into())
-        }
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
-        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
-        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => Ok(()),
-    }
 }
 
 fn history_batch() -> quanta_index_sdk::HistoryBatch {
@@ -258,132 +207,11 @@ fn history_commit_only_batch() -> quanta_index_sdk::HistoryBatch {
 }
 
 fn lexical_batch() -> Result<SearchCorpusBatch, Box<dyn Error>> {
-    let batch =
-        SearchCorpusBatch::replace_generation(repo(), revision(), generation(), "manifest:lexical")
-            .source_event(lexical_event("fixture:sdk-lexical-v1", None));
-    let batch = replace_fixture_file(
-        batch,
-        repo(),
-        revision(),
-        "src/lib.rs",
-        vec![
-            lexical_chunk(
-                "chunk-dirty",
-                "src/lib.rs",
-                "todo!()",
-                "text:digest",
-                "shape:digest",
-                12,
-            )?,
-            lexical_chunk(
-                "chunk-tree",
-                "src/lib.rs",
-                "fn main() {}",
-                "text:tree",
-                "shape:tree",
-                12,
-            )?,
-        ],
-        vec![symbol_record()?],
-    )?;
-    let batch = replace_fixture_file(
-        batch,
-        repo(),
-        revision(),
-        "src/alpha.rs",
-        vec![lexical_chunk(
-            "alpha",
-            "src/alpha.rs",
-            "sphinx of quartz",
-            "text:alpha",
-            "shape:alpha",
-            16,
-        )?],
-        Vec::new(),
-    )?;
-    let batch = replace_fixture_file(
-        batch,
-        repo(),
-        revision(),
-        "src/beta.rs",
-        vec![lexical_chunk(
-            "beta",
-            "src/beta.rs",
-            "sphinx riddles",
-            "text:beta",
-            "shape:beta",
-            14,
-        )?],
-        Vec::new(),
-    )?;
-    Ok(with_semantic_sources_from_chunks(batch))
+    crate::sdk_frontdoor_lexical_fixture::source_batch(&pin())
 }
 
 fn lexical_frontdoor_matrix_batch() -> Result<SearchCorpusBatch, Box<dyn Error>> {
-    let batch = lexical_batch()?;
-    let batch = replace_fixture_file(
-        batch,
-        repo(),
-        revision(),
-        "src/file_contains.rs",
-        vec![lexical_chunk(
-            "chunk-file-contains",
-            "src/file_contains.rs",
-            "foo oo_ba file_contains_needle",
-            "text:file-contains",
-            "shape:file-contains",
-            29,
-        )?],
-        Vec::new(),
-    )?;
-    let batch = replace_fixture_file(
-        batch,
-        RepoId::new("corp-a")?,
-        revision(),
-        "src/recency_a.rs",
-        vec![lexical_chunk_with_source_repo(
-            "chunk-recency-a",
-            "src/recency_a.rs",
-            "shared_oracle_needle corp-a branch",
-            "text:recency-a",
-            "shape:recency-a",
-            33,
-            Some("corp-a"),
-        )?],
-        Vec::new(),
-    )?;
-    let batch = replace_fixture_file(
-        batch,
-        RepoId::new("corp-a")?,
-        revision(),
-        "src/recency_gate.rs",
-        vec![lexical_chunk_with_source_repo(
-            "chunk-recency-a-gate",
-            "src/recency_gate.rs",
-            "shared_oracle_needle gate-a only",
-            "text:recency-gate",
-            "shape:recency-gate",
-            32,
-            Some("corp-a"),
-        )?],
-        Vec::new(),
-    )?;
-    replace_fixture_file(
-        batch,
-        RepoId::new("corp-b")?,
-        revision(),
-        "src/recency_b.rs",
-        vec![lexical_chunk_with_source_repo(
-            "chunk-recency-b",
-            "src/recency_b.rs",
-            "shared_oracle_needle corp-b branch",
-            "text:recency-b",
-            "shape:recency-b",
-            33,
-            Some("corp-b"),
-        )?],
-        Vec::new(),
-    )
+    crate::sdk_frontdoor_lexical_fixture::matrix_source_batch(&pin())
 }
 
 fn lexical_batch_two() -> Result<SearchCorpusBatch, Box<dyn Error>> {
@@ -568,17 +396,8 @@ fn repo_commit_recency_batch() -> Result<RepoCommitRecencyBatch, Box<dyn Error>>
 }
 
 fn repo_meta_batch() -> RepoMetaBatch {
-    RepoMetaBatch::new(repo(), revision(), generation())
-        .entry(
-            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
-            "license",
-            "apache-2.0",
-        )
-        .entry(
-            RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
-            "license",
-            "gpl-3.0",
-        )
+    crate::sdk_frontdoor_lexical_fixture::matrix_repo_meta_batch(&pin())
+        .expect("static fixture IDs satisfy canonical policy")
 }
 
 fn repo_topic_batch() -> RepoTopicBatch {
@@ -664,158 +483,6 @@ fn file_contributor_batch() -> FileContributorBatch {
                 email: Some("bob@example.com".to_string()),
             }],
         )
-}
-
-fn rev_at_time_ancestor_revision() -> RevisionId {
-    RevisionId::new("1111111111111111111111111111111111111111")
-        .expect("static fixture ID satisfies canonical policy")
-}
-
-fn rev_at_time_head_revision() -> RevisionId {
-    RevisionId::new("2222222222222222222222222222222222222222")
-        .expect("static fixture ID satisfies canonical policy")
-}
-
-fn rev_at_time_ancestor_generation() -> ManifestGeneration {
-    ManifestGeneration::new(41)
-}
-
-fn rev_at_time_head_generation() -> ManifestGeneration {
-    ManifestGeneration::new(42)
-}
-
-fn rev_at_time_ancestor_pin() -> GenerationPin {
-    GenerationPin::new(
-        repo(),
-        rev_at_time_ancestor_revision(),
-        rev_at_time_ancestor_generation(),
-    )
-}
-
-fn rev_at_time_head_pin() -> GenerationPin {
-    GenerationPin::new(
-        repo(),
-        rev_at_time_head_revision(),
-        rev_at_time_head_generation(),
-    )
-}
-
-fn rev_at_time_lexical_batch(
-    revision_id: RevisionId,
-    generation: ManifestGeneration,
-    event_id: &str,
-    expected_base_event_id: Option<&str>,
-    path: &str,
-    candidate_id: &str,
-    snippet: &str,
-) -> Result<SearchCorpusBatch, Box<dyn Error>> {
-    let batch = SearchCorpusBatch::replace_generation(
-        repo(),
-        revision_id.clone(),
-        generation,
-        format!("manifest:rev-at-time:{}:{}", path, generation.get()),
-    )
-    .source_event(lexical_event(event_id, expected_base_event_id));
-    replace_fixture_file(
-        batch,
-        repo(),
-        revision_id,
-        path,
-        vec![lexical_chunk(
-            candidate_id,
-            path,
-            snippet,
-            "text:rev-at-time",
-            "shape:rev-at-time",
-            u32::try_from(snippet.len()).map_err(|err| -> Box<dyn Error> {
-                format!("rev_at_time lexical chunk overflow: {err}").into()
-            })?,
-        )?],
-        Vec::new(),
-    )
-}
-
-fn rev_at_time_history_batch() -> Result<quanta_index_sdk::HistoryBatch, Box<dyn Error>> {
-    let now_ms = now_epoch_ms()?;
-    Ok(quanta_index_sdk::HistoryBatch::new(
-        repo(),
-        rev_at_time_head_revision(),
-        rev_at_time_head_generation(),
-    )
-    .manifest_digest("manifest:rev-at-time-history-sdk")
-    .commit(CommitRecord {
-        wire_version: 1,
-        sha: CommitSha::from_hex("1111111111111111111111111111111111111111").map_err(
-            |err| -> Box<dyn Error> { format!("invalid rev-at-time ancestor sha: {err}").into() },
-        )?,
-        parents: Vec::new(),
-        author_time_ms: now_ms.saturating_sub(63_072_000_000),
-        committer_time_ms: now_ms.saturating_sub(63_072_000_000),
-        applied_at_ms: now_ms.saturating_sub(63_072_000_000),
-        author: "alice".to_string().into_boxed_str(),
-        author_name: None,
-        author_email: None,
-        committer: "alice".to_string().into_boxed_str(),
-        committer_name: None,
-        committer_email: None,
-        message: "legacy rev-at-time commit".to_string().into_boxed_str(),
-        is_merge: false,
-        tags: Vec::new(),
-    })
-    .commit(CommitRecord {
-        wire_version: 1,
-        sha: CommitSha::from_hex("2222222222222222222222222222222222222222").map_err(
-            |err| -> Box<dyn Error> { format!("invalid rev-at-time head sha: {err}").into() },
-        )?,
-        parents: vec![
-            CommitSha::from_hex("1111111111111111111111111111111111111111").map_err(
-                |err| -> Box<dyn Error> { format!("invalid rev-at-time parent sha: {err}").into() },
-            )?,
-        ],
-        author_time_ms: now_ms.saturating_sub(12 * 60 * 60 * 1000),
-        committer_time_ms: now_ms.saturating_sub(12 * 60 * 60 * 1000),
-        applied_at_ms: now_ms.saturating_sub(12 * 60 * 60 * 1000),
-        author: "alice".to_string().into_boxed_str(),
-        author_name: None,
-        author_email: None,
-        committer: "alice".to_string().into_boxed_str(),
-        committer_name: None,
-        committer_email: None,
-        message: "head rev-at-time commit".to_string().into_boxed_str(),
-        is_merge: false,
-        tags: Vec::new(),
-    })
-    .ref_upsert(
-        "HEAD",
-        CommitSha::from_hex("2222222222222222222222222222222222222222").map_err(
-            |err| -> Box<dyn Error> { format!("invalid rev-at-time HEAD sha: {err}").into() },
-        )?,
-    ))
-}
-
-fn symbol_record() -> Result<SymbolRecord, Box<dyn Error>> {
-    Ok(SymbolRecord {
-        symbol_id: SymbolId::new("sym-sdk"),
-        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        language: rust_language()?,
-        symbol_kind: SymbolKindCode::new("function").map_err(|err| -> Box<dyn Error> {
-            format!("invalid symbol kind code: {err}").into()
-        })?,
-        symbol_kind_family: Some(SymbolKindFamily::Callable),
-        local_name: "MySdkSymbol".into(),
-        qualified_name: "crate::MySdkSymbol".to_string().into_boxed_str(),
-        signature: None,
-        visibility: None,
-        definition_span: SymbolSpan {
-            path: "src/lib.rs".to_string().into_boxed_str(),
-            byte_start: 0,
-            byte_end: 12,
-            line_start: 1,
-            line_end: 1,
-        },
-        container_qualified_name: Some("crate".to_string().into_boxed_str()),
-        relationship: SymbolRelationship::Def,
-    })
 }
 
 fn dirty_batch() -> DirtyBatch {
@@ -1101,15 +768,15 @@ fn rust_language() -> Result<LanguageCode, Box<dyn Error>> {
     })
 }
 
-fn publish_runtime_catalog_batch(socket: &Path) -> TestResult {
-    dispatch_ingest(
-        socket,
-        SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(RuntimeCatalogIngestBatch {
+fn publish_runtime_catalog_batch(client: &QuantaIndex) -> TestResult {
+    let receipt = client
+        .producer()
+        .publish_runtime_catalog(RuntimeCatalogIngestBatch {
             repo_id: repo(),
             revision_id: revision(),
             generation: generation(),
             overlay_epoch_ms: 20,
-            batch_digest: "batch:runtime-catalog-sdk".to_string(),
+            batch_digest: String::new(),
             producer_head_applied_at_ms: 100,
             generation_materialized_at_ms: 20,
             changed_entries: vec![RuntimeChangedRecord {
@@ -1136,8 +803,11 @@ fn publish_runtime_catalog_batch(socket: &Path) -> TestResult {
                 key: "rebuild=lexical".to_string(),
                 doc_ids: vec![ChunkId::new("alpha")],
             }],
-        }),
-    )
+        })?;
+    if !receipt.applied || receipt.durable_sequence == 0 {
+        return Err("Runtime Catalog publication was not durably applied".into());
+    }
+    Ok(())
 }
 
 fn structural_scope() -> SearchScopeKey {
@@ -1187,40 +857,8 @@ fn current_sdk_search_corpus_or_none(
 
 /// Reserve the final SDK source event before writing generation-scoped overlays.
 ///
-/// The canonical digest comparison binds this test-only wire reconstruction to
-/// the SDK batch that will later be published unchanged.
 fn reserve_sdk_frontdoor_generation(client: &QuantaIndex, batch: &SearchCorpusBatch) -> TestResult {
-    let mut wire = SearchCorpusIngestBatch {
-        source_event: lexical_event("fixture:sdk-lexical-v1", None),
-        repo_id: batch.repo_id().clone(),
-        revision_id: batch.revision_id().clone(),
-        generation: batch.generation(),
-        base_generation: batch.base_generation(),
-        manifest_digest: batch.manifest_digest().to_string(),
-        batch_digest: String::new(),
-        mode: match batch.mode() {
-            quanta_index_sdk::BatchMode::ReplaceGeneration => BatchIngestMode::ReplaceGeneration,
-            quanta_index_sdk::BatchMode::Delta => BatchIngestMode::Delta,
-        },
-        bundle_payload: None,
-        clear_surfaces: batch.clear_surfaces().to_vec(),
-        replace_scopes: batch.replace_scopes().to_vec(),
-        tombstone_scopes: batch.tombstone_scopes().to_vec(),
-        semantic_replace_scopes: batch.semantic_replace_scopes().to_vec(),
-        semantic_tombstone_scopes: batch.semantic_tombstone_scopes().to_vec(),
-        seal: batch.seal_requested(),
-    };
-    wire.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&wire)?;
-    quanta_index_ipc::stamp_batch_digest_v1(&mut wire)?;
-    if wire.batch_digest != batch.batch_digest()? {
-        return Err("SDK frontdoor reservation payload differs from final publish batch".into());
-    }
-
-    let request = SearchCorpusGenerationReservationRequestV1 {
-        repo_id: wire.repo_id.clone(),
-        revision_id: wire.revision_id.clone(),
-        source_event: wire.source_event.clone(),
-    };
+    let request = batch.generation_reservation_request()?;
     let reservation = client.search_corpus().reserve_generation(&request)?;
     if reservation.repo_id != request.repo_id
         || reservation.revision_id != request.revision_id
@@ -1516,8 +1154,6 @@ where
     )
 }
 
-#[path = "sdk_frontdoor/binary_tests.rs"]
-mod binary_tests;
 #[path = "sdk_frontdoor/failure_tests.rs"]
 mod failure_tests;
 #[path = "sdk_frontdoor/lifecycle_tests.rs"]

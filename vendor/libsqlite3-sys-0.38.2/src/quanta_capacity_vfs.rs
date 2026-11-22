@@ -114,6 +114,8 @@ unsafe extern "C" {
     ) -> c_int;
     fn qiv_enter_scope(scope_id: u64) -> u64;
     fn qiv_enter_verification(enabled: c_int) -> c_int;
+    fn qiv_enter_verification_main_ceiling(bytes: u64) -> u64;
+    fn qiv_enter_verification_wal_ceiling(bytes: u64) -> u64;
     fn qiv_drain_retirements() -> c_int;
     fn qiv_event_layout(slots: *mut u32, count: usize) -> c_int;
     fn qiv_close_owned_fd(descriptor: c_int) -> c_int;
@@ -372,23 +374,38 @@ impl RegisteredVfs {
     /// Enter the root scope around **every** operation on a connection
     /// opened by this VFS. The guard cannot move to another thread.
     pub fn enter_scope(&self, scope: NonZeroU64) -> ScopeGuard {
-        self.enter_scope_mode(scope, false)
+        self.enter_scope_mode(scope, false, 0, 0)
     }
 
     /// Deny source-file mutation at the native boundary. Main DB opens retain
     /// write-capable FDs solely for exclusive POSIX locks; WAL opens are RO.
     /// Callers must select exclusive locking before any database read and
     /// disable checkpoint-on-close. SHM is refused, never created or mapped.
-    pub fn enter_verification_scope(&self, scope: NonZeroU64) -> ScopeGuard {
-        self.enter_scope_mode(scope, true)
+    pub fn enter_verification_scope(
+        &self,
+        scope: NonZeroU64,
+        main_bytes: u64,
+        wal_bytes: u64,
+    ) -> ScopeGuard {
+        self.enter_scope_mode(scope, true, main_bytes, wal_bytes)
     }
 
-    fn enter_scope_mode(&self, scope: NonZeroU64, verification: bool) -> ScopeGuard {
+    fn enter_scope_mode(
+        &self,
+        scope: NonZeroU64,
+        verification: bool,
+        main_bytes: u64,
+        wal_bytes: u64,
+    ) -> ScopeGuard {
         let previous = unsafe { qiv_enter_scope(scope.get()) };
         let previous_verification = unsafe { qiv_enter_verification(c_int::from(verification)) };
+        let previous_main_bytes = unsafe { qiv_enter_verification_main_ceiling(main_bytes) };
+        let previous_wal_bytes = unsafe { qiv_enter_verification_wal_ceiling(wal_bytes) };
         ScopeGuard {
             previous,
             previous_verification,
+            previous_main_bytes,
+            previous_wal_bytes,
             _not_send: PhantomData,
         }
     }
@@ -397,6 +414,8 @@ impl RegisteredVfs {
 pub struct ScopeGuard {
     previous: u64,
     previous_verification: c_int,
+    previous_main_bytes: u64,
+    previous_wal_bytes: u64,
     _not_send: PhantomData<Rc<()>>,
 }
 
@@ -409,8 +428,10 @@ impl ScopeGuard {
 impl Drop for ScopeGuard {
     fn drop(&mut self) {
         unsafe {
-            qiv_enter_scope(self.previous);
+            qiv_enter_verification_wal_ceiling(self.previous_wal_bytes);
+            qiv_enter_verification_main_ceiling(self.previous_main_bytes);
             qiv_enter_verification(self.previous_verification);
+            qiv_enter_scope(self.previous);
         }
     }
 }

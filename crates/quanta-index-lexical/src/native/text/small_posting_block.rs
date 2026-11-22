@@ -15,7 +15,7 @@ pub(super) const MAGIC: &[u8; 8] = b"QITXSP01";
 const HEADER_BYTES: usize = 16;
 const MAX_BYTES: usize = 16_384;
 const MAX_ROWS: usize = 512;
-pub(super) const MAX_TERMS: usize = MAX_ROWS / 2;
+pub(super) const MAX_TERMS: usize = MAX_ROWS.div_euclid(2);
 const MAX_TERM_BYTES: usize = 1_024;
 const ROW_BYTES: usize = 34;
 
@@ -25,8 +25,10 @@ fn corrupt(reason: &str) -> IndexError {
 
 fn check_term(term: &[u8]) -> Result<(), IndexError> {
     if !(2..=MAX_TERM_BYTES).contains(&term.len())
-        || !term.first().copied().is_some_and(|tag| tag <= 1)
-        || std::str::from_utf8(&term[1..]).is_err()
+        || term.first().copied().is_none_or(|tag| tag > 1)
+        || term
+            .get(1..)
+            .is_none_or(|key| std::str::from_utf8(key).is_err())
     {
         return Err(corrupt("canonical term shape differs"));
     }
@@ -55,10 +57,17 @@ pub(super) struct Draft {
 
 impl Draft {
     pub(super) fn new(budget: &mut WorkBudget) -> Result<Self, IndexError> {
+        let child_bytes = MAX_ROWS
+            .checked_mul(std::mem::size_of::<ObjectRef>())
+            .ok_or(IndexError::ResourceLimited)?;
+        let remap_bytes = std::mem::size_of::<ObjectRef>()
+            .checked_add(2)
+            .and_then(|bytes| bytes.checked_mul(8))
+            .ok_or(IndexError::ResourceLimited)?;
         let bytes = MAX_BYTES
-            .checked_add(MAX_ROWS * std::mem::size_of::<ObjectRef>())
+            .checked_add(child_bytes)
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
-            .and_then(|bytes| bytes.checked_add(8 * (std::mem::size_of::<ObjectRef>() + 2)))
+            .and_then(|bytes| bytes.checked_add(remap_bytes))
             .ok_or(IndexError::ResourceLimited)?;
         let memory = budget.reserve_memory(width(bytes)?, MemoryLifetime::Temporary)?;
         let mut payload = Vec::new();
@@ -103,16 +112,23 @@ impl Draft {
         if !(2..=8).contains(&map.len()) || df != width(map.len())? {
             return Err(corrupt("DF differs from short membership"));
         }
-        if self
-            .previous
-            .is_some_and(|(start, end)| self.payload[start..end].cmp(term).is_ge())
-        {
-            return Err(corrupt("terms are not strictly ordered"));
+        if let Some((start, end)) = self.previous {
+            let prior = self
+                .payload
+                .get(start..end)
+                .ok_or_else(|| corrupt("terms are not strictly ordered"))?;
+            if prior.cmp(term).is_ge() {
+                return Err(corrupt("terms are not strictly ordered"));
+            }
         }
+        let row_bytes = map
+            .len()
+            .checked_mul(ROW_BYTES)
+            .ok_or(IndexError::ResourceLimited)?;
         let added = term
             .len()
             .checked_add(3)
-            .and_then(|bytes| bytes.checked_add(map.len() * ROW_BYTES))
+            .and_then(|bytes| bytes.checked_add(row_bytes))
             .ok_or(IndexError::ResourceLimited)?;
         if self
             .rows
@@ -139,20 +155,37 @@ impl Draft {
             let index = if let Some(index) = self.children.iter().position(|known| *known == child)
             {
                 index
-            } else if let Some(index) = new_children[..new_count]
+            } else if let Some(index) = new_children
+                .get(..new_count)
+                .ok_or(IndexError::ResourceLimited)?
                 .iter()
                 .position(|known| *known == Some(child))
             {
-                self.children.len() + index
+                self.children
+                    .len()
+                    .checked_add(index)
+                    .ok_or(IndexError::ResourceLimited)?
             } else {
-                new_children[new_count] = Some(child);
-                new_count += 1;
-                self.children.len() + new_count - 1
+                *new_children
+                    .get_mut(new_count)
+                    .ok_or(IndexError::ResourceLimited)? = Some(child);
+                new_count = new_count
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                self.children
+                    .len()
+                    .checked_add(new_count)
+                    .and_then(|count| count.checked_sub(1))
+                    .ok_or(IndexError::ResourceLimited)?
             };
             *id = u16::try_from(index).map_err(|_error| IndexError::ResourceLimited)?;
         }
         let copied = added
-            .checked_add(new_count * std::mem::size_of::<ObjectRef>())
+            .checked_add(
+                new_count
+                    .checked_mul(std::mem::size_of::<ObjectRef>())
+                    .ok_or(IndexError::ResourceLimited)?,
+            )
             .ok_or(IndexError::ResourceLimited)?;
         budget.charge(WorkUsage {
             bytes: width(copied)?,
@@ -184,7 +217,10 @@ impl Draft {
             .terms
             .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?;
-        self.rows += map.len();
+        self.rows = self
+            .rows
+            .checked_add(map.len())
+            .ok_or(IndexError::ResourceLimited)?;
         Ok(Some(slot))
     }
 
@@ -217,7 +253,13 @@ impl Draft {
         let mut at = HEADER_BYTES;
         let length = usize::from(next_u16(&other.payload, &mut at)?);
         let first = take(&other.payload, &mut at, length)?;
-        if self.payload[left_start..left_end].cmp(first).is_ge() {
+        if self
+            .payload
+            .get(left_start..left_end)
+            .ok_or_else(|| corrupt("tail terms are not strictly ordered"))?
+            .cmp(first)
+            .is_ge()
+        {
             return Err(corrupt("tail terms are not strictly ordered"));
         }
         let (right_start, right_end) = other.previous.ok_or_else(|| corrupt("empty right tail"))?;
@@ -227,7 +269,11 @@ impl Draft {
             .ok_or(IndexError::ResourceLimited)?;
         // The fixed remapping table is admitted before its backing is born.
         let _mapping_memory = budget.reserve_memory(
-            width(MAX_ROWS * std::mem::size_of::<u16>())?,
+            width(
+                MAX_ROWS
+                    .checked_mul(std::mem::size_of::<u16>())
+                    .ok_or(IndexError::ResourceLimited)?,
+            )?,
             MemoryLifetime::Temporary,
         )?;
         let mut mapping = [0_u16; MAX_ROWS];
@@ -237,29 +283,55 @@ impl Draft {
             let index = if let Some(index) = self.children.iter().position(|known| known == child) {
                 index
             } else {
-                let index = self.children.len() + new_count;
-                new_count += 1;
+                let index = self
+                    .children
+                    .len()
+                    .checked_add(new_count)
+                    .ok_or(IndexError::ResourceLimited)?;
+                new_count = new_count
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
                 index
             };
             *mapping
                 .get_mut(slot)
                 .ok_or_else(|| corrupt("child dictionary bound"))? =
-                u16::try_from(index).map_err(|_| IndexError::ResourceLimited)?;
+                u16::try_from(index).map_err(|_error| IndexError::ResourceLimited)?;
         }
+        let child_bytes = new_count
+            .checked_mul(std::mem::size_of::<ObjectRef>())
+            .ok_or(IndexError::ResourceLimited)?;
+        let remap_bytes = other
+            .rows
+            .checked_mul(2)
+            .ok_or(IndexError::ResourceLimited)?;
         let copied = added
-            .checked_add(new_count * std::mem::size_of::<ObjectRef>())
-            .and_then(|bytes| bytes.checked_add(other.rows * 2))
+            .checked_add(child_bytes)
+            .and_then(|bytes| bytes.checked_add(remap_bytes))
             .ok_or(IndexError::ResourceLimited)?;
         budget.charge(WorkUsage {
             bytes: width(copied)?,
             ..WorkUsage::default()
         })?;
         let base_slot = self.terms;
-        let base = self.payload.len() - HEADER_BYTES;
-        self.payload
-            .extend_from_slice(&other.payload[HEADER_BYTES..]);
+        let base = self
+            .payload
+            .len()
+            .checked_sub(HEADER_BYTES)
+            .ok_or_else(|| corrupt("short draft header"))?;
+        self.payload.extend_from_slice(
+            other
+                .payload
+                .get(HEADER_BYTES..)
+                .ok_or_else(|| corrupt("short draft header"))?,
+        );
         for (slot, child) in other.children.iter().enumerate() {
-            if usize::from(mapping[slot]) == self.children.len() {
+            if usize::from(
+                *mapping
+                    .get(slot)
+                    .ok_or_else(|| corrupt("child dictionary bound"))?,
+            ) == self.children.len()
+            {
                 self.children.push(*child);
             }
         }
@@ -268,17 +340,28 @@ impl Draft {
             budget.checkpoint()?;
             let length = usize::from(next_u16(&other.payload, &mut at)?);
             let _term = take(&other.payload, &mut at, length)?;
-            let df = usize::from(take(&other.payload, &mut at, 1)?[0]);
+            let df = usize::from(
+                *take(&other.payload, &mut at, 1)?
+                    .first()
+                    .ok_or_else(|| corrupt("DF absent"))?,
+            );
             for _ in 0..df {
                 let _owner = take(&other.payload, &mut at, 32)?;
-                let destination = base + at;
+                let destination = base
+                    .checked_add(at)
+                    .ok_or_else(|| corrupt("joined child offset"))?;
                 let slot = usize::from(next_u16(&other.payload, &mut at)?);
                 let id = mapping
                     .get(slot)
                     .filter(|_| slot < other.children.len())
                     .ok_or_else(|| corrupt("child slot absent"))?;
                 self.payload
-                    .get_mut(destination..destination + 2)
+                    .get_mut(
+                        destination
+                            ..destination
+                                .checked_add(2)
+                                .ok_or_else(|| corrupt("joined child offset"))?,
+                    )
                     .ok_or_else(|| corrupt("joined child offset"))?
                     .copy_from_slice(&id.to_be_bytes());
             }
@@ -286,7 +369,12 @@ impl Draft {
         if at != other.payload.len() {
             return Err(corrupt("tail cardinality differs"));
         }
-        self.previous = Some((base + right_start, base + right_end));
+        self.previous = Some((
+            base.checked_add(right_start)
+                .ok_or_else(|| corrupt("joined child offset"))?,
+            base.checked_add(right_end)
+                .ok_or_else(|| corrupt("joined child offset"))?,
+        ));
         self.terms = terms;
         self.rows = rows;
         Ok(Some(base_slot))
@@ -300,17 +388,26 @@ impl Draft {
             bytes: 6,
             ..WorkUsage::default()
         })?;
-        self.payload[8..10].copy_from_slice(
-            &u16::try_from(self.rows)
-                .map_err(|_error| IndexError::ResourceLimited)?
-                .to_be_bytes(),
-        );
-        self.payload[10..12].copy_from_slice(&self.terms.to_be_bytes());
-        self.payload[12..14].copy_from_slice(
-            &u16::try_from(self.children.len())
-                .map_err(|_error| IndexError::ResourceLimited)?
-                .to_be_bytes(),
-        );
+        self.payload
+            .get_mut(8..10)
+            .ok_or_else(|| corrupt("short draft header"))?
+            .copy_from_slice(
+                &u16::try_from(self.rows)
+                    .map_err(|_error| IndexError::ResourceLimited)?
+                    .to_be_bytes(),
+            );
+        self.payload
+            .get_mut(10..12)
+            .ok_or_else(|| corrupt("short draft header"))?
+            .copy_from_slice(&self.terms.to_be_bytes());
+        self.payload
+            .get_mut(12..14)
+            .ok_or_else(|| corrupt("short draft header"))?
+            .copy_from_slice(
+                &u16::try_from(self.children.len())
+                    .map_err(|_error| IndexError::ResourceLimited)?
+                    .to_be_bytes(),
+            );
         Ok(EncodedBlock {
             input: ObjectBatchInput {
                 payload: self.payload,
@@ -377,7 +474,7 @@ pub(super) fn read(
     if rows == 0
         || rows > MAX_ROWS
         || terms == 0
-        || usize::from(terms) > rows / 2
+        || usize::from(terms) > rows.div_euclid(2)
         || children == 0
         || children > rows
         || reserved != 0
@@ -388,15 +485,23 @@ pub(super) fn read(
     {
         return Err(corrupt("header, locator or registration differs"));
     }
+    let child_bytes = children
+        .checked_mul(32)
+        .ok_or(IndexError::ResourceLimited)?;
     let wire_bytes = 16_usize
         .checked_add(payload.len())
-        .and_then(|bytes| bytes.checked_add(children * 32))
+        .and_then(|bytes| bytes.checked_add(child_bytes))
         .ok_or(IndexError::ResourceLimited)?;
     if object.registration.bytes != width(wire_bytes)? {
         return Err(corrupt("registered wire length differs"));
     }
     budget.charge(WorkUsage {
-        bytes: width(payload.len() + children * 32)?,
+        bytes: width(
+            payload
+                .len()
+                .checked_add(child_bytes)
+                .ok_or(IndexError::ResourceLimited)?,
+        )?,
         ..WorkUsage::default()
     })?;
     for (index, child) in object.registration.children.iter().enumerate() {
@@ -415,7 +520,7 @@ pub(super) fn read(
     let mut used_children = 0;
     let mut previous_term: Option<&[u8]> = None;
     let mut found = SmallMap::default();
-    let mut counted_rows = 0;
+    let mut counted_rows = 0_usize;
     for current in 0..terms {
         budget.checkpoint()?;
         let length = usize::from(next_u16(payload, &mut at)?);
@@ -459,13 +564,17 @@ pub(super) fn read(
                     return Err(corrupt("child first-use order differs"));
                 }
                 *visited = true;
-                used_children += 1;
+                used_children = used_children
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
             }
             if current == slot && !found.push(owner, reference)? {
                 return Err(corrupt("selected membership exceeds bound"));
             }
         }
-        counted_rows += df;
+        counted_rows = counted_rows
+            .checked_add(df)
+            .ok_or(IndexError::ResourceLimited)?;
     }
     if at != payload.len()
         || counted_rows != rows

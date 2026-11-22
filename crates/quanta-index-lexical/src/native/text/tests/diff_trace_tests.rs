@@ -201,6 +201,8 @@ fn assert_diff_trace(
             | DiagnosticEventKindV1::OwnedRenewalRefusal { .. }
             | DiagnosticEventKindV1::SyncAggregate { .. }
             | DiagnosticEventKindV1::ObjectInstallAggregate { .. }
+            | DiagnosticEventKindV1::ManagedInstallCensusBatch { .. }
+            | DiagnosticEventKindV1::ManagedInstallCensusEntry { .. }
             | DiagnosticEventKindV1::ObjectKindAggregate { .. }
             | DiagnosticEventKindV1::AdoptionGroupAggregate { .. }
             | DiagnosticEventKindV1::Bm25CensusAggregate { .. }

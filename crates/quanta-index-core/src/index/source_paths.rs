@@ -1,89 +1,57 @@
 //! Read repository members of one path in the selected SourceCut.
 
 use quanta_index_contract::{
-    NativeIdentityConstructionErrorV1, NativeNormalizationAdmissionV1, NativeNormalizationErrorV1,
-    NativeNormalizationScratchDemandV1, NativeNormalizationScratchOwnerV1, RepoId,
+    NativeIdentityConstructionErrorV1, NativeNormalizationErrorV1, RepoId,
 };
 
+#[cfg(test)]
+use super::MemoryLease;
+use super::repository_key::RepositoryKeyAdmission;
 use super::{
-    IndexError, MapPageEntry, MapRoot, MapValue, MemoryLease, MemoryLifetime, ObjectRef, OwnerKey,
+    IndexError, MapPageEntry, MapRoot, MapValue, MemoryLifetime, ObjectRef, OwnerKey, SourceRecord,
     SourcePathOwners, SourcePathRepositoryKey, SourceRecordOwner, WorkBudget, WorkUsage,
     owner_map_key,
     ports::{ImmutableObjectPort, PersistentMapPort},
 };
 
-pub(super) struct RepositoryKeyAdmission<'a> {
-    budget: &'a mut WorkBudget,
-    leases: [Option<MemoryLease>; 3],
-    sizes: [usize; 3],
-}
-
-impl<'a> RepositoryKeyAdmission<'a> {
-    pub(super) fn new(budget: &'a mut WorkBudget) -> Self {
-        Self {
-            budget,
-            leases: [None, None, None],
-            sizes: [0; 3],
+impl SourcePathOwners {
+    /// Reverse-check an already selected SourceRecord. The caller obtained this
+    /// value using the record's path and still checks the returned OwnerKey.
+    /// Legacy rows carry only their single owner. Bucket rows use the actual
+    /// repository of the record, including the distinct unscoped legacy slot.
+    pub fn owner_for_record(
+        self,
+        record: &SourceRecord,
+        maps: &dyn super::ports::PersistentMapPort,
+        budget: &mut super::WorkBudget,
+    ) -> Result<Option<OwnerKey>, super::IndexError> {
+        match self {
+            Self::LegacyOwner(owner) => Ok(Some(owner)),
+            Self::Repositories(root) => {
+                let key = SourcePathRepositoryKey::new(record.source_repo_id.as_ref())?;
+                Self::repository_owner(root, key.as_slice()?, maps, budget)
+            }
         }
     }
 
-    const fn slot(owner: NativeNormalizationScratchOwnerV1) -> usize {
-        match owner {
-            NativeNormalizationScratchOwnerV1::Decomposition => 0,
-            NativeNormalizationScratchOwnerV1::Recomposition => 1,
-            NativeNormalizationScratchOwnerV1::Sort => 2,
-        }
-    }
-}
-
-impl NativeNormalizationAdmissionV1 for RepositoryKeyAdmission<'_> {
-    type Error = IndexError;
-
-    fn checkpoint_work_v1(&mut self, units: u64) -> Result<(), IndexError> {
-        self.budget.charge(WorkUsage {
-            bytes: units,
-            ..WorkUsage::default()
-        })
-    }
-
-    fn native_birth_v1(
-        &mut self,
-        demand: NativeNormalizationScratchDemandV1,
-        birth: &mut dyn FnMut() -> bool,
-    ) -> Result<bool, IndexError> {
-        let slot = Self::slot(demand.owner_v1);
-        if self.sizes[slot] != demand.current_bytes_v1
-            || self.leases[slot].as_ref().is_some_and(|lease| {
-                usize::try_from(lease.bytes()).ok() != Some(demand.current_bytes_v1)
-            })
-            || demand.new_bytes_v1 <= demand.current_bytes_v1
+    /// Read a leaf from a repository bucket using a canonical child key.
+    pub fn repository_owner(
+        root: ObjectRef,
+        key: &[u8],
+        maps: &dyn super::ports::PersistentMapPort,
+        budget: &mut super::WorkBudget,
+    ) -> Result<Option<OwnerKey>, super::IndexError> {
+        let marker = maps.lookup(MapRoot(Some(root)), key, budget)?;
+        match marker
+            .map(|value| Self::decode(value, budget))
+            .transpose()?
         {
-            return Err(IndexError::BackendViolation(
-                "repository key NFC scratch growth differs from its live grant".into(),
-            ));
+            Some(Self::LegacyOwner(owner)) => Ok(Some(owner)),
+            None => Ok(None),
+            Some(Self::Repositories(_)) => Err(super::IndexError::CorruptObject(
+                "repository path owner must not have another child map".into(),
+            )),
         }
-        self.budget.charge(WorkUsage {
-            bytes: u64::try_from(demand.new_bytes_v1)
-                .map_err(|_error| IndexError::ResourceLimited)?,
-            ..WorkUsage::default()
-        })?;
-        let replacement = self.budget.reserve_memory(
-            u64::try_from(demand.new_bytes_v1).map_err(|_error| IndexError::ResourceLimited)?,
-            MemoryLifetime::Temporary,
-        )?;
-        let born = birth();
-        if born {
-            // The old grant remains live until the replacement birth completes.
-            self.leases[slot] = replacement;
-            self.sizes[slot] = demand.new_bytes_v1;
-        }
-        Ok(born)
-    }
-
-    fn release_scratch_v1(&mut self, owner: NativeNormalizationScratchOwnerV1) {
-        let slot = Self::slot(owner);
-        self.leases[slot] = None;
-        self.sizes[slot] = 0;
     }
 }
 
@@ -478,7 +446,7 @@ mod tests {
                 .map(RepoId::try_from)
                 .transpose()
                 .map_err(|error| IndexError::InvalidInput(error.to_string()))?,
-                language: None,
+            language: None,
         };
         let payload = serde_json::to_vec(&record)
             .map_err(|error| IndexError::InvalidInput(error.to_string()))?;

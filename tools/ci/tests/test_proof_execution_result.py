@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ from tools.ci.proof_execution_result import (
     collect_pytest_inventory,
     derive_test_result,
 )
+from tools.ci.proof_run_source import ProofRunSource, write_run_binding
 
 
 @pytest.mark.parametrize(
@@ -112,10 +114,16 @@ def test_pytest_collection_never_overwrites_existing_inventory(tmp_path: Path) -
 def test_run_p12a_emits_complete_junit_pair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from tools.ci.tests.test_write_proof_manifest import _build_fixture_root
+
+    root, _ = _build_fixture_root(tmp_path.resolve())
     selector = "tools/ci/tests/test_proof_execution_result.py"
     raw_dir = tmp_path / "raw"
+    original_run = subprocess.run
 
-    def collect(selectors: list[str], output: Path) -> None:
+    def collect(checkout: Path, selectors: list[str], output: Path, env: dict[str, str]) -> None:
+        assert checkout != root
+        assert env["PYTHONPATH"] == str(checkout)
         assert selectors == [selector]
         output.parent.mkdir(parents=True)
         output.write_text(
@@ -131,7 +139,10 @@ def test_run_p12a_emits_complete_junit_pair(
         )
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert kwargs["cwd"] == MODULE.ROOT
+        if command[:3] != [sys.executable, "-m", "pytest"]:
+            return original_run(command, **kwargs)
+        assert kwargs["cwd"] != MODULE.ROOT
+        assert kwargs["env"]["PYTHONPATH"] == str(kwargs["cwd"])
         assert command[-1] == f"--junitxml={raw_dir / 'p12a-junit.xml'}"
         (raw_dir / "p12a-junit.xml").write_text(
             '<testsuite tests="1" failures="0" errors="0" skipped="0">'
@@ -141,22 +152,90 @@ def test_run_p12a_emits_complete_junit_pair(
         )
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(MODULE, "collect_pytest_inventory", collect)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(MODULE, "ROOT", root)
+    monkeypatch.setattr(MODULE, "_collect_frozen_pytest", collect)
     monkeypatch.setattr(MODULE.subprocess, "run", run)
     assert MODULE.run_p12a_pytest([selector], raw_dir) == 0
-    assert (raw_dir / "p12a-inventory.json").is_file()
+    record = json.loads((raw_dir / "p12a-run-binding.json").read_bytes())
+    assert record["source"]["head"] == subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], text=True,
+    ).strip()
+    assert record["cargo_lock_sha256"] is None
+    assert record["daemon_sha256"] is None
+    assert record["artifacts"] == {
+        "inventory": hashlib.sha256((raw_dir / "p12a-inventory.json").read_bytes()).hexdigest(),
+        "events": hashlib.sha256((raw_dir / "p12a-junit.xml").read_bytes()).hexdigest(),
+    }
     with pytest.raises(ExecutionResultError, match="already exists"):
         MODULE.run_p12a_pytest([selector], raw_dir)
 
 
-def _nextest_fixture(root: Path) -> tuple[dict, list[dict[str, str]], Path]:
+@pytest.mark.parametrize("during", ["collection", "execution", "transient execution"])
+def test_run_p12a_refuses_same_head_source_drift(tmp_path, monkeypatch, during):
+    from tools.ci.tests.test_write_proof_manifest import _build_fixture_root
+
+    root, _ = _build_fixture_root(tmp_path.resolve())
+    selector = "tools/ci/tests/test_source_drift.py"
+    body = root / selector
+    body.parent.mkdir(parents=True)
+    transient = during == "transient execution"
+    original_body = "def test_case():\n    assert False\n" if transient else "def test_case():\n    assert True\n"
+    body.write_text(original_body)
+    subprocess.run(["git", "add", selector], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "Track tested body"], cwd=root, check=True)
+    raw = tmp_path / "external-evidence"
+    runner_root = MODULE.ROOT
+    original_collect = MODULE._collect_frozen_pytest
+    original_run = subprocess.run
+
+    def collect(checkout, selectors, output, env):
+        # The fixture supplies the tested program. The installed runner supplies
+        # the pytest collection plugin.
+        collection_env = {**env, "PYTHONPATH": os.pathsep.join((str(checkout), str(runner_root)))}
+        original_collect(checkout, selectors, output, collection_env)
+        if during == "collection":
+            body.write_text("def test_case():\n    assert 2 + 2 == 4\n")
+
+    def run(args, **kwargs):
+        if transient and args[:3] == [sys.executable, "-m", "pytest"]:
+            body.write_text("def test_case():\n    assert True\n")
+            try:
+                assert kwargs["cwd"] != root
+                assert (kwargs["cwd"] / selector).read_text() == original_body
+                return original_run(args, **kwargs)
+            finally:
+                body.write_text(original_body)
+        result = original_run(args, **kwargs)
+        if during == "execution" and args[:3] == [sys.executable, "-m", "pytest"]:
+            body.write_text("def test_case():\n    assert 2 + 2 == 4\n")
+        return result
+
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(MODULE, "ROOT", root)
+    monkeypatch.setattr(MODULE, "_collect_frozen_pytest", collect)
+    monkeypatch.setattr(MODULE.subprocess, "run", run)
+    if transient:
+        assert MODULE.run_p12a_pytest([selector], raw) == 1
+        assert body.read_text() == original_body
+    else:
+        with pytest.raises(ExecutionResultError, match="proof source changed during"):
+            MODULE.run_p12a_pytest([selector], raw)
+    assert not (raw / "p12a-run-binding.json").exists()
+    if during == "collection":
+        assert not (raw / "p12a-junit.xml").exists()
+
+
+def _nextest_fixture(
+    root: Path, *, kind: str = "test"
+) -> tuple[dict, list[dict[str, str]], Path]:
     raw = root / "raw"
     raw.mkdir()
     events = raw / "events.jsonl"
     inventory = raw / "inventory.json"
     package, binary = "quanta-index-core", "journal_owner"
     name = f"{package}::{binary}$passes"
-    metadata = {"crate": package, "test_binary": binary, "kind": "test"}
+    metadata = {"crate": package, "test_binary": binary, "kind": kind}
     rows = [
         {"type": "suite", "event": "started", "test_count": 1, "nextest": metadata},
         {"type": "test", "event": "started", "name": name},
@@ -179,7 +258,7 @@ def _nextest_fixture(root: Path) -> tuple[dict, list[dict[str, str]], Path]:
                     f"{package}::{binary}": {
                         "package-name": package,
                         "binary-name": binary,
-                        "kind": "test",
+                        "kind": kind,
                         "status": "listed",
                         "testcases": {
                             "passes": {"ignored": False, "filter-match": {"status": "matches"}}
@@ -219,6 +298,88 @@ def test_nextest_result_is_derived_from_complete_inventory(tmp_path: Path) -> No
         {"selected": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
         {("nextest-jsonl", "quanta-index-core::journal_owner$passes")},
     )
+
+
+@pytest.mark.parametrize("substitute", ["lock", "daemon", "events"])
+def test_bound_nextest_refuses_substituted_archived_input(tmp_path: Path, substitute: str) -> None:
+    result, artifacts, events = _nextest_fixture(tmp_path)
+    (run,) = result["runs"]
+    original = ProofRunSource("p04-read-view-lifetime", "1" * 40, "sha256:" + "2" * 64, "3" * 64)
+    daemon_sha256 = "4" * 64
+    binding = "raw/run-binding.json"
+    write_run_binding(
+        tmp_path / binding, original, format=run["format"],
+        digests=dict(zip(("events", "inventory"), (row["sha256"] for row in artifacts), strict=True)),
+        daemon_sha256=daemon_sha256,
+    )
+    run["run_binding"] = binding
+    artifacts.append({"path": binding, "source_path": binding})
+    _bind_artifact_digests(tmp_path, artifacts)
+    counts, _ = derive_test_result(
+        tmp_path, result, artifacts, run_source=original, daemon_sha256=daemon_sha256,
+    )
+    assert counts["passed"] == 1
+
+    source = original
+    if substitute == "lock":
+        source = ProofRunSource(original.proof_id, original.head, original.dirty_digest, "5" * 64)
+    elif substitute == "daemon":
+        daemon_sha256 = "5" * 64
+    else:
+        events.write_bytes(b" " + events.read_bytes())
+        _bind_artifact_digests(tmp_path, artifacts)
+    with pytest.raises(ValueError, match="captured execution source differs"):
+        derive_test_result(
+            tmp_path, result, artifacts, run_source=source, daemon_sha256=daemon_sha256,
+        )
+
+
+@pytest.mark.parametrize("kind", ["test", "lib"])
+def test_p04_archive_binds_process_observations_to_integration_target(
+    tmp_path: Path, kind: str
+) -> None:
+    result, artifacts, events = _nextest_fixture(tmp_path, kind=kind)
+    name = "quanta-index-core::journal_owner$passes"
+    digest = "f" * 64
+    nonce = "a" * 32
+    run = result["runs"][0]
+    run["daemon_observations"] = "raw/daemon-observations.json"
+    (tmp_path / run["daemon_observations"]).write_text(json.dumps({
+        "nonce": nonce,
+        "events_sha256": hashlib.sha256(events.read_bytes()).hexdigest(),
+        "inventory_sha256": hashlib.sha256((tmp_path / run["inventory"]).read_bytes()).hexdigest(),
+        "observations": {
+            name: {"schema_version": 1, "test": name, "nonce": nonce, "executables": [digest]},
+        },
+    }))
+    artifacts.append({"source_path": run["daemon_observations"], "path": run["daemon_observations"]})
+    _bind_artifact_digests(tmp_path, artifacts)
+    observed: dict[str, str] = {}
+    arguments = {"daemon_observations": observed, "daemon_tests": {name: 1}}
+    if kind == "lib":
+        with pytest.raises(ValueError, match="require Cargo integration test targets"):
+            derive_test_result(tmp_path, result, artifacts, **arguments)
+        assert observed == {}
+    else:
+        counts, _ = derive_test_result(tmp_path, result, artifacts, **arguments)
+        assert counts["passed"] == 1 and observed == {name: digest}
+
+
+@pytest.mark.parametrize(
+    ("kind", "required_case", "accepted"),
+    [("test", "passes", False), ("lib", "missing", False), ("lib", "passes", True)],
+)
+def test_required_lib_case_needs_the_exact_passing_library_body(
+    tmp_path: Path, kind: str, required_case: str, accepted: bool
+) -> None:
+    result, artifacts, _ = _nextest_fixture(tmp_path, kind=kind)
+    required = {"quanta-index-core": [required_case]}
+    if not accepted:
+        with pytest.raises(ExecutionResultError, match="registered nextest lib cases did not pass"):
+            derive_test_result(tmp_path, result, artifacts, required_lib_cases=required)
+    else:
+        counts, _ = derive_test_result(tmp_path, result, artifacts, required_lib_cases=required)
+        assert counts["passed"] == 1
 
 
 @pytest.mark.parametrize(

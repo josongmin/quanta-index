@@ -8,6 +8,7 @@ use quanta_index_core::index::{
     SchemaId, SourceCut, SourceEvent, SourceHistoryTransitionV1, SourceTransition, UpdateKind, UpdateRequest, ViewRef,
     WorkBudget, WorkClaim,
 };
+use quanta_index_core::index::{IndexInstanceId, ObjectRef, OwnerKey};
 use serde::{
     Deserialize,
     de::{DeserializeSeed, EnumAccess, IgnoredAny, SeqAccess, VariantAccess, Visitor},
@@ -46,6 +47,7 @@ enum KindTag {
     HistoryAdvance,
     HistoryAppend,
     Reconfigure,
+    CompactSourceLocal,
     Materialize,
 }
 
@@ -84,6 +86,7 @@ impl<'de: 'a, 'a> Deserialize<'de> for RawKind<'a> {
                 "HistoryAdvance",
                 "HistoryAppend",
                 "Reconfigure",
+                "CompactSourceLocal",
                 "Materialize",
             ],
             KindVisitor,
@@ -122,6 +125,14 @@ struct ResyncParts<'a> {
 #[serde(deny_unknown_fields)]
 struct ReconfigureParts {
     profile: quanta_index_core::index::ObjectRef,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompactSourceLocalParts {
+    instance: IndexInstanceId,
+    expected_artifact: ObjectRef,
+    owner: OwnerKey,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -450,6 +461,17 @@ pub(crate) fn decode(bytes: &[u8], budget: &WorkBudget) -> Result<LoadedRequest,
                 None,
             )
         }
+        KindTag::CompactSourceLocal => {
+            let parts: CompactSourceLocalParts = read(raw, budget)?;
+            (
+                UpdateKind::CompactSourceLocal {
+                    instance: parts.instance,
+                    expected_artifact: parts.expected_artifact,
+                    owner: parts.owner,
+                },
+                None,
+            )
+        }
         KindTag::Materialize => {
             let parts: MaterializeParts = read(raw, budget)?;
             (UpdateKind::Materialize { claim: parts.claim }, None)
@@ -585,7 +607,9 @@ pub(crate) mod tests {
             UpdateKind::HistoryAppend(append) => append.expected.generation.repo_id.as_str().len()
                 .checked_add(append.expected.generation.revision_id.as_str().len())
                 .ok_or(IndexError::ResourceLimited)?,
-            UpdateKind::Reconfigure { .. } | UpdateKind::Materialize { .. } => 0,
+            UpdateKind::Reconfigure { .. }
+            | UpdateKind::CompactSourceLocal { .. }
+            | UpdateKind::Materialize { .. } => 0,
         };
         Ok(u64::try_from(bytes)?)
     }

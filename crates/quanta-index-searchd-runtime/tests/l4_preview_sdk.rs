@@ -1,18 +1,52 @@
-//! Selected-source preview through the SDK and query socket.
+//! Selected-source preview through the SDK and pinned Legacy daemon.
 #![forbid(unsafe_code)]
 
-#[path = "common/searchd_binary_process.rs"]
-mod searchd_binary_process;
-
 use std::error::Error;
+use std::path::Path;
+use std::time::Duration;
 
 use quanta_index_contract::{
-    GenerationPin, HighlightSpan, PreviewByteRange, PreviewKind, PreviewUnavailableReason,
+    GenerationPin, HighlightSpan, ManifestGeneration, PreviewByteRange, PreviewKind,
+    PreviewUnavailableReason, RepoId, RevisionId,
 };
-use quanta_index_sdk::{ConnectOptions, QuantaIndex};
-use quanta_index_searchd_harness::E2eRuntime;
+use quanta_index_sdk::QuantaIndex;
+use quanta_index_searchd_harness::{
+    legacy_reference::{LegacySearchdBinary, SearchdBinaryProcess, publish_legacy_source},
+    private_tempdir,
+};
+
+use crate::fail_closed_wait::{RealTicker, wait_for};
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+fn publish_preview_corpus(
+    binary: &LegacySearchdBinary,
+    state: &Path,
+    files: &[(&str, &str, u64)],
+) -> Result<(SearchdBinaryProcess, GenerationPin), Box<dyn Error>> {
+    let daemon = binary.start(state, 8)?;
+    let client = daemon.connect()?;
+    let repo = RepoId::new("repo-e2e")?;
+    let revision = RevisionId::new("rev-e2e")?;
+    let (_head, _receipt) = publish_legacy_source(&client, &repo, &revision, 1, None, files, None)?;
+    Ok((
+        daemon,
+        GenerationPin::new(repo, revision, ManifestGeneration::new(1)),
+    ))
+}
+
+fn wait_for_preview_queries(client: &QuantaIndex) -> TestResult {
+    let _ready = wait_for(
+        &RealTicker::new(),
+        Duration::from_secs(20),
+        Duration::from_millis(50),
+        "pinned old-Q preview query backend ready",
+        || client.observability().process_readiness(),
+        |report| report.ready,
+        |_| true,
+    )?;
+    Ok(())
+}
 
 fn assert_preview(
     client: &QuantaIndex,
@@ -29,7 +63,7 @@ fn assert_preview(
         .query()
         .native(query)
         .pinned(pin.clone())
-        .top_k(1)
+        .top_k(10)
         .execute()?;
     if response.generation != *pin || response.results.len() != 1 {
         return Err(format!("{query:?}: unexpected SDK page: {response:?}").into());
@@ -77,35 +111,51 @@ fn assert_preview(
 }
 
 fn assert_path_preview(client: &QuantaIndex, pin: &GenerationPin) -> TestResult {
-    let response = client
-        .lexical()
-        .query()
-        .native("select:path needlepath")
-        .pinned(pin.clone())
-        .top_k(1)
-        .execute()?;
-    let candidate = response.results.first().ok_or("path hit missing")?;
-    if response.results.len() != 1
-        || candidate.repo_relative_path.as_str() != "src/needlepath.rs"
-        || candidate.snippet != "src/needlepath.rs"
-        || !candidate.highlights.is_empty()
-        || candidate.snippet_hit_offset.is_some()
-    {
-        return Err(format!("incorrect path-only candidate: {response:?}").into());
+    for query in ["select:path needlepath", "needlepath"] {
+        let response = client
+            .lexical()
+            .query()
+            .native(query)
+            .pinned(pin.clone())
+            .top_k(10)
+            .execute()?;
+        let candidate = response.results.first().ok_or("path hit missing")?;
+        if response.generation != *pin
+            || response.results.len() != 1
+            || candidate.repo_relative_path.as_str() != "src/needlepath.rs"
+            || candidate.snippet != "src/needlepath.rs"
+            || !candidate.highlights.is_empty()
+            || candidate.snippet_hit_offset.is_some()
+        {
+            return Err(format!("{query:?}: incorrect path-only candidate: {response:?}").into());
+        }
+        candidate
+            .validate_source_metadata()
+            .map_err(str::to_owned)?;
+        let preview = candidate.preview.as_ref().ok_or("path preview missing")?;
+        if preview.kind != PreviewKind::Path
+            || preview.unavailable_reason.is_some()
+            || preview.original_focus.is_some()
+            || preview.original_context.is_some()
+            || preview.normalized_focus.is_some()
+        {
+            return Err(format!(
+                "{query:?}: path match fabricated content coordinates: {candidate:?}"
+            )
+            .into());
+        }
     }
-    candidate
-        .validate_source_metadata()
-        .map_err(str::to_owned)?;
-    let preview = candidate.preview.as_ref().ok_or("path preview missing")?;
-    if preview.kind != PreviewKind::Path
-        || preview.unavailable_reason.is_some()
-        || preview.original_focus.is_some()
-        || preview.original_context.is_some()
-        || preview.normalized_focus.is_some()
-    {
-        return Err(format!("path match fabricated content coordinates: {candidate:?}").into());
-    }
-    Ok(())
+    // A path-only match must not make the negative Boolean content clause true.
+    assert_preview(
+        client,
+        pin,
+        "unrelated AND NOT needlepath",
+        "src/needlepath.rs",
+        "unrelated content",
+        PreviewByteRange { start: 0, end: 9 },
+        PreviewByteRange { start: 0, end: 9 },
+        false,
+    )
 }
 
 fn assert_unavailable(
@@ -204,34 +254,27 @@ fn assert_overlapping_raw_highlights(client: &QuantaIndex, pin: &GenerationPin) 
 
 #[test]
 fn l4_sdk_preview_uses_matcher_ranges_and_original_source_bytes() -> TestResult {
-    let mut runtime = E2eRuntime::boot()?;
+    let parent = private_tempdir()?;
+    let binary = LegacySearchdBinary::from_environment()?;
     let prefix = "context ".repeat(80);
     let upper = format!("{prefix}NEEDLECASE");
     let regex = format!("{prefix}needle42");
     let decomposed = format!("{prefix}cafe\u{301}");
     let long_focus = format!("{prefix}{}", "A".repeat(200));
     let oversized_focus = format!("{prefix}{}", "B".repeat(241));
-    runtime.ingest_text("repo", "src/upper.rs", &upper)?;
-    runtime.ingest_text("repo", "src/regex.rs", &regex)?;
-    runtime.ingest_text("repo", "src/decomposed.rs", &decomposed)?;
-    runtime.ingest_text("repo", "src/long200.rs", &long_focus)?;
-    runtime.ingest_text("repo", "src/long241.rs", &oversized_focus)?;
-    runtime.ingest_text("repo", "src/needlepath.rs", "unrelated content")?;
-    runtime.ingest_text("repo", "src/multi.rs", "threehits threehits threehits")?;
-    runtime.ingest_text("repo", "src/overlap.rs", "ababa")?;
-    let pin = runtime.generation_pin();
-    let _sealed = runtime.seal()?;
-    runtime.activate_last_sealed_generation()?;
-    runtime.start()?;
-    let (query_socket, control_socket, ingest_socket) = runtime
-        .socket_paths()
-        .ok_or("started harness has no query/control/ingest sockets")?;
-    let client = QuantaIndex::connect_legacy(
-        ConnectOptions::from_state_root(runtime.state_root())
-            .with_query_socket(query_socket)
-            .with_control_socket(control_socket)
-            .with_ingest_socket(ingest_socket),
-    )?;
+    let files = [
+        ("src/upper.rs", upper.as_str(), 1),
+        ("src/regex.rs", regex.as_str(), 2),
+        ("src/decomposed.rs", decomposed.as_str(), 3),
+        ("src/long200.rs", long_focus.as_str(), 4),
+        ("src/long241.rs", oversized_focus.as_str(), 5),
+        ("src/needlepath.rs", "unrelated content", 6),
+        ("src/multi.rs", "threehits threehits threehits", 7),
+        ("src/overlap.rs", "ababa", 8),
+    ];
+    let (daemon, pin) = publish_preview_corpus(&binary, &parent.path().join("state"), &files)?;
+    let client = daemon.connect()?;
+    wait_for_preview_queries(&client)?;
     assert_preview(
         &client,
         &pin,
@@ -328,45 +371,41 @@ fn l4_sdk_preview_uses_matcher_ranges_and_original_source_bytes() -> TestResult 
     assert_multihit_highlights(&client, &pin)?;
     assert_overlapping_raw_highlights(&client, &pin)?;
     drop(client);
-    Ok(runtime.stop()?)
+    daemon.stop()?;
+    binary.verify()
 }
 
 #[test]
 fn l4_sdk_preview_survives_daemon_process_restart() -> TestResult {
-    let state = quanta_index_searchd_harness::private_tempdir()?;
-    let checkout = quanta_index_searchd_harness::private_tempdir()?;
+    let parent = private_tempdir()?;
+    let state = parent.path().join("state");
+    let checkout = private_tempdir()?;
+    let binary = LegacySearchdBinary::from_environment()?;
     let checkout_file = checkout.path().join("checkout.rs");
     std::fs::write(&checkout_file, "oldanchor")?;
-    let mut runtime = E2eRuntime::boot_in(state.path())?;
-    runtime.ingest_text("repo", "src/decomposed.rs", "cafe\u{301}")?;
-    runtime.ingest_text("repo", "src/regex.rs", "needle42")?;
-    runtime.ingest_text("repo", "src/multi.rs", "threehits threehits threehits")?;
-    runtime.ingest_text("repo", "src/overlap.rs", "ababa")?;
-    runtime.ingest_text("repo", "src/overflow.rs", &"a".repeat(35))?;
-    runtime.ingest_text(
-        "repo",
-        "src/checkout.rs",
-        &std::fs::read_to_string(&checkout_file)?,
-    )?;
-    let pin = runtime.generation_pin();
-    let _sealed = runtime.seal()?;
-    runtime.activate_last_sealed_generation()?;
-    // Activation uses the harness driver for its control CAS. Release the
-    // runtime and its state-root lease before a separate process boots.
-    runtime.stop()?;
+    let overflow = "a".repeat(35);
+    let checkout_body = std::fs::read_to_string(&checkout_file)?;
+    let files = [
+        ("src/decomposed.rs", "cafe\u{301}", 1),
+        ("src/regex.rs", "needle42", 2),
+        ("src/multi.rs", "threehits threehits threehits", 3),
+        ("src/overlap.rs", "ababa", 4),
+        ("src/overflow.rs", overflow.as_str(), 5),
+        ("src/checkout.rs", checkout_body.as_str(), 6),
+    ];
+    let (producer, pin) = publish_preview_corpus(&binary, &state, &files)?;
+    producer.stop()?;
     std::fs::write(&checkout_file, "newanchor")?;
 
     for round in 0..2 {
         if round == 1 {
             std::fs::remove_file(&checkout_file)?;
         }
-        let daemon =
-            searchd_binary_process::SearchdBinaryProcess::start_with_history_max_generations(
-                state.path(),
-                8,
-            )
+        let daemon = binary
+            .start(&state, 8)
             .map_err(|error| format!("daemon start {round} failed: {error}"))?;
         let client = daemon.connect()?;
+        wait_for_preview_queries(&client)?;
         assert_preview(
             &client,
             &pin,
@@ -424,5 +463,5 @@ fn l4_sdk_preview_survives_daemon_process_restart() -> TestResult {
         drop(client);
         daemon.stop()?;
     }
-    Ok(())
+    binary.verify()
 }

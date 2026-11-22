@@ -1,0 +1,177 @@
+"""Bind an admitted Native selection to the existing installed Product key."""
+
+import hashlib
+import json
+import os
+import re
+import stat
+from pathlib import Path
+
+SCHEMA = "semantica-installed-native-q-approval/v1"
+DOMAIN = b"semantica.installed-native-q-approval.v1\n"
+TRUST = Path("/etc/semantica-codegraph-v2/trust")
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+REQUEST_FIELDS = {
+    "deployment_root", "selection_path", "selection_sha256",
+    "decision_policy_path", "decision_policy_sha256",
+}
+
+
+def signing_bytes(payload: dict) -> bytes:
+    return DOMAIN + json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False,
+    ).encode("ascii")
+
+
+def binding(selection, selection_sha256, policy_sha256, active_sha256, manifest_sha256):
+    if selection.native_config is None or selection.native_boot_receipt is None:
+        raise ValueError("Native release approval requires a selected BOOT")
+    digests = (selection_sha256, policy_sha256, active_sha256, manifest_sha256,
+               selection.binary_sha256, selection.native_config_sha256)
+    if any(not isinstance(value, str) or SHA256.fullmatch(value) is None for value in digests):
+        raise ValueError("Native release approval digest differs")
+    return {
+        "schema_version": SCHEMA,
+        "active_generation_sha256": active_sha256,
+        "release_manifest_sha256": manifest_sha256,
+        "q_elf_sha256": selection.binary_sha256,
+        "selection_sha256": selection_sha256,
+        "state_root": str(selection.state_root),
+        "boot_receipt": selection.native_boot_receipt.to_wire(),
+        "config_sha256": selection.native_config_sha256,
+        "decision_policy_sha256": policy_sha256,
+    }
+
+
+def _under_root(path, root):
+    path = Path(path)
+    if not path.is_absolute() or path.resolve(strict=True) != path or root not in path.parents:
+        raise ValueError("Native release input is outside its canonical deployment root")
+    return path
+
+
+def _request_paths(request):
+    if (not isinstance(request, dict) or set(request) != REQUEST_FIELDS
+            or any(not isinstance(value, str) or not value for value in request.values())):
+        raise ValueError("Native release approval request differs")
+    root = Path(request["deployment_root"])
+    if not root.is_absolute() or root.resolve(strict=True) != root or not root.is_dir():
+        raise ValueError("Native release approval deployment root differs")
+    selection_path = _under_root(request["selection_path"], root)
+    policy = _under_root(request["decision_policy_path"], root)
+    return root, selection_path, policy
+
+
+def _read_request_input(path, sha256):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("Native release input is not a regular file")
+        data = stream.read(1024 * 1024 + 1)
+    if len(data) > 1024 * 1024 or hashlib.sha256(data).hexdigest() != sha256:
+        raise ValueError("Native release selection or decision policy changed")
+    return data
+
+
+def _verify_request_digests(request, selection_path, policy):
+    selection = _read_request_input(selection_path, request["selection_sha256"])
+    _read_request_input(policy, request["decision_policy_sha256"])
+    return selection
+
+
+def _require_native_selection(root, selection_path, expected, q_sha256, launcher):
+    selection = launcher._require_current_selection(selection_path, expected)
+    if selection.binary_sha256 != q_sha256:
+        raise ValueError("Native release selection differs from the approved Q ELF")
+    if selection.native_config is None or selection.native_boot_receipt is None:
+        raise ValueError("Native release approval requires a selected BOOT")
+    for path in (selection.binary, selection.state_root, selection.native_config):
+        _under_root(path, root)
+    return selection
+
+
+def verify_approval_request(request, *, q_sha256=None, launcher=None):
+    """Check the pinned inputs and selected files before committing to signing."""
+    root, selection_path, policy = _request_paths(request)
+    data = _verify_request_digests(request, selection_path, policy)
+    if launcher is not None:
+        selection_path = launcher._selection_path(selection_path)
+        selection = _require_native_selection(
+            root, selection_path, request["selection_sha256"], q_sha256, launcher,
+        )
+        launcher._check_binary(selection)
+    elif q_sha256 is not None:
+        selected = json.loads(data)
+        if not isinstance(selected, dict) or selected.get("binary_sha256") != q_sha256:
+            raise ValueError("Native release selection differs from the approved Q ELF")
+
+
+def approve_selected_install(request, *, q_sha256, active_sha256, manifest_sha256, sign, launcher):
+    root, selection_path, policy = _request_paths(request)
+    expected = request["selection_sha256"]
+    policy_sha = request["decision_policy_sha256"]
+
+    with launcher.deployment_lock(selection_path) as lock_fd:
+        _verify_request_digests(request, selection_path, policy)
+        selection = _require_native_selection(root, selection_path, expected, q_sha256, launcher)
+        payload = binding(selection, expected, policy_sha, active_sha256, manifest_sha256)
+        launcher._verify_bootstrap_locked(selection, lock_fd)
+        _verify_request_digests(request, selection_path, policy)
+        if launcher._require_current_selection(selection_path, expected) != selection:
+            raise ValueError("Native release selection changed under its deployment lock")
+        return {"payload": payload, "signature_hex": sign(signing_bytes(payload)).hex()}
+
+
+def _installed_bytes(path: Path, limit: int) -> bytes:
+    if not path.is_absolute() or path.resolve(strict=True) != path:
+        raise ValueError("Native release approval requires a canonical installed file")
+    for parent in reversed(path.parents):
+        directory = parent.lstat()
+        if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != 0 or directory.st_mode & 0o022:
+            raise ValueError("Native release approval requires a protected installed directory")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        named = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+                or info.st_mode & 0o022 or not 0 < info.st_size <= limit
+                or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)):
+            raise ValueError("Native release approval requires a protected installed file")
+        data = stream.read(limit + 1)
+        if len(data) != info.st_size:
+            raise ValueError("Native release approval installed file changed")
+        return data
+
+
+def verify_installed_approval(receipt, selection, selection_sha256, policy_sha256):
+    """Compare approval with this installation's protected trust and actual inputs."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    if (not isinstance(receipt, dict) or set(receipt) != {"payload", "signature_hex"}
+            or not isinstance(receipt["signature_hex"], str)
+            or re.fullmatch(r"[0-9a-f]{128}", receipt["signature_hex"]) is None):
+        raise ValueError("Native release approval envelope differs")
+    active = _installed_bytes(TRUST / "active-generation.json", 16 * 1024)
+    key = _installed_bytes(TRUST / "deployment-public-key.bin", 32)
+    payload = json.loads(active)["payload"]
+    if not isinstance(payload, dict) or payload.get("schema_version") != "semantica-installed-product-active/v1":
+        raise ValueError("Native release approval requires the installed Product generation")
+    manifest_sha = payload["release_manifest_sha256"]
+    expected = binding(selection, selection_sha256, policy_sha256,
+                       hashlib.sha256(active).hexdigest(), manifest_sha)
+    expected_bytes = signing_bytes(expected)
+    if not isinstance(receipt["payload"], dict) or signing_bytes(receipt["payload"]) != expected_bytes:
+        raise ValueError("Native release approval differs from the selected installation")
+    try:
+        Ed25519PublicKey.from_public_bytes(key).verify(
+            bytes.fromhex(receipt["signature_hex"]), expected_bytes,
+        )
+    except InvalidSignature as exc:
+        raise ValueError("Native release approval signature differs") from exc
+    manifest = Path(payload["install_root"]) / "releases" / manifest_sha / "share/quanta/release-manifest.json"
+    if hashlib.sha256(_installed_bytes(manifest, 1024 * 1024)).hexdigest() != manifest_sha:
+        raise ValueError("Native release approval manifest changed")
+    if (active != _installed_bytes(TRUST / "active-generation.json", 16 * 1024)
+            or key != _installed_bytes(TRUST / "deployment-public-key.bin", 32)):
+        raise ValueError("Native release approval installation changed")

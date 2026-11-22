@@ -219,6 +219,19 @@ impl<'a> StructuralNamespace<'a> {
         publish_structural_batch(self.client, batch)
     }
 
+    /// Publish an exact caller-owned structural wire batch. This preserves
+    /// unsealed Delta batches with no base generation while retaining the
+    /// SDK's canonical digest and response binding.
+    pub fn publish_wire_batch(
+        &self,
+        mut batch: StructuralIngestBatch,
+    ) -> Result<BatchReceipt, SdkError> {
+        stamp_batch_digest_v1(&mut batch).map_err(|error| {
+            SdkError::Serialization(format!("structural batch digest: {error}"))
+        })?;
+        dispatch_structural_wire_batch(self.client, batch)
+    }
+
     /// Publishes the caller-owned canonical structural wire batch under
     /// admitted transport and response decode custody.
     #[expect(
@@ -276,9 +289,15 @@ fn publish_structural_batch<const SEALED: bool>(
     client: &QuantaIndexClientPayloadV1,
     batch: &StructuralBatch<SEALED>,
 ) -> Result<BatchReceipt, SdkError> {
-    let response = client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
-        batch.to_wire_batch()?,
-    ))?;
+    dispatch_structural_wire_batch(client, batch.to_wire_batch()?)
+}
+
+fn dispatch_structural_wire_batch(
+    client: &QuantaIndexClientPayloadV1,
+    batch: StructuralIngestBatch,
+) -> Result<BatchReceipt, SdkError> {
+    let response =
+        client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch))?;
     match response {
         SearchPlaneIngestIpcResponse::StructuralReceipt(receipt) => Ok(receipt),
         other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
@@ -400,7 +419,11 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 
 impl StructuralQueryBuilder<'_, true, true, true> {
     pub fn execute(self) -> Result<SearchPlaneStructuralQueryResponse, SdkError> {
-        let text_query = self.state.build_request("structural")?;
+        let text_query = self.state.build_request(
+            self.client,
+            crate::LegacyQueryCapabilityV1::Structural,
+            "structural",
+        )?;
         dispatch_structural_query_request_v1(
             self.client,
             StructuralQueryRequest {

@@ -822,6 +822,91 @@ mod tests {
         )
     }
 
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions compare physical reclaim state, boot inventory and boot gauges"
+    )]
+    fn physical_interrupted_reclaim_stays_out_of_inventory_across_boot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_core::{GenerationStorageKeyV1, RECLAIM_AREA_DIR_NAME};
+        use quanta_index_semantic::{
+            SemanticAdapter, build_resident_batch_v1, legacy_chunk_embedding_record_v1,
+            sealed_replace_batch_v1,
+        };
+
+        let root = tempfile::tempdir()?;
+        let repo = RepoId::new("repo")?;
+        let revision = RevisionId::new("rev")?;
+        let removed = ManifestGeneration::new(86);
+        let retained = ManifestGeneration::new(87);
+        let adapter = SemanticAdapter::with_state_root(root.path().to_path_buf())?;
+        for generation in [removed, retained] {
+            let batch = sealed_replace_batch_v1(
+                repo.clone(),
+                revision.clone(),
+                generation,
+                "src/lib.rs",
+                vec![legacy_chunk_embedding_record_v1(
+                    "boot-witness",
+                    "src/lib.rs",
+                    vec![1.0, 0.0, 0.0],
+                )?],
+                3,
+            );
+            build_resident_batch_v1(&adapter, &batch)?;
+        }
+        drop(adapter);
+        let key = GenerationStorageKeyV1::for_repo_revision(&repo, &revision);
+        let removed_dir = key.generation_dir(root.path(), removed);
+        let retained_dir = key.generation_dir(root.path(), retained);
+        let reclaim_area = root.path().join(RECLAIM_AREA_DIR_NAME);
+        std::fs::create_dir_all(&reclaim_area)?;
+        let staged = reclaim_area.join(key.reclaim_entry_name(removed));
+        std::fs::rename(&removed_dir, &staged)?;
+        assert!(!removed_dir.exists() && staged.is_dir());
+
+        let mut ledger = Ledger::new();
+        ledger.record_historically_sealed_search_corpus(&repo, &revision, retained, "manifest:87");
+        let ledger = Arc::new(RwLock::new(ledger));
+        let track = SearchPlaneTrackKind::Semantic;
+        let require_only_retained = |report: &TrackInventoryReportV1| {
+            assert_eq!(report.sealed_generations, 1);
+            assert!(report.quarantined.is_empty() && report.orphaned.is_empty());
+            assert_eq!(report.sealed_directories.len(), 1);
+            let directory = report.sealed_directories.values().next();
+            assert!(directory.is_some_and(|entry| entry.retained && entry.path == retained_dir));
+        };
+
+        let reopened = SemanticAdapter::with_state_root(root.path().to_path_buf())?;
+        require_only_retained(&seed_track_readiness(&ledger, track, &reopened)?);
+        assert!(
+            staged.is_dir(),
+            "inventory did not consume the staged reclaim"
+        );
+        let finished = finish_interrupted_reclaims(&reopened, None)?;
+        assert!(matches!(
+            &finished,
+            InterruptedReclaimsAtBoot::Finished(count) if count.entries == 1 && count.bytes > 0
+        ));
+        let report =
+            seed_track_readiness(&ledger, track, &reopened)?.with_interrupted_reclaims(finished);
+        require_only_retained(&report);
+        assert_eq!(
+            interrupted_gauges(&report),
+            (MetricValueV1::Gauge(1.0), MetricValueV1::Gauge(0.0))
+        );
+        assert!(!staged.exists() && !removed_dir.exists() && retained_dir.is_dir());
+        drop(reopened);
+
+        let reopened = SemanticAdapter::with_state_root(root.path().to_path_buf())?;
+        let finished = finish_interrupted_reclaims(&reopened, None)?;
+        assert_eq!(finished, InterruptedReclaimsAtBoot::default());
+        require_only_retained(&seed_track_readiness(&ledger, track, &reopened)?);
+        assert!(!staged.exists() && !removed_dir.exists());
+        Ok(())
+    }
+
     /// Boot finishes what interrupted reclaims left (QI-BB-003).
     ///
     /// Finished entries are reported with their bytes; nothing to finish

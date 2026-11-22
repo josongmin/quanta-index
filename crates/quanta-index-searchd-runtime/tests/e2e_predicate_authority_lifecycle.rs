@@ -1,4 +1,4 @@
-//! UDS lifecycle coverage for source-repo and file authority predicates.
+//! Pinned Legacy SDK lifecycle coverage for source-repo and file authority predicates.
 //!
 //! This test keeps the authority data multi-repo and verifies that durable
 //! predicate shards and file-owner projections survive a daemon reopen.
@@ -9,15 +9,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result as AnyResult, ensure};
 use quanta_index_contract::{
-    CapabilityStatusV1, ChunkId, ChunkRecord, FileContributorEntry, FileContributorIdentityEntry,
-    FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch, OwnerDocKind,
-    RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
-    RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
-    RepoTopicEntry, RepoTopicIngestBatch, SemanticCorpusKindV1, SemanticSourceRecordV1,
-    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceFileKey, SourceRoleV1,
-    TextQuerySyntax, lex::LanguageCode,
+    CapabilityStatusV1, ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin,
+    ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
+    SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
+    SemanticSourceScopeKeyV1, SourceFileKey, SourcePublicationEvent, SourceRoleV1,
+    TextQueryRequest, TextQueryResponse, TextQuerySyntax, lex::LanguageCode,
 };
-use quanta_index_searchd_harness::{E2eQueryResult, E2eRuntime};
+use quanta_index_sdk::{
+    FileContributorBatch, FileOwnershipBatch, QuantaIndex, RepoCommitRecencyBatch,
+    RepoDescriptionBatch, RepoMetaBatch, RepoTopicBatch, SearchCorpusBatch,
+};
+use quanta_index_searchd_harness::legacy_reference::{LegacySearchdBinary, request_when_ready};
+use quanta_index_searchd_harness::{fixture_source_scope_v1, private_tempdir};
 
 const NEEDLE: &str = "predicate_authority_lifecycle_needle";
 const ALPHA_PATH: &str = "src/alpha.rs";
@@ -29,6 +32,10 @@ struct AuthorityObservation {
     owner_rows: Vec<(String, Vec<String>)>,
 }
 
+fn pinned<T>(result: Result<T, Box<dyn std::error::Error>>) -> AnyResult<T> {
+    result.map_err(|error| anyhow::anyhow!("{error}"))
+}
+
 fn now_epoch_ms() -> AnyResult<u64> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -37,9 +44,9 @@ fn now_epoch_ms() -> AnyResult<u64> {
     u64::try_from(millis).map_err(|error| anyhow::anyhow!("epoch milliseconds overflow: {error}"))
 }
 
-fn sorted_paths(result: &E2eQueryResult) -> Vec<String> {
+fn sorted_paths(result: &TextQueryResponse) -> Vec<String> {
     let mut paths = result
-        .candidates
+        .results
         .iter()
         .map(|candidate| candidate.repo_relative_path.as_str().to_string())
         .collect::<Vec<_>>();
@@ -47,9 +54,11 @@ fn sorted_paths(result: &E2eQueryResult) -> Vec<String> {
     paths
 }
 
-fn sorted_owner_rows(result: &E2eQueryResult) -> Vec<(String, Vec<String>)> {
+fn sorted_owner_rows(result: &TextQueryResponse) -> Vec<(String, Vec<String>)> {
     let mut rows = result
         .file_owner_rows
+        .as_deref()
+        .unwrap_or_default()
         .iter()
         .map(|row| {
             let mut owners = row.owners.clone();
@@ -61,16 +70,22 @@ fn sorted_owner_rows(result: &E2eQueryResult) -> Vec<(String, Vec<String>)> {
     rows
 }
 
-fn query_paths(rt: &mut E2eRuntime, query: &str) -> AnyResult<Vec<String>> {
-    let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
-    if let Some(error) = result.typed_error {
-        anyhow::bail!(
-            "query {query:?} returned typed error {}: {}",
-            error.code,
-            error.message
-        );
-    }
-    Ok(sorted_paths(&result))
+fn query(client: &QuantaIndex, pin: &GenerationPin, text: &str) -> AnyResult<TextQueryResponse> {
+    Ok(request_when_ready(|| {
+        client.lexical().query_request(TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
+            query_text: text.to_string(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: Some(pin.clone()),
+            generation_selector: None,
+            top_k: 10,
+            cursor: None,
+        })
+    })?)
+}
+
+fn query_paths(client: &QuantaIndex, pin: &GenerationPin, text: &str) -> AnyResult<Vec<String>> {
+    Ok(sorted_paths(&query(client, pin, text)?))
 }
 
 fn replacement_chunk(id: &str, path: &str, source_repo_id: &str) -> AnyResult<ChunkRecord> {
@@ -138,30 +153,69 @@ fn semantic_source_scope(
     })
 }
 
-fn publish_initial_text_generation(rt: &mut E2eRuntime) -> AnyResult<()> {
-    let generation = rt.current_generation();
-    rt.stage_corpus_fixture(
-        vec![
-            replacement_chunk(
-                &format!("predicate-lifecycle-g{}-alpha", generation.get()),
-                ALPHA_PATH,
-                "authority-alpha",
-            )?,
-            replacement_chunk(
-                &format!("predicate-lifecycle-g{}-beta", generation.get()),
-                BETA_PATH,
-                "authority-beta",
-            )?,
-        ],
-        Vec::new(),
-        vec![
-            semantic_source_scope(ALPHA_PATH, generation.get(), "authority-alpha")?,
-            semantic_source_scope(BETA_PATH, generation.get(), "authority-beta")?,
-        ],
+fn fixture_batch(
+    repo: &RepoId,
+    revision: &RevisionId,
+    generation: ManifestGeneration,
+) -> AnyResult<SearchCorpusBatch> {
+    let mut batch = SearchCorpusBatch::replace_generation(
+        repo.clone(),
+        revision.clone(),
+        generation,
+        format!("lex-seal:{}", generation.get()),
     )
+    .source_event(SourcePublicationEvent {
+        stream_id: "e2e-harness-source-v1".into(),
+        event_id: "e2e-source-event-1".into(),
+        expected_base_event_id: None,
+        payload_sha256: [0; 32],
+    });
+    for record in [
+        replacement_chunk(
+            &format!("predicate-lifecycle-g{}-alpha", generation.get()),
+            ALPHA_PATH,
+            "authority-alpha",
+        )?,
+        replacement_chunk(
+            &format!("predicate-lifecycle-g{}-beta", generation.get()),
+            BETA_PATH,
+            "authority-beta",
+        )?,
+    ] {
+        let file = SourceFileKey {
+            source_repo_id: record
+                .source_repo_id
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("fixture chunk has no source repository"))?,
+            repo_relative_path: record.repo_relative_path.clone(),
+        };
+        let scope = fixture_source_scope_v1(file, revision.clone(), vec![record], Vec::new())?;
+        batch = batch.replace_scope(
+            scope.coverage,
+            scope.source_bytes,
+            scope.chunks,
+            scope.symbols,
+        );
+    }
+    for scope in [
+        semantic_source_scope(ALPHA_PATH, generation.get(), "authority-alpha")?,
+        semantic_source_scope(BETA_PATH, generation.get(), "authority-beta")?,
+    ] {
+        batch = batch.replace_semantic_scope(
+            scope.scope,
+            scope.scope_digest,
+            scope.sources,
+            scope.cluster_memberships,
+        );
+    }
+    Ok(batch)
 }
 
-fn observe_generation(rt: &mut E2eRuntime, label: &str) -> AnyResult<AuthorityObservation> {
+fn observe_generation(
+    client: &QuantaIndex,
+    pin: &GenerationPin,
+    label: &str,
+) -> AnyResult<AuthorityObservation> {
     let expected_alpha = vec![ALPHA_PATH.to_string()];
     let predicates = [
         format!("repo:has.meta(lifecycle:{label}) {NEEDLE}"),
@@ -173,7 +227,7 @@ fn observe_generation(rt: &mut E2eRuntime, label: &str) -> AnyResult<AuthorityOb
     ];
     let mut predicate_paths = Vec::with_capacity(predicates.len());
     for query in &predicates {
-        let paths = query_paths(rt, query)?;
+        let paths = query_paths(client, pin, query)?;
         ensure!(
             paths == expected_alpha,
             "{query:?} must select only {ALPHA_PATH}, got {paths:?}"
@@ -181,18 +235,7 @@ fn observe_generation(rt: &mut E2eRuntime, label: &str) -> AnyResult<AuthorityOb
         predicate_paths.push(paths);
     }
 
-    let select = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        &format!("select:file.owners {NEEDLE}"),
-        10,
-    );
-    if let Some(error) = select.typed_error {
-        anyhow::bail!(
-            "select:file.owners returned typed error {}: {}",
-            error.code,
-            error.message
-        );
-    }
+    let select = query(client, pin, &format!("select:file.owners {NEEDLE}"))?;
     let select_paths = sorted_paths(&select);
     ensure!(
         select_paths == [ALPHA_PATH.to_string(), BETA_PATH.to_string()],
@@ -214,147 +257,170 @@ fn observe_generation(rt: &mut E2eRuntime, label: &str) -> AnyResult<AuthorityOb
     })
 }
 
-fn publish_generation(rt: &mut E2eRuntime, label: &str, recent_at_ms: u64) -> AnyResult<()> {
-    let source_repo_alpha = RepoId::new("authority-alpha")
-        .map_err(|error| anyhow::anyhow!("static fixture repo id: {error}"))?;
-    let source_repo_beta = RepoId::new("authority-beta")
-        .map_err(|error| anyhow::anyhow!("static fixture repo id: {error}"))?;
+fn publish_generation(
+    client: &QuantaIndex,
+    batch: &SearchCorpusBatch,
+    repo: &RepoId,
+    revision: &RevisionId,
+    generation: ManifestGeneration,
+    label: &str,
+    recent_at_ms: u64,
+) -> AnyResult<GenerationPin> {
+    let alpha = RepoId::new("authority-alpha")?;
+    let beta = RepoId::new("authority-beta")?;
 
-    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
-    rt.publish_repo_commit_recency_batch(RepoCommitRecencyIngestBatch {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
-        generation: rt.current_generation(),
-        batch_digest: format!("predicate-lifecycle:commit-recency:{label}"),
-        entries: vec![
-            RepoCommitRecencyEntry {
-                source_repo_id: source_repo_alpha.clone(),
-                latest_committer_time_ms: recent_at_ms,
-            },
-            RepoCommitRecencyEntry {
-                source_repo_id: source_repo_beta.clone(),
-                latest_committer_time_ms: 1_600_000_000_000,
-            },
-        ],
-    })?;
-    rt.publish_repo_meta_batch(RepoMetaIngestBatch {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
-        generation: rt.current_generation(),
-        batch_digest: format!("predicate-lifecycle:meta:{label}"),
-        entries: vec![
-            RepoMetaEntry {
-                source_repo_id: source_repo_alpha.clone(),
-                key: "lifecycle".to_string(),
-                value: label.to_string(),
-            },
-            RepoMetaEntry {
-                source_repo_id: source_repo_beta.clone(),
-                key: "lifecycle".to_string(),
-                value: "beta".to_string(),
-            },
-        ],
-    })?;
-    rt.publish_repo_topic_batch(RepoTopicIngestBatch {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
-        generation: rt.current_generation(),
-        batch_digest: format!("predicate-lifecycle:topic:{label}"),
-        entries: vec![
-            RepoTopicEntry {
-                source_repo_id: source_repo_alpha.clone(),
-                topic: format!("lifecycle-{label}"),
-            },
-            RepoTopicEntry {
-                source_repo_id: source_repo_beta.clone(),
-                topic: "lifecycle-beta".to_string(),
-            },
-        ],
-    })?;
-    rt.publish_repo_description_batch(RepoDescriptionIngestBatch {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
-        generation: rt.current_generation(),
-        batch_digest: format!("predicate-lifecycle:description:{label}"),
-        entries: vec![
-            RepoDescriptionEntry {
-                source_repo_id: source_repo_alpha.clone(),
-                description: format!("{label} authority description"),
-            },
-            RepoDescriptionEntry {
-                source_repo_id: source_repo_beta.clone(),
-                description: "beta authority description".to_string(),
-            },
-        ],
-    })?;
-    rt.publish_file_ownership_batch(FileOwnershipIngestBatch {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
-        generation: rt.current_generation(),
-        batch_digest: format!("predicate-lifecycle:ownership:{label}"),
-        entries: vec![
-            FileOwnershipEntry {
-                source_repo_id: source_repo_alpha.clone(),
-                repo_relative_path: RepoRelativePath::new(ALPHA_PATH),
-                owners: vec![format!("@{label}-owner")],
-            },
-            FileOwnershipEntry {
-                source_repo_id: source_repo_beta.clone(),
-                repo_relative_path: RepoRelativePath::new(BETA_PATH),
-                owners: vec!["@beta-owner".to_string()],
-            },
-        ],
-    })?;
-    rt.publish_file_contributor_batch(FileContributorIngestBatch {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
-        generation: rt.current_generation(),
-        batch_digest: format!("predicate-lifecycle:contributor:{label}"),
-        entries: vec![
-            FileContributorEntry {
-                source_repo_id: source_repo_alpha,
-                repo_relative_path: RepoRelativePath::new(ALPHA_PATH),
-                contributors: vec![FileContributorIdentityEntry {
+    let reservation_request = batch.generation_reservation_request()?;
+    let reserved = client
+        .search_corpus()
+        .reserve_generation(&reservation_request)?;
+    ensure!(
+        reserved.repo_id == *repo
+            && reserved.revision_id == *revision
+            && reserved.generation == generation
+            && reserved.source_event == reservation_request.source_event,
+        "Source reservation differs from fixture: {reserved:?}"
+    );
+    let recency = client.history().publish_repo_commit_recency(
+        &RepoCommitRecencyBatch::new(repo.clone(), revision.clone(), generation)
+            .entry(alpha.clone(), recent_at_ms)
+            .entry(beta.clone(), 1_600_000_000_000),
+    )?;
+    let metadata = client.history().publish_repo_meta(
+        &RepoMetaBatch::new(repo.clone(), revision.clone(), generation)
+            .entry(alpha.clone(), "lifecycle", label)
+            .entry(beta.clone(), "lifecycle", "beta"),
+    )?;
+    let topics = client.history().publish_repo_topic(
+        &RepoTopicBatch::new(repo.clone(), revision.clone(), generation)
+            .entry(alpha.clone(), format!("lifecycle-{label}"))
+            .entry(beta.clone(), "lifecycle-beta"),
+    )?;
+    let descriptions = client.history().publish_repo_description(
+        &RepoDescriptionBatch::new(repo.clone(), revision.clone(), generation)
+            .entry(alpha.clone(), format!("{label} authority description"))
+            .entry(beta.clone(), "beta authority description"),
+    )?;
+    let ownership = client.history().publish_file_ownership(
+        &FileOwnershipBatch::new(repo.clone(), revision.clone(), generation)
+            .entry(
+                alpha.clone(),
+                RepoRelativePath::new(ALPHA_PATH),
+                vec![format!("@{label}-owner")],
+            )
+            .entry(
+                beta.clone(),
+                RepoRelativePath::new(BETA_PATH),
+                vec!["@beta-owner".to_string()],
+            ),
+    )?;
+    let contributors = client.history().publish_file_contributor(
+        &FileContributorBatch::new(repo.clone(), revision.clone(), generation)
+            .entry_identities(
+                alpha,
+                RepoRelativePath::new(ALPHA_PATH),
+                vec![FileContributorIdentityEntry {
                     canonical: format!("{label}-contributor"),
                     name: Some(format!("{label} contributor")),
                     email: Some(format!("{label}@example.test")),
                 }],
-            },
-            FileContributorEntry {
-                source_repo_id: source_repo_beta,
-                repo_relative_path: RepoRelativePath::new(BETA_PATH),
-                contributors: vec![FileContributorIdentityEntry {
+            )
+            .entry_identities(
+                beta,
+                RepoRelativePath::new(BETA_PATH),
+                vec![FileContributorIdentityEntry {
                     canonical: "beta-contributor".to_string(),
                     name: Some("Beta Contributor".to_string()),
                     email: Some("beta@example.test".to_string()),
                 }],
-            },
-        ],
-    })?;
-    Ok(())
+            ),
+    )?;
+    for receipt in [
+        recency,
+        metadata,
+        topics,
+        descriptions,
+        ownership,
+        contributors,
+    ] {
+        ensure!(
+            receipt.generation == generation && receipt.applied && receipt.durable_sequence != 0,
+            "predicate authority receipt differs from fixture: {receipt:?}"
+        );
+    }
+    let (receipt, activation) = client.search_corpus().publish_and_activate(batch, None)?;
+    ensure!(
+        receipt.generation == generation
+            && receipt.applied
+            && receipt.durable_sequence != 0
+            && receipt.accepted_replace_scopes == 2
+            && receipt.accepted_semantic_replace_scopes == 2
+            && activation.active.generation.lexical.manifest_generation == generation,
+        "Source receipt or activation differs from fixture: {receipt:?} {activation:?}"
+    );
+    let observed = client
+        .generations()
+        .active_head(repo.clone(), revision.clone())?
+        .ok_or_else(|| anyhow::anyhow!("Source activation has no observed active head"))?;
+    ensure!(
+        observed == activation.active,
+        "observed Source head differs from activation"
+    );
+    Ok(GenerationPin::new(
+        repo.clone(),
+        revision.clone(),
+        generation,
+    ))
 }
 
 #[test]
 fn uds_predicate_authority_lifecycle_survives_reopen() -> AnyResult<()> {
-    let mut runtime = E2eRuntime::boot()?;
+    let parent = private_tempdir()?;
+    let binary = pinned(LegacySearchdBinary::from_environment())?;
+    let repo = RepoId::new("repo-e2e")?;
+    let revision = RevisionId::new("rev-e2e")?;
+    let generation = ManifestGeneration::new(1);
     let now_ms = now_epoch_ms()?;
+    let batch = fixture_batch(&repo, &revision, generation)?;
 
-    publish_initial_text_generation(&mut runtime)?;
-    publish_generation(&mut runtime, "g1", now_ms.saturating_sub(1_000))?;
-    let sealed_g1 = runtime.seal()?;
-    ensure!(
-        sealed_g1.get() == 1,
-        "expected initial generation 1, got {sealed_g1:?}"
-    );
-    runtime.activate_last_sealed_generation()?;
-    let g1_before_reopen = observe_generation(&mut runtime, "g1")?;
+    let process = pinned(binary.start(parent.path(), 8))?;
+    let before = (|| -> AnyResult<_> {
+        let client = pinned(process.connect())?;
+        let pin = publish_generation(
+            &client,
+            &batch,
+            &repo,
+            &revision,
+            generation,
+            "g1",
+            now_ms.saturating_sub(1_000),
+        )?;
+        let observed = observe_generation(&client, &pin, "g1")?;
+        Ok((pin, observed))
+    })();
+    let stopped = pinned(process.stop());
+    let (pin, g1_before_reopen) = before?;
+    stopped?;
 
-    let mut runtime = runtime.reopen();
-    let g1_after_reopen = observe_generation(&mut runtime, "g1")?;
+    let process = pinned(binary.start(parent.path(), 8))?;
+    let after = (|| -> AnyResult<_> {
+        let client = pinned(process.connect())?;
+        let active = client
+            .generations()
+            .active_head(repo.clone(), revision.clone())?
+            .ok_or_else(|| anyhow::anyhow!("reopen lost the active Source head"))?;
+        ensure!(
+            active.generation.lexical.manifest_generation == generation,
+            "reopen changed the active generation: {active:?}"
+        );
+        observe_generation(&client, &pin, "g1")
+    })();
+    let stopped = pinned(process.stop());
+    let g1_after_reopen = after?;
+    stopped?;
     ensure!(
         g1_after_reopen == g1_before_reopen,
         "reopen changed generation-one predicate or select behavior: before={g1_before_reopen:?} after={g1_after_reopen:?}"
     );
-
+    pinned(binary.verify())?;
     Ok(())
 }

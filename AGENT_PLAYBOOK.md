@@ -8,8 +8,7 @@ Read `AGENT_CORE.md` first, then select the narrowest command here.
 - preferred agent surface: `just rust-profile <name>`
 - default local compile: `just rust-profile dev-fast`
 - daemon-only compile: `just rust-profile dev-daemon`
-- deployable daemon artifact: `just rust-profile release-daemon`
-- stale-fingerprint-safe daemon artifact: `just rust-profile release-daemon-fresh`
+- optimized Native daemon candidate: `just rust-profile release-daemon`
 - widest compile rail: `just rust-profile dev-all-targets`
 - shared-surface validation: `just rust-profile validate-shared-surface`
 - one crate probe when the profile catalog is insufficient: `./scripts/cargow check -p <crate>`

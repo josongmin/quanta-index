@@ -2,6 +2,8 @@
 
 #[path = "native_overlay_uds/excluded_save.rs"]
 mod excluded_save;
+#[path = "common/native_object_files.rs"]
+mod native_object_files;
 #[path = "common/native_physical_profile.rs"]
 mod native_physical_profile;
 #[path = "native_overlay_uds/overlay_search.rs"]

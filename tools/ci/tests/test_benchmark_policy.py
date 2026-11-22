@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BENCHMARK_DIR = REPO_ROOT / "tools" / "benchmark"
 POLICY_PATH = REPO_ROOT / "tools" / "ci" / "lint" / "check-benchmark-policy.py"
@@ -214,10 +216,10 @@ def test_inline_benchctl_comment_cannot_hide_direct_producer(tmp_path: Path) -> 
     workflow = tmp_path / ".github" / "workflows" / "benchmark.yml"
     workflow.parent.mkdir(parents=True)
     workflow.write_text(
-        "jobs:\n  bench:\n    steps:\n      - run: just rust-bench-dsl-warm # benchctl\n",
+        "jobs:\n  bench:\n    steps:\n      - run: just rust-verify-quality-relevance # benchctl\n",
         encoding="utf-8",
     )
-    registry = {"producers": {"warm": {"kind": "just-recipe", "recipe": "rust-bench-dsl-warm"}}}
+    registry = module.load_registry(BENCHMARK_DIR / "registry.toml")
     assert module.workflow_bypasses(tmp_path, registry)
 
 
@@ -306,17 +308,26 @@ def test_dev_dependency_on_a_benchmark_package_is_allowed() -> None:
     assert module.dependency_inversions(metadata) == []
 
 
-def test_direct_ci_producer_invocation_is_refused(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "invocation",
+    [
+        "just rust-verify-quality-relevance",
+        "python3 tools/benchmark/run_dsl_cold_matrix.py",
+        "python3.12 -B ./tools/benchmark/run_dsl_cold_matrix.py",
+        "uv run --frozen python -m tools.benchmark.run_dsl_cold_matrix",
+    ],
+)
+def test_direct_ci_producer_invocation_is_refused(tmp_path: Path, invocation: str) -> None:
     module = _policy_module()
     registry = module.load_registry(REPO_ROOT / "tools" / "benchmark" / "registry.toml")
     workflows = tmp_path / ".github" / "workflows"
     workflows.mkdir(parents=True)
     (workflows / "correctness.yml").write_text(
-        "jobs:\n  x:\n    steps:\n      - run: just rust-bench-dsl-warm\n",
+        f"jobs:\n  x:\n    steps:\n      - run: {invocation}\n",
         encoding="utf-8",
     )
     bypasses = module.workflow_bypasses(tmp_path, registry)
-    assert any("rust-bench-dsl-warm" in entry for entry in bypasses)
+    assert bypasses == [f"correctness.yml:x: {invocation}"]
 
 
 def test_registry_cli_ci_invocation_is_allowed(tmp_path: Path) -> None:

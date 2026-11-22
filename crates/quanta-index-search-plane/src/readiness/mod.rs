@@ -39,7 +39,7 @@ mod ledger;
 mod ledger_apply;
 mod pair_digest;
 mod retention_receipt;
-mod runtime_state;
+pub(crate) mod runtime_state;
 mod search_corpus_generation;
 mod search_corpus_history;
 pub(crate) mod serde_support;
@@ -67,7 +67,10 @@ pub use history_state::{HistoryAuthorityState, HistoryDiffKey};
 pub(crate) use ledger::AuxDomainState;
 pub use ledger::Ledger;
 pub use retention_receipt::SearchCorpusHistoryRetentionReceiptV1;
-pub use runtime_state::{ChangedDocState, DirtyDocState, DocFacetState, RuntimeMetadataState};
+pub use runtime_state::{
+    ChangedDocState, DirtyDocState, DocFacetState, RuntimeMetadataState,
+    enforce_runtime_catalog_epoch_v1, runtime_catalog_chunk_ids_v1, validate_runtime_catalog_keys_v1,
+};
 pub use search_corpus_generation::{
     PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1,
 };
@@ -76,12 +79,12 @@ pub use structural_state::StructuralAuthorityState;
 pub use track_state::TrackLedger;
 
 pub(crate) use history_state::{
-    HistoryDelta, HistoryStateMeta, RefChange, history_diff_search_text,
+    HistoryDelta, HistoryStateMeta, history_diff_search_text, history_diff_search_text_len,
 };
 pub(crate) use pair_digest::{SEARCH_CORPUS_LOCK_STRIPES_V1, search_corpus_lock_stripe_v1};
 pub(crate) use runtime_state::{
     RuntimeCatalogDelta, RuntimeDirtyDelta, RuntimeStateMeta, enforce_runtime_catalog_batch_order,
-    validate_runtime_catalog_doc_ids,
+    validate_runtime_catalog_doc_ids, validate_runtime_catalog_keys_with_checkpoint,
 };
 pub(crate) use structural_state::{
     StructuralChunksDelta, StructuralStateMeta, StructuralTreesDelta,

@@ -3,7 +3,7 @@
 use std::{ops::Deref, sync::Arc};
 
 use quanta_index_contract::{
-    index::{OwnerKey, ProducerId, StableOwnerId, ViewSelection},
+    index::{MapRoot, ObjectRef, OwnerKey, ProducerId, StableOwnerId, ViewSelection},
     native_protocol::{
         NativeProducerSourceOwner, NativeProducerSourcePage, NativeProducerSourceRows,
     },
@@ -18,13 +18,14 @@ use quanta_index_core::index::{
 
 use crate::native::NativeDispatcher;
 
-fn append_producer_rows(
+fn append_producer_rows<T>(
     page: &MapPage,
     after_key: &[u8],
     prefix: &[u8; 22],
     producer: ProducerId,
     max_rows: usize,
-    rows: &mut Vec<NativeProducerSourceOwner>,
+    rows: &mut Vec<T>,
+    row: impl Fn(OwnerKey, ObjectRef) -> T,
 ) -> Result<bool, IndexError> {
     let mut previous = after_key;
     for (key, _reference) in &page.entries {
@@ -50,10 +51,7 @@ fn append_producer_rows(
         if rows.len() == max_rows {
             return Ok(true);
         }
-        rows.push(NativeProducerSourceOwner {
-            owner,
-            source: reference.object_ref()?,
-        });
+        rows.push(row(owner, reference.object_ref()?));
     }
     if !reached_end && page.has_more {
         return Err(IndexError::BackendViolation(
@@ -61,6 +59,49 @@ fn append_producer_rows(
         ));
     }
     Ok(false)
+}
+
+pub(super) struct ProducerOwnerWindow {
+    pub producer: ProducerId,
+    pub after: Option<StableOwnerId>,
+    pub limit: u32,
+}
+
+impl ProducerOwnerWindow {
+    pub(super) fn scan<T>(
+        &self,
+        maps: &dyn PersistentMapPort,
+        root: MapRoot,
+        row: impl Fn(OwnerKey, ObjectRef) -> T,
+        budget: &mut WorkBudget,
+    ) -> Result<(Vec<T>, bool), IndexError> {
+        let page_limit = self.limit.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        let max_rows = usize::try_from(self.limit).map_err(|_error| IndexError::ResourceLimited)?;
+        let prefix = producer_owner_prefix(self.producer);
+        let after_key = self.after.map(|stable_id| {
+            owner_map_key(OwnerKey {
+                producer: self.producer,
+                stable_id,
+            })
+        });
+        let after_key = after_key.as_ref().map_or(prefix.as_slice(), |key| key.as_slice());
+        let page = maps.scan(root, Some(after_key), page_limit, budget)?;
+        if page.entries.len() > max_rows + 1 || (page.entries.is_empty() && page.has_more) {
+            return Err(IndexError::BackendViolation(
+                "producer owner scan exceeded its page or did not advance".into(),
+            ));
+        }
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(max_rows).map_err(|_error| IndexError::ResourceLimited)?;
+        let has_more = append_producer_rows(
+            &page, after_key, &prefix, self.producer, max_rows, &mut rows, row,
+        )?;
+        Ok((rows, has_more))
+    }
+}
+
+fn source_row(owner: OwnerKey, source: ObjectRef) -> NativeProducerSourceOwner {
+    NativeProducerSourceOwner { owner, source }
 }
 
 pub(crate) struct ScopedNativeProducerSourcePage {
@@ -96,7 +137,6 @@ impl NativeDispatcher {
                 "producer source continuation requires an exact view".into(),
             ));
         }
-        let page_limit = limit.checked_add(1).ok_or(IndexError::ResourceLimited)?;
         let need = ResourceNeed {
             provider_units: 0,
             ..self.interactive_need
@@ -131,32 +171,8 @@ impl NativeDispatcher {
             // This port rejects a historical Exact view. A producer-wide epoch is
             // current authority, not an attribute of arbitrary retained history.
             let source_epoch = self.catalog.source_epoch(view, producer, budget)?;
-            let prefix = producer_owner_prefix(producer);
-            let owner_after_key = after.map(|stable_id| {
-                owner_map_key(OwnerKey {
-                    producer,
-                    stable_id,
-                })
-            });
-            let after_key = owner_after_key
-                .as_ref()
-                .map_or(prefix.as_slice(), |key| key.as_slice());
-            let page = self
-                .objects
-                .scan(source.owners, Some(after_key), page_limit, budget)?;
-            if page.entries.len()
-                > usize::try_from(page_limit).map_err(|_error| IndexError::ResourceLimited)?
-                || (page.entries.is_empty() && page.has_more)
-            {
-                return Err(IndexError::BackendViolation(
-                    "producer source scan exceeded its page or did not advance".into(),
-                ));
-            }
-            let mut rows = Vec::new();
-            rows.try_reserve_exact(max_rows)
-                .map_err(|_error| IndexError::ResourceLimited)?;
-            let has_more =
-                append_producer_rows(&page, after_key, &prefix, producer, max_rows, &mut rows)?;
+            let (rows, has_more) = ProducerOwnerWindow { producer, after, limit }
+                .scan(self.objects.as_ref(), source.owners, source_row, budget)?;
             ticket.validate()?;
             if self.catalog.source_epoch(view, producer, budget)? != source_epoch {
                 return Err(IndexError::Conflict);
@@ -254,7 +270,7 @@ mod tests {
             None,
         );
         let mut rows = Vec::new();
-        if !append_producer_rows(&page, &prefix, &prefix, producer, 1, &mut rows)?
+        if !append_producer_rows(&page, &prefix, &prefix, producer, 1, &mut rows, source_row)?
             || rows.as_slice()
                 != [NativeProducerSourceOwner {
                     owner: first,
@@ -282,7 +298,7 @@ mod tests {
             None,
         );
         rows.clear();
-        if append_producer_rows(&page, &after, &prefix, producer, 1, &mut rows)?
+        if append_producer_rows(&page, &after, &prefix, producer, 1, &mut rows, source_row)?
             || rows.as_slice()
                 != [NativeProducerSourceOwner {
                     owner: second,
@@ -313,7 +329,7 @@ mod tests {
         );
         let mut rows = Vec::new();
         if !matches!(
-            append_producer_rows(&unordered, &prefix, &prefix, producer, 2, &mut rows),
+            append_producer_rows(&unordered, &prefix, &prefix, producer, 2, &mut rows, source_row),
             Err(IndexError::BackendViolation(_))
         ) {
             return Err(IndexError::BackendViolation(
@@ -330,7 +346,7 @@ mod tests {
             None,
         );
         if !matches!(
-            append_producer_rows(&malformed, &prefix, &prefix, producer, 2, &mut rows),
+            append_producer_rows(&malformed, &prefix, &prefix, producer, 2, &mut rows, source_row),
             Err(IndexError::CorruptObject(_))
         ) {
             return Err(IndexError::BackendViolation(

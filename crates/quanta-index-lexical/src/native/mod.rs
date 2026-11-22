@@ -10,20 +10,27 @@ mod literal_grams;
 mod literal_memberships;
 mod literal_packed;
 mod literal_reader;
+mod literal_work;
 mod metadata;
 mod text;
 mod text_filter;
+mod text_inventory_descriptor;
 mod text_memory;
 mod text_occurrence;
 mod text_overlay;
+mod text_path;
+mod text_path_group;
 mod text_phrase;
 mod text_preflight;
 mod text_query;
 mod text_regex;
+mod text_repo_predicate;
 mod text_universe;
 pub use text_preflight::validate_native_text_input;
 mod text_reader;
 mod text_spool;
+mod text_statistics;
+mod text_token_batch;
 
 pub use literal::{
     LiteralCandidate, LiteralHit, LiteralPage, LiteralPageParts, LiteralPlan, LiteralQuery,

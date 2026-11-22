@@ -1,5 +1,6 @@
 //! Shared IPC protocol limits and typed transport errors.
 
+use quanta_index_core::index::IndexError;
 use std::time::Duration;
 
 /// Client operation that exceeded its configured I/O timeout.
@@ -15,6 +16,51 @@ pub enum IpcIoOperation {
 
 /// Maximum IPC frame body size accepted on the wire.
 pub const MAX_FRAME_BODY_BYTES: usize = quanta_index_contract::MAX_IPC_FRAME_BODY_BYTES_V1;
+
+/// A local process/image-binding refusal observed before request bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PeerBindingRefusalV1 {
+    Unsupported,
+    UnsupportedRoute,
+    ProcessExited,
+    ForeignProcess,
+    InvalidKernelCredentials,
+    Kernel {
+        operation: &'static str,
+        errno: i32,
+    },
+    #[cfg(target_os = "linux")]
+    Image(quanta_explicit_fd_process::ExplicitFdProcessErrorV1),
+}
+impl std::fmt::Display for PeerBindingRefusalV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported => f.write_str("connected peer process capture is unsupported"),
+            Self::UnsupportedRoute => {
+                f.write_str("request is unsupported by this peer binding mode")
+            }
+            Self::ProcessExited => f.write_str("admitted peer process has exited"),
+            Self::ForeignProcess => f.write_str("connected peer differs from the admitted process"),
+            Self::InvalidKernelCredentials => {
+                f.write_str("kernel peer process credentials are invalid")
+            }
+            Self::Kernel { operation, errno } => {
+                write!(f, "peer process {operation} failed with errno {errno}")
+            }
+            #[cfg(target_os = "linux")]
+            Self::Image(cause) => std::fmt::Display::fmt(cause, f),
+        }
+    }
+}
+impl std::error::Error for PeerBindingRefusalV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Image(cause) => Some(cause),
+            _ => None,
+        }
+    }
+}
 
 /// Codec errors surfaced by encode and decode entry points.
 #[derive(Debug)]
@@ -34,7 +80,7 @@ pub enum IpcError {
     /// Underlying transport returned an I/O error other than short read.
     Io(std::io::Error),
     /// The connected stream failed its admitted process binding before writes.
-    PeerBindingRefused(crate::PeerBindingRefusalV1),
+    PeerBindingRefused(PeerBindingRefusalV1),
     /// A blocking client read or write exceeded its configured timeout.
     Timeout {
         operation: IpcIoOperation,
@@ -81,6 +127,16 @@ pub enum IpcError {
     /// the server never admits it — so 0 is a malformed envelope, refused
     /// before admission, typed, with no dispatch and no response.
     ZeroRequestId,
+}
+
+impl IpcError {
+    pub(crate) fn from_client_memory_error(bytes: u64, error: IndexError) -> Self {
+        if error == IndexError::ResourceLimited {
+            Self::FrameMemoryLimited { bytes }
+        } else {
+            Self::Io(std::io::Error::other(error))
+        }
+    }
 }
 
 impl core::fmt::Display for IpcError {

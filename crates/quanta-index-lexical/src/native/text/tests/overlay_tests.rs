@@ -173,6 +173,76 @@ fn exact_path(path: &str) -> Result<quanta_index_contract::QueryConstraintSetV1,
 }
 
 #[test]
+fn overlay_file_contains_reads_replacement_bytes_and_masks_deleted_owners() -> Result<(), IndexError>
+{
+    let (fixture, _, added, empty_a, empty_b, corpus) = fixture_and_corpus()?;
+    let mut sources = overlay_sources(&fixture, added, empty_a, empty_b);
+    let constraints = quanta_index_contract::QueryConstraintSetV1::unconstrained();
+    let contains = |needle: &str| {
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "file.contains".into(),
+            args: vec![quanta_index_contract::LqPredicateArg::RawString(
+                needle.into(),
+            )],
+        })
+    };
+    // Both durable owners contained `two`; replacement and deletion remove it.
+    assert_eq!(
+        search(
+            &fixture,
+            &corpus,
+            &sources,
+            contains("two"),
+            None,
+            &constraints
+        )?
+        .matched,
+        0
+    );
+    let replacement = search(
+        &fixture,
+        &corpus,
+        &sources,
+        contains("ne th"),
+        None,
+        &constraints,
+    )?;
+    assert_eq!(replacement.matched, 1);
+    assert_eq!(replacement.hits[0].owner, fixture.owner);
+    assert_eq!(
+        replacement.hits[0].source,
+        NativeTextHitSource::Overlay { revision: 7 }
+    );
+    let selected = search(
+        &fixture,
+        &corpus,
+        &sources,
+        contains("one"),
+        None,
+        &exact_path("c")?,
+    )?;
+    assert_eq!(selected.matched, 1);
+    assert_eq!(selected.hits[0].owner, added);
+    assert_eq!(
+        selected.hits[0].source,
+        NativeTextHitSource::Overlay { revision: 9 }
+    );
+    sources[0].body = "changed after overlay admission";
+    assert!(matches!(
+        search(
+            &fixture,
+            &corpus,
+            &sources,
+            contains("changed"),
+            None,
+            &constraints
+        ),
+        Err(IndexError::Conflict)
+    ));
+    Ok(())
+}
+
+#[test]
 fn replacement_delete_new_and_empty_adjust_the_selected_virtual_corpus() -> Result<(), IndexError> {
     let (fixture, deleted, added, empty_a, empty_b, corpus) = fixture_and_corpus()?;
     if corpus.statistics()

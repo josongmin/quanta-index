@@ -11,6 +11,9 @@ mod native_physical_profile;
 #[path = "common/native_object_files.rs"]
 mod native_object_files;
 
+#[path = "common/legacy_searchd_binary.rs"]
+mod legacy_searchd_binary;
+
 #[path = "native_index_uds/physical_mixed_pressure.rs"]
 mod physical_mixed_pressure;
 
@@ -58,7 +61,7 @@ use quanta_index_contract::{
     },
 };
 use quanta_index_core::{
-    CoreError, RequestBudgetV1, TextEmbeddingProvider,
+    CoreError, ProcessMemoryProbePort, RequestBudgetV1, TextEmbeddingProvider,
     index::{
         AdmissionOutcome, AttemptContext, BaseMember, DeltaInput, IndexError, IndexQueryPort,
         MemberBinding, ObjectInstallScope, ObjectRef, PlanContext, PlanDecision, QueryOutcome,
@@ -80,9 +83,9 @@ use quanta_index_lexical::native::{
 use quanta_index_repomap::native::{NativeFileMap, NativePathReader};
 use quanta_index_sdk::native_uds::{NativeUdsClient, NativeUdsError};
 use quanta_index_searchd_runtime::native::{
-    FixedPumpPolicy, NativeAdapterDescriptors, NativeIndexService, NativePumpConfig,
-    NativePumpScope, NativeReclaimConfig, NativeResourceObservation, NativeResourcePlan,
-    NativeServiceCapabilities, NativeServiceResources, NativeWalReclaimPolicy,
+    FixedPumpPolicy, NativeAdapterDescriptors, NativeIndexService, NativeProcessMemoryAdmission,
+    NativePumpConfig, NativePumpScope, NativeReclaimConfig, NativeResourceObservation,
+    NativeResourcePlan, NativeServiceCapabilities, NativeServiceResources, NativeWalReclaimPolicy,
     NativeWorkerObservation, NativeWorkerStatus,
 };
 use quanta_index_semantic::native::{
@@ -92,12 +95,10 @@ use quanta_index_semantic::native::{
 use quanta_index_storage::{FileObjectStore, FileScratchSpace};
 use sha2::{Digest as _, Sha256};
 
-#[cfg(target_os = "linux")]
-use std::sync::atomic::AtomicU64;
-#[cfg(target_os = "linux")]
 use quanta_index_core::index::{
     MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort,
 };
+use std::sync::atomic::AtomicU64;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -189,6 +190,48 @@ fn bind_service_with_registry(
             provider_attempt_pool: None,
         },
         &resources,
+    )
+}
+
+fn bind_service_with_registry_and_process_memory_admission(
+    root: &std::path::Path,
+    socket: &std::path::Path,
+    limits: WorkLimits,
+    registry: AdapterRegistry,
+    admission: Arc<NativeProcessMemoryAdmission>,
+) -> anyhow::Result<NativeIndexService> {
+    let resources = test_resources();
+    let reader_need = ResourceNeed {
+        provider_units: 0,
+        ..resources.execution.interactive
+    };
+    let mut literal = QueryAdapterRegistry::new();
+    literal.register(
+        descriptors().literal,
+        reader_need,
+        NativeLiteralReader::new(reader_need)?,
+    )?;
+    let mut path = QueryAdapterRegistry::new();
+    path.register(
+        descriptors().file_map,
+        reader_need,
+        NativePathReader::new(reader_need)?,
+    )?;
+    NativeIndexService::bind_with_capabilities_and_process_memory_admission(
+        root,
+        socket,
+        limits,
+        NativeServiceCapabilities {
+            builders: registry,
+            literal,
+            path,
+            text: QueryAdapterRegistry::new(),
+            semantic: QueryAdapterRegistry::new(),
+            pump: None,
+            provider_attempt_pool: None,
+        },
+        &resources,
+        admission,
     )
 }
 
@@ -1474,11 +1517,21 @@ struct NativeServiceGuard {
 }
 
 impl NativeServiceGuard {
+    #[expect(
+        clippy::print_stderr,
+        reason = "retain the daemon's terminal cause when a client observes an EOF before explicit fixture shutdown"
+    )]
     fn start(service: NativeIndexService) -> Self {
         let shutdown = service.shutdown_handle();
         let observation = service.worker_observation();
         let resources = service.resource_observation();
-        let thread = std::thread::spawn(move || service.run(Duration::from_millis(5)));
+        let thread = std::thread::spawn(move || {
+            let result = service.run(Duration::from_millis(5));
+            if let Err(error) = &result {
+                eprintln!("native fixture service terminated: {error:#}");
+            }
+            result
+        });
         Self {
             shutdown,
             thread: Some(thread),
@@ -1519,6 +1572,80 @@ impl Drop for NativeServiceGuard {
             drop(thread.join());
         }
     }
+}
+
+struct ScriptedNativeResidentMemory(AtomicU64);
+
+impl ProcessMemoryProbePort for ScriptedNativeResidentMemory {
+    fn resident_bytes(&self) -> Result<u64, CoreError> {
+        Ok(self.0.load(Ordering::Acquire))
+    }
+}
+
+#[test]
+fn native_publication_rss_gate_refuses_typed_without_input_and_retries_the_same_operation()
+-> TestResult {
+    const CEILING: u64 = 1_000;
+
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let probe = Arc::new(ScriptedNativeResidentMemory(AtomicU64::new(CEILING + 1)));
+    let probe_port: Arc<dyn ProcessMemoryProbePort> = probe.clone();
+    let admission = Arc::new(NativeProcessMemoryAdmission::new(probe_port, CEILING)?);
+    let running =
+        NativeServiceGuard::start(bind_service_with_registry_and_process_memory_admission(
+            root.path(),
+            &socket,
+            work_limits(),
+            tokio_literal_registry()?,
+            Arc::clone(&admission),
+        )?);
+    let client = NativeUdsClient::new(&socket);
+    let created = client.request(
+        NativeIndexRequest::CreateWorkspace {
+            workspace: workspace(),
+            epoch: 1,
+        },
+        &budget(),
+    )?;
+    assert!(matches!(created, NativeIndexResponse::Created(_)));
+    let publication = operation(91);
+
+    let refused = client.begin_input(publication, &budget());
+    assert!(
+        matches!(&refused, Err(NativeUdsError::Refused(error))
+            if error.code == NativeIndexErrorCode::ProcessRssCeilingExceeded
+                && error.message.contains("PROCESS_RSS_CEILING_EXCEEDED")
+                && error.message.contains("1001 resident bytes")),
+        "publication above the measured RSS ceiling was not refused typed: {refused:?}"
+    );
+    assert_eq!(admission.refusals(), 1);
+    assert_eq!(
+        client.status(publication, &budget())?,
+        OperationStatus::Unknown
+    );
+
+    probe.0.store(CEILING - 1, Ordering::Release);
+    let ingress = client.begin_input(publication, &budget())?;
+    assert_eq!(
+        client.status(publication, &budget())?,
+        OperationStatus::Unknown
+    );
+    probe.0.store(CEILING + 1, Ordering::Release);
+    let resumed = client.begin_input(publication, &budget())?;
+    assert_eq!(resumed.operation, ingress.operation);
+    assert!(
+        resumed.fence > ingress.fence,
+        "an existing ingress retry must rotate its fence atomically"
+    );
+    assert_eq!(
+        admission.refusals(),
+        1,
+        "an idempotent retry is not an RSS refusal"
+    );
+    client.discard_input(resumed, &budget())?;
+    assert_eq!(admission.refusals(), 1);
+    running.stop()
 }
 
 #[test]
@@ -2058,9 +2185,11 @@ fn native_uds_stage_sources_accepts_full_object_batch_and_refuses_overflow() -> 
             r#"{{"path":"batch/0.rs","bytes":{},"byte_len":1,"text":"Excluded","source_repo_id":"{repository}"}}"#,
             serde_json::to_string(&body)?,
         );
-        let expected =
-            quanta_index_contract::index::native_immutable_object_ref_v1(payload.as_bytes(), &[body])
-                .ok_or("repository source record identity")?;
+        let expected = quanta_index_contract::index::native_immutable_object_ref_v1(
+            payload.as_bytes(),
+            &[body],
+        )
+        .ok_or("repository source record identity")?;
         assert_eq!(reply, NativeIndexResponse::StagedSources(vec![expected]));
         assert_ne!(staged.first(), Some(&expected));
     }
@@ -2069,23 +2198,23 @@ fn native_uds_stage_sources_accepts_full_object_batch_and_refuses_overflow() -> 
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-struct MultiframeStageMemory(Arc<AtomicU64>);
+struct CountedNativeTestMemory(Arc<AtomicU64>);
 
-#[cfg(target_os = "linux")]
-impl MemoryLeaseOwner for MultiframeStageMemory {
+impl MemoryLeaseOwner for CountedNativeTestMemory {
     fn release(&self, bytes: u64) {
         let previous = self.0.fetch_sub(bytes, Ordering::SeqCst);
         assert!(previous >= bytes);
     }
 }
 
-#[cfg(target_os = "linux")]
-impl MemoryScopePort for MultiframeStageMemory {
+impl MemoryScopePort for CountedNativeTestMemory {
     fn reserve(&self, bytes: u64, _lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
-        let _previous = self.0
+        let _previous = self
+            .0
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |active| {
-                active.checked_add(bytes).filter(|next| *next <= 256 * 1024 * 1024)
+                active
+                    .checked_add(bytes)
+                    .filter(|next| *next <= 256 * 1024 * 1024)
             })
             .map_err(|_| IndexError::ResourceLimited)?;
         Ok(MemoryLease::new(bytes, Arc::new(Self(Arc::clone(&self.0)))))
@@ -2107,10 +2236,10 @@ fn native_uds_bound_admitted_projection_stage_crosses_single_frame_with_child_re
         descriptors(),
     )?);
     let active = Arc::new(AtomicU64::new(0));
-    let memory = MemoryScope::new(Arc::new(MultiframeStageMemory(Arc::clone(&active))));
+    let memory = MemoryScope::new(Arc::new(CountedNativeTestMemory(Arc::clone(&active))));
     let request_budget = RequestBudgetV1::for_duration(Duration::from_secs(120));
-    let observed = NativeUdsClient::new(&socket)
-        .capture_peer_process_admitted_v1(&request_budget, &memory)?;
+    let observed =
+        NativeUdsClient::new(&socket).capture_peer_process_admitted_v1(&request_budget, &memory)?;
     assert_eq!(observed.credentials_v1().pid, Some(std::process::id()));
     let peer = observed.share_lease_v1();
     drop(observed);
@@ -2125,7 +2254,10 @@ fn native_uds_bound_admitted_projection_stage_crosses_single_frame_with_child_re
         &request_budget,
         &memory,
     )?;
-    assert!(matches!(created.response(), NativeIndexResponse::Created(_)));
+    assert!(matches!(
+        created.response(),
+        NativeIndexResponse::Created(_)
+    ));
     drop(created);
     let operation = operation(1);
     let opened = client.request_publication_admitted(
@@ -2141,8 +2273,8 @@ fn native_uds_bound_admitted_projection_stage_crosses_single_frame_with_child_re
     drop(opened);
 
     let child_bytes = b"multiframe-child";
-    let child_expected = native_immutable_object_ref_v1(child_bytes, &[])
-        .ok_or("child object identity overflow")?;
+    let child_expected =
+        native_immutable_object_ref_v1(child_bytes, &[]).ok_or("child object identity overflow")?;
     let child_reply = client.request_publication_admitted(
         NativeIndexRequest::StageProjectionOutput {
             ingress,
@@ -2153,7 +2285,10 @@ fn native_uds_bound_admitted_projection_stage_crosses_single_frame_with_child_re
         &request_budget,
         &memory,
     )?;
-    assert_eq!(child_reply.response(), &NativeIndexResponse::Staged(child_expected));
+    assert_eq!(
+        child_reply.response(),
+        &NativeIndexResponse::Staged(child_expected)
+    );
     drop(child_reply);
 
     // Each 0xff element has a two-byte CBOR representation. The stored object
@@ -2570,7 +2705,12 @@ fn native_uds_source_lifecycle_status_old_view_and_reopen() -> TestResult {
     worker
         .join()
         .map_err(|_panic| "native service thread panicked")??;
+    assert!(
+        !socket.exists(),
+        "native socket survived the first in-process stop"
+    );
     let reopened = bind_service(root.path(), &socket, work_limits(), descriptors())?;
+    assert!(socket.exists(), "native socket was not rebound on restart");
     let stop = reopened.shutdown_handle();
     let worker = std::thread::spawn(move || reopened.run(Duration::from_millis(5)));
     assert_eq!(
@@ -2633,6 +2773,10 @@ fn native_uds_source_lifecycle_status_old_view_and_reopen() -> TestResult {
     worker
         .join()
         .map_err(|_panic| "reopened service thread panicked")??;
+    assert!(
+        !socket.exists(),
+        "native socket survived the final in-process stop"
+    );
     Ok(())
 }
 
@@ -3694,12 +3838,15 @@ fn native_previous_roots_refuse_before_creating_v20_state() -> TestResult {
         let old_catalog = root.path().join("catalog");
         std::fs::create_dir(&old_catalog)?;
         let old_database = old_catalog.join("catalog-v1.sqlite");
-        let original_database = format!("v{version} Catalog bytes must remain untouched").into_bytes();
+        let original_database =
+            format!("v{version} Catalog bytes must remain untouched").into_bytes();
         std::fs::write(&old_database, &original_database)?;
         let socket = root.path().join("native.sock");
 
         let error = match bind_service(root.path(), &socket, work_limits(), descriptors()) {
-            Ok(_service) => return Err(format!("v{version} state was accepted by the v20 reader").into()),
+            Ok(_service) => {
+                return Err(format!("v{version} state was accepted by the v20 reader").into());
+            }
             Err(error) => error,
         };
         assert!(error.to_string().contains("explicit rebuild"));
@@ -6353,6 +6500,11 @@ fn native_automatic_reclaim_resumes_prepared_partial_child_drain_after_service_r
         &budget(),
     )?;
     assert!(matches!(created, NativeIndexResponse::Created(_)));
+    let latest = ViewSelection::Latest {
+        workspace: workspace(),
+        epoch: 1,
+    };
+    let original_view = client.read_view(latest, &budget())?;
     let children_ingress = client.begin_input(operation(890), &budget())?;
     let parent_ingress = client.begin_input(operation(891), &budget())?;
     seed_running.stop()?;
@@ -6473,17 +6625,22 @@ fn native_automatic_reclaim_resumes_prepared_partial_child_drain_after_service_r
     }
     drop(connection);
 
-    let reopened =
-        NativeServiceGuard::start(NativeIndexService::bind_with_capabilities_and_maintenance(
-            root.path(),
-            &socket,
-            work_limits(),
-            reclaim_capabilities(None)?,
-            &resources,
-            Some(test_reclaim_config()),
-        )?);
+    let reopen = || -> TestResult<NativeServiceGuard> {
+        Ok(NativeServiceGuard::start(
+            NativeIndexService::bind_with_capabilities_and_maintenance(
+                root.path(),
+                &socket,
+                work_limits(),
+                reclaim_capabilities(None)?,
+                &resources,
+                Some(test_reclaim_config()),
+            )?,
+        ))
+    };
+    let reopened = reopen()?;
+    let catalog_path = catalog.path().to_path_buf();
     let connection = rusqlite::Connection::open_with_flags(
-        catalog.path(),
+        &catalog_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     let deadline = Instant::now()
@@ -6506,25 +6663,37 @@ fn native_automatic_reclaim_resumes_prepared_partial_child_drain_after_service_r
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    let parent_metadata: i64 = connection.query_row(
-        "SELECT count(*) FROM native_object_v1 WHERE object=?1",
-        rusqlite::params![(parent.reference.0).0.to_vec()],
-        |row| row.get(0),
-    )?;
-    assert_eq!(parent_metadata, 0);
-    assert!(native_object_absent_nofollow(&parent_file)?);
-    for child in &children {
-        assert!(native_object_file(root.path(), *child)?.is_file());
-    }
-    for (path, wire) in &child_wires {
-        assert_eq!(std::fs::read(path)?.as_slice(), wire.as_slice());
-    }
+    let assert_settled = |connection: &rusqlite::Connection| -> TestResult {
+        let pending_or_registered: i64 = connection.query_row(
+            "SELECT (SELECT count(*) FROM native_gc_object_v1 WHERE object=?1) \
+             + (SELECT count(*) FROM native_object_v1 WHERE object=?1)",
+            rusqlite::params![(parent.reference.0).0.to_vec()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(pending_or_registered, 0);
+        assert!(native_object_absent_nofollow(&parent_file)?);
+        for (path, wire) in &child_wires {
+            assert_eq!(std::fs::read(path)?.as_slice(), wire.as_slice());
+        }
+        assert_eq!(client.read_view(latest, &budget())?, original_view);
+        Ok(())
+    };
+    assert_settled(&connection)?;
     drop(connection);
     drop(catalog);
+    reopened.stop()?;
+
+    let reopened = reopen()?;
+    let connection = rusqlite::Connection::open_with_flags(
+        &catalog_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    assert_settled(&connection)?;
+    drop(connection);
 
     // The held ingress remains usable after reopen. Releasing it makes all
     // 70 now-unshared children eligible for automatic physical reclamation.
-    NativeUdsClient::new(socket).discard_input(children_ingress, &budget())?;
+    client.discard_input(children_ingress, &budget())?;
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(10))
         .ok_or("deadline overflow")?;

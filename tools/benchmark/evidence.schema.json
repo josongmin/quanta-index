@@ -113,7 +113,7 @@
         "argv": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
         "cwd": { "type": "string", "minLength": 1 },
         "status": { "enum": ["completed", "failed", "timeout", "interrupted"] },
-        "exit_code": { "type": ["integer", "null"] },
+        "exit_code": { "type": ["integer", "null"], "minimum": -2147483648, "maximum": 2147483647 },
         "timeout_seconds": { "type": "integer", "minimum": 1 },
         "wall_ms": { "type": "integer", "minimum": 0 }
       }

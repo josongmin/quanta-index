@@ -509,14 +509,17 @@ fn explain_request(
     })
 }
 
-// CASE-COVERS: CS-ENG-01 — every lexical lane admits primitives before a
-// language contradiction can erase execution, including composite routes.
+// CASE-COVERS: CS-ENG-01 — every composite lexical lane calls preflight before
+// a language contradiction can erase execution. The pinned old-Q SDK rail
+// separately proves the real adapter's primitive refusal for these inputs.
 #[test]
 fn l1_composite_routes_admit_primitives_before_language_shortcut() -> TestResult {
     let mut failures = Vec::new();
     for constraints in [QueryConstraintSetV1::unconstrained(), rust_constraints()] {
         for primitive in ["...", "\"!!!\"", "content:!!!"] {
             let query = format!("lang:python {primitive}");
+            let expected_query =
+                crate::lower_lexical_text_query(&text_query(&query, constraints.clone()))?;
             let requests = [
                 ("hybrid", hybrid_request(&query, constraints.clone())),
                 (
@@ -541,6 +544,12 @@ fn l1_composite_routes_admit_primitives_before_language_shortcut() -> TestResult
             ];
             for (route, request) in requests {
                 let lanes = truth_dispatcher(Vec::new(), Vec::new())?;
+                lanes
+                    .lexical
+                    .lock()
+                    .map_err(|err| err.to_string())?
+                    .preflight_refusal =
+                    Some(quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens);
                 let response = lanes
                     .dispatcher
                     .dispatch(request, &RequestBudgetV1::unbounded());
@@ -551,10 +560,11 @@ fn l1_composite_routes_admit_primitives_before_language_shortcut() -> TestResult
                         if error.code == quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens
                 ) || !lexical.opened_pins.is_empty()
                     || lexical.primitive_queries.len() != 1
+                    || lexical.primitive_queries.first() != Some(&expected_query)
                 {
                     failures.push(format!(
-                        "{route} {query:?} {constraints:?}: response={response:?}, opens={}, admissions={}",
-                        lexical.opened_pins.len(), lexical.primitive_queries.len(),
+                        "{route} {query:?} {constraints:?}: response={response:?}, opens={}, admissions={:?}",
+                        lexical.opened_pins.len(), lexical.primitive_queries,
                     ));
                 }
                 drop(lexical);

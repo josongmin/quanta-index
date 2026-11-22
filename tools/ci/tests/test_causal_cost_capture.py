@@ -1518,7 +1518,9 @@ def test_capture_accepts_one_unchanged_executable_and_input_epoch(
     assert capture_fixture.state["product_validations"] == 1
     assert result["requested_disk_observation_mode"] is None
     assert result["disk_observation_mode"] == "boundary-only"
-    assert result["command"][-2:] == ["--disk-observation", "boundary-only"]
+    command = result["command"]
+    assert command[command.index("--disk-observation") + 1] == "boundary-only"
+    assert command[command.index("--backend") + 1] == "legacy"
     assert not (capture_fixture.args.out_root / "causal-profile.json").exists()
     assert (capture_fixture.args.out_root / "causal-waterfall.json").is_file()
     status = json.loads((capture_fixture.args.out_root / "timeline-status.json").read_text())
@@ -1545,6 +1547,25 @@ def test_managed_build_refuses_a_caller_supplied_binary_before_execution(
         capture(capture_fixture.args)
     assert not capture_fixture.args.out_root.exists()
     assert capture_fixture.state["product_validations"] == 0
+
+
+def test_legacy_managed_capture_refuses_current_producer_checkout(
+    capture_fixture: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = capture_fixture.args
+    args.cwd = Path(causal_cost_capture.__file__).resolve().parents[3]
+    args.managed_build = True
+    args.binary = None
+    args.binary_sha256 = None
+
+    def unexpected_build(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Legacy capture attempted to build the current Native producer")
+
+    monkeypatch.setattr(causal_cost_capture, "build_scale", unexpected_build)
+    with pytest.raises(ValueError, match="Legacy managed capture requires a clean archived source checkout"):
+        capture(args)
+    assert not args.out_root.exists()
 
 
 @pytest.mark.parametrize("canonical_available", [False, True])
@@ -2340,6 +2361,8 @@ def test_scale_command_forwards_pair_and_total_as_distinct_flags() -> None:
         "300000000",
         "--history-max-total-bytes",
         "600000000",
+        "--backend",
+        "legacy",
     ]
     args.history_max_bytes = None
     args.history_max_total_bytes = None
@@ -2390,7 +2413,8 @@ def test_capture_refuses_replayed_disk_mode_mismatch(
     assert result["product_status"] == "PRODUCT_ARTIFACT_VERIFIED"
     assert result["diagnostic_status"] == "PARTIAL"
     assert "disk observation mode" in result["reason"]
-    assert result["command"][-2:] == ["--disk-observation", "periodic"]
+    command = result["command"]
+    assert command[command.index("--disk-observation") + 1] == "periodic"
     assert not (args.out_root / "causal-profile.json").exists()
 
 

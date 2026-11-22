@@ -408,3 +408,51 @@ fn a_cancellation_while_the_query_is_pending_drops_it_and_the_handle_serves_agai
     }
     Ok(())
 }
+
+/// A deadline that expires after the exact lane is entered interrupts the
+/// pending query at that lane, counts exactly one interruption, and leaves the
+/// same handle usable for the next request.
+#[test]
+fn a_deadline_while_the_exact_lane_is_pending_is_counted_and_the_handle_serves_again() -> TestResult
+{
+    let _turn = take_turn();
+    let (_temp, adapter) = adapter_with_both_lanes()?;
+    let searcher = adapter.open(&repo(), &revision(), exact_generation())?;
+    let query = unit_vector(5);
+
+    let held = {
+        let _hold = DenseLaneHold::arm();
+        searcher.search(
+            &query,
+            TOP_K,
+            &RequestBudgetV1::for_duration(Duration::from_millis(25)),
+        )
+    };
+    expect_interruption(
+        &held,
+        REQUEST_DEADLINE_EXCEEDED_CODE,
+        "semantic:exact",
+        "the deadline-bound held search",
+    )?;
+    let after_deadline = tallies(&adapter)?;
+    if after_deadline.exact_queries != 0 || after_deadline.exact_interruptions != 1 {
+        return Err(format!(
+            "a deadline inside the pending lane issues no query and counts once: {after_deadline:?}"
+        )
+        .into());
+    }
+
+    expect_served(
+        searcher.search(&query, TOP_K, &RequestBudgetV1::unbounded()),
+        5,
+        "the search after the deadline",
+    )?;
+    let after_serve = tallies(&adapter)?;
+    if after_serve.exact_queries != 1 || after_serve.exact_interruptions != 1 {
+        return Err(format!(
+            "the handle must serve after the deadline without another interruption: {after_serve:?}"
+        )
+        .into());
+    }
+    Ok(())
+}

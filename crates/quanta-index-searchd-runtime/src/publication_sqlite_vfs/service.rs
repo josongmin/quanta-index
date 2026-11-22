@@ -39,12 +39,6 @@ impl ServiceFundedCatalogIo {
         })
     }
 
-    /// Complete queued native FD retirements without closing this reusable scope.
-    #[cfg(feature = "legacy-tantivy")]
-    pub(crate) fn drain_retirements(&self) -> Result<(), CoreError> {
-        self.vfs.drain_retirements()
-    }
-
     /// Require native scope retirement before the caller releases this owner.
     /// A failed check leaves the same service and held parent available for retry.
     pub fn retire_checked(&self) -> Result<(), CoreError> {

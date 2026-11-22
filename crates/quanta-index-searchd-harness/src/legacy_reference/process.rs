@@ -89,6 +89,11 @@ impl SearchdBinaryProcess {
         )?)
     }
 
+    /// Identify the live, unreaped child for process observations.
+    pub fn process_id(&self) -> u32 {
+        self.child.id()
+    }
+
     #[cfg(target_os = "linux")]
     pub fn observe_peak_rss(&self, _client: &QuantaIndex) -> anyhow::Result<u64> {
         self.peak_rss_bytes()
@@ -101,9 +106,7 @@ impl SearchdBinaryProcess {
 
     #[cfg(target_os = "linux")]
     pub fn peak_rss_bytes(&self) -> anyhow::Result<u64> {
-        // We still own the unreaped Child, so its PID cannot refer to a successor.
-        let status = std::fs::read_to_string(format!("/proc/{}/status", self.child.id()))?;
-        parse_peak_rss_bytes(&status)
+        crate::artifact::linux_child_peak_rss_bytes(&self.child)
     }
 
     pub fn stop(mut self) -> Result<(), Box<dyn Error>> {
@@ -173,28 +176,6 @@ pub fn peak_rss_from_darwin_metrics(snapshot: &MetricsSnapshotV1) -> anyhow::Res
         anyhow::bail!("daemon resident-bytes gauge is not one exact positive byte count");
     }
     Ok(format!("{value:.0}").parse()?)
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn parse_peak_rss_bytes(status: &str) -> anyhow::Result<u64> {
-    let mut high_water = status
-        .lines()
-        .filter_map(|line| line.strip_prefix("VmHWM:"));
-    let field = high_water
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("daemon process status has no VmHWM field"))?;
-    let mut parts = field.split_whitespace();
-    let (Some(value), Some("kB"), None) = (parts.next(), parts.next(), parts.next()) else {
-        anyhow::bail!("daemon VmHWM has invalid units or size");
-    };
-    if high_water.next().is_some() {
-        anyhow::bail!("daemon process status has duplicate VmHWM fields");
-    }
-    value
-        .parse::<u64>()?
-        .checked_mul(1024)
-        .filter(|bytes| *bytes > 0)
-        .ok_or_else(|| anyhow::anyhow!("daemon VmHWM is zero or overflows bytes"))
 }
 
 impl Drop for SearchdBinaryProcess {
@@ -445,8 +426,8 @@ mod tests {
 
     use super::super::apply_searchd_env;
     use super::{
-        parse_peak_rss_bytes, remove_socket_files, socket_accepts_child, socket_accepts_connection,
-        terminate_child, wait_for_sockets,
+        remove_socket_files, socket_accepts_child, socket_accepts_connection, terminate_child,
+        wait_for_sockets,
     };
 
     #[cfg(target_os = "linux")]
@@ -469,8 +450,10 @@ mod tests {
 
     #[test]
     fn peak_rss_uses_the_kernel_high_water_mark() {
+        use crate::artifact::parse_linux_peak_rss_bytes;
+
         assert_eq!(
-            parse_peak_rss_bytes("VmHWM:\t 17 kB\nVmRSS:\t 8 kB\n").ok(),
+            parse_linux_peak_rss_bytes("VmHWM:\t 17 kB\nVmRSS:\t 8 kB\n").ok(),
             Some(17_408),
         );
         for status in [
@@ -481,7 +464,7 @@ mod tests {
             "VmHWM: 8 kB\nVmHWM: 9 kB\n",
             "VmHWM: 18446744073709551615 kB\n",
         ] {
-            assert!(parse_peak_rss_bytes(status).is_err(), "{status}");
+            assert!(parse_linux_peak_rss_bytes(status).is_err(), "{status}");
         }
     }
 

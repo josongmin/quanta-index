@@ -6,6 +6,16 @@ use quanta_index_searchd_runtime::native::{
     NativeReadSessionConfig, NativeRetentionConfig, NativeRetentionScope,
 };
 
+#[path = "read_sessions/dsl.rs"]
+mod dsl;
+#[path = "read_sessions/excluded_text.rs"]
+mod excluded_text;
+#[path = "read_sessions/file_body_quarantine.rs"]
+mod file_body_quarantine;
+#[path = "read_sessions/long_state_root.rs"]
+mod long_state_root;
+#[path = "read_sessions/member_artifact_quarantine.rs"]
+mod member_artifact_quarantine;
 #[path = "read_sessions/query.rs"]
 mod query;
 
@@ -22,6 +32,62 @@ pub(super) fn read_session_service(
     root: &std::path::Path,
     socket: &std::path::Path,
     lease: Duration,
+) -> TestResult<NativeIndexService> {
+    let retention = NativeRetentionConfig {
+        scopes: vec![NativeRetentionScope {
+            workspace: workspace(),
+            epoch: 1,
+        }],
+        sequence_window: 1,
+        page_limit: 8,
+        custody_page_limit: 8,
+        interval: Duration::from_millis(20),
+        round_timeout: Duration::from_secs(2),
+        work_limits: work_limits(),
+        head_probe_every: 2,
+    };
+    read_session_service_with_retention(root, socket, lease, Some(retention))
+}
+
+fn read_session_service_with_retention(
+    root: &std::path::Path,
+    socket: &std::path::Path,
+    lease: Duration,
+    retention: Option<NativeRetentionConfig>,
+) -> TestResult<NativeIndexService> {
+    read_session_service_with_retention_and_work_limits(
+        root,
+        socket,
+        lease,
+        retention,
+        work_limits(),
+    )
+}
+
+fn read_session_service_with_retention_and_work_limits(
+    root: &std::path::Path,
+    socket: &std::path::Path,
+    lease: Duration,
+    retention: Option<NativeRetentionConfig>,
+    limits: WorkLimits,
+) -> TestResult<NativeIndexService> {
+    read_session_service_with_reclaim(
+        root,
+        socket,
+        lease,
+        retention,
+        limits,
+        test_reclaim_config(),
+    )
+}
+
+fn read_session_service_with_reclaim(
+    root: &std::path::Path,
+    socket: &std::path::Path,
+    lease: Duration,
+    retention: Option<NativeRetentionConfig>,
+    limits: WorkLimits,
+    reclaim: NativeReclaimConfig,
 ) -> TestResult<NativeIndexService> {
     let resources = read_session_resources(lease);
     let recipe = TextRecipe::new(Digest([31; 32]));
@@ -46,27 +112,14 @@ pub(super) fn read_session_service(
         read_need,
         NativeTextReader::new(recipe, Bm25Policy { k1: 1.2, b: 0.75 }, read_need)?,
     )?;
-    let retention = NativeRetentionConfig {
-        scopes: vec![NativeRetentionScope {
-            workspace: workspace(),
-            epoch: 1,
-        }],
-        sequence_window: 1,
-        page_limit: 8,
-        custody_page_limit: 8,
-        interval: Duration::from_millis(20),
-        round_timeout: Duration::from_secs(2),
-        work_limits: work_limits(),
-        head_probe_every: 2,
-    };
     let service = NativeIndexService::bind_with_retention(
         root,
         socket,
-        work_limits(),
+        limits,
         capabilities,
         &resources,
-        Some(test_reclaim_config()),
-        Some(retention),
+        Some(reclaim),
+        retention,
     )?;
     service.configure_read_sessions(NativeReadSessionConfig::default())?;
     Ok(service)
@@ -114,8 +167,7 @@ fn publish_text_owner<P: AsRef<std::path::Path>>(
     quanta_index_contract::index::ViewRef,
     quanta_index_contract::index::ObjectRef,
 )> {
-    let (request, source) =
-        prepare_text_owner(client, expected, sequence, stable_id, path, text)?;
+    let (request, source) = prepare_text_owner(client, expected, sequence, stable_id, path, text)?;
     Ok((published(&client.submit(request, &budget())?)?, source))
 }
 
@@ -141,35 +193,99 @@ fn prepare_text_owner_in_ingress<P: AsRef<std::path::Path>>(
     path: &str,
     text: &str,
 ) -> TestResult<(UpdateRequest, quanta_index_contract::index::ObjectRef)> {
-    let sequence = ingress.operation.sequence;
-    let staged = client.stage_sources(
+    prepare_text_owner_in_repository(client, expected, ingress, stable_id, path, text, None)
+}
+
+fn prepare_text_owner_in_repository<P: AsRef<std::path::Path>>(
+    client: &NativeUdsClient<P>,
+    expected: quanta_index_contract::index::ViewRef,
+    ingress: quanta_index_contract::index::IngressRef,
+    stable_id: u8,
+    path: &str,
+    text: &str,
+    repository: Option<quanta_index_contract::RepoId>,
+) -> TestResult<(UpdateRequest, quanta_index_contract::index::ObjectRef)> {
+    let source = stage_text_source_in_ingress(client, ingress, path, text, repository)?;
+    let request = prepare_text_owner_mutation_in_ingress(
+        client,
+        expected,
         ingress,
-        vec![SourceInput {
-            path: path.into(),
-            bytes: text.as_bytes().to_vec(),
-            text: SourceTextAdmission::Utf8 {
-                policy: Digest([31; 32]),
-            },
-            language: None,
-        }],
-        &budget(),
+        stable_id,
+        None,
+        Some(source),
     )?;
+    Ok((request, source))
+}
+
+fn stage_text_source_in_ingress<P: AsRef<std::path::Path>>(
+    client: &NativeUdsClient<P>,
+    ingress: quanta_index_contract::index::IngressRef,
+    path: &str,
+    text: &str,
+    repository: Option<quanta_index_contract::RepoId>,
+) -> TestResult<ObjectRef> {
+    let inputs = vec![SourceInput {
+        path: path.into(),
+        bytes: text.as_bytes().to_vec(),
+        text: SourceTextAdmission::Utf8 {
+            policy: Digest([31; 32]),
+        },
+        language: None,
+    }];
+    let staged = if let Some(repository) = repository {
+        let NativeIndexResponse::StagedSources(staged) = client.request(
+            NativeIndexRequest::StageRepositorySources {
+                ingress,
+                repository,
+                inputs,
+            },
+            &budget(),
+        )?
+        else {
+            return Err("read-session repository fixture did not stage sources".into());
+        };
+        staged
+    } else {
+        client.stage_sources(ingress, inputs, &budget())?
+    };
     let [source] = staged.as_slice() else {
         return Err("read-session source fixture did not stage one source".into());
     };
-    let prior = client.read_view(ViewSelection::Exact(expected), &budget())?;
-    let owners = client.stage_mutations(
+    Ok(*source)
+}
+
+fn prepare_text_owner_mutation_in_ingress<P: AsRef<std::path::Path>>(
+    client: &NativeUdsClient<P>,
+    expected: quanta_index_contract::index::ViewRef,
+    ingress: quanta_index_contract::index::IngressRef,
+    stable_id: u8,
+    expected_source: Option<ObjectRef>,
+    next_source: Option<ObjectRef>,
+) -> TestResult<UpdateRequest> {
+    prepare_text_mutations_in_ingress(
+        client,
+        expected,
         ingress,
         [OwnerMutation {
             owner: OwnerKey {
-                producer: operation(sequence).producer,
+                producer: ingress.operation.producer,
                 stable_id: StableOwnerId([stable_id; 16]),
             },
-            expected: None,
-            next: Some(*source),
+            expected: expected_source,
+            next: next_source,
         }],
-        &budget(),
-    )?;
+    )
+}
+
+fn prepare_text_mutations_in_ingress<P: AsRef<std::path::Path>>(
+    client: &NativeUdsClient<P>,
+    expected: quanta_index_contract::index::ViewRef,
+    ingress: IngressRef,
+    mutations: impl IntoIterator<Item = OwnerMutation>,
+) -> TestResult<UpdateRequest> {
+    let sequence = ingress.operation.sequence;
+    let prior = client.read_view(ViewSelection::Exact(expected), &budget())?;
+    let owners = client.stage_mutations(ingress, mutations, &budget())?;
     let event_sequence = sequence
         .checked_sub(1)
         .ok_or("read-session event sequence underflow")?;
@@ -179,23 +295,20 @@ fn prepare_text_owner_in_ingress<P: AsRef<std::path::Path>>(
         events: Vec::new(),
     };
     transition.events.push(SourceEvent {
-        producer: operation(sequence).producer,
-        stream: operation(sequence).stream,
-        stream_epoch: 1,
+        producer: ingress.operation.producer,
+        stream: ingress.operation.stream,
+        stream_epoch: ingress.operation.stream_epoch,
         predecessor: event_sequence
             .checked_sub(1)
             .ok_or("read-session event predecessor underflow")?,
         sequence: event_sequence,
         payload: transition.owner_digest()?,
     });
-    Ok((
-        UpdateRequest {
-            operation: operation(sequence),
-            expected_view: expected,
-            kind: UpdateKind::SourceAdvance(transition),
-        },
-        *source,
-    ))
+    Ok(UpdateRequest {
+        operation: ingress.operation,
+        expected_view: expected,
+        kind: UpdateKind::SourceAdvance(transition),
+    })
 }
 
 fn view_pin_count(root: &std::path::Path, sequence: u64) -> TestResult<i64> {

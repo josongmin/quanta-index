@@ -108,11 +108,6 @@ impl LegacySearchdCommand<'_> {
         self
     }
 
-    pub fn stdin(&mut self, stdin: impl Into<Stdio>) -> &mut Self {
-        let _configured = self.command.stdin(stdin);
-        self
-    }
-
     pub fn stdout(&mut self, stdout: impl Into<Stdio>) -> &mut Self {
         let _configured = self.command.stdout(stdout);
         self
@@ -307,7 +302,9 @@ fn sealed_executable(path: &Path, sha256: &str) -> Result<(FileIdentity, File), 
         | SealFlag::F_SEAL_GROW
         | SealFlag::F_SEAL_SHRINK
         | SealFlag::F_SEAL_SEAL;
-    fcntl(&sealed, FcntlArg::F_ADD_SEALS(required))?;
+    if fcntl(&sealed, FcntlArg::F_ADD_SEALS(required))? != 0 {
+        return Err("Legacy executable sealing returned an unexpected status".into());
+    }
     verify_sealed(&sealed, identity.length, required)?;
     Ok((identity, sealed))
 }
@@ -381,6 +378,12 @@ impl LegacySearchdBinary {
         &self.sha256
     }
 
+    /// Filesystem device of the source executable at admission.
+    #[must_use]
+    pub fn source_device(&self) -> u64 {
+        self.identity.device
+    }
+
     pub fn verify(&self) -> Result<(), Box<dyn Error>> {
         let (identity, sha256) = inspect(&self.path)?;
         if identity != self.identity || sha256 != self.sha256 {
@@ -442,6 +445,26 @@ impl LegacySearchdBinary {
         Ok(LegacySearchdCommand {
             binary: self,
             command: Command::new(self.launch_path()),
+        })
+    }
+
+    /// Put the same pinned executable under a one-block file limit.
+    /// Ignoring SIGXFSZ lets the writer receive EFBIG from the kernel.
+    pub fn command_with_one_block_file_limit(
+        &self,
+    ) -> Result<LegacySearchdCommand<'_>, Box<dyn Error>> {
+        self.verify_launch_custody()?;
+        let mut command = Command::new("/bin/sh");
+        let _configured = command
+            .args([
+                "-c",
+                r#"trap '' XFSZ || exit 96; ulimit -f 1 || exit 97; exec "$@""#,
+                "offline-short-write",
+            ])
+            .arg(self.launch_path());
+        Ok(LegacySearchdCommand {
+            binary: self,
+            command,
         })
     }
 

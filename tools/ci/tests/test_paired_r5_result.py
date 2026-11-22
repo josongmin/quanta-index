@@ -16,7 +16,6 @@ import pytest
 from tools.ci import binary_custody
 from tools.ci import paired_r5_result as RUNNER
 from tools.ci.paired_r5_result import (
-    CALLER_FEATURES,
     CASES,
     _require_exact_resolution,
     _verify_resolution_files,
@@ -46,14 +45,19 @@ def test_paired_runner_imports_its_owner_from_foreign_cwd(tmp_path: Path) -> Non
     assert "--qbc-lane" in result.stdout
 
 
-def _rows(outcome: str = "ok", name: str = "pkg::binary$selected") -> tuple[bytes, bytes]:
+SELECTED_CASE = ("caller", "pkg", "feature", "binary", "test", "selected")
+
+
+def _rows(
+    outcome: str = "ok", name: str = "pkg::binary$selected", *, kind: str = "test"
+) -> tuple[bytes, bytes]:
     inventory = {
         "test-count": 1,
         "rust-suites": {
             "pkg::binary": {
                 "package-name": "pkg",
                 "binary-name": "binary",
-                "kind": "test",
+                "kind": kind,
                 "status": "listed",
                 "testcases": {
                     "selected": {"ignored": False, "filter-match": {"status": "matches"}}
@@ -61,7 +65,7 @@ def _rows(outcome: str = "ok", name: str = "pkg::binary$selected") -> tuple[byte
             }
         },
     }
-    metadata = {"crate": "pkg", "test_binary": "binary", "kind": "test"}
+    metadata = {"crate": "pkg", "test_binary": "binary", "kind": kind}
     rows = [
         {"type": "suite", "event": "started", "test_count": 1, "nextest": metadata},
         {"type": "test", "event": "started", "name": name},
@@ -83,16 +87,19 @@ def _rows(outcome: str = "ok", name: str = "pkg::binary$selected") -> tuple[byte
 
 def test_exact_inventory_and_terminal_selected_name() -> None:
     listed, events = _rows()
-    result = validate_selected(listed, events, "pkg::binary$selected")
+    result = validate_selected(listed, events, SELECTED_CASE)
     assert result["selected"] == result["executed"] == result["passed"] == 1
     assert result["failed"] == 0 and result["passed_names"] == ["pkg::binary$selected"]
 
 
-@pytest.mark.parametrize("mutation", ["zero", "failed", "wrong-name", "missing-run", "extra-list"])
+@pytest.mark.parametrize(
+    "mutation", ["zero", "failed", "wrong-name", "missing-run", "extra-list", "wrong-kind"]
+)
 def test_runner_refuses_incomplete_or_mismatched_proof(mutation: str) -> None:
     listed, events = _rows(
         "failed" if mutation == "failed" else "ok",
         "pkg::binary$wrong" if mutation == "wrong-name" else "pkg::binary$selected",
+        kind="lib" if mutation == "wrong-kind" else "test",
     )
     if mutation == "zero":
         listed = listed.replace(b'"test-count": 1', b'"test-count": 0')
@@ -104,7 +111,7 @@ def test_runner_refuses_incomplete_or_mismatched_proof(mutation: str) -> None:
             b'"extra": {"ignored": false, "filter-match": {"status": "matches"}}, "selected": {',
         ).replace(b'"test-count": 1', b'"test-count": 2')
     with pytest.raises(ValueError):
-        validate_selected(listed, events, "pkg::binary$selected")
+        validate_selected(listed, events, SELECTED_CASE)
 
 
 def test_locator_requires_exact_immutable_custody() -> None:
@@ -197,7 +204,6 @@ def test_missing_and_duplicate_locator_are_refused(tmp_path: Path) -> None:
 
 def test_recipe_selected_caller_and_kernel_literals() -> None:
     # Fixed from Semantica quanta-runtime/Cargo.toml's target required-features.
-    assert CALLER_FEATURES == "index-sdk-ingress,retrieval-authority-contract-surface"
     assert CASES == (
         (
             "caller",
@@ -219,16 +225,30 @@ def test_recipe_selected_caller_and_kernel_literals() -> None:
 
 
 @pytest.mark.parametrize(
-    ("replacement_boundary", "expected_runs"),
-    [(None, 2), ("before-list", 0), ("after-list", 1), ("before-run", 1), ("after-run", 2)],
+    ("change", "replacement_path", "expected_runs"),
+    [
+        (boundary, path, runs)
+        for boundary, runs in (
+            ("before-list", 0), ("after-list", 1), ("before-run", 1), ("after-run", 2)
+        )
+        for path in ("built", "provided", "custody")
+    ]
+    + [
+        (None, "custody", 2),
+        ("no-witness", "custody", 2),
+        ("wrong-name", "custody", 2),
+        ("wrong-nonce", "custody", 2),
+        ("wrong-executable", "custody", 2),
+        ("missing-restart", "custody", 2),
+        ("different-restart", "custody", 2),
+    ],
 )
-@pytest.mark.parametrize("replacement_path", ["built", "provided", "custody"])
-def test_runner_checks_daemon_custody_at_each_nextest_boundary(
+def test_runner_checks_daemon_custody_and_live_witness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    replacement_boundary: str | None,
-    expected_runs: int,
+    change: str | None,
     replacement_path: str,
+    expected_runs: int,
 ) -> None:
     root, paired = tmp_path / "quanta", tmp_path / "paired"
     paths = {name: tmp_path / name for name in ("built", "provided", "custody")}
@@ -236,7 +256,7 @@ def test_runner_checks_daemon_custody_at_each_nextest_boundary(
         path.write_bytes(b"original daemon bytes")
         path.chmod(0o700)
     digest = hashlib.sha256(paths["built"].read_bytes()).hexdigest()
-    custody_command = ["verify-fixture-daemon", digest, *map(str, paths.values())]
+    real_verify = binary_custody.verify
     listed, events = _rows()
     phases: list[str] = []
     guards: list[str] = []
@@ -246,26 +266,48 @@ def test_runner_checks_daemon_custody_at_each_nextest_boundary(
         nonlocal last_source
         last_source = source
 
-    def run(command: list[str], **_kwargs):
-        if command[0] == "verify-fixture-daemon":
-            assert command == custody_command
-            boundary = (
-                "before-" + ("list" if not phases else "run")
-                if last_source == paired
-                else "after-" + phases[-1]
-            )
-            guards.append(boundary)
-            if replacement_boundary == boundary:
-                paths[replacement_path].write_bytes(b"replaced daemon bytes")
-            binary_custody.verify(command[1], [Path(path) for path in command[2:]])
-        else:
-            pytest.fail("unexpected subprocess outside binary custody")
-        return SimpleNamespace(returncode=0)
+    def verify(expected_digest, watched_paths):
+        assert expected_digest == digest and watched_paths == list(paths.values())
+        boundary = (
+            "before-" + ("list" if not phases else "run")
+            if last_source == paired
+            else "after-" + phases[-1]
+        )
+        guards.append(boundary)
+        if change == boundary:
+            paths[replacement_path].write_bytes(b"replaced daemon bytes")
+        real_verify(expected_digest, watched_paths)
 
-    def execute_phase(semantica, _case, phase, cargo, _owner, _completion, _env, lane):
+    witness = tmp_path / RUNNER.R5_WITNESS_FILE
+
+    def execute_phase(semantica, _case, phase, cargo, _owner, _completion, env, lane, *, cases):
         assert semantica == paired and lane == "fixture"
         assert cargo[:3] == ["cargo", "nextest", phase]
+        assert env.get("QUANTA_INDEX_SEARCHD_BIN") == str(paths["custody"])
         phases.append(phase)
+        if phase == "list":
+            assert RUNNER.WITNESS_DIR_ENV not in env and RUNNER.WITNESS_NONCE_ENV not in env
+            return 0
+        assert Path(env[RUNNER.WITNESS_DIR_ENV]) == tmp_path
+        nonce = env[RUNNER.WITNESS_NONCE_ENV]
+        assert nonce == env["FIXTURE_NONCE"]
+        if change != "no-witness":
+            unrelated = hashlib.sha256(b"another executable").hexdigest()
+            mutations = {
+                "wrong-name": {"test": "pkg::binary$different"},
+                "wrong-nonce": {"nonce": ("0" if nonce[0] != "0" else "1") + nonce[1:]},
+                "wrong-executable": {"executables": [unrelated, unrelated]},
+                "missing-restart": {"executables": [digest]},
+                "different-restart": {"executables": [digest, unrelated]},
+            }
+            observation = {
+                "schema_version": 1,
+                "test": "pkg::binary$selected",
+                "nonce": nonce,
+                "executables": [digest, digest],
+                **mutations.get(change, {}),
+            }
+            witness.write_text(json.dumps(observation))
         return 0
 
     capture = SimpleNamespace(
@@ -277,8 +319,9 @@ def test_runner_checks_daemon_custody_at_each_nextest_boundary(
         capture.stdout = listed if phases[-1] == "list" else events
         return SimpleNamespace(**vars(capture))
 
+    monkeypatch.setenv("QUANTA_INDEX_SEARCHD_BIN", str(paths["provided"]))
     monkeypatch.setattr(RUNNER, "_frozen", frozen)
-    monkeypatch.setattr(RUNNER.subprocess, "run", run)
+    monkeypatch.setattr(binary_custody, "verify", verify)
     monkeypatch.setattr(RUNNER, "_execute_qbc_phase", execute_phase)
     monkeypatch.setattr(
         RUNNER, "read_locator", lambda *_: (b"locator", {"receipt_path": "/fixture/receipt.json"})
@@ -306,10 +349,19 @@ def test_runner_checks_daemon_custody_at_each_nextest_boundary(
                 campaign_source_snapshot_digest_v1=lambda _: "c" * 64
             )
         ),
-        custody_command,
+        digest,
+        paths,
         "fixture",
     )
-    if replacement_boundary is None:
+    witness_errors = {
+        "no-witness": (FileNotFoundError, RUNNER.R5_WITNESS_FILE),
+        "wrong-name": (ValueError, "differs from its selected execution"),
+        "wrong-nonce": (ValueError, "differs from its selected execution"),
+        "wrong-executable": (ValueError, "executed daemon differs"),
+        "missing-restart": (ValueError, "must bind 2"),
+        "different-restart": (ValueError, "must bind 2"),
+    }
+    if change is None:
         result = RUNNER._one(*arguments)
         assert (
             result["nextest"]["selected"]
@@ -318,10 +370,18 @@ def test_runner_checks_daemon_custody_at_each_nextest_boundary(
             == 1
         )
         assert guards == ["before-list", "after-list", "before-run", "after-run"]
+        assert result["executions"]["run"]["daemon_witness_sha256"] == hashlib.sha256(
+            witness.read_bytes()
+        ).hexdigest()
+        assert "daemon_witness_sha256" not in result["executions"]["list"]
+    elif change in witness_errors:
+        error, message = witness_errors[change]
+        with pytest.raises(error, match=message):
+            RUNNER._one(*arguments)
     else:
         with pytest.raises(ValueError, match="release daemon bytes changed"):
             RUNNER._one(*arguments)
-        assert guards[-1] == replacement_boundary
+        assert guards[-1] == change
     assert len(phases) == expected_runs
 
 
@@ -385,13 +445,16 @@ def test_locator_refuses_wrong_current_source_and_failed_process() -> None:
 
 
 def test_default_recipe_uses_typed_selected_runner_and_same_cargo_target_floor() -> None:
+    from tools.ci.daemon_execution_evidence import R5_PROOF, live_proof, r5_cases
+
     # Independent fixed literal from quanta-runtime/Cargo.toml's
     # index_sdk_ingress_publish_contract_test required-features, not the helper.
     required = "index-sdk-ingress,retrieval-authority-contract-surface"
-    script = (
-        Path(__file__).resolve().parents[3] / "scripts/verify-repomap-cross-repo.sh"
-    ).read_text(encoding="utf-8")
-    assert script.count(f"resolved_pair quanta-runtime {required})") == 2
+    root = Path(__file__).resolve().parents[3]
+    script = (root / "scripts/verify-repomap-cross-repo.sh").read_text(encoding="utf-8")
+    caller, _ = r5_cases(live_proof(root, R5_PROOF))
+    assert set(required.split(",")).issubset(caller[2].split(","))
+    assert 'resolved_pair "$runtime_package" "$runtime_features"' in script
     assert '--qbc-lane "$r5_lane"' in script
     assert '"$paired_python" "$quanta_root/tools/ci/paired_r5_result.py"' in script
     assert "--list" not in script
@@ -406,6 +469,7 @@ def test_paired_resolver_refuses_missing_caller_required_feature(tmp_path: Path)
             "consumer": "quanta-runtime",
             "consumer_features": ["index-sdk-ingress"],
         },
+        "kernel": {},
     }
     with pytest.raises(ValueError, match="selected caller/kernel feature authority"):
         _verify_resolution_files(tmp_path, tmp_path, resolutions)
@@ -484,6 +548,17 @@ def test_paired_lock_path_refuses_another_anchor(tmp_path: Path, lock_path: str)
 
 def test_resolution_preflight_cli_checks_nested_lock_without_runner(tmp_path: Path) -> None:
     root, paired, resolutions = _complete_resolution_fixture(tmp_path)
+    registry = root / "tools/ci/proof-authority.toml"
+    registry.parent.mkdir(parents=True)
+    fields = ("role", "package", "features", "binary", "kind", "test")
+    selections = "\n".join(
+        "[[proofs.paired_execution_cases]]\n"
+        + "\n".join(f"{key} = {json.dumps(value)}" for key, value in zip(fields, case, strict=True))
+        for case in CASES
+    )
+    registry.write_text(
+        '[[proofs]]\nid = "p11-cross-repo-cutover"\nauthority_state = "staged"\n' + selections + "\n"
+    )
     # A different root lock cannot stand in for the nested Cargo resolver's lock.
     (paired / "Cargo.lock").write_bytes(b"unrelated root lock\n")
     modules = paired / "tools/quanta-build-cli"
@@ -591,7 +666,17 @@ def test_exact_recipe_uses_qbc_owner_admission_and_completion_port(tmp_path, cas
         EXPECTED_SOURCE_ENV_V1="COMPLETION_SNAPSHOT",
     )
     control = {name: name.lower() for name in ("LOCATOR", "NONCE", "REQUEST", "SOURCE")}
-    environment = {**control, "CODEGRAPH_PERSONA": "agent"}
+    pinned_daemon = str(tmp_path / "pinned-searchd")
+    witness_environment = {
+        RUNNER.WITNESS_DIR_ENV: str(tmp_path),
+        RUNNER.WITNESS_NONCE_ENV: "b" * 32,
+    }
+    environment = {
+        **control,
+        **witness_environment,
+        "CODEGRAPH_PERSONA": "agent",
+        "QUANTA_INDEX_SEARCHD_BIN": pinned_daemon,
+    }
     reference = f"quanta-index:paired-r5:{case[0]}:{phase}"
 
     def admit(model, *, authority):
@@ -613,7 +698,9 @@ def test_exact_recipe_uses_qbc_owner_admission_and_completion_port(tmp_path, cas
         assert kwargs["compile_env_overrides_v1"] == {
             "EXPECTED_SNAPSHOT": "a" * 64,
             "CODEGRAPH_PERSONA": "agent",
+            "QUANTA_INDEX_SEARCHD_BIN": pinned_daemon,
             **({"NEXTEST_EXPERIMENTAL_LIBTEST_JSON": "1"} if phase == "run" else {}),
+            **(witness_environment if case[0] == "caller" and phase == "run" else {}),
         }
         return 17
 
@@ -671,3 +758,306 @@ def test_exact_recipe_uses_qbc_owner_admission_and_completion_port(tmp_path, cas
             tmp_path, case, phase, command, owner, completion, environment, "registered"
         )
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "quanta",
+        "semantica",
+        "lock",
+        "daemon",
+        "receipt",
+        "unsigned-index",
+        "foreign-run",
+        "mixed-snapshot",
+        "wrong-caller-kind",
+        "request",
+        "feature-set",
+        "packages",
+        "extra-locator-field",
+        "missing-daemon-observation",
+        "wrong-daemon-observation",
+        "changed-restart-observation",
+        "stale-daemon-observation",
+    ],
+)
+def test_release_replays_signed_qbc_bytes_and_source_binding(tmp_path, change):
+    from tools.ci import paired_r5_release as release
+    from tools.ci.proof_operational_result import manifest_binding
+    from tools.ci.tests.p11_test_issuer import keypair, paired_evidence, sign_statement
+    from tools.ci.tests.test_proof_operational_result import archive
+
+    proof = {"id": release.PROOF_ID, "attestation_public_key": keypair()[0]}
+    manifest = {
+        "source": {"head": "a" * 40},
+        "source_pair": {
+            "source": {"head": "b" * 40},
+            "dependency_lock": {
+                "path": "packages/analysis/quanta-v2/Cargo.lock",
+                "sha256": "1" * 64,
+            },
+        },
+        "daemon_binary": {"sha256": "2" * 64},
+        "environment": {"os": "linux", "host": {"identity_digest": "sha256:" + "3" * 64}},
+        "inputs": dict.fromkeys(("fixture", "corpus", "config", "model", "provider")),
+        "state_root_format": "v2",
+        "dependency_receipts": [],
+        "started_at": "2026-01-01T00:00:00Z",
+        "ended_at": "2026-01-01T00:01:00Z",
+    }
+    manifest["execution_result"], manifest["artifacts"] = paired_evidence(
+        tmp_path, proof, manifest, False,
+        split_snapshot=(change == "mixed-snapshot"),
+        wrong_caller_kind=(change == "wrong-caller-kind"),
+    )
+    if change == "mixed-snapshot":
+        with pytest.raises(ValueError, match="one lane and source snapshot"):
+            release.verify_release(tmp_path, proof, manifest, cases=CASES)
+        return
+    if change == "wrong-caller-kind":
+        with pytest.raises(ValueError, match="inventory differs from exact selected test"):
+            release.verify_release(tmp_path, proof, manifest, cases=CASES)
+        return
+    release.verify_release(tmp_path, proof, manifest, cases=CASES)
+    if change == "missing-daemon-observation":
+        manifest["artifacts"] = [
+            item for item in manifest["artifacts"]
+            if Path(item["source_path"]).name != RUNNER.R5_WITNESS_FILE
+        ]
+        with pytest.raises(ValueError, match="original QBC captures"):
+            release.verify_release(tmp_path, proof, manifest, cases=CASES)
+        return
+    directory = Path(manifest["execution_result"]["runs"][0]["events"]).parent
+    source = tmp_path / directory
+    index = json.loads((source / release.INDEX).read_bytes())
+    if change in ("quanta", "semantica"):
+        index["source_heads"][change] = "c" * 40
+    elif change == "lock":
+        index["resolutions"]["runtime"]["dependency_lock"]["sha256"] = "sha256:" + "0" * 64
+    elif change == "daemon":
+        index["daemon_sha256"] = "0" * 64
+    elif change in {"wrong-daemon-observation", "changed-restart-observation", "stale-daemon-observation"}:
+        witness = source / RUNNER.R5_WITNESS_FILE
+        observation = json.loads(witness.read_bytes())
+        if change == "wrong-daemon-observation":
+            observation["executables"] = ["0" * 64] * 2
+        elif change == "changed-restart-observation":
+            observation["executables"][1] = "0" * 64
+        else:
+            observation["nonce"] = "0" * 32
+        raw = json.dumps(observation).encode()
+        witness.write_bytes(raw)
+        index["cases"][0]["executions"]["run"]["daemon_witness_sha256"] = (
+            hashlib.sha256(raw).hexdigest()
+        )
+    elif change == "request":
+        index["cases"][0]["executions"]["list"]["request_env_sha256"] = "9" * 64
+    elif change == "feature-set":
+        index["resolutions"]["runtime"]["consumer_features"] = ["index-sdk-ingress"]
+    elif change == "packages":
+        index["resolutions"]["kernel"]["packages"] = []
+    elif change == "extra-locator-field":
+        path = source / "caller-list-completion.json"
+        raw = json.dumps({**json.loads(path.read_bytes()), "extra": True}).encode()
+        path.write_bytes(raw)
+        index["cases"][0]["executions"]["list"]["locator_sha256"] = hashlib.sha256(raw).hexdigest()
+    elif change == "receipt":
+        (source / "caller-run-receipt.json").write_bytes(
+            (source / "kernel-run-receipt.json").read_bytes()
+        )
+    elif change == "foreign-run":
+        manifest["execution_result"]["runs"][0]["events"] = manifest["execution_result"]["runs"][1][
+            "events"
+        ]
+    data = json.dumps(index).encode() + b"\n"
+    (source / release.INDEX).write_bytes(data)
+    if change != "unsigned-index":
+        (source / release.SIGNATURE).write_bytes(
+            sign_statement(
+                proof["attestation_public_key"],
+                proof["id"],
+                release._statement(
+                    data, manifest_binding(manifest), manifest["started_at"], manifest["ended_at"]
+                ),
+            )
+        )
+    manifest["artifacts"] = [archive(tmp_path, a["source_path"]) for a in manifest["artifacts"]]
+    with pytest.raises(
+        ValueError,
+        match="release sources|lock differs|completion bytes|attestation|original QBC|locator differs|feature authority|dependency packages|daemon witness|executed daemon differs",
+    ):
+        release.verify_release(tmp_path, proof, manifest, cases=CASES)
+
+
+@pytest.mark.parametrize("variant", ["same", "alias", "distinct", "unavailable"])
+def test_qbc_children_do_not_inherit_the_producer_signing_agent(tmp_path, monkeypatch, variant):
+    import socket
+
+    signer = str(tmp_path / "s")
+    ordinary = str(tmp_path / "a")
+    monkeypatch.chdir(tmp_path)
+    with socket.socket(socket.AF_UNIX) as signing_agent:
+        signing_agent.bind("s")
+    if variant == "same":
+        ordinary = signer
+    elif variant == "alias":
+        Path(ordinary).symlink_to(signer)
+    elif variant == "distinct":
+        with socket.socket(socket.AF_UNIX) as ordinary_agent:
+            ordinary_agent.bind("a")
+    monkeypatch.setenv(RUNNER.SOCKET_ENV, signer)
+    monkeypatch.setenv("SSH_AUTH_SOCK", ordinary)
+    monkeypatch.setenv(RUNNER.WITNESS_DIR_ENV, str(tmp_path / "old-witness"))
+    monkeypatch.setenv(RUNNER.WITNESS_NONCE_ENV, "b" * 32)
+
+    def run(socket):
+        assert socket == signer
+        assert RUNNER.SOCKET_ENV not in os.environ
+        assert RUNNER.WITNESS_DIR_ENV not in os.environ
+        assert RUNNER.WITNESS_NONCE_ENV not in os.environ
+        assert os.environ.get("SSH_AUTH_SOCK") == (ordinary if variant == "distinct" else None)
+        return 0
+
+    monkeypatch.setattr(RUNNER, "_main", run)
+    assert RUNNER.main() == 0
+    assert os.environ[RUNNER.SOCKET_ENV] == signer
+    assert os.environ["SSH_AUTH_SOCK"] == ordinary
+    assert os.environ[RUNNER.WITNESS_DIR_ENV] == str(tmp_path / "old-witness")
+    assert os.environ[RUNNER.WITNESS_NONCE_ENV] == "b" * 32
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        None, "quanta", "semantica", "built", "provided", "custody", "kernel",
+        "witness", "missing-witness",
+    ],
+)
+def test_staged_runner_rechecks_witness_and_custody_before_publication(
+    tmp_path, monkeypatch, capsys, change
+):
+    root, pair, resolutions = _complete_resolution_fixture(tmp_path)
+    registry = root / "tools/ci/proof-authority.toml"
+    registry.parent.mkdir(parents=True)
+    fields = ("role", "package", "features", "binary", "kind", "test")
+    rows = [
+        "  { " + ", ".join(
+            f"{key} = {json.dumps(value)}" for key, value in zip(fields, case, strict=True)
+        ) + " }"
+        for case in CASES
+    ]
+    registry.write_text(
+        '[[proofs]]\nid = "p11-cross-repo-cutover"\nauthority_state = "staged"\n'
+        "paired_execution_cases = [\n" + ",\n".join(rows) + "\n]\n"
+    )
+    for checkout in (root, pair):
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+        subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "Fixture",
+            ],
+            check=True,
+        )
+    binaries = {key: tmp_path / key for key in ("built", "provided", "custody")}
+    for path in binaries.values():
+        path.write_bytes(b"fixed fixture daemon")
+        path.chmod(0o700)
+    digest = hashlib.sha256(b"fixed fixture daemon").hexdigest()
+    evidence = tmp_path / "result"
+    witness = evidence / RUNNER.R5_WITNESS_FILE
+    index = evidence / "paired-r5-result.json"
+    queries = []
+
+    def resolver(q, s, consumer, feature, lane):
+        assert (q, s, lane) == (root, pair, "fixture")
+        queries.append((consumer, feature))
+        result = resolutions["runtime" if consumer == "quanta-runtime" else "kernel"]
+        if len(queries) != 4:
+            return result
+        if change in binaries:
+            binaries[change].write_bytes(b"different bytes after the final resolver")
+        elif change in ("quanta", "semantica"):
+            ({"quanta": root, "semantica": pair}[change] / "late-change").touch()
+        elif change == "kernel":
+            return {**result, "consumer": "other"}
+        elif change == "witness":
+            witness.write_bytes(witness.read_bytes() + b"\n")
+        elif change == "missing-witness":
+            witness.unlink()
+        return result
+
+    def completed_case(_pair, _root, output, _source_head, _quanta_head, case,
+                       *_qbc_inputs, archive, cases):
+        assert archive is None and cases == CASES and output == evidence
+        label, package, _, binary, _, test = case
+        event = f"{package}::{binary}${test}"
+        if label == "kernel":
+            return {"event_name": event}
+        nonce = "c" * 32
+        observation = {
+            "schema_version": 1,
+            "test": event,
+            "nonce": nonce,
+            "executables": [digest, digest],
+        }
+        raw = json.dumps(observation).encode()
+        witness.write_bytes(raw)
+        return {
+            "event_name": event,
+            "executions": {
+                "run": {"nonce": nonce, "daemon_witness_sha256": hashlib.sha256(raw).hexdigest()}
+            },
+        }
+
+    monkeypatch.delenv(RUNNER.SOCKET_ENV, raising=False)
+    monkeypatch.setattr(sys, "argv", [
+        "paired_r5_result.py",
+        "--quanta-root", str(root),
+        "--semantica-root", str(pair),
+        "--quanta-head", RUNNER._head(root),
+        "--semantica-head", RUNNER._head(pair),
+        "--evidence-root", str(evidence),
+        "--qbc-lane", "fixture",
+        "--daemon-digest", digest,
+        "--built-binary", str(binaries["built"]),
+        "--provided-binary", str(binaries["provided"]),
+        "--custody-binary", str(binaries["custody"]),
+        "--runtime-resolution", json.dumps(resolutions["runtime"]),
+        "--kernel-resolution", json.dumps(resolutions["kernel"]),
+    ])
+    monkeypatch.setattr(RUNNER, "_qbc_modules", lambda _root: (None, None, None))
+    monkeypatch.setattr(RUNNER, "_one", completed_case)
+    monkeypatch.setattr(RUNNER, "_resolved_after", resolver)
+    if change == "missing-witness":
+        with pytest.raises(FileNotFoundError, match=RUNNER.R5_WITNESS_FILE):
+            RUNNER.main()
+    elif change:
+        with pytest.raises(
+            ValueError,
+            match="source changed|daemon bytes changed|resolver identity changed|archived capture",
+        ):
+            RUNNER.main()
+    else:
+        assert RUNNER.main() == 0
+        result = json.loads(index.read_bytes())
+        assert result["qualification"] == "runner-candidate-only"
+        assert result["cases"][0]["executions"]["run"]["daemon_witness_sha256"] == (
+            hashlib.sha256(witness.read_bytes()).hexdigest()
+        )
+        assert capsys.readouterr().out == f"paired-r5-runner-candidate: {index}\n"
+    assert index.exists() == (change is None)
+    assert queries == [
+        ("quanta-runtime", "index-sdk-ingress,retrieval-authority-contract-surface"),
+        ("quanta-runtime-retrieval-kernel", "index-sdk-ingress-surface"),
+    ] * 2

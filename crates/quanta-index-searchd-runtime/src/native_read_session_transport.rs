@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+mod dsl;
+pub(super) use dsl::{NativeDslCommitValidator, NativeDslCorpusCache};
+pub(crate) use dsl::ScopedNativeDslPage;
 mod history;
 pub(crate) use history::ScopedNativeHistoryPage;
 mod hybrid;
@@ -27,7 +30,7 @@ use quanta_index_core::{
 use quanta_index_ipc::DispatchContextV1;
 
 use crate::{
-    native::{NativeDispatcher, ScopedNativeTextResult, plan_native_text},
+    native::{NativeDispatcher, plan_native_projected_text, plan_native_text},
     native_reply::NativeReply,
     native_resources::{NativeClassScheduler, NativeResourceLedger},
     native_work_diagnostic::{
@@ -93,7 +96,9 @@ pub(super) fn dispatch(
         &request,
         NativeReadSessionRequest::SearchText { .. }
             | NativeReadSessionRequest::SearchTextPage { .. }
+            | NativeReadSessionRequest::SearchTextPathPageV1 { .. }
             | NativeReadSessionRequest::SearchHybridFile { .. }
+            | NativeReadSessionRequest::SearchDslV1 { .. }
             | NativeReadSessionRequest::SearchHistory { .. }
             | NativeReadSessionRequest::ReadHistoryCut { .. }
             | NativeReadSessionRequest::ReadHistoryGeneration { .. }
@@ -102,7 +107,9 @@ pub(super) fn dispatch(
         let session = match &request {
             NativeReadSessionRequest::SearchText { session, .. }
             | NativeReadSessionRequest::SearchTextPage { session, .. }
+            | NativeReadSessionRequest::SearchTextPathPageV1 { session, .. }
             | NativeReadSessionRequest::SearchHybridFile { session, .. }
+            | NativeReadSessionRequest::SearchDslV1 { session, .. }
             | NativeReadSessionRequest::SearchHistory { session, .. }
             | NativeReadSessionRequest::ReadHistoryCut { session, .. }
             | NativeReadSessionRequest::ReadHistoryGeneration { session, .. }
@@ -202,8 +209,7 @@ pub(super) fn dispatch(
                         instance, query, ..
                     } => search(
                         dispatcher, ticket, attempt, instance, &query, &mut work, &timer, control,
-                    )
-                    .map(NativeReply::Text),
+                    ),
                     NativeReadSessionRequest::SearchTextPage {
                         instance,
                         query,
@@ -214,6 +220,24 @@ pub(super) fn dispatch(
                         &timer, control,
                     )
                     .map(NativeReply::TextPage),
+                    NativeReadSessionRequest::SearchTextPathPageV1 { instance, query, after, .. } => {
+                        page::search_paths(
+                            dispatcher, ticket, attempt, session, instance, &query, after, &mut work,
+                            &timer, control,
+                        ).map(NativeReply::TextPathPage)
+                    }
+                    NativeReadSessionRequest::SearchDslV1 { query, .. } => {
+                        drop(control);
+                        let need = quanta_index_core::index::effort::ResourceNeed {
+                            provider_units: 0,
+                            ..dispatcher.interactive_need
+                        };
+                        timer.mark(ReadFailureStage::InteractiveAdmission);
+                        let reservation = dispatcher.interactive_scheduler
+                            .acquire_interactive_for_request(need, &work)?;
+                        work.bind_memory_scope(reservation.memory_scope());
+                        dsl::search(dispatcher, ticket, attempt, session, &query, &mut work, &timer)
+                    }
                     NativeReadSessionRequest::SearchHistory {
                         instance,
                         query,
@@ -363,7 +387,9 @@ pub(super) fn dispatch(
             | NativeReadSessionRequest::ReadHistoryGeneration { .. }
             | NativeReadSessionRequest::SearchText { .. }
             | NativeReadSessionRequest::SearchTextPage { .. }
+            | NativeReadSessionRequest::SearchTextPathPageV1 { .. }
             | NativeReadSessionRequest::SearchHybridFile { .. }
+            | NativeReadSessionRequest::SearchDslV1 { .. }
             | NativeReadSessionRequest::SearchHistory { .. } => {
                 return Err(IndexError::BackendViolation(
                     "retained text request reached control reply".into(),
@@ -393,13 +419,14 @@ fn search(
     work: &mut WorkBudget,
     timer: &RetainedSearchTimer,
     control: ReservationGuard<NativeClassScheduler>,
-) -> Result<ScopedNativeTextResult, IndexError> {
+) -> Result<NativeReply, IndexError> {
     work.bind_memory_scope(control.memory_scope());
     timer.mark(ReadFailureStage::QueryPreparation);
-    let planned = plan_native_text(query, |bytes, lifetime| {
+    let planned = plan_native_projected_text(query, |bytes, lifetime| {
         work.reserve_memory(bytes, lifetime)
     })?;
     let limit = planned.result_limit()?;
+    let path_projection = planned.plan.filters.surface == quanta_index_lexical::symbol::ResultSurface::Path;
     execute_text(
         dispatcher,
         ticket,
@@ -410,9 +437,14 @@ fn search(
         timer,
         control,
         |outcome, work| {
-            crate::native_text_result::convert(outcome, instance, limit, |bytes, lifetime| {
-                work.reserve_memory(bytes, lifetime)
-            })
+            let reserve = |bytes, lifetime| work.reserve_memory(bytes, lifetime);
+            if path_projection {
+                crate::native_text_result::convert_paths(outcome, instance, limit, false, reserve)
+                    .map(NativeReply::TextPaths)
+            } else {
+                crate::native_text_result::convert(outcome, instance, limit, reserve)
+                    .map(NativeReply::Text)
+            }
         },
     )
 }

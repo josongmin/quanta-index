@@ -85,8 +85,43 @@ fn index_error(error: &CoreError) -> IndexError {
         }
     ) {
         IndexError::ResourceLimited
+    } else if reader_path_corruption(error) {
+        IndexError::CorruptObject(format!(
+            "object path is not a retained regular file: {error}"
+        ))
     } else {
         IndexError::Storage(format!("native object read I/O: {error}"))
+    }
+}
+
+fn reader_path_corruption(error: &CoreError) -> bool {
+    match error {
+        CoreError::NotFound(_) => true,
+        CoreError::StorageIo {
+            raw_os_error: Some(errno),
+            ..
+        } => [
+            rustix::io::Errno::NOENT,
+            rustix::io::Errno::NOTDIR,
+            rustix::io::Errno::LOOP,
+        ]
+        .iter()
+        .any(|expected| *errno == expected.raw_os_error()),
+        CoreError::InvalidContract(message) => [
+            "anchored entry is not a regular file",
+            "native reader pathname absent",
+            "native reader inode absent from sealed authority",
+            "native pin witness and anchored path differ",
+            "native pin inode absent from sealed authority",
+            "native open inode/width changed",
+        ]
+        .iter()
+        .any(|reason| message.contains(reason)),
+        CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }
+        | CoreError::Typed { .. } => false,
     }
 }
 
@@ -136,8 +171,20 @@ impl ObjectReadIoPort for NativeObjectReadIo {
             .custom_flags(nofollow)
             .open(path)
             .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    IndexError::CorruptObject("referenced object is absent".into())
+                if matches!(
+                    error.raw_os_error(),
+                    Some(errno)
+                        if [
+                            rustix::io::Errno::NOENT,
+                            rustix::io::Errno::NOTDIR,
+                            rustix::io::Errno::LOOP,
+                        ]
+                        .iter()
+                        .any(|expected| errno == expected.raw_os_error())
+                ) {
+                    IndexError::CorruptObject(format!(
+                        "referenced object is absent or not a regular file: {error}"
+                    ))
                 } else {
                     IndexError::Storage(format!("open admitted object reader: {error}"))
                 }
@@ -386,6 +433,32 @@ mod tests {
         require(
             capacity.snapshot()?.used_bytes == baseline.used_bytes,
             "reader close released a still-linked object",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn missing_and_symlink_object_paths_are_corruption_not_storage() -> TestResult {
+        let (directory, path, _capacity, common) = fixture()?;
+        let io = NativeObjectReadIo::new(common);
+        let outside = directory.path().join("outside-object");
+        fs::write(&outside, b"untrusted-target")?;
+        fs::remove_file(&path)?;
+        std::os::unix::fs::symlink(&outside, &path)?;
+        require(
+            matches!(
+                io.open(&path, &mut budget()?),
+                Err(IndexError::CorruptObject(_))
+            ),
+            "symlink object path escaped the typed corruption boundary",
+        )?;
+        fs::remove_file(&path)?;
+        require(
+            matches!(
+                io.open(&path, &mut budget()?),
+                Err(IndexError::CorruptObject(_))
+            ),
+            "missing object path escaped the typed corruption boundary",
         )?;
         Ok(())
     }

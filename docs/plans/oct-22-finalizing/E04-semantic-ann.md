@@ -54,80 +54,27 @@ mask/delete/replacement는 top-k/refill 전에 적용한다.
 
 ## Implemented source contract — reuse, no new ticket
 
-Core `SearchablePreparation`, Kernel의 actual `prepare_searchable` caller,
-Semantic directory/materialization은 기존 source 경로다.
-실제 선언은 `crates/quanta-index-core/src/index/searchable.rs`,
-`crates/quanta-index-kernel/src/update.rs`,
-`crates/quanta-index-semantic/src/native/embedding/ann_directory.rs`에 있다.
-이 문서의 C1/C2·metadata/COW·ResidentStage 절단을 미구현 TODO로 재발급하지 않는다.
-현재 binary/source가 달라지면 해당 영향 본문만 다시 검증한다.
-
-- 기존 root/default/non-ANN의 scalar path는 원 wire·children·identity를 유지한다.
-  provisional root는 read, pin, Catalog 게시 권한을 갖지 않는다.
-- ordinary ANN에서 directory와 CoverageBinding은 child-first 준비·설치를
-  공유한다. actual caller는 반환 길이·ordinal·순서·identity를 확인한다.
-  Source/Projection/reconfigure caller도 같은 계약을 소비한다.
-- `stage_work`의 설치된 artifact frontier, same-operation artifact reuse,
-  owner metadata와 owners/missing original-base, old/current roots를 보존한다.
-  prepared result는 원 payload/wire allocation lease와 attempt identity를 소유한다.
-- ResidentStage는 provisional ref에만 stage-aware canonical object/map 읽기를
-  빌려준다. 기존 stored-wire decoder, radix lookup/scan/batch lookup 및
-  selected member/recipe/children validator를 사용한다.
-- non-seal의 실제 delta는 같은 준비 범위에서 descriptor·coverage와 연결한다.
-  seal, projected reverse-map, retirement unlink처럼 먼저 읽거나 써야 하는 분기는
-  원 canonical stage를 첫 실제 write 전에 flush한다.
-- install 전의 failure/cancel/encoding/funding 거절은 새 root나 성공 prefix를
-  게시하지 않는다. partial physical install의 비용·reclaim은 원 attempt custody다.
-  token drop은 I/O를 수행하지 않는다.
-- selected backend의 실패를 다른 engine으로 재시도하지 않는다.
-  원 grant·deadline·cancel·error priority, commit_transition의 Catalog CAS,
-  physical base·old pin·delete/ABA fencing을 유지한다.
-
-설치 그룹 감소는 해당 source와 실제 분기의 reserve/confirm 계수로 판정한다.
-이는 단일 COMMIT, wall-time 단축, 현재 자체 ANN 제품 PASS를 뜻하지 않는다. 원 설치 그룹·sync 측정과
-source별 테스트 결과는 [VALIDATION](VALIDATION.md#e04-native-keyword-sequence-20261025)
-및 위 Git preimage에서 확인한다.
+Core SearchablePreparation, Kernel caller, Semantic directory와 Storage의
+준비·설치 계약은 [구현 ADR](../../adr/NOV-07-001-native-index-execution-and-custody.md#prepared-searchable-installation)에 통합했다.
+기존 C1/C2·metadata/COW·ResidentStage를 미구현 작업으로 발급하지 않는다.
+현재 제품·성능 판정은 NC-B/NC-F와 아래 원4K gate를 따른다.
 
 <a id="non-seal-delta-and-coverage-installation-contract"></a>
 ### Non-seal delta and coverage installation contract
 
-기존 ordinary non-seal 구현은 ANN delta COW와 searchable
-descriptor/coverage를 같은 원 attempt에서 결합한다.
-새 delta bytes를 설치 전 읽지 않는 경로에만 적용한다.
-`ObjectMapBatchPort::prepare_one_map`의 consuming token은 backend,
-ResidentStage, prepared root, AttemptRef와 allocation grant를 소유한다.
-준비 단계는 original base를 검사하고 설치 없이 COW DATA를 계산한다.
-provisional token은 child/coverage encoding 입력이며 publish authority가 아니다.
-
-소비 시 같은 attempt·sink scope와 coverage-base precondition을
-physical I/O 전에 재검사한다. 기존 child-first installer의 reserve →
-physical sync → confirm, 반환 ordinal/reference 검증, 최종 Catalog CAS를 유지한다.
-이 non-seal 결합은 원 최대 2 short-key roots/2 opaque DATA를 유지한다.
-독립 separate-sequence oracle는 canonical bytes/identity/child closure/선택 결과,
-logical usage·peak admission과 실제 reserve/confirm 계수를 대조한다.
-잘못된 attempt·base·반환 순서와 funding/confirm/부분 실패·재오픈을 검사한다.
-취소·drop은 새 storage intent를 만들지 않으며 partial install은
-원 attempt 회수 경로에 남긴다. seal/readback 또는 backend 부재는
-별도 원 경로를 사용하며 selected backend 오류를 fallback으로 숨기지 않는다.
-[원 구현·소스 결과](VALIDATION.md#e04-native-sync-mutation-classes-20261024);
-정확한 옛 코드 절단은 위 Git preimage의 같은 heading으로 복구한다.
+[같은 attempt의 delta·descriptor·coverage 설치 계약](../../adr/NOV-07-001-native-index-execution-and-custody.md#prepared-searchable-installation)을 재사용한다.
+2 DATA/2 short-key roots, original-base·sink·attempt 재검사와 독립
+separate-sequence oracle를 유지한다. 당시 실행은
+[원 source 기록](VALIDATION.md#e04-native-sync-mutation-classes-20261024)에 귀속한다.
 
 <a id="deferred-owner-install-contract"></a>
 ### Deferred owner install contract — historical source boundary
 
-기존 `FileObjectStore` ResidentStage와 canonical `ObjectMapBatchPort`는
-same-attempt prepared owner scope를 사용한다. 초기 artifact stage는
-설치된 상태로 남고 metadata DATA·owners/missing base edit는 provisional이다.
-stage-aware read만 임시 참조를 소비한다. 일반 backend에 설치된 root인 것처럼
-넘기지 않는다. 원 bounded packet은 최대 4 DATA/4 independent roots이고
-실제 walker는 ≤256 objects/64 MiB split를 유지한다.
-원 base 조건과 child→parent reachability를 첫 durable reserve 전에 확인한다.
-prepared/transferred/installed를 구분하고 CAS 이전에 가짜 완료를 내지 않는다.
-
-이 절의 당시 focused 139/139 및 후속 157/157, 4K 실패·host 차단은
+[ResidentStage의 준비·이전·설치 구분과 4 DATA/4 roots 계약](../../adr/NOV-07-001-native-index-execution-and-custody.md#prepared-searchable-installation)을 재사용한다.
+당시 focused 139/139·157/157과 4K 실패·호스트 차단은
 [원 source 기록](VALIDATION.md#e04-native-keyword-sequence-20261025)에 귀속한다.
-후행 5c6d0f8a의 원4K 통과가 역사적 실패 상태를 대체했지만
-새 자체 ANN과 성능 수용은 별개다. 구현을 다시 시작할 근거로 사용하지 않는다.
+세부 코드 절단은 문서 상단의 Git preimage와
+[복구 색인](../../ARCHIVE-INDEX.md#2026-11-17-upper-plan-and-retired-audit-consolidation)에서 회수한다.
 
 <a id="original-4k-gate"></a>
 ## Original 4K gate

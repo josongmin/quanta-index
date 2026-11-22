@@ -2,7 +2,7 @@
 
 use quanta_index_core::{
     RequestBudgetV1,
-    index::{IndexError, MemoryLease, MemoryLifetime, MemoryScope},
+    index::{MemoryLease, MemoryLifetime, MemoryScope},
 };
 use std::io::{ErrorKind, Read, Write};
 
@@ -161,7 +161,7 @@ pub fn encode_request_single_frame_admitted<T: serde::Serialize>(
         memory
             .reserve(bytes, MemoryLifetime::Retained)
             .map(Some)
-            .map_err(|error| classify_client_memory_error(bytes, error))
+            .map_err(|error| IpcError::from_client_memory_error(bytes, error))
     })
     .map(AdmittedClientRequestFrame)
 }
@@ -180,7 +180,7 @@ pub(crate) fn encode_request_multiframe_admitted_v1<T: serde::Serialize>(
         memory
             .reserve(bytes, MemoryLifetime::Retained)
             .map(Some)
-            .map_err(|error| classify_client_memory_error(bytes, error))
+            .map_err(|error| IpcError::from_client_memory_error(bytes, error))
     };
     if length <= MAX_FRAME_BODY_BYTES {
         return encode_counted_frame(envelope, Some(budget), bytes, retain)
@@ -197,14 +197,6 @@ pub(crate) fn encode_request_multiframe_admitted_v1<T: serde::Serialize>(
     frame_multiframe_request(wire, layout, Some(budget)).map(AdmittedClientRequestFrame)
 }
 
-pub(crate) fn classify_client_memory_error(bytes: u64, error: IndexError) -> IpcError {
-    if error == IndexError::ResourceLimited {
-        IpcError::FrameMemoryLimited { bytes }
-    } else {
-        IpcError::Io(std::io::Error::other(error))
-    }
-}
-
 /// An encoded client request whose wire bytes and charge share one lifetime.
 #[derive(Debug)]
 pub struct AdmittedClientRequestFrame(ResponseFrame);
@@ -217,10 +209,8 @@ impl std::ops::Deref for AdmittedClientRequestFrame {
     }
 }
 
-const MULTIFRAME_FIRST_HEADER_BYTES: usize =
-    FRAME_HEADER_BYTES + MULTIFRAME_FIRST_METADATA_BYTES;
-const MULTIFRAME_NEXT_HEADER_BYTES: usize =
-    FRAME_HEADER_BYTES + MULTIFRAME_NEXT_METADATA_BYTES;
+const MULTIFRAME_FIRST_HEADER_BYTES: usize = FRAME_HEADER_BYTES + MULTIFRAME_FIRST_METADATA_BYTES;
+const MULTIFRAME_NEXT_HEADER_BYTES: usize = FRAME_HEADER_BYTES + MULTIFRAME_NEXT_METADATA_BYTES;
 const MULTIFRAME_NEXT_CAPACITY: usize = MAX_FRAME_BODY_BYTES - MULTIFRAME_NEXT_METADATA_BYTES;
 
 struct MultiframeLayout {
@@ -232,15 +222,20 @@ struct MultiframeLayout {
 
 impl MultiframeLayout {
     fn new(body_bytes: usize) -> Result<Self, IpcError> {
-        let first_fragment_bytes = body_bytes
-            .min(MAX_FRAME_BODY_BYTES - MULTIFRAME_FIRST_METADATA_BYTES);
+        let first_fragment_bytes =
+            body_bytes.min(MAX_FRAME_BODY_BYTES - MULTIFRAME_FIRST_METADATA_BYTES);
         let next_frames = (body_bytes - first_fragment_bytes).div_ceil(MULTIFRAME_NEXT_CAPACITY);
         let wire_bytes = next_frames
             .checked_mul(MULTIFRAME_NEXT_HEADER_BYTES)
             .and_then(|bytes| bytes.checked_add(MULTIFRAME_FIRST_HEADER_BYTES))
             .and_then(|bytes| bytes.checked_add(body_bytes))
             .ok_or_else(|| IpcError::Encode("fragmented request wire length overflow".into()))?;
-        Ok(Self { body_bytes, first_fragment_bytes, next_frames, wire_bytes })
+        Ok(Self {
+            body_bytes,
+            first_fragment_bytes,
+            next_frames,
+            wire_bytes,
+        })
     }
 }
 
@@ -248,7 +243,10 @@ fn encode_multiframe_request(mut body: Vec<u8>) -> Result<Vec<u8>, IpcError> {
     let layout = MultiframeLayout::new(body.len())?;
     body.try_reserve_exact(layout.wire_bytes - layout.body_bytes)
         .map_err(|_| IpcError::Encode("fragmented request framing allocation refused".into()))?;
-    let frame = ResponseFrame { bytes: body, _memory: None };
+    let frame = ResponseFrame {
+        bytes: body,
+        _memory: None,
+    };
     frame_multiframe_request(frame, layout, None).map(|frame| frame.bytes)
 }
 
@@ -258,7 +256,9 @@ fn frame_multiframe_request(
     budget: Option<&RequestBudgetV1>,
 ) -> Result<ResponseFrame, IpcError> {
     if frame.bytes.len() != layout.body_bytes || frame.bytes.capacity() < layout.wire_bytes {
-        return Err(IpcError::Encode("fragmented request lost counted backing".into()));
+        return Err(IpcError::Encode(
+            "fragmented request lost counted backing".into(),
+        ));
     }
     let mut digest = sha2::Sha256::new();
     for chunk in frame.bytes.chunks(MAX_FRAME_BODY_BYTES) {
@@ -293,7 +293,10 @@ fn frame_multiframe_request(
     }
 
     response_checkpoint(budget).map_err(IpcError::Io)?;
-    wire.copy_within(0..layout.first_fragment_bytes, MULTIFRAME_FIRST_HEADER_BYTES);
+    wire.copy_within(
+        0..layout.first_fragment_bytes,
+        MULTIFRAME_FIRST_HEADER_BYTES,
+    );
     let first_len = u32::try_from(MULTIFRAME_FIRST_METADATA_BYTES + layout.first_fragment_bytes)
         .map_err(|_| IpcError::Encode("first fragment body length exceeds u32".into()))?;
     let body_len = u64::try_from(layout.body_bytes)
@@ -814,6 +817,8 @@ where
 /// Reserve server ingress bytes after validating the first frame header,
 /// before allocating its body.
 ///
+/// Guarded preflight also reserves parser-owned text/byte scalar backings
+/// before materialization. Visitor-owned collections need their own admission.
 /// The returned guard must cover the decoded request through dispatch and
 /// response; otherwise queued envelopes can exceed the ingress bound.
 pub(crate) fn decode_request_guarded<T, R, G>(
@@ -893,7 +898,7 @@ pub fn read_response_body_admitted_with_work_v1<R: Read>(
     work(body_len)?;
     let memory_lease = memory
         .reserve(body_len_u64, MemoryLifetime::Retained)
-        .map_err(|error| classify_client_memory_error(body_len_u64, error))?;
+        .map_err(|error| IpcError::from_client_memory_error(body_len_u64, error))?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(body_len)
@@ -920,14 +925,9 @@ pub fn decode_cbor_payload<T>(bytes: &[u8]) -> Result<T, IpcError>
 where
     T: serde::de::DeserializeOwned,
 {
-    let mut reader = std::io::Cursor::new(bytes);
-    let decoded =
-        ciborium::from_reader(&mut reader).map_err(|err| IpcError::Decode(err.to_string()))?;
-    if reader.position()
-        != u64::try_from(bytes.len()).map_err(|error| {
-            IpcError::Decode(format!("CBOR payload length does not fit u64: {error}"))
-        })?
-    {
+    let (decoded, consumed) = ciborium::de::from_slice_with_definite_scalars(bytes)
+        .map_err(|err| IpcError::Decode(err.to_string()))?;
+    if consumed != bytes.len() {
         return Err(IpcError::Decode(
             "CBOR payload contains trailing bytes after its value".to_string(),
         ));
@@ -1052,8 +1052,8 @@ fn decode_materialized<T: serde::de::DeserializeOwned, G>(
     reserve: &mut impl FnMut(&mut G, usize) -> Result<(), IpcError>,
 ) -> Result<T, IpcError> {
     if preflight_request {
-        let text_storage = crate::cbor_preflight::retained_text_budget(bytes)?;
-        reserve(guard, text_storage)?;
+        let decoded_storage = crate::cbor_preflight::guarded_request_storage_budget(bytes)?;
+        reserve(guard, decoded_storage)?;
     }
     decode_cbor_payload(bytes)
 }
@@ -1287,7 +1287,10 @@ mod tests {
         let frame = super::encode_request_multiframe_admitted_v1(&request, &budget, &scope)
             .expect("admitted request exceeds one frame");
         assert!(frame[4..].starts_with(MULTIFRAME_REQUEST_MAGIC));
-        assert_eq!(active.load(SeqCst), u64::try_from(frame.len()).expect("wire length"));
+        assert_eq!(
+            active.load(SeqCst),
+            u64::try_from(frame.len()).expect("wire length")
+        );
         let decoded: String = decode_request(&mut std::io::Cursor::new(&*frame))
             .expect("existing receiver decodes admitted fragments");
         assert_eq!(decoded, request);
@@ -1755,6 +1758,312 @@ mod tests {
     }
 
     #[test]
+    fn guarded_request_admits_owned_scalar_backing_before_deserializing() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static MATERIALIZED: AtomicBool = AtomicBool::new(false);
+        #[derive(Debug)]
+        struct MustNotMaterialize;
+        impl<'de> serde::Deserialize<'de> for MustNotMaterialize {
+            fn deserialize<D: serde::Deserializer<'de>>(
+                _deserializer: D,
+            ) -> Result<Self, D::Error> {
+                MATERIALIZED.store(true, Ordering::SeqCst);
+                Err(serde::de::Error::custom(
+                    "request materialized before admission",
+                ))
+            }
+        }
+
+        for value in [
+            ciborium::Value::Text("t".repeat(4_097)),
+            ciborium::Value::Bytes(vec![0xab; 6_383]),
+        ] {
+            let frame = encode_request(&value).expect("bounded scalar request");
+            let body_len = frame.len() - super::FRAME_HEADER_BYTES;
+            // The raw body and small DTO headers fit; a second scalar backing does not.
+            let limit = body_len + 256;
+            MATERIALIZED.store(false, Ordering::SeqCst);
+            let result = decode_request_guarded::<MustNotMaterialize, _, usize>(
+                &mut Cursor::new(frame),
+                Ok,
+                |held, additional| {
+                    let next = held.checked_add(additional).expect("bounded test charge");
+                    if next > limit {
+                        return Err(IpcError::IngressSaturated {
+                            bytes: limit,
+                            requests: 1,
+                        });
+                    }
+                    *held = next;
+                    Ok(())
+                },
+            );
+            assert!(matches!(result, Err(IpcError::IngressSaturated { .. })));
+            assert!(!MATERIALIZED.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn guarded_native_immutable_stage_round_trips_route_sized_payload_and_ordered_children() {
+        use quanta_index_contract::index::{
+            CollectionId, Digest, IngressRef, ObjectRef, OperationKey, ProducerId, SlotId,
+            StreamId, TenantId, WorkspaceKey, WorktreeId,
+        };
+        use quanta_index_contract::native_protocol::{
+            NativeImmutableObjectChildrenV1, NativeImmutableObjectPayloadV1, NativeIndexRequest,
+            NativeIndexRequestEnvelope,
+        };
+
+        let ingress = IngressRef {
+            operation: OperationKey {
+                workspace: WorkspaceKey {
+                    tenant: TenantId([1; 16]),
+                    collection: CollectionId([2; 16]),
+                    worktree: WorktreeId([3; 16]),
+                    slot: SlotId([4; 16]),
+                },
+                epoch: 1,
+                producer: ProducerId([5; 16]),
+                stream: StreamId([6; 16]),
+                stream_epoch: 1,
+                sequence: 50,
+            },
+            fence: 7,
+        };
+        let expected_children: Vec<_> = [1_u8, 3, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 3]
+            .into_iter()
+            .map(|byte| ObjectRef(Digest([byte; 32])))
+            .collect();
+
+        for (request_id, payload, edges) in [
+            (70_000, vec![0x31; 64], Vec::new()),
+            (70_001, vec![0x32; 64], Vec::new()),
+            (70_002, vec![0x7b; 6_383], expected_children.clone()),
+        ] {
+            let request = NativeIndexRequestEnvelope {
+                request_id,
+                payload: NativeIndexRequest::StageImmutableObject {
+                    ingress,
+                    bytes: NativeImmutableObjectPayloadV1::new(payload).expect("bounded payload"),
+                    children: NativeImmutableObjectChildrenV1::new(edges).expect("bounded edges"),
+                },
+            };
+            let frame = encode_request(&request).expect("single-frame native request");
+            let body_len = usize::try_from(u32::from_le_bytes(
+                frame[..4].try_into().expect("frame header"),
+            ))
+            .expect("frame body length");
+            assert_eq!(frame.len(), body_len + 4);
+            assert!(body_len < MAX_FRAME_BODY_BYTES);
+
+            let mut reader = Cursor::new(frame.as_slice());
+            let (decoded, charged): (NativeIndexRequestEnvelope, usize) = decode_request_guarded(
+                &mut reader,
+                |bytes| {
+                    assert_eq!(bytes, body_len);
+                    Ok(bytes)
+                },
+                |held, additional| {
+                    *held = held.checked_add(additional).expect("bounded decode charge");
+                    if *held > 64 * 1024 {
+                        return Err(IpcError::IngressSaturated {
+                            bytes: 64 * 1024,
+                            requests: 1,
+                        });
+                    }
+                    Ok(())
+                },
+            )
+            .expect("guarded native request decode");
+            assert_eq!(decoded, request);
+            assert_eq!(
+                reader.position(),
+                u64::try_from(frame.len()).expect("frame length")
+            );
+            assert!(charged >= body_len);
+            assert!(charged <= 64 * 1024);
+            if request_id == 70_002 {
+                let NativeIndexRequest::StageImmutableObject {
+                    bytes, children, ..
+                } = decoded.payload
+                else {
+                    panic!("decoded route-sized immutable stage changed opcode");
+                };
+                assert_eq!(bytes.len(), 6_383);
+                assert_eq!(children.as_slice(), expected_children.as_slice());
+            }
+        }
+    }
+
+    #[test]
+    fn guarded_native_repomap_query_preserves_valid_text_across_reader_scratch_boundary() {
+        use quanta_index_contract::index::{
+            CollectionId, IndexInstanceId, SlotId, TenantId, ViewSelection, WorkspaceKey,
+            WorktreeId,
+        };
+        use quanta_index_contract::native_protocol::{
+            MAX_REPOMAP_RANK_QUERY_BYTES, NativeIndexRequest, NativeIndexRequestEnvelope,
+            NativeRepoMapQuery,
+        };
+
+        // A peer can send malformed wire without using the canonical serializer.
+        #[derive(serde::Serialize)]
+        struct RawQuery<'a> {
+            query_text: &'a str,
+            focus_subjects: &'a [quanta_index_contract::RepoMapFocusSubjectDto],
+            top_k: u32,
+            token_budget: u32,
+        }
+
+        let workspace = WorkspaceKey {
+            tenant: TenantId([1; 16]),
+            collection: CollectionId([2; 16]),
+            worktree: WorktreeId([3; 16]),
+            slot: SlotId([4; 16]),
+        };
+        for (request_id, size) in [
+            (71_000, 4_096),
+            (71_001, 4_097),
+            (71_002, MAX_REPOMAP_RANK_QUERY_BYTES),
+        ] {
+            let query_text = "q".repeat(size);
+            let query = NativeRepoMapQuery {
+                query_text: query_text.clone(),
+                focus_subjects: Vec::new(),
+                top_k: 1,
+                token_budget: 1,
+            };
+            assert!(
+                query.valid_native_rank_query(),
+                "id={request_id} len={size}"
+            );
+            let request = NativeIndexRequestEnvelope {
+                request_id,
+                payload: NativeIndexRequest::QueryRepoMap {
+                    selection: ViewSelection::Latest {
+                        workspace,
+                        epoch: 1,
+                    },
+                    instance: IndexInstanceId([5; 16]),
+                    query,
+                },
+            };
+            let frame = encode_request(&request)
+                .unwrap_or_else(|error| panic!("id={request_id} len={size} encode: {error}"));
+            let mut reader = Cursor::new(frame.as_slice());
+            let (decoded, charged): (NativeIndexRequestEnvelope, usize) =
+                decode_request_guarded(&mut reader, Ok, |held, additional| {
+                    *held = held.checked_add(additional).expect("bounded decode charge");
+                    if *held > 64 * 1024 {
+                        return Err(IpcError::IngressSaturated {
+                            bytes: 64 * 1024,
+                            requests: 1,
+                        });
+                    }
+                    Ok(())
+                })
+                .unwrap_or_else(|error| panic!("id={request_id} len={size} decode: {error}"));
+            assert_eq!(decoded, request, "id={request_id} len={size}");
+            assert_eq!(
+                reader.position(),
+                u64::try_from(frame.len()).expect("frame length")
+            );
+            assert!(charged <= 64 * 1024, "id={request_id} len={size}");
+            let NativeIndexRequest::QueryRepoMap { query, .. } = decoded.payload else {
+                panic!("id={request_id} len={size} changed opcode");
+            };
+            assert_eq!(query.query_text, query_text, "id={request_id} len={size}");
+        }
+        let oversized = NativeRepoMapQuery {
+            query_text: "q".repeat(MAX_REPOMAP_RANK_QUERY_BYTES + 1),
+            focus_subjects: Vec::new(),
+            top_k: 1,
+            token_budget: 1,
+        };
+        assert!(!oversized.valid_native_rank_query());
+        assert!(
+            matches!(encode_request(&oversized), Err(IpcError::Encode(message))
+            if message.contains("invalid native RepoMap rank query"))
+        );
+        let frame = encode_request(&RawQuery {
+            query_text: &oversized.query_text,
+            focus_subjects: &oversized.focus_subjects,
+            top_k: oversized.top_k,
+            token_budget: oversized.token_budget,
+        })
+        .expect("encode invalid length counterexample");
+        let rejected: Result<NativeRepoMapQuery, IpcError> =
+            decode_request(&mut Cursor::new(frame));
+        assert!(matches!(rejected, Err(IpcError::Decode(message))
+            if message.contains("native RepoMap text exceeds byte bound")));
+    }
+
+    #[test]
+    fn guarded_query_cursor_preserves_opaque_text_across_reader_scratch_boundary() {
+        use quanta_index_contract::{
+            ContinuationTokenV2, DiagnosticAttemptFieldV1, QueryConstraintSetV1,
+            SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, TextQueryRequest,
+            TextQuerySyntax,
+        };
+
+        assert!(ContinuationTokenV2::new("").is_err());
+        let empty = encode_request(&"").expect("encode empty token counterexample");
+        let rejected: Result<ContinuationTokenV2, IpcError> =
+            decode_request(&mut Cursor::new(empty));
+        assert!(matches!(rejected, Err(IpcError::Decode(message))
+            if message.contains("non-empty continuation token")));
+
+        for (request_id, size) in [(72_000, 4_096), (72_001, 4_097)] {
+            let cursor_text = "c".repeat(size);
+            let cursor = ContinuationTokenV2::new(cursor_text.clone())
+                .expect("nonempty opaque cursor is allowed by its contract");
+            let request = SearchPlaneQueryIpcRequestEnvelope {
+                request_id,
+                diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
+                payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                    syntax: TextQuerySyntax::CodeSearch,
+                    query_text: "needle".into(),
+                    constraints: QueryConstraintSetV1::unconstrained(),
+                    generation: None,
+                    generation_selector: None,
+                    top_k: 1,
+                    cursor: Some(cursor),
+                }),
+            };
+            let frame = encode_request(&request)
+                .unwrap_or_else(|error| panic!("id={request_id} len={size} encode: {error}"));
+            let mut reader = Cursor::new(frame.as_slice());
+            let (decoded, charged): (SearchPlaneQueryIpcRequestEnvelope, usize) =
+                decode_request_guarded(&mut reader, Ok, |held, additional| {
+                    *held = held.checked_add(additional).expect("bounded decode charge");
+                    if *held > 64 * 1024 {
+                        return Err(IpcError::IngressSaturated {
+                            bytes: 64 * 1024,
+                            requests: 1,
+                        });
+                    }
+                    Ok(())
+                })
+                .unwrap_or_else(|error| panic!("id={request_id} len={size} decode: {error}"));
+            assert_eq!(decoded, request, "id={request_id} len={size}");
+            assert_eq!(
+                reader.position(),
+                u64::try_from(frame.len()).expect("frame length")
+            );
+            assert!(charged <= 64 * 1024, "id={request_id} len={size}");
+            let SearchPlaneQueryIpcRequest::Text(query) = decoded.payload else {
+                panic!("id={request_id} len={size} changed query route");
+            };
+            assert_eq!(
+                query.cursor.as_ref().map(ContinuationTokenV2::as_str),
+                Some(cursor_text.as_str()),
+                "id={request_id} len={size} cursor must reach downstream validation unchanged"
+            );
+        }
+    }
+
+    #[test]
     fn compressible_request_larger_than_wire_cap_round_trips_under_wire_cap() {
         let expected = "x".repeat(MAX_FRAME_BODY_BYTES + 1024);
         let frame = encode_request(&expected).expect("bounded compressed request");
@@ -1782,8 +2091,34 @@ mod tests {
             .expect("length fits usize");
         assert_eq!(
             reserved,
-            wire_len + logical_len + 3 * std::mem::size_of::<String>()
+            wire_len + logical_len + 3 * std::mem::size_of::<String>() + expected.len()
         );
+    }
+
+    #[test]
+    fn guarded_multiframe_admits_large_definite_byte_backing() {
+        use crate::admission::{DecodePermit, DispatchSlots};
+        use crate::plane::IpcPlane;
+
+        // Exercise an inline-source-sized byte string without relying on its
+        // compressibility. The integer-array regression below does not cover
+        // the parser's owned byte backing.
+        let payload_len = 60 * 1024 * 1024;
+        let body = encode_cbor_payload(&ciborium::Value::Bytes(vec![0xab; payload_len]))
+            .expect("encode definite source-sized value");
+        let frame = super::encode_multiframe_request(body).expect("frame large request");
+        let slots = DispatchSlots::new(4, 2);
+        let (value, _permit): (ciborium::Value, _) = decode_request_guarded(
+            &mut Cursor::new(frame),
+            |bytes| slots.try_acquire_decode(bytes, IpcPlane::Ingest),
+            DecodePermit::reserve,
+        )
+        .expect("admit framed body and one definite backing");
+        let ciborium::Value::Bytes(actual) = value else {
+            panic!("decoded value must be the original byte string");
+        };
+        assert_eq!(actual.len(), payload_len);
+        assert!(actual.iter().all(|byte| *byte == 0xab));
     }
 
     #[test]

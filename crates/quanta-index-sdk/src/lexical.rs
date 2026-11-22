@@ -111,6 +111,19 @@ impl SearchCorpusBatch {
             semantic_tombstone_scopes: Vec::new(),
         }
     }
+
+    /// Derive the control request from the same Source event and payload
+    /// commitment that publishing this sealed batch will send.
+    pub fn generation_reservation_request(
+        &self,
+    ) -> Result<SearchCorpusGenerationReservationRequestV1, SdkError> {
+        let wire = self.to_wire_batch()?;
+        Ok(SearchCorpusGenerationReservationRequestV1 {
+            repo_id: wire.repo_id,
+            revision_id: wire.revision_id,
+            source_event: wire.source_event,
+        })
+    }
 }
 
 impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
@@ -1064,7 +1077,12 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 
 impl LexicalQueryBuilder<'_, true, true, true> {
     pub fn execute(self) -> Result<TextQueryResponse, SdkError> {
-        dispatch_text_query_request_v1(self.client, self.state.build_request("lexical")?)
+        let request = self.state.build_request(
+            self.client,
+            crate::LegacyQueryCapabilityV1::Text,
+            "lexical",
+        )?;
+        dispatch_text_query_request_v1(self.client, request)
     }
 
     /// Execute the same lexical request with request-local client IPC timing.
@@ -1073,12 +1091,14 @@ impl LexicalQueryBuilder<'_, true, true, true> {
     pub fn execute_observed(
         self,
     ) -> Result<(TextQueryResponse, ClientLexicalQueryObservationV1), SdkError> {
-        let mut observation = ClientLexicalQueryObservationV1::default();
-        let response = dispatch_text_query_request_inner(
+        let request = self.state.build_request(
             self.client,
-            self.state.build_request("lexical")?,
-            Some(&mut observation),
+            crate::LegacyQueryCapabilityV1::Text,
+            "lexical",
         )?;
+        let mut observation = ClientLexicalQueryObservationV1::default();
+        let response =
+            dispatch_text_query_request_inner(self.client, request, Some(&mut observation))?;
         Ok((response, observation))
     }
 }

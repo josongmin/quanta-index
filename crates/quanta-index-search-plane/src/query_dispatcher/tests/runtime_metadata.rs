@@ -19,7 +19,8 @@ use crate::query_dispatcher::routes::runtime_metadata::{
     runtime_generation_is_stale, validate_runtime_metadata_query,
 };
 use crate::query_dispatcher::tests::support::common::{
-    TestResult, dispatcher_with_obs, ipc_error_from, manual_query, ready_ledger, ready_pin,
+    TestResult, assert_closed_obs_metrics, dispatcher_with_obs, ipc_error_from, manual_query,
+    ready_ledger, ready_pin,
 };
 use crate::query_dispatcher::tests::support::lexical::RejectLexicalOpener;
 use crate::query_dispatcher::tests::support::runtime_metadata::{
@@ -75,6 +76,54 @@ fn runtime_metadata_dispatch_not_ready_emits_closed_obs_metric() -> TestResult {
         return Err(format!("unexpected runtime-metadata obs errors: {errors:?}").into());
     }
     Ok(())
+}
+
+#[test]
+fn runtime_metadata_dispatch_success_emits_closed_obs_metrics() -> TestResult {
+    let obs_sink = Arc::new(BoundedQueryObsStore::default());
+    let dispatcher = crate::query_dispatcher::dispatcher::SearchPlaneDispatcher::new_with_obs(
+        Arc::new(RejectLexicalOpener),
+        Arc::new(RejectSemanticOpener),
+        crate::SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+        Arc::new(
+            crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort::default(),
+        ),
+        Arc::new(crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer),
+        ready_runtime_metadata_ledger(100, 20),
+        crate::query_dispatcher::tests::support::common::test_activation_catalog()?,
+        crate::query_dispatcher::tests::support::common::default_query_embedder(),
+        obs_sink.clone(),
+    );
+
+    let response = dispatcher.dispatch(
+        runtime_query_request(TextQuerySyntax::Native, "dirty:yes todo"),
+        &RequestBudgetV1::unbounded(),
+    );
+    let SearchPlaneQueryIpcResponse::RuntimeMetadata(response) = response else {
+        return Err("expected RuntimeMetadata response".into());
+    };
+    if response.results.len() != 1
+        || response
+            .results
+            .first()
+            .is_none_or(|row| row.candidate_id != "chunk-dirty")
+    {
+        return Err(format!("unexpected RuntimeMetadata response: {response:?}").into());
+    }
+
+    assert_closed_obs_metrics(
+        &obs_sink,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_lane_contribution_count",
+            "lq_merge_result_count",
+            "lq_route_runtime_metadata_examined_candidates_total",
+            "lq_route_runtime_metadata_latency_ms",
+            "lq_route_runtime_metadata_served_total",
+        ],
+    )
 }
 
 #[test]
@@ -270,6 +319,7 @@ fn page(
         read.epochs(),
         top_k,
         cursor,
+        |_| Ok(true),
     )
 }
 

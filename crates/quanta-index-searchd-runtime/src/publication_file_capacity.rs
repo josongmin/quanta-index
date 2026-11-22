@@ -33,6 +33,16 @@ use rustix::fs::{
 };
 use sha2::{Digest as _, Sha256};
 
+/// Normalize native stat device numbers without losing signed-platform errors.
+pub(crate) fn checked_device_id<T: TryInto<u64>>(device: T) -> Result<u64, T::Error> {
+    device.try_into()
+}
+
+/// Linux nlink_t is u64; Darwin uses a narrower unsigned field.
+pub(crate) fn link_count_u64<T: Into<u64>>(links: T) -> u64 {
+    links.into()
+}
+
 fn storage(context: &str, error: impl std::fmt::Display) -> CoreError {
     CoreError::Storage(format!("publication file capacity {context}: {error}"))
 }
@@ -353,13 +363,13 @@ impl Anchor {
                 }
                 Ok(Some(InodeObservation {
                     inode: InodeKey {
-                        device: crate::publication_inventory::checked_device_id(stat.st_dev)
+                        device: checked_device_id(stat.st_dev)
                             .map_err(|error| storage("stat device", error))?,
                         inode: stat.st_ino,
                     },
                     bytes: u64::try_from(stat.st_size)
                         .map_err(|error| storage("stat width", error))?,
-                    links: crate::publication_inventory::link_count_u64(stat.st_nlink),
+                    links: link_count_u64(stat.st_nlink),
                 }))
             }
             Err(rustix::io::Errno::NOENT) => Ok(None),
@@ -555,7 +565,7 @@ fn pending_path_matches(root: &StateRootDirectoryV1, relative: &Path, born: Inod
             return FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile
                 && stat.st_uid == rustix::process::getuid().as_raw()
                 && stat.st_mode & 0o022 == 0
-                && crate::publication_inventory::checked_device_id(stat.st_dev)
+                && checked_device_id(stat.st_dev)
                     .is_ok_and(|device| device == born.device)
                 && stat.st_ino == born.inode;
         }
@@ -1487,7 +1497,7 @@ impl PublicationFileCapacity {
                             .map_err(|error| storage_io("stat opened list directory", error))?;
                         if !metadata.is_dir()
                             || metadata.dev()
-                                != crate::publication_inventory::checked_device_id(stat.st_dev)
+                                != checked_device_id(stat.st_dev)
                                     .map_err(|error| storage("list directory device", error))?
                             || metadata.ino() != stat.st_ino
                             || metadata.uid() != rustix::process::getuid().as_raw()
@@ -2801,7 +2811,7 @@ impl PublicationFileCapacity {
     }
     /// Dispose only an unused native birth after its original FD retired.
     /// A populated file or resize cannot use this empty-sidecar cleanup path.
-    #[cfg(any(test, feature = "legacy-tantivy"))]
+    #[cfg(test)]
     pub(crate) fn discard_retired_empty_native_create(&self, path: &Path) -> Result<(), CoreError> {
         let relative = self.relative(path)?;
         self.discard_retired_native_pending_file(&relative, true)
@@ -6243,5 +6253,5 @@ pub use directory::{DirectoryDeleteTicket, DirectoryMoveRecovery, DirectoryPathT
 #[path = "publication_file_capacity/read_recovery.rs"]
 mod read_recovery;
 pub(crate) use read_recovery::{
-    RecoveryReadCloseFaultV1, RecoveryReadMemoryV1, RecoveryReadRootRegistrationV1,
+    InventoryMemory, RecoveryReadCloseFaultV1, RecoveryReadMemoryV1, RecoveryReadRootRegistrationV1,
 };

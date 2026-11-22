@@ -1,12 +1,13 @@
 //! Original-budget catalog side of a paired managed object installation.
 use super::{
-    SqliteCatalog, at_most_one, begin, bootstrap, cached_execute, canonical_object, check_attempt,
-    confirmed_ingress_object, fields_digest, ingress_intent, object_install, object_key,
-    operation_key, reclaim, register_confirmed_preflighted_children, registration_codec,
-    require_intent_with_attempt_key, require_open_ingress, require_registered_edges,
-    require_reserved_ingress_intent, require_reserved_intent, sql, try_insert_ingress_intent,
-    try_insert_object_intent,
+    ManagedRegistrationBits, SqliteCatalog, at_most_one, begin, bootstrap, cached_execute,
+    canonical_object, check_attempt, confirmed_ingress_object, fields_digest, ingress_intent,
+    object_install, object_key, operation_key, reclaim, register_confirmed_preflighted_children,
+    registration_codec, require_intent_with_attempt_key, require_open_ingress,
+    require_registered_edges, require_reserved_ingress_intent, require_reserved_intent, sql,
+    try_insert_ingress_intent, try_insert_object_intent,
 };
+use quanta_index_core::diagnostic_trace::DiagnosticManagedInstallCensusKindV1;
 use quanta_index_core::index::{
     AttemptRef, Digest, IndexError, MAX_RECLAIM_CHILDREN, ObjectInstallScope, ObjectRef,
     RegisteredObject, WorkBudget, WorkUsage,
@@ -759,7 +760,7 @@ fn confirm_ingress(
     objects: &[RegisteredObject],
     capacity: ChildWindowCapacity,
     budget: &mut WorkBudget,
-) -> Result<(), IndexError> {
+) -> Result<ManagedRegistrationBits, IndexError> {
     require_open_ingress(connection, stage)?;
     let mut seen = InputPrefix::new();
     for object in objects {
@@ -780,7 +781,7 @@ fn confirm_ingress(
         }
     }
     let proof = preflight_registration_children(connection, objects, capacity, budget, None)?;
-    let registered = register_confirmed_preflighted_children(proof)?;
+    let (registered, newly_registered) = register_confirmed_preflighted_children(proof)?;
     let operation = operation_key(stage.operation)?;
     for object in objects {
         let key = object_key(object.reference);
@@ -800,7 +801,7 @@ fn confirm_ingress(
         }
         reclaim::confirm_protected(connection, object.reference)?;
     }
-    Ok(())
+    Ok(newly_registered)
 }
 
 fn reserve_attempt(
@@ -861,7 +862,7 @@ fn confirm_attempt(
     capacity: ChildWindowCapacity,
     budget: &mut WorkBudget,
     bound: &mut reclaim::ManagedBoundNamespace<'_, '_>,
-) -> Result<(), IndexError> {
+) -> Result<ManagedRegistrationBits, IndexError> {
     bound.require_transaction(connection)?;
     let (attempt_key, proof) = observe_sqlite(budget, 6, |budget| {
         let _operation = check_attempt(connection, attempt)?;
@@ -877,7 +878,7 @@ fn confirm_attempt(
         })?;
         Ok((attempt_key, proof))
     })?;
-    let _registered = observe_sqlite(budget, 7, |_budget| {
+    let (_registered, newly_registered) = observe_sqlite(budget, 7, |_budget| {
         register_confirmed_preflighted_children(proof)
     })?;
     observe_sqlite(budget, 8, |budget| {
@@ -918,7 +919,8 @@ fn confirm_attempt(
             }
         }
         Ok(())
-    })
+    })?;
+    Ok(newly_registered)
 }
 
 /// Observe existing transaction work, never grant authority or change its result.
@@ -964,6 +966,62 @@ fn observe_sqlite<T>(
     result
 }
 
+/// Report newly registered parents after commit. Child observations follow the
+/// original input order; the diagnostic consumer deduplicates physical edges.
+/// The selected request's managed confirm/advance span remains live here.
+fn emit_catalog_census(
+    budget: &WorkBudget,
+    objects: &[RegisteredObject],
+    newly_registered: &ManagedRegistrationBits,
+) {
+    let Some(context) = budget.request().diagnostic_context() else {
+        return;
+    };
+    let mut registrations = 0_u64;
+    let mut edges = 0_u64;
+    for (index, object) in objects.iter().enumerate() {
+        if newly_registered[index / 64] & (1_u64 << (index % 64)) == 0 {
+            continue;
+        }
+        let Some(next_registrations) = registrations.checked_add(1) else {
+            context.health(DiagnosticHealthCodeV1::CounterOverflow);
+            return;
+        };
+        let Ok(children) = u64::try_from(object.children.len()) else {
+            context.health(DiagnosticHealthCodeV1::CounterOverflow);
+            return;
+        };
+        let Some(next_edges) = edges.checked_add(children) else {
+            context.health(DiagnosticHealthCodeV1::CounterOverflow);
+            return;
+        };
+        registrations = next_registrations;
+        edges = next_edges;
+    }
+    context.managed_install_census_batch(
+        DiagnosticManagedInstallCensusKindV1::CatalogRegistration,
+        registrations,
+    );
+    context.managed_install_census_batch(DiagnosticManagedInstallCensusKindV1::CatalogEdge, edges);
+    for (index, object) in objects.iter().enumerate() {
+        if newly_registered[index / 64] & (1_u64 << (index % 64)) == 0 {
+            continue;
+        }
+        context.managed_install_census_entry(
+            DiagnosticManagedInstallCensusKindV1::CatalogRegistration,
+            object.reference,
+            None,
+        );
+        for child in &object.children {
+            context.managed_install_census_entry(
+                DiagnosticManagedInstallCensusKindV1::CatalogEdge,
+                object.reference,
+                Some(*child),
+            );
+        }
+    }
+}
+
 pub(super) fn install(
     catalog: &SqliteCatalog,
     scope: ObjectInstallScope,
@@ -977,13 +1035,16 @@ pub(super) fn install(
     budget.checkpoint()?;
     let mut guard = observe_sqlite(budget, 9, |budget| catalog.lock_native_budget(budget))?;
     let tx = observe_sqlite(budget, 10, |_budget| begin(&mut guard))?;
-    install_in_transaction(&tx, scope, objects, budget, confirming, None)?;
+    let newly_registered = install_in_transaction(&tx, scope, objects, budget, confirming, None)?;
     budget.checkpoint()?;
     // Retain the existing COMMIT-only scope and lane identity.
     observe_sqlite(budget, 3, |_budget| {
         tx.commit().map_err(|error| sql(&error))
     })?;
     drop(guard);
+    if let Some(newly_registered) = newly_registered.as_ref() {
+        emit_catalog_census(budget, objects, newly_registered);
+    }
     Ok(())
 }
 
@@ -1007,7 +1068,7 @@ pub(super) fn advance_attempt(
     let mut guard = observe_sqlite(budget, 9, |budget| catalog.lock_native_budget(budget))?;
     let tx = observe_sqlite(budget, 10, |_budget| begin(&mut guard))?;
     let scope = ObjectInstallScope::Attempt(attempt);
-    install_in_transaction(&tx, scope, confirmed, budget, true, None)?;
+    let newly_registered = install_in_transaction(&tx, scope, confirmed, budget, true, None)?;
     budget.checkpoint()?;
     let mut references = InputPrefix::new();
     for object in confirmed {
@@ -1021,12 +1082,15 @@ pub(super) fn advance_attempt(
         attempt,
         references,
     };
-    install_in_transaction(&tx, scope, next, budget, false, Some(&protected))?;
+    let _reserved = install_in_transaction(&tx, scope, next, budget, false, Some(&protected))?;
     budget.checkpoint()?;
     observe_sqlite(budget, 3, |_budget| {
         tx.commit().map_err(|error| sql(&error))
     })?;
     drop(guard);
+    if let Some(newly_registered) = newly_registered.as_ref() {
+        emit_catalog_census(budget, confirmed, newly_registered);
+    }
     Ok(())
 }
 
@@ -1037,7 +1101,7 @@ fn install_in_transaction(
     budget: &mut WorkBudget,
     confirming: bool,
     protected: Option<&ProtectedAttemptInputs<'_, '_>>,
-) -> Result<(), IndexError> {
+) -> Result<Option<ManagedRegistrationBits>, IndexError> {
     if objects.is_empty() || objects.len() > MAX_OBJECTS {
         return Err(IndexError::ResourceLimited);
     }
@@ -1120,12 +1184,13 @@ fn install_in_transaction(
         )?;
     }
     drop(planned);
-    match (scope, confirming) {
+    let newly_registered = match (scope, confirming) {
         (ObjectInstallScope::Ingress(stage), false) => {
             reserve_ingress(tx, stage, objects, budget)?;
+            None
         }
         (ObjectInstallScope::Ingress(stage), true) => {
-            confirm_ingress(tx, stage, objects, child_capacity, budget)?;
+            Some(confirm_ingress(tx, stage, objects, child_capacity, budget)?)
         }
         (ObjectInstallScope::Attempt(attempt), false) => {
             reserve_attempt(
@@ -1139,19 +1204,18 @@ fn install_in_transaction(
                     IndexError::BackendViolation("managed namespace proof absent".into())
                 })?,
             )?;
+            None
         }
-        (ObjectInstallScope::Attempt(attempt), true) => {
-            confirm_attempt(
-                tx,
-                attempt,
-                objects,
-                child_capacity,
-                budget,
-                managed_bound.as_mut().ok_or_else(|| {
-                    IndexError::BackendViolation("managed namespace proof absent".into())
-                })?,
-            )?;
-        }
+        (ObjectInstallScope::Attempt(attempt), true) => Some(confirm_attempt(
+            tx,
+            attempt,
+            objects,
+            child_capacity,
+            budget,
+            managed_bound.as_mut().ok_or_else(|| {
+                IndexError::BackendViolation("managed namespace proof absent".into())
+            })?,
+        )?),
         (ObjectInstallScope::Bootstrap(stage), false) => {
             let [object] = objects else {
                 return Err(IndexError::InvalidInput(
@@ -1161,6 +1225,7 @@ fn install_in_transaction(
             bootstrap::reserve_bootstrap_tx(tx, stage, object)?;
             reclaim::reserve_object(tx, object.reference)?;
             let _queued = reclaim::enqueue(tx, object.reference)?;
+            None
         }
         (ObjectInstallScope::Bootstrap(stage), true) => {
             let [object] = objects else {
@@ -1171,9 +1236,10 @@ fn install_in_transaction(
             bootstrap::confirm_bootstrap_tx(tx, stage, object)?;
             reclaim::confirm_object(tx, object.reference)?;
             let _queued = reclaim::enqueue(tx, object.reference)?;
+            None
         }
-    }
-    Ok(())
+    };
+    Ok(newly_registered)
 }
 
 #[cfg(test)]

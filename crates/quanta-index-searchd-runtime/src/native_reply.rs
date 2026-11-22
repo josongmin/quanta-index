@@ -3,7 +3,8 @@
 
 use quanta_index_contract::index::{OperationStatus, SubmitOutcome};
 use quanta_index_contract::native_protocol::{
-    NativeIndexResponse, NativeIndexResponseEnvelope, NativeIndexWireError, NativeReadSessionId,
+    NativeEffortDone, NativeIndexResponse, NativeIndexResponseEnvelope, NativeIndexWireError,
+    NativeReadSessionId,
 };
 use quanta_index_core::index::{IndexError, MemoryLease};
 use quanta_index_ipc::{ResponseEnvelope, SlotRefusal};
@@ -14,7 +15,10 @@ use crate::native_producer_source_lookup::ScopedNativeProducerSourcePage;
 use crate::native_projection_owner_lookup::ScopedNativeProjectionOwnerLookup;
 use crate::native_semantic_result::ScopedNativeSemanticResult;
 use crate::native_source_owner_lookup::ScopedNativeSourceOwnerLookup;
-use crate::native_text_result::ScopedNativeTextResult;
+use crate::native_text_result::{
+    ScopedNativeTextPathPage, ScopedNativeTextPathResult, ScopedNativeTextPreviewResult,
+    ScopedNativeTextResult,
+};
 
 /// Canonical success DTO storage is funded before its Box is born. Refusals
 /// remain inline so resource denial never requires another response grant.
@@ -34,6 +38,27 @@ impl Serialize for ScopedCanonicalReply {
     }
 }
 
+pub(crate) struct ScopedNativeEffortDone {
+    result: NativeEffortDone,
+    _memory: Option<MemoryLease>,
+}
+
+impl ScopedNativeEffortDone {
+    pub(crate) fn new(result: NativeEffortDone, memory: Option<MemoryLease>) -> Self {
+        Self {
+            result,
+            _memory: memory,
+        }
+    }
+}
+
+impl std::ops::Deref for ScopedNativeEffortDone {
+    type Target = NativeEffortDone;
+    fn deref(&self) -> &Self::Target {
+        &self.result
+    }
+}
+
 pub(crate) enum NativeReply {
     Plain(ScopedCanonicalReply),
     Error(NativeIndexWireError),
@@ -49,20 +74,26 @@ pub(crate) enum NativeReply {
     Path(ScopedNativePathPage),
     RepositoryPath(quanta_index_repomap::native::RepositoryFilePathPage),
     Text(ScopedNativeTextResult),
+    TextPreview(ScopedNativeTextPreviewResult),
+    TextPaths(ScopedNativeTextPathResult),
+    TextPathPage(ScopedNativeTextPathPage),
     TextPage(crate::native_read_session_transport::ScopedNativeTextPage),
     HybridFile(crate::native_semantic_result::ScopedNativeHybridFileResult),
     HistoryPage(crate::native_read_session_transport::ScopedNativeHistoryPage),
+    DslPageV1(crate::native_read_session_transport::ScopedNativeDslPage),
     OverlayText(crate::native_overlay_query::ScopedOverlayTextResult),
     Semantic(ScopedNativeSemanticResult),
     OverlaySemantic(crate::native_semantic_result::ScopedOverlaySemanticResult),
-    EffortDone(crate::native_effort_transport::ScopedNativeEffortDone),
+    EffortDone(ScopedNativeEffortDone),
     Graph(crate::native_graph_transport::ScopedNativeGraphResult),
+    RepoMapPriorFile(crate::native_repomap_prior_file_transport::ScopedPriorFileResponse),
     ImportedRepoMap(crate::native_imported_repomap_transport::ScopedImportedRepoMapResultV1),
     RepoMapRanked(crate::native_repomap_transport::ScopedNativeRepoMapRankResult),
     Overlay(crate::native_overlay_transport::ScopedOverlayReply),
     Stub(crate::native_stub_transport::ScopedStubReply),
     SourceOwners(ScopedNativeSourceOwnerLookup),
     ProjectionOwners(ScopedNativeProjectionOwnerLookup),
+    ProducerProjectionOwnersV1(crate::native_projection_owner_lookup::ScopedProducerProjectionOwnersV1),
     ProducerSourceOwners(ScopedNativeProducerSourcePage),
     ProjectionSourceDiff(crate::native_projection_source_diff::ScopedNativeProjectionSourceDiff),
     StagedSources(quanta_index_core::index::StagedObjectReferences),
@@ -109,14 +140,19 @@ impl NativeReply {
                 true
             }
             Self::Error(_)
+            | Self::TextPreview(_)
+            | Self::TextPaths(_)
+            | Self::TextPathPage(_)
             | Self::ReadSessionProfile { .. }
             | Self::ReadSessionHistoryCut { .. }
             | Self::EffortDone(_)
             | Self::SourceOwners(_)
             | Self::ProjectionOwners(_)
+            | Self::ProducerProjectionOwnersV1(_)
             | Self::ProducerSourceOwners(_)
             | Self::ProjectionSourceDiff(_)
             | Self::Graph(_)
+            | Self::RepoMapPriorFile(_)
             | Self::ImportedRepoMap(_)
             | Self::RepoMapRanked(_)
             | Self::Overlay(_)
@@ -124,6 +160,7 @@ impl NativeReply {
             | Self::Literal(_)
             | Self::TextPage(_)
             | Self::HybridFile(_)
+            | Self::DslPageV1(_)
             | Self::HistoryPage(_)
             | Self::Path(_)
             | Self::RepositoryPath(_)
@@ -139,14 +176,19 @@ impl NativeReply {
             Self::EffortDone(_) | Self::Error(_) => true,
             Self::ReadSessionProfile { .. } | Self::ReadSessionHistoryCut { .. } => false,
             Self::Text(_)
+            | Self::TextPreview(_)
+            | Self::TextPaths(_)
+            | Self::TextPathPage(_)
             | Self::Semantic(_)
             | Self::OverlayText(_)
             | Self::OverlaySemantic(_)
             | Self::SourceOwners(_)
             | Self::ProjectionOwners(_)
+            | Self::ProducerProjectionOwnersV1(_)
             | Self::ProducerSourceOwners(_)
             | Self::ProjectionSourceDiff(_)
             | Self::Graph(_)
+            | Self::RepoMapPriorFile(_)
             | Self::ImportedRepoMap(_)
             | Self::RepoMapRanked(_)
             | Self::Overlay(_)
@@ -155,6 +197,7 @@ impl NativeReply {
             | Self::Literal(_)
             | Self::TextPage(_)
             | Self::HybridFile(_)
+            | Self::DslPageV1(_)
             | Self::HistoryPage(_)
             | Self::Path(_)
             | Self::RepositoryPath(_) => false,
@@ -188,6 +231,7 @@ impl Serialize for NativeReply {
                 &**result,
             ),
             Self::HistoryPage(result) => result.serialize(serializer),
+            Self::DslPageV1(result) => result.serialize(serializer),
             Self::HybridFile(result) => serializer.serialize_newtype_variant(
                 "NativeIndexResponse",
                 34,
@@ -207,6 +251,15 @@ impl Serialize for NativeReply {
             Self::Text(result) => {
                 NativeIndexResponse::serialize_text_ranked_ref(result, serializer)
             }
+            Self::TextPreview(result) => {
+                NativeIndexResponse::serialize_text_preview_ranked_ref(result, serializer)
+            }
+            Self::TextPaths(result) => {
+                NativeIndexResponse::serialize_text_path_ranked_ref(result, serializer)
+            }
+            Self::TextPathPage(result) => {
+                NativeIndexResponse::serialize_text_path_page_ref(result, serializer)
+            }
             Self::OverlaySemantic(result) => {
                 NativeIndexResponse::serialize_overlay_semantic_ref(result, serializer)
             }
@@ -222,6 +275,9 @@ impl Serialize for NativeReply {
             Self::ProjectionOwners(result) => {
                 NativeIndexResponse::serialize_projection_owners_ref(result, serializer)
             }
+            Self::ProducerProjectionOwnersV1(result) => serializer.serialize_newtype_variant(
+                "NativeIndexResponse", 72, "ProducerProjectionOwnersV1", &**result,
+            ),
             Self::ProjectionSourceDiff(result) => {
                 NativeIndexResponse::serialize_projection_source_diff_ref(result, serializer)
             }
@@ -229,6 +285,7 @@ impl Serialize for NativeReply {
                 NativeIndexResponse::serialize_producer_source_owners_ref(result, serializer)
             }
             Self::Graph(result) => NativeIndexResponse::serialize_graph_ref(result, serializer),
+            Self::RepoMapPriorFile(result) => result.serialize(serializer),
             Self::ImportedRepoMap(result) => serializer.serialize_newtype_variant(
                 "NativeIndexResponse", 43, "ImportedRepoMap", &**result,
             ),
@@ -299,7 +356,11 @@ impl ResponseEnvelope<NativeReply> for NativeReplyEnvelope {
             | NativeReply::Path(_)
             | NativeReply::RepositoryPath(_)
             | NativeReply::Text(_)
+            | NativeReply::TextPreview(_)
+            | NativeReply::TextPaths(_)
+            | NativeReply::TextPathPage(_)
             | NativeReply::TextPage(_)
+            | NativeReply::DslPageV1(_)
             | NativeReply::HistoryPage(_)
             | NativeReply::HybridFile(_)
             | NativeReply::OverlayText(_)
@@ -307,12 +368,14 @@ impl ResponseEnvelope<NativeReply> for NativeReplyEnvelope {
             | NativeReply::OverlaySemantic(_)
             | NativeReply::EffortDone(_)
             | NativeReply::Graph(_)
+            | NativeReply::RepoMapPriorFile(_)
             | NativeReply::ImportedRepoMap(_)
             | NativeReply::RepoMapRanked(_)
             | NativeReply::Overlay(_)
             | NativeReply::Stub(_)
             | NativeReply::SourceOwners(_)
             | NativeReply::ProjectionOwners(_)
+            | NativeReply::ProducerProjectionOwnersV1(_)
             | NativeReply::ProducerSourceOwners(_)
             | NativeReply::ProjectionSourceDiff(_)
             | NativeReply::StagedSources(_) => false,

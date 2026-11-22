@@ -1,7 +1,5 @@
 //! Same-view lexical eligibility, authenticated before semantic candidate work.
 
-use std::collections::BinaryHeap;
-
 use quanta_index_contract::{TextQuerySyntax, native_protocol::MAX_NATIVE_TEXT_TOP_K};
 use quanta_index_core::index::{
     CoverageBinding, CoverageStatus, IndexError, MapRoot, MemoryLease, MemoryLifetime,
@@ -10,94 +8,13 @@ use quanta_index_core::index::{
 };
 
 use super::{
-    NativeSemanticTraversal, RankedHit, ReadContext, SearchQuery, SearchResult,
+    NativeSemanticTraversal, RankedHits, ReadContext, SearchQuery, SearchResult,
     SelectedArtifactInput, SemanticReadRequest,
     ann_directory::AnnDirectory,
     finish_ranked, load_source_record_from_objects, rank_member,
-    selected_owner::{SelectedOwner, scan_ordered_page},
+    selected_owner::{AuthenticatedSource, SelectedOwner, SourceScope, scan_ordered_page},
     validate_search_query,
 };
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SemanticLexicalEligibleSource {
-    pub owner: OwnerKey,
-    pub source: NativeTextHitSource,
-}
-
-/// A request-local copy of the validated lexical hit universe, not a query plan.
-/// Data is destroyed before its original retained allocation grant.
-#[derive(Debug)]
-pub struct SemanticLexicalEligibility {
-    view: ViewRef,
-    entries: Vec<SemanticLexicalEligibleSource>,
-    entries_memory: Option<MemoryLease>,
-}
-
-impl SemanticLexicalEligibility {
-    pub fn new(
-        view: ViewRef,
-        entries: Vec<SemanticLexicalEligibleSource>,
-        entries_memory: Option<MemoryLease>,
-    ) -> Result<Self, IndexError> {
-        // Form the owner before any error: function parameters otherwise drop
-        // in reverse order and could refund the grant before the Vec backing.
-        let mut value = Self {
-            view,
-            entries,
-            entries_memory,
-        };
-        let maximum =
-            usize::try_from(MAX_NATIVE_TEXT_TOP_K).map_err(|_error| IndexError::ResourceLimited)?;
-        if value.entries.capacity() > maximum {
-            return Err(IndexError::ResourceLimited);
-        }
-        let bytes = value
-            .entries
-            .capacity()
-            .checked_mul(std::mem::size_of::<SemanticLexicalEligibleSource>())
-            .ok_or(IndexError::ResourceLimited)?;
-        let bytes = u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?;
-        // None is the existing explicit standalone allocation contract.
-        if value
-            .entries_memory
-            .as_ref()
-            .is_some_and(|memory| memory.bytes() < bytes)
-        {
-            return Err(IndexError::ResourceLimited);
-        }
-        value.entries.sort_unstable_by_key(|entry| entry.owner);
-        if value
-            .entries
-            .windows(2)
-            .any(|pair| matches!(pair, [left, right] if left.owner == right.owner))
-        {
-            return Err(IndexError::InvalidInput(
-                "lexical eligibility repeats an owner".into(),
-            ));
-        }
-        Ok(value)
-    }
-
-    pub(super) fn allows_overlay(&self, owner: OwnerKey, revision: u64) -> bool {
-        self.entries
-            .binary_search_by_key(&owner, |entry| entry.owner)
-            .is_ok_and(|index| {
-                self.entries
-                    .get(index)
-                    .is_some_and(|entry| entry.source == NativeTextHitSource::Overlay { revision })
-            })
-    }
-
-    pub(super) fn overlay_count(&self) -> Result<u32, IndexError> {
-        u32::try_from(
-            self.entries
-                .iter()
-                .filter(|entry| matches!(entry.source, NativeTextHitSource::Overlay { .. }))
-                .count(),
-        )
-        .map_err(|_error| IndexError::ResourceLimited)
-    }
-}
 
 impl SemanticReadRequest {
     pub(super) fn validate_lexical_scope(&self) -> Result<(), IndexError> {
@@ -117,7 +34,7 @@ impl SemanticReadRequest {
             || scope.generation_selector.is_some()
             || scope.cursor.is_some()
             || !(1..=MAX_NATIVE_TEXT_TOP_K).contains(&scope.top_k)
-            || u64::try_from(eligible.entries.len())
+            || u64::try_from(eligible.entries().len())
                 .map_err(|_error| IndexError::ResourceLimited)?
                 > u64::from(scope.top_k)
         {
@@ -164,14 +81,13 @@ impl SelectedLexicalScope {
         Ok((owners, memory))
     }
 
-    pub(super) fn reserve(limit: usize, context: &ReadContext<'_>) -> Result<Self, IndexError> {
-        let (owners, memory) = Self::allocate(limit.min(64), context)?;
-        Ok(Self {
-            owners,
-            overlay_owners: 0,
+    pub(super) const fn new(limit: usize, overlay_owners: u32) -> Self {
+        Self {
+            owners: Vec::new(),
+            overlay_owners,
             limit,
-            backing_memory: memory,
-        })
+            backing_memory: None,
+        }
     }
 
     fn push(&mut self, owner: SelectedOwner, context: &ReadContext<'_>) -> Result<(), IndexError> {
@@ -182,9 +98,9 @@ impl SelectedLexicalScope {
             let next = self
                 .owners
                 .capacity()
-                .max(1)
                 .checked_mul(2)
                 .ok_or(IndexError::ResourceLimited)?
+                .max(1)
                 .min(self.limit);
             // Admit the whole replacement while the old backing is still
             // charged. A failed reservation leaves the original scope intact.
@@ -212,8 +128,7 @@ pub(super) fn selected_projected_empty(coverage: &CoverageBinding) -> bool {
 
 /// A source record authenticated against the selected view and path constraint.
 pub(super) struct SelectedProjectedSource {
-    owner: OwnerKey,
-    reference: ObjectRef,
+    authority: AuthenticatedSource,
     pub(super) file_record: Option<std::sync::Arc<super::source_file::SharedFileRecord>>,
 }
 
@@ -244,13 +159,21 @@ impl SelectedProjectedSource {
                 "source path reverse record differs".into(),
             ));
         }
-        Self::from_authenticated(owner, reference, record, source_files, context)
+        Self::from_authenticated(
+            owner,
+            reference,
+            source_owners,
+            record,
+            source_files,
+            context,
+        )
     }
 
     /// Construct from a source already checked against the path and selected cut.
     pub(super) fn from_authenticated(
         owner: OwnerKey,
         reference: ObjectRef,
+        source_owners: MapRoot,
         record: super::SourceRecordOwner,
         source_files: bool,
         context: &mut ReadContext<'_>,
@@ -264,14 +187,21 @@ impl SelectedProjectedSource {
             None
         };
         Ok(Self {
-            owner,
-            reference,
+            authority: AuthenticatedSource {
+                root: source_owners,
+                owner,
+                reference,
+            },
             file_record,
         })
     }
 }
 
 /// Append projected members up to the reserved cap sentinel by reverse lookup.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the source proof is checked against the current source and coverage roots"
+)]
 pub(super) fn select_projected_source(
     source: &SelectedProjectedSource,
     coverage: &CoverageBinding,
@@ -282,8 +212,12 @@ pub(super) fn select_projected_source(
     source_files: bool,
     context: &mut ReadContext<'_>,
 ) -> Result<(), IndexError> {
-    let source_owner = source.owner;
-    let source = source.reference;
+    if source.authority.root != source_owners {
+        return Err(IndexError::CorruptObject(
+            "projected reverse source stamp differs".into(),
+        ));
+    }
+    let source_owner = source.authority.owner;
     let prefix = owner_map_key(source_owner);
     let limit = selected.limit;
     if selected.owners.len() >= limit {
@@ -321,19 +255,9 @@ pub(super) fn select_projected_source(
                 *value,
                 coverage,
                 Some(projection),
-                source_owners,
+                SourceScope::VerifiedProjection(&source.authority),
                 context,
             )?;
-            let contribution = owner.contribution.ok_or_else(|| {
-                IndexError::CorruptObject("projected reverse owner lacks contribution".into())
-            })?;
-            if contribution.source_owner != Some(source_owner)
-                || contribution.source != Some(source)
-            {
-                return Err(IndexError::CorruptObject(
-                    "projected reverse source stamp differs".into(),
-                ));
-            }
             last = Some(pair);
             if source_files && owner.has_no_candidate(true) {
                 continue;
@@ -374,11 +298,14 @@ fn authenticate_projected_source(
             "projected lexical source violates selected path constraint".into(),
         ));
     }
-    Ok(SelectedProjectedSource {
-        owner: source_owner,
-        reference: source,
-        file_record: None,
-    })
+    SelectedProjectedSource::from_authenticated(
+        source_owner,
+        source,
+        source_owners,
+        record,
+        false,
+        context,
+    )
 }
 
 pub(super) fn prepare(
@@ -394,7 +321,7 @@ pub(super) fn prepare(
     let Some(eligible) = &request.lexical_eligibility else {
         return Ok(None);
     };
-    if eligible.view != view {
+    if eligible.view() != view {
         return Err(IndexError::SnapshotUnavailable);
     }
     if matches!(coverage.status, CoverageStatus::Complete)
@@ -410,7 +337,7 @@ pub(super) fn prepare(
         return Err(IndexError::RebuildRequired);
     }
     let durable_count = eligible
-        .entries
+        .entries()
         .iter()
         .filter(|entry| matches!(entry.source, NativeTextHitSource::Durable(_)))
         .count();
@@ -427,8 +354,8 @@ pub(super) fn prepare(
     } else {
         durable_count
     };
-    let mut selected = SelectedLexicalScope::reserve(selected_capacity, context)?;
-    for entry in &eligible.entries {
+    let mut selected = SelectedLexicalScope::new(selected_capacity, 0);
+    for entry in eligible.entries() {
         context.budget.checkpoint()?;
         if let NativeTextHitSource::Overlay { revision } = entry.source {
             let document = match request
@@ -539,61 +466,32 @@ pub(super) fn prepare(
     Ok(Some(selected))
 }
 
-pub(super) fn search(
-    query: &SearchQuery<'_>,
-    context: &mut ReadContext<'_>,
-) -> Result<Option<SearchResult>, IndexError> {
-    let Some(owners) = query.lexical_owners else {
-        return Ok(None);
-    };
-    let overlay_count = query
-        .lexical_eligibility
-        .ok_or(IndexError::SnapshotUnavailable)?
-        .overlay_count()?;
-    rank_selected(query, owners, overlay_count, None, context).map(Some)
-}
-
 /// Exact ranking over an already authenticated finite selected-owner set.
-/// `overlay_count` is the caller's original cap charge for overlay rows.
 pub(super) fn rank_selected(
     query: &SearchQuery<'_>,
-    owners: &[SelectedOwner],
-    overlay_count: u32,
-    file_record: Option<&std::sync::Arc<super::source_file::SharedFileRecord>>,
+    selected: SelectedLexicalScope,
+    file_record: Option<std::sync::Arc<super::source_file::SharedFileRecord>>,
     context: &mut ReadContext<'_>,
 ) -> Result<SearchResult, IndexError> {
     let norm = validate_search_query(query)?;
-    let top_k = usize::try_from(query.top_k).map_err(|_error| IndexError::ResourceLimited)?;
-    let bytes = top_k
-        .checked_mul(std::mem::size_of::<RankedHit>())
-        .ok_or(IndexError::ResourceLimited)?;
-    let _heap_memory = context.budget.reserve_memory(
-        u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
-        MemoryLifetime::Temporary,
-    )?;
-    let mut heap = BinaryHeap::new();
-    heap.try_reserve_exact(top_k)
-        .map_err(|_error| IndexError::ResourceLimited)?;
-    if heap.capacity() > top_k {
-        return Err(IndexError::ResourceLimited);
-    }
+    let mut heap = RankedHits::for_query(query, context.budget)?;
     let mut scanned = 0_u32;
     let mut stale = 0_u32;
     let mut traversal = NativeSemanticTraversal::ExactExhausted;
     let durable_limit = query
         .max_owners
-        .checked_sub(overlay_count)
+        .checked_sub(selected.overlay_owners)
         .ok_or(IndexError::ResourceLimited)?;
-    for selected in owners {
+    for owner in &selected.owners {
         context.budget.checkpoint()?;
         if scanned == durable_limit {
             traversal = NativeSemanticTraversal::ExactCapped;
             break;
         }
         scanned = scanned.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-        if selected.coverage.covered == Some(selected.coverage.desired)
-            && selected.coverage.searchable.is_none()
-            && selected
+        if owner.coverage.covered == Some(owner.coverage.desired)
+            && owner.coverage.searchable.is_none()
+            && owner
                 .contribution
                 .is_some_and(|value| value.output.is_none())
         {
@@ -601,30 +499,33 @@ pub(super) fn rank_selected(
             // member. It still consumes one selected-owner scan slot.
             continue;
         }
-        if selected.coverage.covered != Some(selected.coverage.desired)
-            || selected.coverage.searchable.is_none()
+        if owner.coverage.covered != Some(owner.coverage.desired)
+            || owner.coverage.searchable.is_none()
         {
             stale = stale.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             continue;
         }
-        let member = selected.current_member(query, context)?;
+        let member = owner.current_member(query, context)?;
         let _rescored = rank_member(
+            owner,
             &member,
-            selected
+            owner
                 .contribution
                 .map(|contribution| SelectedArtifactInput::Projection {
                     contribution,
                     file_record: file_record
+                        .as_ref()
                         .cloned()
                         .map(super::source_file::FileRecord::Shared),
                 }),
             None,
             query,
             norm,
-            top_k,
             &mut heap,
             context,
         )?;
     }
-    finish_ranked(query, norm, top_k, heap, scanned, stale, traversal, context)
+    drop(selected);
+    drop(file_record);
+    finish_ranked(query, norm, heap, scanned, stale, traversal, context)
 }

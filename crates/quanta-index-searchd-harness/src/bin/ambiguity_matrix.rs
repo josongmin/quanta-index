@@ -8,7 +8,6 @@
 //! `artifacts/search-quality/ambiguity/latest/`, and exits non-zero on any
 //! invariant failure. Authority behind `just rust-verify-quality-ambiguity`.
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use quanta_index_searchd_harness::ambiguity::{run_ambiguity_report, write_artifacts};
@@ -24,13 +23,10 @@ fn provenance()
     ))
 }
 
-fn parse_out_dir() -> PathBuf {
-    let mut args = std::env::args().skip(1);
-    match (args.next().as_deref(), args.next()) {
-        (Some("--out-dir"), Some(path)) => PathBuf::from(path),
-        _ => PathBuf::from("artifacts/search-quality/ambiguity/latest"),
-    }
-}
+#[path = "common/artifact_out_dir.rs"]
+mod artifact_out_dir;
+
+const DEFAULT_OUT_DIR: &str = "artifacts/search-quality/ambiguity/latest";
 
 #[expect(
     clippy::print_stderr,
@@ -38,7 +34,13 @@ fn parse_out_dir() -> PathBuf {
     reason = "rail binary reports rail status on stdout/stderr by design"
 )]
 fn main() -> ExitCode {
-    let out_dir = parse_out_dir();
+    let out_dir = match artifact_out_dir::parse(std::env::args_os().skip(1), DEFAULT_OUT_DIR) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("ambiguity_matrix: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let (git_head, host) = match provenance() {
         Ok(value) => value,
         Err(err) => {
@@ -79,5 +81,41 @@ fn main() -> ExitCode {
     } else {
         eprintln!("repairability rail RED: one or more invariants failed");
         ExitCode::FAILURE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{ffi::OsString, path::PathBuf};
+
+    #[test]
+    fn invalid_arguments_cannot_select_the_default_artifact_directory() {
+        assert_eq!(
+            artifact_out_dir::parse([], DEFAULT_OUT_DIR).ok(),
+            Some(PathBuf::from("artifacts/search-quality/ambiguity/latest"))
+        );
+        assert_eq!(
+            artifact_out_dir::parse(
+                ["--out-dir", "custom output"].map(OsString::from),
+                DEFAULT_OUT_DIR,
+            )
+            .ok(),
+            Some(PathBuf::from("custom output"))
+        );
+        let invalid: [&[&str]; 5] = [
+            &["--out-dir"],
+            &["--out-dir", ""],
+            &["--out-dir", "--help"],
+            &["--output-dir", "wrong"],
+            &["--out-dir", "custom", "extra"],
+        ];
+        for args in invalid {
+            assert!(
+                artifact_out_dir::parse(args.iter().copied().map(OsString::from), DEFAULT_OUT_DIR,)
+                    .is_err(),
+                "{args:?}"
+            );
+        }
     }
 }

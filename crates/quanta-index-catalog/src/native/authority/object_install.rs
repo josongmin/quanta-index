@@ -3,8 +3,8 @@
 //! Physical reclamation remains disabled; an orphan reservation over-retains
 //! its children until a later install/reclaim authority can reconcile it.
 
-use quanta_index_core::index::{IndexError, RegisteredObject};
-use rusqlite::{Connection, Transaction, params};
+use quanta_index_core::index::{IndexError, RegisteredObject, WorkBudget};
+use rusqlite::{Connection, Transaction, params, types::ValueRef};
 
 use super::registration_codec::{
     MAX_ENCODED_BYTES, decode as decode_registration, encode as encode_registration,
@@ -86,41 +86,52 @@ pub(super) fn require_edge_ledger(
     reference: quanta_index_core::index::ObjectRef,
     children: &[quanta_index_core::index::ObjectRef],
     ledger: EdgeLedger,
+    budget: Option<&WorkBudget>,
 ) -> Result<(), IndexError> {
     if children.len() > MAX_CHILDREN {
         return Err(ledger.error(EdgeProblem::Shape));
     }
     // One contiguous key array replaces a separate heap allocation per key.
-    let mut expected = children.iter().map(|child| child.0.0).collect::<Vec<_>>();
+    let mut expected = Vec::new();
+    expected
+        .try_reserve_exact(children.len())
+        .map_err(|_| IndexError::ResourceLimited)?;
+    if expected.capacity() > children.len() {
+        return Err(IndexError::ResourceLimited);
+    }
+    expected.extend(children.iter().map(|child| child.0.0));
     expected.sort_unstable();
     expected.dedup();
-    let parent = object_key(reference);
+    let parent = &reference.0.0;
     let mut statement = connection
         .prepare_cached(ledger.query())
         .map_err(|error| sql(&error))?;
-    let rows = statement
-        .query_map(params![&parent], |row| {
-            Ok((
-                row.get::<_, Option<Vec<u8>>>(0)?,
-                row.get::<_, Option<Vec<u8>>>(1)?,
-            ))
-        })
+    let mut rows = statement
+        .query(params![parent.as_slice()])
         .map_err(|error| sql(&error))?;
     let mut count = 0_usize;
-    for row in rows {
-        let (child, checksum) = row.map_err(|error| sql(&error))?;
-        let (Some(child), Some(checksum)) = (child, checksum) else {
+    loop {
+        if let Some(budget) = budget {
+            budget.checkpoint()?;
+        }
+        let Some(row) = rows.next().map_err(|error| sql(&error))? else {
+            break;
+        };
+        let (ValueRef::Blob(child), ValueRef::Blob(checksum)) = (
+            row.get_ref(0).map_err(|error| sql(&error))?,
+            row.get_ref(1).map_err(|error| sql(&error))?,
+        ) else {
             return Err(ledger.error(EdgeProblem::Shape));
         };
-        if count == MAX_CHILDREN {
+        if count == MAX_CHILDREN || child.len() != 32 || checksum.len() != 32 {
             return Err(ledger.error(EdgeProblem::Shape));
         }
-        if checksum != fields_digest(ledger.domain(), &(&parent, &child))? {
+        if checksum != edge_digest(ledger, parent, child)? {
             return Err(ledger.error(EdgeProblem::Digest));
         }
         if expected
             .get(count)
-            .is_none_or(|wanted| wanted.as_slice() != child.as_slice())
+            .is_none_or(|wanted| wanted.as_slice() != child)
         {
             return Err(ledger.error(EdgeProblem::Mismatch));
         }
@@ -130,6 +141,24 @@ pub(super) fn require_edge_ledger(
         return Err(ledger.error(EdgeProblem::Count));
     }
     Ok(())
+}
+
+fn edge_digest(
+    ledger: EdgeLedger,
+    parent: &[u8; 32],
+    child: &[u8],
+) -> Result<[u8; 32], IndexError> {
+    // Two JSON arrays of 32 byte values, with the outer tuple's delimiters.
+    const MAX_EDGE_JSON_BYTES: usize = 2 * (2 + 32 * 3 + 31) + 3;
+    let mut bytes = [0; MAX_EDGE_JSON_BYTES];
+    let mut remaining = bytes.as_mut_slice();
+    serde_json::to_writer(&mut remaining, &(parent.as_slice(), child))
+        .map_err(|error| IndexError::Storage(format!("encode native catalog row: {error}")))?;
+    let written = MAX_EDGE_JSON_BYTES
+        .checked_sub(remaining.len())
+        .ok_or(IndexError::ResourceLimited)?;
+    let encoded = bytes.get(..written).ok_or(IndexError::ResourceLimited)?;
+    Ok(digest(ledger.domain(), encoded))
 }
 
 pub(super) fn checked_object(object: &RegisteredObject) -> Result<RegisteredObject, IndexError> {
@@ -264,6 +293,7 @@ fn provisional_matches(
         object.reference,
         &object.children,
         EdgeLedger::Provisional,
+        None,
     )?;
     Ok(true)
 }

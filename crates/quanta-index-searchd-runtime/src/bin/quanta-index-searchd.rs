@@ -6,20 +6,12 @@
 //! failures (config, lease, adapter construction) are startup failures
 //! and exit `70` too.
 //!
-//! The same process entry carries the offline state commands (SEP-21 P10 /
-//! S21-11): `backup-state`, `restore-state` and
-//! `verify-state` run the composition root's offline workflow and exit `0`
-//! or `70`. An offline invocation never falls through to `serve`.
+//! Native recovery and export commands are served by the same entry. Retired
+//! `backup-state`, `restore-state`, `verify-state` and `serve` commands exit 70.
 
 use std::process::ExitCode;
 
 use quanta_index_searchd::SearchdCommand;
-#[cfg(feature = "legacy-tantivy")]
-use quanta_index_searchd_runtime::run_supervised;
-#[cfg(feature = "legacy-tantivy")]
-use quanta_index_searchd_runtime::state_migration::{
-    render_offline_outcome_v1, run_offline_state_command_v1,
-};
 
 /// One operator-facing boot/exit notice, on stderr: the process entry
 /// is the one place these are written; the runtime keeps them as data.
@@ -29,17 +21,6 @@ use quanta_index_searchd_runtime::state_migration::{
 )]
 fn log(line: &str) {
     eprintln!("searchd: {line}");
-}
-
-/// One operator-facing offline notice, on stdout: the offline workflow's
-/// receipt line, so a scripted cutover can read it.
-#[expect(
-    clippy::print_stdout,
-    reason = "the process entry is the one place the offline workflow's receipt line is written"
-)]
-#[cfg(feature = "legacy-tantivy")]
-fn report(line: &str) {
-    println!("{line}");
 }
 
 fn run_native(
@@ -122,36 +103,9 @@ fn main() -> ExitCode {
             }
         };
     }
-    #[cfg(not(feature = "legacy-tantivy"))]
     if command.offline_operation().is_some() {
         log("legacy state command unavailable in Native-only build");
         return ExitCode::from(70);
-    }
-    #[cfg(feature = "legacy-tantivy")]
-    if let Some(offline) = command.offline_operation().cloned() {
-        let outcome = quanta_index_searchd::app::config::SearchdConfig::from_env_with_state_root(
-            offline.source_root.clone(),
-        )
-        .and_then(|config| {
-            run_offline_state_command_v1(
-                &offline,
-                &config,
-                &quanta_index_core::RequestBudgetV1::unbounded(),
-            )
-        });
-        return match outcome {
-            Ok(outcome) => {
-                report(&render_offline_outcome_v1(&offline, &outcome));
-                ExitCode::SUCCESS
-            }
-            Err(error) => {
-                log(&format!(
-                    "{} failed: {error}",
-                    offline.operation.command_name()
-                ));
-                ExitCode::from(70)
-            }
-        };
     }
     if let Some(native) = command.native_command() {
         log("native_boot_stage=config_preflight");
@@ -169,23 +123,6 @@ fn main() -> ExitCode {
             }
         };
     }
-    #[cfg(not(feature = "legacy-tantivy"))]
-    {
-        log("legacy serve unavailable in Native-only build");
-        ExitCode::from(70)
-    }
-    #[cfg(feature = "legacy-tantivy")]
-    match run_supervised(command) {
-        Ok(outcome) => {
-            let code = outcome.exit_code();
-            if code != 0 {
-                log(&format!("supervised exit {code}: {outcome:?}"));
-            }
-            u8::try_from(code).map_or_else(|_out_of_range| ExitCode::from(70), ExitCode::from)
-        }
-        Err(error) => {
-            log(&format!("boot failed: {error}"));
-            ExitCode::from(70)
-        }
-    }
+    log("legacy serve unavailable in Native-only build");
+    ExitCode::from(70)
 }

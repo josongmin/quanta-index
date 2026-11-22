@@ -21,11 +21,12 @@ use std::sync::Arc;
 
 use quanta_index_contract::{
     AuxEpochV1, CursorAuxEpochKindV2, CursorAuxEpochV2, CursorRouteV2, LqQuery,
-    QueryResultWindowV1, SearchPlaneStructuralQueryResponse, StructuralCandidate,
-    StructuralCursorV1, StructuralQueryRequest,
+    QueryResultWindowV1, SearchPlaneStructuralQueryResponse, StructuralCursorV1,
+    StructuralQueryRequest,
 };
 use quanta_index_core::{
-    CoreError, QueryRouteV1, RequestBudgetV1, StructuralService, validate_query_top_k,
+    CoreError, QueryRouteV1, RequestBudgetV1, StructuralMatchCandidate, StructuralService,
+    domains::structural::StructuralProducerPort, validate_query_top_k,
 };
 
 use crate::lowering::admit_structural_where_regex_cardinality;
@@ -42,9 +43,11 @@ use crate::query_dispatcher::routes::structural::eval::{
 };
 use crate::query_dispatcher::routes::structural::lexical_leaves::LexicalSubexprEvaluator;
 use crate::query_dispatcher::routes::structural::lowering::{
-    extract_structural_filters, lower_structural_query_request,
+    extract_structural_filters, lower_structural_query_request, lower_structural_text_query,
 };
-use crate::query_dispatcher::routes::structural::projection::project_structural_page;
+use crate::query_dispatcher::routes::structural::projection::{
+    project_native_structural_hit, project_structural_page, project_structural_query_candidate,
+};
 use crate::query_dispatcher::routes::structural::read::StructuralRead;
 use crate::query_dispatcher::routes::structural::universe::build_pinned_structural_universe;
 use crate::query_dispatcher::window::pageable_window_v2;
@@ -153,7 +156,11 @@ impl SearchPlaneDispatcher {
             .transpose()?;
         Ok(SearchPlaneStructuralQueryResponse {
             generation: pin,
-            results: page.results,
+            results: page
+                .results
+                .into_iter()
+                .map(project_structural_query_candidate)
+                .collect(),
             window,
             read_epoch: structural.epoch,
             examined: page.examined,
@@ -172,59 +179,125 @@ impl SearchPlaneDispatcher {
         cursor: Option<&StructuralCursorV1>,
         budget: &RequestBudgetV1,
     ) -> Result<StructuralPage, CoreError> {
-        if !structural_expr_has_structural_leaf(&lowered.expr) {
-            return Err(structural_invalid_request(
-                "query must include at least one structural `match { ... }` leaf",
-            ));
-        }
-        admit_structural_where_regex_cardinality(&lowered.expr)?;
-        let has_lexical = structural_expr_has_non_structural_leaf(&lowered.expr);
-        let requested_lang = extract_structural_requested_lang(&lowered.expr, has_lexical)?;
-        let (requested_lang, executable_filters) =
-            extract_structural_filters(lowered, requested_lang.as_deref())?;
-        let seed = if structural_expr_is_pure_negative_root(&lowered.expr) {
-            Some(build_pinned_structural_universe(
-                read.pin,
-                read.state,
-                requested_lang.as_deref(),
-                &executable_filters,
-            )?)
-        } else {
-            None
-        };
-        let service = StructuralService::new(Arc::clone(&self.structural_producer));
-        let mut ctx = StructuralEvalContext::default();
-        let lexical_eval = if has_lexical {
-            Some(LexicalSubexprEvaluator {
-                searcher: view.lexical()?.as_ref(),
-                read,
-                query: lowered,
-                budget,
-            })
-        } else {
-            None
-        };
-        budget.checkpoint("structural:execute")?;
-        let candidates = evaluate_structural_expr(
-            &mut ctx,
-            &service,
+        execute_structural_authority_page(
+            Some(view),
+            Arc::clone(&self.structural_producer),
             read,
-            &lowered.expr,
+            lowered,
+            top_k,
+            cursor,
+            budget,
+        )
+    }
+}
+
+pub fn execute_native_structural_v1(
+    producer: Arc<dyn StructuralProducerPort + Send + Sync>,
+    state: &crate::readiness::StructuralAuthorityState,
+    pin: &quanta_index_contract::GenerationPin,
+    query: &quanta_index_contract::native_protocol::NativeDslQueryV1,
+    budget: &RequestBudgetV1,
+) -> Result<
+    (
+        Vec<quanta_index_contract::native_protocol::NativeDslStructuralHitV1>,
+        QueryResultWindowV1,
+    ),
+    CoreError,
+> {
+    let lowered = lower_structural_text_query(&query.text)?;
+    // The Native view and projection bind the cursor. This local epoch only
+    // carries the boundary through the shared evaluator and is never emitted.
+    let epoch = AuxEpochV1::GENESIS;
+    let read = StructuralRead { pin, epoch, state };
+    let after = query.after.as_ref().map(|cursor| StructuralCursorV1 {
+        candidate_id: cursor.candidate_id.clone(),
+        aux_epoch: epoch,
+    });
+    let page = execute_structural_authority_page(
+        None,
+        producer,
+        read,
+        &lowered,
+        query.text.top_k,
+        after.as_ref(),
+        budget,
+    )?;
+    let hits = page
+        .results
+        .into_iter()
+        .map(|hit| project_native_structural_hit(hit, state, pin))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((hits, page.window))
+}
+
+fn execute_structural_authority_page(
+    view: Option<&QueryReadViewV2>,
+    producer: Arc<dyn StructuralProducerPort + Send + Sync>,
+    read: StructuralRead<'_>,
+    lowered: &LqQuery,
+    top_k: u32,
+    cursor: Option<&StructuralCursorV1>,
+    budget: &RequestBudgetV1,
+) -> Result<StructuralPage, CoreError> {
+    if !structural_expr_has_structural_leaf(&lowered.expr) {
+        return Err(structural_invalid_request(
+            "query must include at least one structural `match { ... }` leaf",
+        ));
+    }
+    admit_structural_where_regex_cardinality(&lowered.expr)?;
+    let has_lexical = structural_expr_has_non_structural_leaf(&lowered.expr);
+    let requested_lang = extract_structural_requested_lang(&lowered.expr, has_lexical)?;
+    let (requested_lang, executable_filters) =
+        extract_structural_filters(lowered, requested_lang.as_deref())?;
+    let seed = if structural_expr_is_pure_negative_root(&lowered.expr) {
+        Some(build_pinned_structural_universe(
+            read.pin,
+            read.state,
             requested_lang.as_deref(),
             &executable_filters,
-            &lowered.options,
-            seed.as_ref(),
+        )?)
+    } else {
+        None
+    };
+    let service = StructuralService::new(producer);
+    let mut ctx = StructuralEvalContext::default();
+    let lexical_eval = if has_lexical {
+        Some(LexicalSubexprEvaluator {
+            searcher: view
+                .ok_or_else(|| {
+                    structural_invalid_request(
+                        "retained Native Structural requires a tree expression",
+                    )
+                })?
+                .lexical()?
+                .as_ref(),
+            read,
+            query: lowered,
             budget,
-            lexical_eval.as_ref(),
-        )?;
-        select_structural_page(candidates, read.epoch, top_k, cursor)
-    }
+        })
+    } else {
+        None
+    };
+    budget.checkpoint("structural:execute")?;
+    let candidates = evaluate_structural_expr(
+        &mut ctx,
+        &service,
+        read,
+        &lowered.expr,
+        requested_lang.as_deref(),
+        &executable_filters,
+        &lowered.options,
+        seed.as_ref(),
+        budget,
+        lexical_eval.as_ref(),
+    )?;
+    select_structural_page(candidates, read.epoch, top_k, cursor)
 }
 
 /// One page of structural results in candidate-id order.
 #[derive(Debug)]
 struct StructuralPage {
-    results: Vec<StructuralCandidate>,
+    results: Vec<StructuralMatchCandidate>,
     window: QueryResultWindowV1,
     examined: u64,
     next_cursor: Option<StructuralCursorV1>,

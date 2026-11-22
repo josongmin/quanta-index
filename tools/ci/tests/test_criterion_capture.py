@@ -109,7 +109,8 @@ def test_missing_native_sample_refused():
 
 
 @pytest.mark.parametrize("large_log", [False, True])
-def test_replay_refuses_forged_typed_mean(tmp_path, large_log, monkeypatch):
+@pytest.mark.parametrize("feature_flag", ["--all-features", "--no-default-features"])
+def test_replay_refuses_forged_typed_mean(tmp_path, large_log, feature_flag, monkeypatch):
     import evidence_bridge
     import host_monitor
 
@@ -124,7 +125,7 @@ def test_replay_refuses_forged_typed_mean(tmp_path, large_log, monkeypatch):
         "owner",
         "--bench",
         "pipeline",
-        "--all-features",
+        feature_flag,
         "--locked",
         "--no-run",
         "--message-format=json",
@@ -213,6 +214,17 @@ def test_replay_refuses_forged_typed_mean(tmp_path, large_log, monkeypatch):
         },
     }
     capture.replay_run(capture.RunStore(tmp_path), evidence)
+    if feature_flag == "--no-default-features" and not large_log:
+        execution = json.loads(data["execution.json"])
+        execution["features"] = ["legacy-tantivy"]
+        (run / "execution.json").write_text(json.dumps(execution))
+        (run / "build.jsonl").write_bytes(
+            data["build.jsonl"].replace(b'"features": []', b'"features": ["legacy-tantivy"]')
+        )
+        with pytest.raises(ValueError, match="feature/flag inventory differs"):
+            capture.replay_run(capture.RunStore(tmp_path), evidence)
+        (run / "execution.json").write_bytes(data["execution.json"])
+        (run / "build.jsonl").write_bytes(data["build.jsonl"])
     evidence["payload"]["value"] = 42.0
     with pytest.raises(ValueError, match="differs"):
         capture.replay_run(capture.RunStore(tmp_path), evidence)
@@ -501,8 +513,8 @@ def test_direct_child_exit_terminates_same_group_background_descendant(
     if kill_guard_after_report:
         wait_for_terminal = execution._wait_for_terminal
 
-        def kill_reported_guard(process, terminal, sinks, timeout):
-            record = wait_for_terminal(process, terminal, sinks, timeout)
+        def kill_reported_guard(process, terminal, interrupted, sinks, timeout):
+            record = wait_for_terminal(process, terminal, interrupted, sinks, timeout)
             os.kill(process.pid, signal.SIGKILL)
             return record
 

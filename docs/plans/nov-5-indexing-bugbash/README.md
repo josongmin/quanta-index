@@ -144,6 +144,8 @@ Posting batch별 COMMIT 가설과 관측기 wall/표본 한계는 [원 진단](R
 
 ## 남은 순서와 중복 제외
 
+한 파일 DELTA의 Source 본문 복사·재해시와 packed Literal 디렉터리 순회는 [증분 비용 티켓 두 건](../../bugbash/nov-20-native-delta-cost/tickets/README.md)에서 수리한다. XL·Mixed의 최종 제품 수용은 아래 기존 순서를 따른다.
+
 | 순서 | 실제 잔여 | 경계 |
 | --- | --- | --- |
 | 1 | 후행 Native 후보의 XL 32,768 source 원 120초 ACK·검색·재오픈 | r56/r57와 `824629e4` 실패는 각 입력에 유지. 새 후보에서 정확한 지배 비용을 계측하고 [NC-F](../nov-12-native-cutover/tickets/NC-F-integration.md)가 결합 |

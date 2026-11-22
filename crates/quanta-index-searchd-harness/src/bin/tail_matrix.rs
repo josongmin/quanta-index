@@ -1,12 +1,12 @@
 //! `tail_matrix` — latency-tail rail artifact producer + gate (J7Q-04).
 //!
-//! Boots one warm `E2eRuntime`, golden-validates each budgeted route's
+//! Boots one SHA-pinned Legacy daemon and golden-validates each budgeted route's
 //! representative query, then times it `TAIL_SAMPLES` times to read p50/p95/p99
 //! off a sorted sample, and writes the canonical artifacts under
 //! `artifacts/search-quality/tail/latest/`. Per-route budgets are declared in
 //! `route_budgets.json`; `summary.json` is the `BenchArtifactV1` (QI-BB-010):
 //! the exact head of a clean worktree, the warm fixture corpus digest, the
-//! sample configuration digest, the host and the process's peak RSS, with
+//! sample configuration and daemon digests, the host and the daemon's peak RSS, with
 //! the measured tails under `detail`. Authority behind
 //! `just rust-verify-quality-tail`.
 //!
@@ -15,20 +15,15 @@
 //! unresolvable head refuses to write. Latency budgets are advisory on this
 //! host this increment (canonical blocking is the Linux runner).
 
-use std::path::{Path, PathBuf};
+#[path = "common/artifact_out_dir.rs"]
+mod artifact_out_dir;
+
+use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Result as AnyResult;
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::tail::{TailReport, run_tail_report, write_artifacts};
-
-fn parse_out_dir() -> PathBuf {
-    let mut args = std::env::args().skip(1);
-    match (args.next().as_deref(), args.next()) {
-        (Some("--out-dir"), Some(path)) => PathBuf::from(path),
-        _ => PathBuf::from("artifacts/search-quality/tail/latest"),
-    }
-}
 
 fn run(out_dir: &Path) -> AnyResult<TailReport> {
     // Provenance first: a run that cannot be attributed is not started.
@@ -45,7 +40,16 @@ fn run(out_dir: &Path) -> AnyResult<TailReport> {
     reason = "rail binary reports rail status on stdout/stderr by design"
 )]
 fn main() -> ExitCode {
-    let out_dir = parse_out_dir();
+    let out_dir = match artifact_out_dir::parse(
+        std::env::args_os().skip(1),
+        "artifacts/search-quality/tail/latest",
+    ) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("tail_matrix: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let report = match run(&out_dir) {
         Ok(report) => report,
         Err(err) => {

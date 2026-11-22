@@ -31,6 +31,7 @@ enum EventFocus {
     Source,
     Preflight,
     Build,
+    Searchable,
 }
 
 impl EventFocus {
@@ -54,6 +55,7 @@ impl EventFocus {
                     | DiagnosticStageV1::SqliteWork
             ),
             Self::Build => stage == DiagnosticStageV1::BuildPrepare,
+            Self::Searchable => stage == DiagnosticStageV1::NativeSearchablePrepare,
         }
     }
 }
@@ -207,6 +209,128 @@ fn object_port_counts(
         *count = value;
     }
     Ok(counts)
+}
+
+#[test]
+fn validation_only_searchable_prepare_closes_synchronous_refusal() -> TestResult {
+    let spec = InstanceSpec {
+        instance: IndexInstanceId([27; 16]),
+        kind: IndexKind([28; 16]),
+        group: PublicationGroupId([29; 16]),
+        activation: GroupActivation::AsyncCoverage,
+        format: StorageFormatId([30; 16]),
+        ..literal_spec()
+    };
+    let directory = tempfile::tempdir()?;
+    let fixture = Fixture::open_with_owner_validator(
+        directory.path(),
+        Some(AdapterDescriptor {
+            kind: spec.kind,
+            schema: spec.schema,
+            format: spec.format,
+        }),
+    )?;
+    let configured = fixture.configure()?;
+    let operation = key(5, 6, 2);
+    let ingress = fixture.engine.begin_input(operation)?;
+    let profile = fixture.engine.stage_profile(
+        ingress,
+        &IndexProfile {
+            instances: vec![literal_spec(), file_spec(), spec],
+        },
+        &mut budget(),
+    )?;
+    let clock = Arc::new(StepClock::default());
+    let events = Arc::new(BoundedEvents::new(EventFocus::Searchable)?);
+    let context = DiagnosticContextV1::new(DiagnosticCaptureIdV1([96; 16]), clock, events.clone());
+    let root = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(3))?;
+    let (result, _usage) = observed_submit(
+        &fixture,
+        UpdateRequest {
+            operation,
+            expected_view: configured,
+            kind: UpdateKind::Reconfigure { profile },
+        },
+        budget_with_request(traced_request(Some(context.child_context(&root)))),
+    );
+    check_eq!(
+        result?,
+        SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput)),
+        "validation-only owner did not refuse execution"
+    );
+    check_eq!(
+        latest_view(&fixture)?,
+        configured,
+        "refused owner execution advanced the view"
+    );
+    root.finish(DiagnosticTerminalV1::Ok)?;
+    check_eq!(
+        events.rejected.load(Ordering::Relaxed),
+        0,
+        "searchable prepare trace rejected events"
+    );
+    let state = events.state.lock().map_err(|_error| "events poisoned")?;
+    let rows = &state.rows;
+    let starts: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(at, row)| match row.kind {
+            DiagnosticEventKindV1::SpanBegin {
+                span_id,
+                stage: DiagnosticStageV1::NativeSearchablePrepare,
+                lane: DiagnosticLaneV1(3),
+                ..
+            } => Some((at, span_id)),
+            _ => None,
+        })
+        .collect();
+    let [(start_at, span_id)] = starts.as_slice() else {
+        return Err(format!("expected one searchable prepare, observed {starts:?}").into());
+    };
+    let ends: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(at, row)| match row.kind {
+            DiagnosticEventKindV1::SpanEnd {
+                span_id: ended,
+                outcome,
+            } if ended == *span_id => Some((at, outcome)),
+            _ => None,
+        })
+        .collect();
+    let [(end_at, DiagnosticTerminalV1::Error { .. })] = ends.as_slice() else {
+        return Err(format!("searchable prepare did not end once with Error: {ends:?}").into());
+    };
+    for key in [
+        DiagnosticCounterV1::WorkReads,
+        DiagnosticCounterV1::WorkWrites,
+        DiagnosticCounterV1::WorkBytes,
+        DiagnosticCounterV1::WorkMutations,
+    ] {
+        let values: Vec<_> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(at, row)| match row.kind {
+                DiagnosticEventKindV1::Counter {
+                    span_id: counted,
+                    key: observed,
+                    value,
+                } if counted == *span_id && observed == key => Some((at, value)),
+                _ => None,
+            })
+            .collect();
+        let [(at, 0)] = values.as_slice() else {
+            return Err(format!(
+                "searchable prepare work counter missing or nonzero: {key:?} {values:?}"
+            )
+            .into());
+        };
+        check!(
+            *start_at < *at && *at < *end_at,
+            "searchable prepare work counter outside its span"
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -482,6 +606,8 @@ fn source_trace_preserves_publication_cost_and_closes_refused_preflight() -> Tes
                     | DiagnosticEventKindV1::OwnedRenewalRefusal { .. }
                     | DiagnosticEventKindV1::SyncAggregate { .. }
                     | DiagnosticEventKindV1::ObjectInstallAggregate { .. }
+                    | DiagnosticEventKindV1::ManagedInstallCensusBatch { .. }
+                    | DiagnosticEventKindV1::ManagedInstallCensusEntry { .. }
                     | DiagnosticEventKindV1::ObjectKindAggregate { .. }
                     | DiagnosticEventKindV1::AdoptionGroupAggregate { .. }
                     | DiagnosticEventKindV1::Bm25CensusAggregate { .. }

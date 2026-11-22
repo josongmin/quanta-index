@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -65,46 +65,6 @@ def test_terminal_json_preserves_unambiguous_values() -> None:
     ) == {"status": "failed", "counts": {"failed": 1}, "items": [None, True, 1.25]}
 
 
-def _cross_repo_custody_windows(source: str) -> dict[str, tuple[int, int]]:
-    """Locate shell custody around the typed runner and final publication."""
-    markers = {
-        "paired_source": 'cd -- "$semantica_root"',
-        "r5_producer": '"$paired_python" "$quanta_root/tools/ci/paired_r5_result.py"',
-        "r5_end": '--runtime-resolution "$runtime_resolution" --kernel-resolution "$kernel_resolution"\n',
-        "resolution_after": "runtime_resolution_after=",
-        "resolution_drift_end": "  printf 'resolved cross-repo dependency identities changed during proof\\n' >&2\n  exit 1\nfi\n",
-        "final_output": "printf 'paired-daemon-sha256:",
-    }
-    positions = {}
-    start = source.index('export QUANTA_INDEX_SEARCHD_BIN="$custody_binary"')
-    for name, marker in markers.items():
-        positions[name] = source.index(marker, start)
-        start = positions[name] + len(marker)
-    boundaries = (
-        ("r5-producer", "paired_source", "r5_producer"),
-        ("after-resolution", "r5_end", "resolution_after"),
-        ("final-output", "resolution_drift_end", "final_output"),
-    )
-    return {
-        name: (positions[left] + len(markers[left]), positions[right])
-        for name, left, right in boundaries
-    }
-
-
-def _assert_cross_repo_custody(source: str) -> None:
-    guard = re.compile(r"(?m)^[ \t]*require_binary_custody[ \t]*$")
-    windows = _cross_repo_custody_windows(source)
-    for name, (start, end) in windows.items():
-        assert guard.search(source, start, end), f"missing binary custody at {name}"
-    final_start, final_end = windows["final-output"]
-    final = source[final_start:final_end]
-    assert (
-        final.index('require_frozen_source "$quanta_root"')
-        < final.index('require_frozen_source "$semantica_root"')
-        < final.index("require_binary_custody")
-    )
-
-
 def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
     command = subprocess.run(
         ["just", "--dry-run", "rust-verify-hellgate-cross-repo"],
@@ -121,34 +81,24 @@ def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
     # literal and behavior oracles live in test_paired_r5_result.py.
     target = '"$paired_python" "$quanta_root/tools/ci/paired_r5_result.py"'
     assert source.count(target) == 2
-    assert source.index("--verify-resolution-only") < source.index(
-        "just rust-build-release-daemon-fresh"
-    )
+    build = source.index("just rust-build-release-native-daemon")
+    assert source.index("--verify-resolution-only") < build
+    assert "rust-build-release-daemon-fresh" not in source
+    recipes = subprocess.check_output(["just", "--summary"], cwd=REPO_ROOT, text=True).split()
+    assert "rust-build-release-daemon-fresh" not in recipes
     assert '--qbc-lane "$r5_lane"' in source
     assert "-- --list" not in source and "-- --exact --nocapture" not in source
-    build = source.index("just rust-build-release-daemon-fresh")
     compare = source.index('binary_digest="$("$paired_python"')
     assert source.index('require_frozen_source "$quanta_root"') < build
     assert build < compare < source.index(target, compare)
-    assert 'QUANTA_INDEX_SEARCHD_BIN="$custody_binary"' in source
-    _assert_cross_repo_custody(source)
-
-
-@pytest.mark.parametrize(
-    "boundary",
-    (
-        "r5-producer",
-        "after-resolution",
-        "final-output",
-    ),
-)
-def test_cross_repo_hellgate_refuses_missing_boundary_custody(boundary: str) -> None:
-    source = (REPO_ROOT / "scripts/verify-repomap-cross-repo.sh").read_text()
-    start, end = _cross_repo_custody_windows(source)[boundary]
-    guard = re.compile(r"(?m)^[ \t]*require_binary_custody[ \t]*\n")
-    changed = source[:start] + guard.sub("", source[start:end]) + source[end:]
-    with pytest.raises(AssertionError, match="missing binary custody"):
-        _assert_cross_repo_custody(changed)
+    assert '--custody-binary "$custody_binary"' in source
+    runner = source.rindex(target)
+    assert source.rindex("require_binary_custody\n", compare, runner) > compare
+    after_runner = (
+        source[runner:].split('--kernel-resolution "$kernel_resolution"\n', 1)[1].splitlines()
+    )
+    assert len(after_runner) == 3
+    assert all(line.startswith("printf 'paired-") for line in after_runner)
 
 
 @dataclass(frozen=True)
@@ -849,10 +799,14 @@ def test_exact_pair_is_derived_from_live_external_checkout_without_persisting_pa
     jsonschema.Draft202012Validator(schema["properties"]["source_pair"]).validate(source_pair)
 
 
+@pytest.mark.parametrize("scenario", ["complete", "omit-r5", "missing-binding", "advance-head"])
 def test_p12a_manifest_issues_without_p11_or_paired_checkout(
     tmp_path: Path,
     manifest_templates: ManifestTemplates,
+    scenario: str,
 ) -> None:
+    from tools.ci.tests.p11_test_issuer import bind_run, pytest_bytes
+
     root, _ = _fixture_root(tmp_path, manifest_templates)
     terminal_path, terminal = _terminal(root)
     catalog = CHECKER._read_toml(root / "tools/ci/test-authority.toml")
@@ -860,28 +814,18 @@ def test_p12a_manifest_issues_without_p11_or_paired_checkout(
     registry = CHECKER._read_toml(root / "tools/ci/proof-authority.toml")
     proof = next(item for item in registry["proofs"] if item["id"] == "p12a-proof-infrastructure")
     selectors = [paths[target] for target in proof["test_authority_targets"]]
-    cases = sorted(f"{path[:-3].replace('/', '.')}.test_case" for path in selectors)
+    if scenario == "omit-r5":
+        selectors = [path for path in selectors if path != "tools/ci/tests/test_paired_r5_result.py"]
     raw = root / "artifacts/proof-authority/raw"
     inventory = raw / "p12a-inventory.json"
     junit = raw / "p12a-junit.xml"
-    inventory.write_text(
-        json.dumps(
-            {"schema_version": 1, "kind": "pytest", "selector": " ".join(selectors), "tests": cases}
-        ),
-        encoding="utf-8",
-    )
-    junit.write_text(
-        f'<testsuite tests="{len(cases)}" failures="0" errors="0" skipped="0">'
-        + "".join(
-            f'<testcase classname="{case.rsplit(".", 1)[0]}" name="test_case"/>' for case in cases
-        )
-        + "</testsuite>",
-        encoding="utf-8",
-    )
+    listed, events = pytest_bytes(selectors)
+    inventory.write_bytes(listed)
+    junit.write_bytes(events)
     terminal["counts"] = {
-        "selected": len(cases),
-        "executed": len(cases),
-        "passed": len(cases),
+        "selected": len(selectors),
+        "executed": len(selectors),
+        "passed": len(selectors),
         "failed": 0,
         "ignored": 0,
     }
@@ -901,6 +845,10 @@ def test_p12a_manifest_issues_without_p11_or_paired_checkout(
             }
         ],
     }
+    binding = "artifacts/proof-authority/raw/p12a-run-binding.json"
+    if scenario != "missing-binding":
+        bind_run(root, proof, terminal["execution_result"]["runs"][0], binding)
+        terminal["artifacts"].append(binding)
     terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
     kwargs = {
         "root": root,
@@ -909,6 +857,20 @@ def test_p12a_manifest_issues_without_p11_or_paired_checkout(
         "proof_id": "p12a-proof-infrastructure",
         "terminal_input_path": terminal_path,
     }
+    refusals = {
+        "omit-r5": "no passing runner case: proof-paired-r5",
+        "missing-binding": "execution run does not match its registered source binding",
+        "advance-head": "captured execution source differs",
+    }
+    if scenario in refusals:
+        if scenario == "advance-head":
+            (root / proof["owner"]).write_text("# Different source after the run.\n")
+            _run(root, "git", "add", "--", proof["owner"])
+            _run(root, "git", "commit", "-qm", "Advance source after P12A execution")
+        with pytest.raises(WRITER.ManifestRefused, match=refusals[scenario]):
+            WRITER.publish_manifest(**kwargs, paired_checkout=None)
+        assert not (root / proof["artifact"]).exists()
+        return
     WRITER.publish_manifest(**kwargs, paired_checkout=None)
     payload = json.loads(
         (root / "artifacts/proof-authority/p12a-proof-infrastructure.json").read_text()
@@ -916,97 +878,241 @@ def test_p12a_manifest_issues_without_p11_or_paired_checkout(
     assert payload["status"] == "passed"
     assert payload["source_pair"] is None
     assert payload["dependency_receipts"] == []
+    manifest = root / proof["artifact"]
+    archived = root / CHECKER.proof_archive_relative_path(payload, _digest(manifest))
+    original = json.loads(archived.read_bytes())
+    (root / proof["owner"]).write_text("# Advance source after issuance.\n")
+    _run(root, "git", "add", "--", proof["owner"])
+    _run(root, "git", "commit", "-qm", "Advance source after P12A publication")
+    replay = {
+        "root": root,
+        "proof": proof,
+        "manifest_path": archived,
+        "bind_source": False,
+    }
+    assert CHECKER.check_manifest(original, **replay) == []
+    original["source"] = CHECKER.proof_source_snapshot(
+        root, manifest_path=manifest, proof=proof,
+    )
+    assert any(
+        "captured execution source differs" in finding.message
+        for finding in CHECKER.check_manifest(original, **replay)
+    )
 
 
 def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    manifest_templates: ManifestTemplates,
 ) -> None:
-    root, registry = _fixture_root(tmp_path, manifest_templates)
-    registry_path = root / "tools/ci/proof-authority.toml"
-    registry_text = (
-        re.sub(
-            r'id = "p11-cross-repo-cutover"\nauthority_state = "staged"\nexecution_mode = "test-authority"\nstaged_reason = "[^"\n]+"',
-            'id = "p11-cross-repo-cutover"\nauthority_state = "executable"\nexecution_mode = "test-authority"',
-            registry_path.read_text(encoding="utf-8"),
-            count=1,
-        )
-        .replace(
-            'target = "semantica-terminal-receipt"\nfilter = "none"\nsource_binding = "exact-pair"',
-            'target = "semantica-terminal-receipt"\nfilter = "none"\nsource_binding = "exact-pair"',
-        )
-        .replace(
-            'test_authority_targets = []\ndependencies = ["p10-state-migration"]',
-            'test_authority_targets = ["catalog-idempotency"]\ntest_authority_scopes = ["integration-fast"]\ndependencies = ["p10-state-migration"]',
-        )
-        .replace(
-            'command = "just rust-verify-hellgate-cross-repo"',
-            'command = "just proof-p11-cross-repo-cutover"',
-        )
-    )
-    registry_path.write_text(registry_text, encoding="utf-8")
-    with (root / "Justfile").open("a", encoding="utf-8") as handle:
-        handle.write(
-            "proof-p11-cross-repo-cutover:\n    @just rust-profile test-integration-fast\n"
-        )
-    _run(root, "git", "add", "tools/ci/proof-authority.toml", "Justfile")
-    _run(root, "git", "commit", "-qm", "activate exact-pair fixture")
-    registry = CHECKER._read_toml(registry_path)
-    checkout = _paired_checkout(tmp_path, manifest_templates)
-    terminal_path, terminal = _terminal(root)
-    proof = next(proof for proof in registry["proofs"] if proof["id"] == "p11-cross-repo-cutover")
-    daemon = root / "bin/searchd"
-    daemon.parent.mkdir()
-    daemon.write_bytes(b"release-daemon")
-    for dependency_id in proof["dependencies"]:
-        dependency = next(item for item in registry["proofs"] if item["id"] == dependency_id)
-        dependency_path = root / dependency["artifact"]
-        dependency_path.parent.mkdir(parents=True, exist_ok=True)
-        dependency_payload = {
-            "proof_id": dependency_id,
-            "source": {
-                "head": "a" * 40,
-                "dirty_digest": "sha256:" + "b" * 64,
-                "branch": "fixture",
-                "upstream": None,
-                "merge_base": None,
-            },
-            "source_pair": None,
-        }
-        dependency_bytes = (
-            json.dumps(dependency_payload, sort_keys=True, indent=2) + "\n"
-        ).encode()
-        dependency_path.write_bytes(dependency_bytes)
-        dependency_digest = _digest(dependency_path)
-        archive_relative = CHECKER.proof_archive_relative_path(
-            dependency_payload,
-            dependency_digest,
-        )
-        archive_path = root / archive_relative
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
-        archive_path.write_bytes(dependency_bytes)
-    terminal["environment"]["host"]["profile"] = "linux-production-like"
-    terminal["environment"]["os"] = "linux"
-    terminal["daemon_binary"] = "bin/searchd"
-    _add_nextest_run(root, terminal, package="quanta-index-catalog", binary="idempotency")
-    terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
+    from tools.ci.tests import test_write_proof_aggregate as release_fixture
+
+    root, registry = release_fixture._build_fixture_root(tmp_path, executable=True)
+    checkout = release_fixture._build_paired_checkout(tmp_path)
+    release_fixture._write_dependency_manifests(root, registry, checkout)
+    by_id = {entry["id"]: entry for entry in registry["proofs"]}
+    proof = by_id[release_fixture.PAIR_PROOF]
+    fixture = json.loads((root / proof["artifact"]).read_text())
+    from tools.ci import paired_r5_release as release
+    from tools.ci.tests.p11_test_issuer import sign_statement
+
     monkeypatch.setattr(WRITER.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(WRITER.platform, "machine", lambda: fixture["environment"]["arch"])
+    env = {**fixture["environment"], "host": release_fixture.RELEASE_HOST_INPUT}
+    monkeypatch.setattr(release, "observed_host_environment", lambda: env.copy())
+    monkeypatch.setattr(release.p11_attestation, "sign", sign_statement)
+    source = root / "artifacts/proof-authority/raw/pair"
+    candidate = json.loads((source / release.INDEX).read_bytes())
+    p10 = json.loads((root / by_id["p10-state-migration"]["artifact"]).read_bytes())
+    admission = release.admit_release(root, checkout, None, preflight_signer=False)
+    assert admission["binary_path"] == p10["daemon_binary"]["path"]
+    assert admission["binding"]["daemon_sha256"] == p10["daemon_binary"]["sha256"]
+    assert admission["binding"]["state_root_format"] == p10["state_root_format"]
+    with pytest.raises(ValueError, match="different daemon or state-root format"):
+        release.admit_release(root, checkout, "0" * 64, preflight_signer=False)
 
-    original_load_checker = WRITER._load_checker
+    dependency = root / admission["binding"]["dependency_receipts"][0]["path"]
+    dependency_bytes = dependency.read_bytes()
+    with monkeypatch.context() as patch:
+        writer = release._writer()
+        resolve = writer._resolve_dependencies
 
-    def load_checker_without_nested_fixture_validation():
-        checker = original_load_checker()
-        original_check_manifest = checker.check_manifest
+        def replace_resolved_receipt(*args):
+            receipts = resolve(*args)
+            dependency.write_bytes(dependency_bytes + b"\n")
+            return receipts
 
-        def check_manifest_without_nested_authority(*args, **kwargs):
-            kwargs["proof_by_id"] = None
-            return original_check_manifest(*args, **kwargs)
+        patch.setattr(writer, "_resolve_dependencies", replace_resolved_receipt)
+        try:
+            with pytest.raises(ValueError, match="artifact digest mismatch"):
+                release.admit_release(root, checkout, None, preflight_signer=False)
+        finally:
+            dependency.write_bytes(dependency_bytes)
+    from types import SimpleNamespace
 
-        checker.check_manifest = check_manifest_without_nested_authority
-        return checker
+    physical_reads = []
 
-    monkeypatch.setattr(WRITER, "_load_checker", load_checker_without_nested_fixture_validation)
+    def read_run(path):
+        physical_reads.append(path)
+        raw = path.read_bytes()
+        receipt = json.loads(raw)
+        stdout, stderr = (path.with_name(n).read_bytes() for n in ("stdout.log", "stderr.log"))
+
+        def digest(blob):
+            return hashlib.sha256(blob).hexdigest()
+
+        custody = {
+            "lane_id": receipt["lane"],
+            "run_id": receipt["last_run_id_v1"],
+            "receipt_path": str(path),
+            "receipt_sha256": digest(raw),
+            "execution_root": receipt["lane_execution_root_v1"],
+            "target_root": receipt["target_dir"],
+            "stdout_path": str(path.with_name("stdout.log")),
+            "stdout_sha256": digest(stdout),
+            "stderr_path": str(path.with_name("stderr.log")),
+            "stderr_sha256": digest(stderr),
+        }
+        return SimpleNamespace(
+            run=SimpleNamespace(
+                run_id=receipt["last_run_id_v1"],
+                result_directory=path.parent,
+                command_cwd=Path(receipt["command_cwd_v1"]),
+                execution_root=Path(receipt["lane_execution_root_v1"]),
+                command=tuple(receipt["command"]),
+                lane=receipt["lane"],
+                exit_code=receipt["last_exit_code"],
+            ),
+            receipt_payload_v1=lambda: receipt,
+            receipt_bytes=raw,
+            receipt_digest=digest(raw),
+            process_exit_code_v1=receipt["command_exit_code_v1"],
+            stdout=stdout,
+            stderr=stderr,
+            custody_payload_v1=lambda: custody,
+        )
+
+    owner = SimpleNamespace(campaign_source_snapshot_digest_v1=lambda _: "a" * 64)
+    monkeypatch.setattr(
+        release,
+        "_qbc_modules",
+        lambda _: (
+            SimpleNamespace(read_completed_run_receipt_at_path_v1=read_run),
+            None,
+            SimpleNamespace(_campaign_cargo_admission_owner_v1=lambda: owner),
+        ),
+    )
+
+    def finalize(check):
+        def check_boundary(*_, archive, cases):
+            assert archive == root / p10["daemon_binary"]["path"]
+            assert cases == release.r5_cases(proof)
+            check()
+
+        monkeypatch.setattr(release, "verify_pair_boundary", check_boundary)
+        return release.prepare_terminal(
+            root, checkout, source, candidate, admission, lane="fixture"
+        )
+
+    def refuse_final_check():
+        raise ValueError("fixture final resolver changed")
+
+    raw_root = (root / proof["artifact"]).parent / "raw"
+    with pytest.raises(ValueError, match="final resolver changed"):
+        finalize(refuse_final_check)
+    assert not list(raw_root.glob("paired-*/*.sig"))
+    assert len(set(physical_reads)) == 4
+
+    def replace_p10_during_final_resolver():
+        dependency.write_bytes(dependency_bytes + b"\n")
+
+    try:
+        with pytest.raises(ValueError, match="current alias differs from its immutable archive"):
+            finalize(replace_p10_during_final_resolver)
+        assert not list(raw_root.glob("paired-*/*.sig"))
+        assert not list(raw_root.glob("paired-*/terminal.json"))
+    finally:
+        dependency.write_bytes(dependency_bytes)
+
+    for path, refusal in [
+        (dependency, "current alias differs from its immutable archive"),
+        (root / admission["binary_path"], "release daemon bytes changed during proof"),
+        (checkout / proof["paired_dependency_lock"], "paired release inputs changed before publication"),
+    ]:
+        with monkeypatch.context() as temporary:
+            prior = path.read_bytes()
+
+            def replace_during_signing(*args, target=path, old=prior, **kwargs):
+                signature = sign_statement(*args, **kwargs)
+                target.write_bytes(old + b"\n")
+                return signature
+
+            temporary.setattr(release.p11_attestation, "sign", replace_during_signing)
+            try:
+                with pytest.raises(ValueError, match=refusal):
+                    finalize(lambda: None)
+                assert not list(raw_root.glob("paired-*/*.sig"))
+                assert not list(raw_root.glob("paired-*/terminal.json"))
+            finally:
+                path.write_bytes(prior)
+
+    with monkeypatch.context() as temporary:
+        prior_candidates = set(raw_root.glob("paired-*"))
+
+        def replace_staged_output_during_signing(*args, **kwargs):
+            signature = sign_statement(*args, **kwargs)
+            (candidate_dir,) = set(raw_root.glob("paired-*")) - prior_candidates
+            (candidate_dir / "caller-run-stdout.log").write_bytes(b"changed staged output")
+            return signature
+
+        temporary.setattr(release.p11_attestation, "sign", replace_staged_output_during_signing)
+        with pytest.raises(ValueError, match="staged QBC evidence changed during signing"):
+            finalize(lambda: None)
+        assert not list(raw_root.glob("paired-*/*.sig"))
+        assert not list(raw_root.glob("paired-*/terminal.json"))
+
+    stream = physical_reads[-1].with_name("stdout.log")
+    original = stream.read_bytes()
+    stream.write_bytes(b"changed original output")
+    with pytest.raises(ValueError, match="physical completed run"):
+        finalize(lambda: None)
+    assert not list(raw_root.glob("paired-*/*.sig"))
+    stream.write_bytes(original)
+    with monkeypatch.context() as temporary:
+
+        def refuse_signer(*_, **__):
+            raise OSError("fixture signing service unavailable")
+
+        temporary.setattr(release.p11_attestation, "sign", refuse_signer)
+        with pytest.raises(OSError, match="signing service unavailable"):
+            finalize(lambda: None)
+        assert not list(raw_root.glob("paired-*/*.sig"))
+        assert not list(raw_root.glob("paired-*/terminal.json"))
+    with monkeypatch.context() as temporary:
+
+        def refuse_signature_write(*_):
+            raise OSError("fixture signature storage error")
+
+        temporary.setattr(release, "_write_output_temporary", refuse_signature_write)
+        with pytest.raises(OSError, match="signature storage error"):
+            finalize(lambda: None)
+        assert not list(raw_root.glob("paired-*/*.sig"))
+        assert not list(raw_root.glob("paired-*/terminal.json"))
+    with monkeypatch.context() as temporary:
+        write = release._write_output_temporary
+
+        def refuse_terminal_write(parent, name, content):
+            if name == "terminal.json":
+                assert list(raw_root.glob("paired-*/*.sig"))
+                raise OSError("fixture terminal storage error")
+            return write(parent, name, content)
+
+        temporary.setattr(release, "_write_output_temporary", refuse_terminal_write)
+        with pytest.raises(OSError, match="terminal storage error"):
+            finalize(lambda: None)
+        assert not list(raw_root.glob("paired-*/*.sig"))
+        assert not list(raw_root.glob("paired-*/terminal.json"))
+    terminal_path = finalize(lambda: None)
+    terminal = json.loads(terminal_path.read_bytes())
 
     output, _, status = WRITER.publish_manifest(
         root=root,
@@ -1029,12 +1135,13 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
             schema=schema,
             root=root,
             bind_source=True,
+            proof_by_id=by_id,
             paired_checkouts={proof["paired_repository"]: checkout},
         )
         == []
     )
     forged = dict(payload)
-    forged["counts"] = {"selected": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0}
+    forged["counts"] = {"selected": 3, "executed": 3, "passed": 3, "failed": 0, "ignored": 0}
     findings = CHECKER.check_manifest(
         forged,
         manifest_path=output,
@@ -1042,13 +1149,14 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
         schema=schema,
         root=root,
         bind_source=True,
+        proof_by_id=by_id,
         paired_checkouts={proof["paired_repository"]: checkout},
     )
     assert any("manifest counts differ from raw execution" in item.message for item in findings)
     event_artifact = next(
         item
         for item in payload["artifacts"]
-        if item["source_path"] == "artifacts/proof-authority/raw/nextest.jsonl"
+        if item["source_path"] == terminal["execution_result"]["runs"][0]["events"]
     )
     (root / event_artifact["path"]).write_text("proof passed\n", encoding="utf-8")
     findings = CHECKER.check_manifest(
@@ -1058,6 +1166,7 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
         schema=schema,
         root=root,
         bind_source=True,
+        proof_by_id=by_id,
         paired_checkouts={proof["paired_repository"]: checkout},
     )
     assert any("proof artifact digest mismatch" in item.message for item in findings)
@@ -1166,3 +1275,84 @@ def test_schema_allows_upstreamless_or_detached_source_but_keeps_binary_field() 
             ],
         }
     )
+
+
+@pytest.mark.parametrize(
+    "proof_id", ["p11-cross-repo-cutover", "p11-deployment", "p11-activation", "p11-rollback"]
+)
+def test_unsigned_p11_observations_refused_by_writer_and_archive(tmp_path, monkeypatch, proof_id):
+    from tools.ci.tests import test_write_proof_aggregate as release_fixture
+
+    root, registry = release_fixture._build_fixture_root(tmp_path, executable=True)
+    pair = release_fixture._build_paired_checkout(tmp_path)
+    release_fixture._write_dependency_manifests(root, registry, pair)
+    authorities = {p["id"]: p for p in registry["proofs"]}
+    proof = authorities[proof_id]
+    output = root / proof["artifact"]
+    before = output.read_bytes()
+    payload = json.loads(before)
+    schema_path = root / proof["artifact_schema"]
+    for group, key, value in (
+        ("environment", "toolchain", "different-toolchain"),
+        ("environment", "features", ["another-profile"]),
+        ("inputs", "model", "sha256:" + "9" * 64),
+    ):
+        changed = copy.deepcopy(payload)
+        changed[group][key] = value
+        findings = CHECKER.check_manifest(
+            changed,
+            proof=proof,
+            manifest_path=output,
+            root=root,
+            bind_source=False,
+            schema=json.loads(schema_path.read_bytes()),
+            proof_by_id=authorities,
+        )
+        assert any("attestation" in f.message or "execution binding" in f.message for f in findings)
+    payload["artifacts"] = [
+        a for a in payload["artifacts"] if not a["source_path"].endswith(".sig")
+    ]
+    schema_path = root / proof["artifact_schema"]
+    findings = CHECKER.check_manifest(
+        payload,
+        proof=proof,
+        manifest_path=output,
+        root=root,
+        bind_source=False,
+        schema=json.loads(schema_path.read_bytes()),
+        proof_by_id=authorities,
+    )
+    assert any("attestation" in f.message for f in findings)
+    terminal = {
+        k: payload[k]
+        for k in (
+            "counts",
+            "status",
+            "state_root_format",
+            "started_at",
+            "ended_at",
+            "execution_result",
+        )
+    }
+    terminal.update(
+        daemon_binary=payload["daemon_binary"]["source_path"],
+        inputs=dict.fromkeys(WRITER.INPUT_NAMES),
+        artifacts=[a["source_path"] for a in payload["artifacts"]],
+        environment={**payload["environment"], "host": release_fixture.RELEASE_HOST_INPUT},
+    )
+    if proof_id != release_fixture.PAIR_PROOF:
+        terminal["inputs"]["config"] = {"path": proof["operational_contract"]}
+    terminal_path = root / "artifacts/terminal.json"
+    terminal_path.write_text(json.dumps(terminal))
+    monkeypatch.setattr(WRITER.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(WRITER.platform, "machine", lambda: "x86_64")
+    with pytest.raises(WRITER.ManifestRefused, match="attestation"):
+        WRITER.publish_manifest(
+            root=root,
+            registry_path=root / "tools/ci/proof-authority.toml",
+            schema_path=schema_path,
+            proof_id=proof_id,
+            terminal_input_path=terminal_path,
+            paired_checkout=pair,
+        )
+    assert output.read_bytes() == before

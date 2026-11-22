@@ -25,6 +25,7 @@ struct Observation {
     budget: WorkBudget,
     result: OnceLock<Result<(), IndexError>>,
     waiter: std::thread::Thread,
+    pin_scratch: PinReadScratch,
     _memory: Option<MemoryLease>,
 }
 
@@ -173,6 +174,7 @@ impl ObservationGroup {
         // Cancellation can return while an elected leader is finishing the
         // batch. Fund that short escaping lifetime without retaining execution.
         let memory = budget.reserve_memory(bytes, MemoryLifetime::Retained)?;
+        let pin_scratch = PinReadScratch::reserve(Some(budget), MemoryLifetime::Retained)?;
         let observation = Arc::new(Observation {
             catalog: std::ptr::from_ref(catalog).addr(),
             ticket,
@@ -188,6 +190,7 @@ impl ObservationGroup {
             ),
             result: OnceLock::new(),
             waiter: std::thread::current(),
+            pin_scratch,
             _memory: memory,
         });
         let mut queued = false;
@@ -336,8 +339,16 @@ fn commit_batch(
                     if (session.2, session.3) != entry.inode {
                         return Err(IndexError::Storage("read session inode mismatch".into()));
                     }
-                    checked_pin(&tx, entry.ticket)
+                    checked_pin(&tx, entry.ticket, &entry.pin_scratch)
                 })?;
+                view_quarantine::refuse_if_quarantined(
+                    catalog,
+                    &tx,
+                    &pin.5,
+                    pin.6,
+                    pin.7,
+                    Some(&entry.budget),
+                )?;
                 let now = observe_ticket_validation(catalog, Some(&entry.budget), 204, || {
                     observed_catalog_now_ms(&tx, catalog.clock.now_unix_ms())
                 })?;

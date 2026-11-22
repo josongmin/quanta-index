@@ -248,6 +248,13 @@ pub struct StateRootLease {
     state_root_identity_v1: PathBuf,
 }
 
+impl crate::app::supervisor::SupervisorGuards for StateRootLease {
+    fn retire(self) -> Result<(), CoreError> {
+        drop(self);
+        Ok(())
+    }
+}
+
 /// Borrowed existing root FD. This allocates no descriptor and retains the
 /// actual lease by reference. A caller cloning the FD owns admission and
 /// retirement of that clone; this DATA loan grants no publication authority.
@@ -1241,14 +1248,12 @@ impl quanta_index_embed::EmbeddingCache for SharedFileEmbeddingCache {
 
 struct LedgerStructuralProducer {
     ledger: Arc<RwLock<Ledger>>,
-    matcher: TruthfulSubsetAuthorityMatcher,
 }
 
 impl LedgerStructuralProducer {
     fn new(ledger: Arc<RwLock<Ledger>>) -> Self {
         Self {
             ledger,
-            matcher: TruthfulSubsetAuthorityMatcher::new(),
         }
     }
 }
@@ -1301,34 +1306,8 @@ impl StructuralProducerPort for LedgerStructuralProducer {
         request: &DomainStructuralQueryRequest,
         budget: &RequestBudgetV1,
     ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
-        quanta_index_core::domains::structural::structural_checkpoint(
-            budget,
-            "structural:compile",
-        )?;
-        let pin = resolve_structural_pin(request)?;
-        // Compile every filter before any short circuit or candidate traversal.
-        // This also rejects malformed filters for an empty candidate universe.
-        let filters = CompiledStructuralFilters::compile(&request.filters, budget)?;
-        quanta_index_core::domains::structural::structural_checkpoint(
-            budget,
-            "structural:where-regex",
-        )?;
-        let regexes = PreparedStructuralRegexes::from_block(&request.pattern)
-            .map_err(map_live_authority_error)?;
-        if !filters.repo_matches(&pin) {
-            return Ok(Vec::new());
-        }
-        let requested_lang = request
-            .requested_lang
-            .as_deref()
-            .or(request.pattern.lang.as_deref())
-            .map(str::trim)
-            .filter(|lang| !lang.is_empty());
-        // The request pins the structural authority epoch the whole query
-        // reads (QI-BB-020 W2): every leaf executes against that snapshot,
-        // and an epoch the ledger no longer retains — or never had — is
-        // refused typed rather than served from the current one.
-        let state = self
+        execute_structural_snapshot_v1(request, budget, |pin| {
+        Ok(self
             .ledger
             .read()
             .map_err(|err| {
@@ -1343,87 +1322,147 @@ impl StructuralProducerPort for LedgerStructuralProducer {
             )
             .map_err(map_structural_read_error)?
             .ok_or(StructuralError::GenerationNotReady)?
-            .state;
-        let requested_pattern = requested_lang
-            .map(|lang| compile_live_structural_pattern(&request.pattern, lang))
-            .transpose()?;
-        let mut results = Vec::new();
-        let mut observed_unsupported_lang: Option<String> = None;
-        let mut saw_supported_lang = false;
-        let candidate_scope = request
-            .candidate_scope
-            .as_ref()
-            .map(|ids| ids.iter().map(String::as_str).collect::<BTreeSet<_>>());
-        for (chunk_id, tree) in state.parse_trees() {
-            quanta_index_core::domains::structural::structural_checkpoint(
-                budget,
-                "structural:chunk",
-            )?;
-            if candidate_scope
-                .as_ref()
-                .is_some_and(|scope| !scope.contains(chunk_id.as_str()))
-            {
-                continue;
-            }
-            let tree_lang = tree.lang.as_str();
-            if let Some(lang) = requested_lang
-                && tree_lang != lang
-            {
-                continue;
-            }
-            let compiled_pattern_storage;
-            let compiled_pattern = if let Some(pattern) = requested_pattern.as_ref() {
-                saw_supported_lang = true;
-                pattern
-            } else {
-                compiled_pattern_storage =
-                    match compile_live_structural_pattern(&request.pattern, tree_lang) {
-                        Ok(pattern) => pattern,
-                        Err(StructuralError::LangNotSupported(lang)) => {
-                            if observed_unsupported_lang.is_none() {
-                                observed_unsupported_lang = Some(lang);
-                            }
-                            continue;
-                        }
-                        Err(err) => return Err(err),
-                    };
-                saw_supported_lang = true;
-                &compiled_pattern_storage
-            };
-            let authority_pattern = lower_live_authority_pattern(compiled_pattern)?;
-            let chunk = state
-                .chunks()
-                .get(chunk_id)
-                .ok_or(StructuralError::ShardUnavailable)?;
-            if !filters.chunk_matches(chunk) {
-                continue;
-            }
-            let authority_candidates = self
-                .matcher
-                .match_authority_prepared(
-                    authority_pattern,
-                    StructuralAuthorityView::new(chunk.text.as_ref(), tree),
-                    &regexes,
-                )
-                .map_err(map_live_authority_error)?;
-            quanta_index_core::domains::structural::structural_checkpoint(
-                budget,
-                "structural:matched-chunk",
-            )?;
-            results.extend(project_structural_candidates(
-                chunk_id,
-                chunk,
-                &authority_candidates,
-            )?);
-        }
-        if requested_lang.is_none()
-            && !saw_supported_lang
-            && let Some(lang) = observed_unsupported_lang
-        {
-            return Err(StructuralError::LangNotSupported(lang));
-        }
-        Ok(results)
+            .state)
+        })
     }
+}
+
+/// Native and Legacy reads use the same structural matcher and capture
+/// projection. The caller supplies an already validated immutable snapshot.
+pub fn native_dsl_structural_producer_v1(
+    state: Arc<quanta_index_search_plane::readiness::StructuralAuthorityState>,
+) -> Arc<dyn StructuralProducerPort + Send + Sync> {
+    Arc::new(NativeDslStructuralProducerV1(state))
+}
+
+struct NativeDslStructuralProducerV1(
+    Arc<quanta_index_search_plane::readiness::StructuralAuthorityState>,
+);
+
+impl StructuralProducerPort for NativeDslStructuralProducerV1 {
+    fn readiness(&self, _request: &DomainStructuralQueryRequest) -> StructuralReadiness {
+        StructuralReadiness::Ready
+    }
+
+    fn execute(
+        &self,
+        request: &DomainStructuralQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
+        execute_structural_snapshot_v1(request, budget, |_| Ok(Arc::clone(&self.0)))
+    }
+}
+
+fn execute_structural_snapshot_v1(
+    request: &DomainStructuralQueryRequest,
+    budget: &RequestBudgetV1,
+    snapshot: impl FnOnce(
+        &GenerationPin,
+    ) -> Result<
+        Arc<quanta_index_search_plane::readiness::StructuralAuthorityState>,
+        StructuralError,
+    >,
+) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
+    quanta_index_core::domains::structural::structural_checkpoint(budget, "structural:compile")?;
+    let pin = resolve_structural_pin(request)?;
+    // Compile every filter before any short circuit or candidate traversal.
+    // This also rejects malformed filters for an empty candidate universe.
+    let filters = CompiledStructuralFilters::compile(&request.filters, budget)?;
+    quanta_index_core::domains::structural::structural_checkpoint(
+        budget,
+        "structural:where-regex",
+    )?;
+    let regexes = PreparedStructuralRegexes::from_block(&request.pattern)
+        .map_err(map_live_authority_error)?;
+    if !filters.repo_matches(&pin) {
+        return Ok(Vec::new());
+    }
+    let requested_lang = request
+        .requested_lang
+        .as_deref()
+        .or(request.pattern.lang.as_deref())
+        .map(str::trim)
+        .filter(|lang| !lang.is_empty());
+    // The request pins the structural authority epoch the whole query
+    // reads (QI-BB-020 W2): every leaf executes against that snapshot,
+    // and an epoch the ledger no longer retains — or never had — is
+    // refused typed rather than served from the current one.
+    let state = snapshot(&pin)?;
+    let requested_pattern = requested_lang
+        .map(|lang| compile_live_structural_pattern(&request.pattern, lang))
+        .transpose()?;
+    let mut results = Vec::new();
+    let mut observed_unsupported_lang: Option<String> = None;
+    let mut saw_supported_lang = false;
+    let candidate_scope = request
+        .candidate_scope
+        .as_ref()
+        .map(|ids| ids.iter().map(String::as_str).collect::<BTreeSet<_>>());
+    for (chunk_id, tree) in state.parse_trees() {
+        quanta_index_core::domains::structural::structural_checkpoint(budget, "structural:chunk")?;
+        if candidate_scope
+            .as_ref()
+            .is_some_and(|scope| !scope.contains(chunk_id.as_str()))
+        {
+            continue;
+        }
+        let tree_lang = tree.lang.as_str();
+        if let Some(lang) = requested_lang
+            && tree_lang != lang
+        {
+            continue;
+        }
+        let compiled_pattern_storage;
+        let compiled_pattern = if let Some(pattern) = requested_pattern.as_ref() {
+            saw_supported_lang = true;
+            pattern
+        } else {
+            compiled_pattern_storage =
+                match compile_live_structural_pattern(&request.pattern, tree_lang) {
+                    Ok(pattern) => pattern,
+                    Err(StructuralError::LangNotSupported(lang)) => {
+                        if observed_unsupported_lang.is_none() {
+                            observed_unsupported_lang = Some(lang);
+                        }
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
+            saw_supported_lang = true;
+            &compiled_pattern_storage
+        };
+        let authority_pattern = lower_live_authority_pattern(compiled_pattern)?;
+        let chunk = state
+            .chunks()
+            .get(chunk_id)
+            .ok_or(StructuralError::ShardUnavailable)?;
+        if !filters.chunk_matches(chunk) {
+            continue;
+        }
+        let authority_candidates = TruthfulSubsetAuthorityMatcher::new()
+            .match_authority_prepared(
+                authority_pattern,
+                StructuralAuthorityView::new(chunk.text.as_ref(), tree),
+                &regexes,
+            )
+            .map_err(map_live_authority_error)?;
+        quanta_index_core::domains::structural::structural_checkpoint(
+            budget,
+            "structural:matched-chunk",
+        )?;
+        results.extend(project_structural_candidates(
+            chunk_id,
+            chunk,
+            &authority_candidates,
+        )?);
+    }
+    if requested_lang.is_none()
+        && !saw_supported_lang
+        && let Some(lang) = observed_unsupported_lang
+    {
+        return Err(StructuralError::LangNotSupported(lang));
+    }
+    Ok(results)
 }
 
 /// The structural producer's typed refusal for a ledger read at a pinned
@@ -2961,7 +3000,10 @@ mod tests {
         reason = "index follows an exact length assert on the same corpus vector"
     )]
     #[test]
-    #[ignore = "requires the pinned 33 MB upstream model assets"]
+    #[cfg_attr(
+        not(quanta_index_test_pinned_potion_model),
+        ignore = "requires the pinned 33 MB upstream model assets"
+    )]
     fn potion_code_profile_uses_one_model_for_query_and_corpus() -> TestRes {
         let model_dir = std::env::var("QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR")?;
         let state_root = tempfile::tempdir()?;

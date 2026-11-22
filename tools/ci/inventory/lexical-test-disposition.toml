@@ -1,0 +1,637 @@
+version = 1
+
+# Preserve every exact committed ID from the retired engine. Removed engine
+# cases may retire. Public and DATA behavior remains subject to body proof.
+# Observations on BLOCKED groups retain historical results for their frozen source.
+# Local Lexical owner results: BOOT 5/5 and lib 2/2 (746a0996-08d7-48e3-b423-12ab3ec7e08c),
+# old-Q DATA 14/15 (f44bc681-941d-4e8c-a2a8-a9f800f94fe8), and the repaired DATA
+# selector 1/1 (6cde7095-11ad-4ecf-86be-45c257e41ae1). BLOCKED records the remaining
+# release evidence requirement for DATA/BOOT-only groups. The macOS run does not
+# exercise the Linux-only non-UTF-8 ranked-key branch. See cutover ticket 04.
+
+[[targets]]
+path = "crates/quanta-index-lexical/tests/sealed_commitment_cost.rs"
+
+[[targets.dispositions]]
+disposition = "retain"
+proof = "NOT_RUN"
+replacement = "fixed old-Q public SDK compatibility rail; engine is external to the NoFeatures graph"
+tests = [
+  "file_admission_counts_verified_changed_sources_separately",
+  "a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files",
+]
+
+[[targets]]
+path = "crates/quanta-index-lexical/tests/sealed_manifest.rs"
+required_feature = "legacy-tantivy"
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "BLOCKED"
+replacement = "On real sealed old-Q DATA, verification and Source export refuse a changed index commit, missing or altered segment and live-BM25 bytes, and all seven uncommitted overlay families including dangling links. The restored generation verifies."
+candidates = [{path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_refuses_changed_or_uncommitted_artifacts"]}]
+observations = [{source = "crates/quanta-index-lexical/tests/legacy_existing.rs", case = "lexical_existing_refuses_changed_or_uncommitted_artifacts", source_sha256 = "33482ba8a5ee19f0511794cd9dc4ffb46c702c1f738f8a41b880e438140ae01e", run_id = "a6f6c5c1-61cd-4f33-a2bf-95384b80b13d", event = "quanta-index-lexical::legacy_existing$lexical_existing_refuses_changed_or_uncommitted_artifacts", events_sha256 = "928568cca40fb8360d90dc8686f0512bfe46fc4cbbd5bc64efc1858555edbc63", inventory_sha256 = "71bf3ee2ca361f70e59717bdc99478de0708eb7db49b3b0906e1c0fa381a632f", source_manifest_sha256 = "07f419ab1e3aec8794ef8c8b4fadd4ae49411cf8386db57005979258e58874e2"}]
+tests = [
+  "both_doors_refuse_an_index_commit_other_than_the_sealed_one",
+  "both_doors_refuse_an_overlay_the_seal_did_not_commit_to",
+  "both_doors_refuse_uncommitted_dangling_overlay_links",
+  "mandatory_live_bm25_sidecar_refuses_all_open_doors",
+  "segment_files_are_length_proved_at_the_doors",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "BLOCKED"
+replacement = "legacy_existing::lexical_existing_refuses_committed_native_root_and_overlays_from_real_old_q checks missing, truncated, flipped and authentic stale bytes at both read-only DATA doors. lexical_existing_refuses_changed_or_uncommitted_artifacts adds committed ranked-key replacement/missing and Linux non-UTF-8 name refusal."
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_refuses_committed_native_root_and_overlays_from_real_old_q", "lexical_existing_refuses_changed_or_uncommitted_artifacts"]},
+]
+tests = [
+  "both_doors_refuse_a_sidecar_that_does_not_match_the_manifest",
+  "both_doors_refuse_an_overlay_that_does_not_match_the_manifest",
+  "both_doors_refuse_missing_changed_or_uncommitted_ranked_keys",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "native_index_uds::read_sessions::file_body_quarantine::selected_file_body_modified_is_quarantined_across_restart. Retain same-length FileBody corruption and durable quarantine"
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/file_body_quarantine.rs", tests = ["selected_file_body_modified_is_quarantined_across_restart"]},
+]
+tests = [
+  "native_body_same_length_flip_is_found_by_scrub_and_quarantined",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "native_index_uds::read_sessions::file_body_quarantine::shared_file_body_fault_fences_every_referencing_native_view; keep receipt writes atomic and fence shared retained views across restart"
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/file_body_quarantine.rs", tests = ["shared_file_body_fault_fences_every_referencing_native_view"]},
+]
+tests = [
+  "shared_file_body_fault_fences_every_referencing_generation",
+]
+
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "BLOCKED"
+replacement = "boot_inventory_data::nofeatures_inventory_quarantines_layout_without_reading_content preserves no-follow inventory and typed quarantine for a dangling sealed identity. The retired incomplete-discard mutation is not part of Native Boot; the current DATA/Native refusal body remains required."
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/boot_inventory_data.rs", tests = ["nofeatures_inventory_quarantines_layout_without_reading_content"]},
+]
+tests = [
+  "a_dangling_sealed_identity_is_never_discarded_as_incomplete",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "BLOCKED"
+replacement = "legacy_existing::lexical_existing_missing_manifest_refuses_and_restores removes the sealed manifest, verifies typed refusal in DATA verification and Source export, then restores and verifies successfully. Native Boot uses the same verifier."
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_missing_manifest_refuses_and_restores"]},
+]
+tests = [
+  "a_sealed_identity_without_a_manifest_is_refused_by_both_doors",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "BLOCKED"
+replacement = "legacy_existing::lexical_existing_identity_digest_mismatch_refuses_and_restores exercises the read-only DATA verifier used by Native Boot. Formal body evidence is still pending."
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_identity_digest_mismatch_refuses_and_restores"]},
+]
+tests = [
+  "an_identity_that_does_not_match_the_manifest_is_refused",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "BLOCKED"
+replacement = "boot_inventory_data::nofeatures_inventory_quarantines_layout_without_reading_content keeps a malformed receipt from hiding the healthy sibling. The old adapter quarantine-discard mutation retires; formal scanner evidence remains pending."
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/boot_inventory_data.rs", tests = ["nofeatures_inventory_quarantines_layout_without_reading_content"]},
+]
+tests = [
+  "an_invalid_quarantine_receipt_does_not_block_sibling_inventory",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "BLOCKED"
+replacement = "legacy_existing::lexical_existing_refuses_non_directory_text_authority_parent_and_restores proves typed refusal in DATA verification and Source export for a symlink or regular file replacing the text-authority root, then restores the directory."
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_refuses_non_directory_text_authority_parent_and_restores"]},
+]
+tests = [
+  "both_doors_refuse_a_non_directory_text_authority_root_parent",
+]
+
+[[targets.dispositions]]
+disposition = "retire"
+proof = "NOT_APPLICABLE"
+replacement = "The LexicalAdapter point-inventory API and its parity with full inventory retired. The full scanner's canonical-family symlink exclusion stays in boot_inventory_data, and selected DATA digest refusal stays with the Native Boot verifier migration."
+tests = [
+  "point_inventory_matches_full_inventory_for_digest_and_family_symlink",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "BLOCKED"
+replacement = "boot_inventory_data::control_file_permission_failures_are_storage_errors_and_recover requires a real PermissionDenied for both identity and quarantine receipt, checks CoreError::Storage, and inventories the healthy generation after permissions are restored."
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/boot_inventory_data.rs", tests = ["control_file_permission_failures_are_storage_errors_and_recover"]},
+]
+tests = [
+  "point_inventory_reports_control_file_read_failures",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "BLOCKED"
+replacement = "The read-only DATA verifier rejects trailing CBOR and formats 8 through 18 before traversing committed objects, and verifies the restored generation."
+candidates = [{path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_rejects_invalid_manifest_before_visiting_committed_objects"]}]
+observations = [{source = "crates/quanta-index-lexical/tests/legacy_existing.rs", case = "lexical_existing_rejects_invalid_manifest_before_visiting_committed_objects", source_sha256 = "33482ba8a5ee19f0511794cd9dc4ffb46c702c1f738f8a41b880e438140ae01e", run_id = "a6f6c5c1-61cd-4f33-a2bf-95384b80b13d", event = "quanta-index-lexical::legacy_existing$lexical_existing_rejects_invalid_manifest_before_visiting_committed_objects", events_sha256 = "928568cca40fb8360d90dc8686f0512bfe46fc4cbbd5bc64efc1858555edbc63", inventory_sha256 = "71bf3ee2ca361f70e59717bdc99478de0708eb7db49b3b0906e1c0fa381a632f", source_manifest_sha256 = "07f419ab1e3aec8794ef8c8b4fadd4ae49411cf8386db57005979258e58874e2"}]
+tests = [
+  "both_doors_refuse_trailing_bytes_after_a_valid_sealed_manifest",
+  "older_formats_require_explicit_rebuild",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "BLOCKED"
+replacement = "DATA rejects over-limit meta.json and Native root declarations before visiting committed objects, and refuses physically oversized committed meta.json and Native root in verification and export."
+candidates = [{path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_rejects_invalid_manifest_before_visiting_committed_objects"]}]
+observations = [{source = "crates/quanta-index-lexical/tests/legacy_existing.rs", case = "lexical_existing_rejects_invalid_manifest_before_visiting_committed_objects", source_sha256 = "33482ba8a5ee19f0511794cd9dc4ffb46c702c1f738f8a41b880e438140ae01e", run_id = "a6f6c5c1-61cd-4f33-a2bf-95384b80b13d", event = "quanta-index-lexical::legacy_existing$lexical_existing_rejects_invalid_manifest_before_visiting_committed_objects", events_sha256 = "928568cca40fb8360d90dc8686f0512bfe46fc4cbbd5bc64efc1858555edbc63", inventory_sha256 = "71bf3ee2ca361f70e59717bdc99478de0708eb7db49b3b0906e1c0fa381a632f", source_manifest_sha256 = "07f419ab1e3aec8794ef8c8b4fadd4ae49411cf8386db57005979258e58874e2"}, {source = "crates/quanta-index-lexical/tests/legacy_existing.rs", case = "lexical_existing_refuses_changed_or_uncommitted_artifacts", source_sha256 = "33482ba8a5ee19f0511794cd9dc4ffb46c702c1f738f8a41b880e438140ae01e", run_id = "a6f6c5c1-61cd-4f33-a2bf-95384b80b13d", event = "quanta-index-lexical::legacy_existing$lexical_existing_refuses_changed_or_uncommitted_artifacts", events_sha256 = "928568cca40fb8360d90dc8686f0512bfe46fc4cbbd5bc64efc1858555edbc63", inventory_sha256 = "71bf3ee2ca361f70e59717bdc99478de0708eb7db49b3b0906e1c0fa381a632f", source_manifest_sha256 = "07f419ab1e3aec8794ef8c8b4fadd4ae49411cf8386db57005979258e58874e2"}]
+tests = ["oversized_committed_control_files_are_refused_before_read"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "BLOCKED"
+replacement = "DATA verification and Source export both return the typed rebuild refusal for a physical manifest above 16 MiB before reading its body. Neither walks committed objects or initiates export, and the restored generation verifies. The adapter open door retired."
+candidates = [{path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_oversized_physical_manifest_requires_rebuild"]}]
+observations = [{source = "crates/quanta-index-lexical/tests/legacy_existing.rs", case = "lexical_existing_oversized_physical_manifest_requires_rebuild", source_sha256 = "33482ba8a5ee19f0511794cd9dc4ffb46c702c1f738f8a41b880e438140ae01e", run_id = "a6f6c5c1-61cd-4f33-a2bf-95384b80b13d", event = "quanta-index-lexical::legacy_existing$lexical_existing_oversized_physical_manifest_requires_rebuild", events_sha256 = "928568cca40fb8360d90dc8686f0512bfe46fc4cbbd5bc64efc1858555edbc63", inventory_sha256 = "71bf3ee2ca361f70e59717bdc99478de0708eb7db49b3b0906e1c0fa381a632f", source_manifest_sha256 = "07f419ab1e3aec8794ef8c8b4fadd4ae49411cf8386db57005979258e58874e2"}]
+tests = ["oversized_sealed_manifest_requires_rebuild_at_every_door"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Publish an initially empty Native generation without a prior nonempty view. The exact view returns an exhaustive empty result before and after restart."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/text_entry_maps.rs", tests = ["initially_empty_text_publication_reopens_as_the_same_queryable_view"]},
+]
+tests = ["a_generation_that_indexed_nothing_seals_openable"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "A changed replay cannot overwrite the sealed Native publication under its original key. The exact original request replays its receipt, and after reopen the exact view, Source bytes, Text artifact bytes and preview remain identical. The former adapter-only direct mutation and overlay writers were removed."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_overlay_uds/overlay_search.rs", tests = ["interrupted_overlay_save_preserves_sealed_view_bytes_across_reopen"]},
+]
+tests = ["a_sealed_generation_refuses_every_mutation_and_keeps_its_bytes"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Physically stage a replacement Source and bind its overlay save, then stop before SourceAdvance. Reopen the previous exact view and verify the original bytes and excerpt, unknown candidate operation, and no candidate Text match."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_overlay_uds/overlay_search.rs", tests = ["interrupted_overlay_save_preserves_sealed_view_bytes_across_reopen"]},
+]
+tests = ["an_interrupted_overlay_publish_leaves_nothing_the_seal_commits_to"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Reject a valid staged replacement-generation request followed by another CBOR value before decode reservation. The publication dispatcher loads this request before calling the publication handler."
+candidates = [{path = "crates/quanta-index-ipc/src/source_upload.rs", tests = ["staged_full_publication_rejects_trailing_cbor_before_decode_reservation"]}]
+tests = ["full_bundle_preflight_rejects_trailing_cbor_before_generation_preparation"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Preserve the typed rebuild refusal for Legacy DATA formats 12, 17 and 18 before committed-object traversal and Source export callbacks, with successful readback after restoration. The actual SearchPlane preflight and publication entrypoints refuse a sealed Lexical DELTA base with an unsupported format, report the original cause and require ReplaceGeneration before either track or the publication authority is mutated."
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_rejects_invalid_manifest_before_visiting_committed_objects"]},
+  {path = "crates/quanta-index-search-plane/src/ingest_dispatcher/tests/search_corpus.rs", tests = ["a_delta_over_a_corrupt_base_is_refused_with_the_repair"]},
+]
+tests = ["unsupported_base_is_refused_before_index_inheritance"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "quanta-index-core::domains::integrity::tests::a_scrub_can_resume_only_the_paused_generation_and_position preserves issued-cursor identity, rejects skips, and keeps a paused cursor when another generation is removed. The old LexicalAdapter methods retire; the shared cursor contract still requires body evidence."
+candidates = [
+  {path = "crates/quanta-index-core/src/domains/integrity.rs", tests = ["a_scrub_can_resume_only_the_paused_generation_and_position"]},
+]
+tests = [
+  "a_caller_cannot_skip_the_scrub_prefix_with_an_unissued_cursor",
+  "reclaim_and_quarantine_discard_of_other_generations_preserve_a_paused_scrub",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "The actual Semantic scrub port returns NotReady when a paused generation is reclaimed. The product scheduler observes the failed resume for the same identity, leaves the directory absent, and finds no candidate or quarantine record."
+candidates = [
+  {path = "crates/quanta-index-core/src/domains/integrity.rs", tests = ["a_scrub_can_resume_only_the_paused_generation_and_position"]},
+  {path = "crates/quanta-index-semantic/tests/sealed_manifest.rs", tests = ["a_scrub_resumed_over_a_reclaimed_generation_is_refused_not_quarantined"]},
+  {path = "crates/quanta-index-searchd/src/app/integrity_scrub.rs", tests = ["semantic_reclaim_refuses_a_parked_scrub_without_quarantine"]},
+]
+tests = ["a_scrub_resumed_over_a_reclaimed_generation_is_refused_not_quarantined"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "A real sealed Semantic generation runs through the product scheduler at a one-byte step cap. Each pause advances the issued cursor by one file; physical file and byte totals are counted once, and the completion receipt appears only after the final step."
+candidates = [
+  {path = "crates/quanta-index-core/src/domains/generation.rs", tests = ["the_layout_check_is_cheap_and_the_scrub_is_bounded_and_resumable"]},
+  {path = "crates/quanta-index-searchd/src/app/integrity_scrub.rs", tests = ["the_scheduler_resumes_a_paused_scrub_and_prefers_the_stalest_candidate", "intact_semantic_generation_resumes_without_recounting_file_prefix"]},
+]
+tests = ["an_intact_generation_scrubs_in_bounded_resumable_steps"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Core checks rename-before-delete and one-time settlement. Searchd boot phases with the physical SemanticAdapter exclude a staged interrupted reclaim from inventory before finishing it, report one completed entry, and report zero after reopen. Native Runtime separately verifies a persisted drain through two service restarts with protected children and the public Latest view unchanged."
+candidates = [
+  {path = "crates/quanta-index-core/src/domains/reclaim_area.rs", tests = ["an_interrupted_reclaim_is_out_of_the_namespace_and_finished_later"]},
+  {path = "crates/quanta-index-searchd/src/app/boot_inventory.rs", tests = ["boot_finishes_interrupted_reclaims_and_reports_what_it_could_not", "physical_interrupted_reclaim_stays_out_of_inventory_across_boot"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds.rs", tests = ["native_automatic_reclaim_resumes_prepared_partial_child_drain_after_service_reopen"]},
+]
+tests = ["an_interrupted_reclaim_is_out_of_the_namespace_and_finished_once"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "native_index_uds::read_sessions::file_body_quarantine::{selected_file_body_modified_is_quarantined_across_restart,selected_file_body_symlink_is_quarantined_across_restart} retain same-length and no-follow selected-object refusal, scrub, restart, and durable quarantine. Formal Native body evidence is pending."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/file_body_quarantine.rs", tests = ["selected_file_body_modified_is_quarantined_across_restart", "selected_file_body_symlink_is_quarantined_across_restart"]},
+]
+tests = [
+  "a_same_length_flip_is_found_by_the_scrub_and_quarantines_the_generation",
+  "a_same_length_segment_redirect_is_refused_and_quarantined",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "native_index_uds::read_sessions::file_body_quarantine::shared_file_body_fault_fences_every_referencing_native_view publishes and exactly reads a new unrelated Source while the first-receipt failure fence is held, then checks that affected views remain fenced."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/file_body_quarantine.rs", tests = ["shared_file_body_fault_fences_every_referencing_native_view"]},
+]
+tests = ["a_scrub_quarantine_does_not_stop_an_unrelated_generation_build"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "legacy_existing::lexical_existing_same_length_coverage_tamper_refuses and lexical_existing_binds_missing_changed_and_uncommitted_coverage_pages retain read-only DATA verification. Native maintenance::scrub_quarantines_a_tampered_text_root_before_page_expansion re-proves the exact selected member root before child-page expansion, fences every retained view that reaches the object, and preserves its durable receipt across repair and restart."
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_same_length_coverage_tamper_refuses", "lexical_existing_binds_missing_changed_and_uncommitted_coverage_pages"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/member_artifact_quarantine.rs", tests = ["scrub_quarantines_a_tampered_text_root_before_page_expansion"]},
+]
+tests = [
+  "coverage_pages_are_bound_at_both_doors_and_by_scrub",
+  "scrub_quarantines_a_tampered_coverage_root_before_page_expansion",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "quanta-index-searchd::app::integrity_scrub::tests::a_corruption_is_counted_and_fences_the_resident_handle and Native FileBody query refusal preserve read-only door behavior followed by explicit quarantine. The retired adapter re-proof and discard calls are not current public APIs."
+candidates = [
+  {path = "crates/quanta-index-searchd/src/app/integrity_scrub.rs", tests = ["a_corruption_is_counted_and_fences_the_resident_handle"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/file_body_quarantine.rs", tests = ["selected_file_body_modified_is_quarantined_across_restart"]},
+]
+tests = ["a_door_finding_is_quarantined_only_by_the_adapters_re_proof"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Lexical read-only DATA preserves typed malformed and oversized manifest refusal. The current physical Semantic maintenance port quarantines malformed manifests by door reproof and by scrub before expanding files. A long artifact name produces a bounded receipt containing the original diagnostic SHA-256. Restoring the original bytes and reopening still returns GenerationQuarantined."
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_rejects_invalid_manifest_before_visiting_committed_objects", "lexical_existing_oversized_physical_manifest_requires_rebuild"]},
+  {path = "crates/quanta-index-semantic/tests/sealed_manifest.rs", tests = ["malformed_sealed_manifest_is_quarantined_after_reproof", "long_manifest_artifact_name_leaves_a_bounded_quarantine_after_reopen"]},
+]
+tests = [
+  "long_manifest_damage_still_records_a_durable_quarantine",
+  "malformed_manifest_is_quarantined_by_door_reproof_and_scrub",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "The real SemanticAdapter identifies the malformed completion receipt. The product scheduler rescrubs that exact candidate, writes its valid receipt, and next completes the healthy sibling. Preserve both the adapter proof and scheduler isolation and retry checks."
+candidates = [
+  {path = "crates/quanta-index-searchd/src/app/integrity_scrub.rs", tests = ["a_failed_quarantine_receipt_keeps_the_generation_fenced_until_a_clean_retry", "another_generation_clean_report_cannot_release_a_failed_quarantine_fence", "malformed_semantic_receipt_is_rescrubbed_before_a_healthy_sibling"]},
+  {path = "crates/quanta-index-semantic/tests/sealed_manifest.rs", tests = ["malformed_completion_receipt_is_rescrubbed_without_blocking_other_candidates"]},
+]
+tests = ["malformed_completion_receipt_is_rescrubbed_without_blocking_other_candidates"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "native_index_uds::read_sessions::file_body_quarantine::shared_file_body_fault_fences_every_referencing_native_view observes typed corruption at both public content reads, then revalidates the same FileBody under scrub and rejects held and newly selected sibling views before any retry after the first receipt fails."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/file_body_quarantine.rs", tests = ["shared_file_body_fault_fences_every_referencing_native_view"]},
+]
+tests = ["door_finding_fans_out_after_origin_receipt_write_failure"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "native_index_uds::read_sessions::file_body_quarantine::shared_file_body_fault_fences_every_referencing_native_view refuses held and new pins before retry with zero per-view receipts and a durable pending body incident; shared_file_body_fanout_failure_boots_fail_closed_without_retry proves boot-time fan-out from that incident without a maintenance retry."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/file_body_quarantine.rs", tests = ["shared_file_body_fault_fences_every_referencing_native_view", "shared_file_body_fanout_failure_boots_fail_closed_without_retry"]},
+]
+tests = [
+  "shared_fault_fans_out_after_origin_receipt_write_failure",
+  "shared_fault_fences_all_references_before_first_fanout_receipt",
+]
+
+[[targets]]
+path = "crates/quanta-index-lexical/tests/text_authority_shards.rs"
+required_feature = "legacy-tantivy"
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "The Native layered writer reads a damaged selected posting page while merging the old base. The accepted operation stays pending, the previous exact Source cut remains visible, and the new owner appears only after restoring the page and resuming the same operation."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_product_process/segmented_layered.rs", tests = ["layered_text_delta_refuses_a_corrupt_selected_base_posting_page"]},
+]
+tests = ["a_delta_refuses_a_corrupt_selected_base_page"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "BLOCKED"
+replacement = "The read-only DATA entrypoint returns the typed format-2 rebuild refusal and validates the restored generation. The adapter open and inherited DELTA entrypoints retired with the format."
+candidates = [{path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_whole_corpus_manifest_requires_rebuild"]}]
+observations = [{source = "crates/quanta-index-lexical/tests/legacy_existing.rs", case = "lexical_existing_whole_corpus_manifest_requires_rebuild", source_sha256 = "33482ba8a5ee19f0511794cd9dc4ffb46c702c1f738f8a41b880e438140ae01e", run_id = "a6f6c5c1-61cd-4f33-a2bf-95384b80b13d", event = "quanta-index-lexical::legacy_existing$lexical_existing_whole_corpus_manifest_requires_rebuild", events_sha256 = "928568cca40fb8360d90dc8686f0512bfe46fc4cbbd5bc64efc1858555edbc63", inventory_sha256 = "71bf3ee2ca361f70e59717bdc99478de0708eb7db49b3b0906e1c0fa381a632f", source_manifest_sha256 = "07f419ab1e3aec8794ef8c8b4fadd4ae49411cf8386db57005979258e58874e2"}]
+tests = ["a_whole_corpus_layout_generation_is_refused_by_text_authority_format"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "The raw staged seal=false commit leaves the existing visible Source and Text, durable corpus state, and journal unchanged. A normal successor based on the original event then activates both surfaces on the same daemon. SearchPlane separately proves refusal before Source event reservation or materializer work."
+candidates = [
+  {path = "crates/quanta-index-search-plane/src/ingest_dispatcher/tests/idempotency.rs", tests = ["staged_unsealed_publication_is_refused_before_source_reservation"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/e2e_ingest_preflight.rs", tests = ["every_preflight_refusal_over_raw_ipc_changes_nothing"]},
+]
+tests = ["an_unsealed_source_batch_cannot_leave_index_authority_skew"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Compare DELTA, cold reopen and independent FULL at the 128-owner boundary, including exact owner/path, terms, phrase, regex and literal byte-substring queries."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_product_process/text_shard_contract.rs", tests = ["native_boundary_delta_matches_independent_full_and_cold_reopen"]},
+]
+tests = ["boundary_documents_answer_like_an_independent_rebuild"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "The read-only DATA verifier and Source export reject damaged committed roots. The public Native UDS Text read returns CorruptObject for a same-length change to its selected Text root, and returns the identical result after physical restoration."
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_refuses_committed_native_root_and_overlays_from_real_old_q"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/native_overlay_uds/overlay_search.rs", tests = ["selected_text_root_same_length_damage_is_refused_through_uds"]},
+]
+tests = ["changed_native_root_is_refused_at_both_doors"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "A single-owner DELTA replaces the changed partition and preserves unaffected physical partition and registered segment IDs. Cold reopen reads both retained and replacement owners."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_product_process/segmented_layered.rs", tests = ["layered_text_dense_layers_split_one_partition_and_survive_restart", "layered_text_full_patch_pinned_views_and_restart"]},
+]
+tests = ["one_scope_delta_preserves_unaffected_paged_segments"]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "The read-only DATA verifier authenticates persisted bytes. A public Native UDS Text query returns CorruptObject for a modified, missing or symlinked physical posting page selected by the query. Restoring the page restores the original exact result."
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/legacy_existing.rs", tests = ["lexical_existing_refuses_changed_or_uncommitted_artifacts"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/native_product_process/segmented_layered.rs", tests = ["selected_native_text_posting_page_faults_are_typed"]},
+]
+tests = ["selected_native_pool_page_faults_are_typed"]
+
+[[targets]]
+path = "crates/quanta-index-lexical/tests/tantivy_smoke.rs"
+required_feature = "legacy-tantivy"
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Native and pinned old-Q verify typed exact paths before top-k, including old-Q index:no Chunk scans and Symbol queries. The opaque metacharacter path works with an empty query for Chunk and Symbol; the unscoped empty query is refused."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/text_query_contract.rs", tests = ["exact_path_constraint_filters_before_top_k_and_treats_metacharacters_literally"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/legacy_l1_query_contract_sdk.rs", tests = ["l1_real_daemon_sdk_domain_primitives_and_symbol_windows"]},
+]
+tests = [
+  "exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1",
+  "exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "The Native SDK phrase query enforces adjacency and case, and the verified preview excerpt is exactly Lemon Yellow Banana at the staged Source identity."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/text_query_contract.rs", tests = ["phrase_query_matches_only_adjacent_terms_through_native_uds"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/e2e_lexical_full_fidelity.rs", tests = ["lexical_full_fidelity_matrix"]},
+]
+tests = [
+  "tantivy_executes_phrase_adjacency_without_unordered_match",
+  "tantivy_phrase_sidecar_uses_text_authority_and_case_rules",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "native_index_uds::read_sessions::query::text_query_contract::file_contains_substrings_intersect_on_one_published_source_before_top_k_over_uds. Scoped regex and phrase require exact coverage"
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/text_query_contract.rs", tests = ["file_contains_substrings_intersect_on_one_published_source_before_top_k_over_uds"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/legacy_text_route_hellgate.rs", tests = ["sourcegraph_text_route_authorities_share_one_indexed_fixture"]},
+]
+tests = [
+  "tantivy_executes_file_has_content_predicate_phrase_and_regex",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "native_index_uds::read_sessions::query::repo_predicates::repository_file_gate_uses_same_cut_witness_before_ranking_and_keeps_held_view. Retain repository-local path, boolean and language gates"
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/repo_predicates.rs", tests = ["repository_file_gate_uses_same_cut_witness_before_ranking_and_keeps_held_view"]},
+]
+tests = [
+  "tantivy_executes_repo_file_path_and_lang_filters",
+  "tantivy_executes_repo_has_file_predicate_as_repo_gate",
+  "tantivy_executes_repo_has_file_predicate_under_or_and_not",
+  "tantivy_executes_repo_has_file_predicate_with_lang_matcher",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "native_index_uds::read_sessions::query::preview::native_select_path_combines_path_and_body_matches_after_cold_reopen is partial. Also require duplicate chunks within one repository and path to collapse"
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/preview.rs", tests = ["native_select_path_combines_path_and_body_matches_after_cold_reopen"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/e2e_exact_count_window.rs", tests = ["select_file_collapses_duplicate_chunks_before_top_k_and_reports_exact_total"]},
+]
+tests = [
+  "tantivy_select_path_collapses_multiple_chunks_per_path",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Pinned old-Q public SDK e2e_exact_count_window::select_file_collapses_duplicate_chunks_before_top_k_and_reports_exact_total"
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/e2e_exact_count_window.rs", tests = ["select_file_collapses_duplicate_chunks_before_top_k_and_reports_exact_total"]},
+]
+tests = [
+  "tantivy_select_file_collapses_multiple_chunks_per_path",
+  "tantivy_select_file_fills_page_after_more_than_ten_duplicate_chunks",
+  "tantivy_select_file_top_ten_covers_ten_files_despite_fifteen_duplicate_chunks",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "The pinned old-Q public SDK refuses independent Chunk clear with InvalidRequest before creating target state. Whole-file tombstone leaves the unrelated Symbol and original pinned view intact. Both the initial publish and same-batch replay preserve Symbol keyword and projection results, and reject unsupported content at the parser or planner boundary."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_product_process/segmented_layered.rs", tests = ["layered_text_full_patch_pinned_views_and_restart"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/sdk_frontdoor/lifecycle_tests.rs", tests = ["sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_query_views", "symbol_content_authority_shapes_fail_closed_on_initial_and_replayed_batches"]},
+]
+tests = [
+  "independent_chunk_clear_refuses_and_file_tombstone_preserves_symbols_v1",
+  "symbol_content_authority_shapes_fail_closed_on_initial_and_replayed_batches",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Pinned old-Q checks same-document keyword, phrase and content conjunction, the cross-document miss, keyword case, and typed index:no language refusal. The indexed low-ranked eligible language leads at top-k=1, and duplicate language OR-set entries preserve the eligible result."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/e2e_unicode_text_semantics.rs", tests = ["every_syntax_case_spelling_and_route_answers_the_golden_set"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/legacy_l1_query_contract_sdk.rs", tests = ["l1_real_daemon_sdk_domain_primitives_and_symbol_windows"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/e2e_lexical_full_fidelity.rs", tests = ["lexical_full_fidelity_matrix"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/legacy_text_route_hellgate.rs", tests = ["sourcegraph_text_route_authorities_share_one_indexed_fixture"]},
+]
+tests = [
+  "index_no_reuses_content_tokens_within_document_without_cross_document_leak",
+  "language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1",
+  "tantivy_executes_index_no_full_scan_with_scoped_content_predicate",
+  "tantivy_honors_case_sensitive_keyword_queries",
+  "tantivy_index_no_language_refuses_without_stored_authority",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Pinned old-Q explain_score_traces_share_one_indexed_fixture and e2e_exact_count_window::count_all_keeps_the_page_and_reports_the_exact_total"
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/legacy_explain_score_trace.rs", tests = ["explain_score_traces_share_one_indexed_fixture"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/e2e_exact_count_window.rs", tests = ["count_all_keeps_the_page_and_reports_the_exact_total"]},
+]
+tests = [
+  "tantivy_applies_query_boost_to_scores",
+  "tantivy_count_all_keeps_the_page_and_reports_the_exact_total",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Pinned old-Q sourcegraph_text_route_authorities_share_one_indexed_fixture. Preserve repo metadata, scoped content and path/file aliases, numeric and Boolean truth, and exact repository filtering"
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/legacy_text_route_hellgate.rs", tests = ["sourcegraph_text_route_authorities_share_one_indexed_fixture"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/repository_query_contract.rs", tests = ["repository_path_aliases_and_scalar_file_matchers_gate_the_source_repository"]},
+]
+tests = [
+  "tantivy_executes_native_predicate_aliases",
+  "tantivy_executes_numeric_content_predicates",
+  "tantivy_executes_repo_allow_list_across_indexed_source_repo_ids",
+  "tantivy_executes_repo_has_content_predicate_under_or_and_not",
+  "tantivy_executes_repo_metadata_filters_when_bundle_payload_is_typed",
+  "tantivy_executes_scoped_file_content_predicates_across_boolean_contexts",
+  "tantivy_repo_has_content_phrase_and_raw_string_true_gate_narrows_by_indexed_source_repo_id",
+  "tantivy_repo_has_content_true_gate_narrows_by_indexed_source_repo_id",
+  "tantivy_select_repo_uses_canonical_representative_when_scores_tie",
+  "tantivy_type_repo_collapses_to_repo_representative",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Native repository_path_aliases_and_scalar_file_matchers_gate_the_source_repository and repository_file_gate_uses_same_cut_witness_before_ranking_and_keeps_held_view"
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/repository_query_contract.rs", tests = ["repository_path_aliases_and_scalar_file_matchers_gate_the_source_repository"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/repo_predicates.rs", tests = ["repository_file_gate_uses_same_cut_witness_before_ranking_and_keeps_held_view"]},
+]
+tests = [
+  "tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Native path-only hits cannot satisfy or veto a content Boolean clause. Pinned old-Q checks mixed top-k order, exact projection, positive type:file Chunk results and successful Symbol type, select and name queries."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/preview.rs", tests = ["native_select_path_combines_path_and_body_matches_after_cold_reopen"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/legacy_text_route_hellgate.rs", tests = ["sourcegraph_text_route_authorities_share_one_indexed_fixture"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/e2e_exact_count_window.rs", tests = ["a_projection_reports_its_collapsed_universe_exactly"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/legacy_l1_query_contract_sdk.rs", tests = ["l1_real_daemon_sdk_domain_primitives_and_symbol_windows"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/sdk_frontdoor/search_tests.rs", tests = ["sdk_query_frontdoor_routes_history_runtime_and_structural_truth"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/sdk_frontdoor/matrix_tests.rs", tests = ["sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth"]},
+]
+tests = [
+  "tantivy_executes_simple_path_term_surface_without_boolean_path_leakage",
+  "tantivy_executes_supported_type_and_select_filters",
+  "tantivy_top_k_stabilizes_keyword_path_surface_without_losing_content_hits",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Verified Native preview and ordinary whole-document regex agree, reject the false positive and return the exact Source excerpt for version 1.2.3-rc.4. Preserve existing alternation and case-folded literal regex checks."
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/regex_alternation.rs", tests = ["alternation_regex_returns_documents_matching_any_branch", "case_folded_literal_regex_agrees_with_the_keyword_route"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/preview.rs", tests = ["native_text_preview_keeps_rank_and_source_coordinates_across_reopen"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/e2e_lexical_full_fidelity.rs", tests = ["lexical_full_fidelity_matrix"]},
+]
+tests = [
+  "tantivy_executes_whole_document_regex_and_rejects_false_positive",
+  "tantivy_regex_sidecar_verifies_authoritative_text",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "Native native_uds_text_query_binds_pinned_view_and_fixed_bm25_gold, block_queries_preserve_fixed_gold_across_delta_delete_noop_and_reopen and global_text_pages_keep_original_view_across_publication_and_release"
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds.rs", tests = ["native_uds_text_query_binds_pinned_view_and_fixed_bm25_gold"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/text_entry_maps.rs", tests = ["block_queries_preserve_fixed_gold_across_delta_delete_noop_and_reopen"]},
+  {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query.rs", tests = ["global_text_pages_keep_original_view_across_publication_and_release"]},
+]
+tests = [
+  "tantivy_index_round_trip",
+  "tantivy_search_all_materializes_full_scope",
+]
+
+[[targets.dispositions]]
+disposition = "migrate"
+proof = "NOT_RUN"
+replacement = "process_readiness_owner_v1::e2e_exact_count_window::type_path_collapses_multiple_chunks_before_top_k_and_reports_exact_total; pinned old-Q public SDK"
+candidates = [
+  {path = "crates/quanta-index-searchd-runtime/tests/e2e_exact_count_window.rs", tests = ["type_path_collapses_multiple_chunks_before_top_k_and_reports_exact_total"]},
+]
+tests = [
+  "tantivy_type_path_collapses_multiple_chunks_per_path",
+]

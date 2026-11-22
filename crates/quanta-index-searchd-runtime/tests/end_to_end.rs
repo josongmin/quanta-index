@@ -42,10 +42,15 @@ use quanta_index_contract::{
     StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
     StructuralTombstoneScope, StructuralTreeRecord, TextQueryRequest, TextQuerySyntax,
 };
+use quanta_index_core::IntegrityScrubPolicyV1;
 use quanta_index_ipc::send_request;
-use quanta_index_searchd::app::SemanticEmbedderProfile;
-use quanta_index_searchd::app::config::OpenAiEmbedderTuning;
-use quanta_index_searchd_harness::{E2eRuntime, SourceCorpusFixture};
+use quanta_index_searchd::app::config::ProviderEgressGrantConfig;
+use quanta_index_searchd_harness::{
+    SourceCorpusFixture,
+    legacy_reference::{LegacySearchdBinary, SearchdBinaryProcess, daemon_socket_paths},
+    private_tempdir,
+    scale_runtime_policy::DEFAULT_HISTORY_MAX_GENERATIONS,
+};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::frontdoor_scenarios::{
@@ -62,55 +67,62 @@ fn next_request_id() -> u64 {
     id
 }
 
-/// Harness-owned three-socket scenario fixture (TOPT-03: runtime fixture
-/// ownership).
-///
-/// The daemon's tempdir, three-socket builder, and driver thread all live in
-/// [`E2eRuntime`]: boot binds query/control/ingest and waits for all three,
-/// and dropping the runtime performs the acknowledged lease-release (signal
-/// the driver, join it — which drops the old runtime and releases the
-/// state-root lease — before the tempdir is removed). Stale-socket cleanup
-/// tolerates races (`NotFound` is not an error). Tests therefore return
-/// `Err(..)` directly on failure paths with no manual shutdown/join
-/// bookkeeping; teardown is owned by the harness.
+/// Real query and ingest sockets over one pinned, disposable Legacy daemon.
 struct ScenarioFixture {
-    runtime: E2eRuntime,
+    process: Option<SearchdBinaryProcess>,
+    binary: LegacySearchdBinary,
+    _root: tempfile::TempDir,
     query_socket: std::path::PathBuf,
     ingest_socket: std::path::PathBuf,
 }
 
 impl ScenarioFixture {
     fn boot() -> Result<Self, Box<dyn Error>> {
-        Self::boot_with_profile(SemanticEmbedderProfile::hash_dev())
+        Self::boot_with_env(&[])
     }
 
-    fn boot_with_profile(profile: SemanticEmbedderProfile) -> Result<Self, Box<dyn Error>> {
-        Self::boot_with_profile_and_grant(
-            profile,
-            quanta_index_searchd::app::config::ProviderEgressGrantConfig::default(),
-        )
-    }
-
-    fn boot_with_profile_and_grant(
-        profile: SemanticEmbedderProfile,
-        grant: quanta_index_searchd::app::config::ProviderEgressGrantConfig,
-    ) -> Result<Self, Box<dyn Error>> {
-        let mut runtime =
-            E2eRuntime::boot_with_embedder_profile(profile)?.with_provider_egress_grant(grant);
-        // Eager start surfaces a boot refusal here and binds all three
-        // sockets before any byte is published.
-        runtime.start()?;
-        let (query_socket, ingest_socket) = {
-            let (query, _, ingest) = runtime
-                .socket_paths()
-                .ok_or_else(|| "fixture: driver started without socket paths".to_string())?;
-            (query.to_path_buf(), ingest.to_path_buf())
-        };
+    fn boot_with_env(environment: &[(&str, &str)]) -> Result<Self, Box<dyn Error>> {
+        let root = private_tempdir()?;
+        let binary = LegacySearchdBinary::from_environment()?;
+        let mut command = binary.benchmark_command(root.path(), DEFAULT_HISTORY_MAX_GENERATIONS)?;
+        let _configured = command
+            .env("QUANTA_INDEX_MAINTENANCE_TICK_MS", "50")
+            .env("QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS", "86400000")
+            .env(
+                "QUANTA_INDEX_INTEGRITY_SCRUB_MAX_BYTES_PER_STEP",
+                IntegrityScrubPolicyV1::DEFAULT
+                    .max_bytes_per_step
+                    .to_string(),
+            )
+            .envs(environment.iter().copied());
+        let process = SearchdBinaryProcess::start_with_pinned_command(root.path(), command)?;
+        let [query_socket, _, ingest_socket] = daemon_socket_paths(root.path());
         Ok(Self {
-            runtime,
+            process: Some(process),
+            binary,
+            _root: root,
             query_socket,
             ingest_socket,
         })
+    }
+}
+
+impl Drop for ScenarioFixture {
+    #[expect(
+        clippy::panic,
+        clippy::print_stderr,
+        reason = "test teardown must expose a daemon shutdown or pin failure without masking an existing panic"
+    )]
+    fn drop(&mut self) {
+        if let Some(process) = self.process.take()
+            && let Err(error) = process.stop().and_then(|()| self.binary.verify())
+        {
+            if thread::panicking() {
+                eprintln!("Legacy IPC fixture shutdown failed: {error}");
+            } else {
+                panic!("Legacy IPC fixture shutdown failed: {error}");
+            }
+        }
     }
 }
 
@@ -762,7 +774,7 @@ fn verify_publish_dispatch_sourcegraph_roundtrip(socket: &Path) -> TestResult {
 fn publish_dispatch_queries_share_one_indexed_fixture() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -799,7 +811,7 @@ fn publish_dispatch_queries_share_one_indexed_fixture() -> TestResult {
 fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -912,7 +924,7 @@ fn verify_history_producer_unavailable_without_lexical_fallback(socket: &Path) -
 fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -958,7 +970,7 @@ fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> Te
 fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -1268,7 +1280,7 @@ fn verify_hybrid_requires_joint_materialization(socket: &Path) -> TestResult {
 fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -1492,7 +1504,7 @@ fn verify_hybrid_visibility_filter(socket: &Path) -> TestResult {
 fn repo_metadata_filters_share_one_indexed_fixture() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -1612,7 +1624,8 @@ fn verify_semantic_without_lexical_scope(socket: &Path) -> TestResult {
 ///
 /// `#[ignore]` because it hits the real `OpenAI` API. The operator must set
 /// `OPENAI_API_KEY` and the `QUANTA_INDEX_PROVIDER_{TENANT,ENDPOINT,REGION,
-/// RETENTION,PROFILE,SOURCE_CONTENT_CONSENT}` grant fields before running:
+/// RETENTION,PROFILE,SOURCE_CONTENT_CONSENT}` grant fields plus the approved
+/// `QUANTA_INDEX_PROVIDER_OPENAI_MAX_REQUEST_COST_MICROS` before running:
 /// `OPENAI_API_KEY=<key> ./scripts/cargow --lane test-daemon-lane test \
 ///   -p quanta-index-searchd-runtime --test runtime_fast_suite \
 ///   end_to_end::openai_semantic_paraphrase_outranks_unrelated_v1 \
@@ -1620,23 +1633,36 @@ fn verify_semantic_without_lexical_scope(socket: &Path) -> TestResult {
 #[test]
 #[ignore = "hits the real OpenAI API; run with OPENAI_API_KEY set and --ignored"]
 fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
-    let api_key = match std::env::var("OPENAI_API_KEY") {
-        Ok(key) if !key.trim().is_empty() => key,
-        _ => return Err("OPENAI_API_KEY must be set to run this gated test".into()),
-    };
-
-    let fixture = ScenarioFixture::boot_with_profile_and_grant(
-        SemanticEmbedderProfile::OpenAi {
-            model: "text-embedding-3-small".to_string(),
-            model_revision: "live".to_string(),
-            dimension: 1536,
-            api_key,
-            tuning: OpenAiEmbedderTuning::default(),
-        },
-        quanta_index_searchd::app::config::ProviderEgressGrantConfig::from_env()?,
-    )?;
+    if !std::env::var("OPENAI_API_KEY").is_ok_and(|key| !key.trim().is_empty()) {
+        return Err("OPENAI_API_KEY must be set to run this gated test".into());
+    }
+    let grant = ProviderEgressGrantConfig::from_env()?;
+    let request_cost = std::env::var("QUANTA_INDEX_PROVIDER_OPENAI_MAX_REQUEST_COST_MICROS")?;
+    let fixture = ScenarioFixture::boot_with_env(&[
+        ("QUANTA_INDEX_EMBEDDER", "openai"),
+        ("QUANTA_INDEX_EMBED_MODEL", "text-embedding-3-small"),
+        ("QUANTA_INDEX_EMBED_MODEL_REVISION", "live"),
+        ("QUANTA_INDEX_EMBED_DIM", "1536"),
+        ("QUANTA_INDEX_PROVIDER_TENANT", &grant.tenant_id),
+        ("QUANTA_INDEX_PROVIDER_ENDPOINT", &grant.endpoint),
+        (
+            "QUANTA_INDEX_PROVIDER_OPENAI_MAX_REQUEST_COST_MICROS",
+            &request_cost,
+        ),
+        ("QUANTA_INDEX_PROVIDER_REGION", &grant.region),
+        ("QUANTA_INDEX_PROVIDER_RETENTION", &grant.retention),
+        ("QUANTA_INDEX_PROVIDER_PROFILE", &grant.profile),
+        (
+            "QUANTA_INDEX_PROVIDER_SOURCE_CONTENT_CONSENT",
+            if grant.source_content_consent {
+                "true"
+            } else {
+                "false"
+            },
+        ),
+    ])?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -1763,11 +1789,11 @@ fn verify_semantic_search_owned_text_derivation(socket: &Path) -> TestResult {
 
 #[test]
 fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile() -> TestResult {
-    // The harness default embedder is the explicit hash profile at the
+    // The pinned daemon uses the explicit hash profile at the
     // search-owned dimension, so plain boot is this test's fixture.
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -1925,7 +1951,7 @@ fn verify_semantic_scoped_unindexed_lexical_scope(socket: &Path) -> TestResult {
 fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -1990,7 +2016,7 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
 fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -2092,7 +2118,7 @@ fn verify_semantic_empty_text_refusal(socket: &Path) -> TestResult {
 fn default_indexed_queries_share_one_fixture() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -2149,12 +2175,11 @@ fn default_indexed_queries_share_one_fixture() -> TestResult {
 
 #[test]
 fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResult {
-    // The harness owns the degraded-config profile outright: no query-time
-    // embedder, so semantic/hybrid queries fail closed while the corpus
-    // still hash-derives and the generation materializes.
-    let fixture = ScenarioFixture::boot_with_profile(SemanticEmbedderProfile::Unavailable)?;
+    // The unavailable profile still hash-derives on publication and
+    // refuses semantic queries that require a query-time embedder.
+    let fixture = ScenarioFixture::boot_with_env(&[("QUANTA_INDEX_EMBEDDER", "unavailable")])?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -2321,7 +2346,7 @@ fn patch_every_top_k(value: &mut ciborium::Value, top_k: u32) -> usize {
 fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -2462,7 +2487,7 @@ fn check_hybrid_lane_provenance(results: &[HybridCandidateV1]) -> Result<(), Box
 fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -2571,7 +2596,7 @@ fn verify_structural_generation_not_ready(socket: &Path) -> TestResult {
 fn orphan_structural_tree_is_refused_before_query_readiness() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -3141,7 +3166,7 @@ fn verify_structural_typed_holes(socket: &Path) -> TestResult {
 fn structural_ready_queries_share_one_indexed_fixture() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let ingest_socket = fixture.ingest_socket.clone();
     let mut corpus = SourceCorpusFixture::new(
         repo(),
         revision(),
@@ -3211,7 +3236,7 @@ fn verify_structural_typed_hole_kind_refusal(socket: &Path) -> TestResult {
 #[test]
 fn request_validation_refusals_share_one_runtime() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
-    let socket = fixture.query_socket;
+    let socket = fixture.query_socket.as_path();
 
     let verification: TestResult = (|| {
         let verify_history_generation_not_ready_fn: fn(&Path) -> TestResult =
@@ -3256,7 +3281,7 @@ fn request_validation_refusals_share_one_runtime() -> TestResult {
                 verify_structural_typed_hole_kind_refusal,
             ),
         ] {
-            verify(&socket)
+            verify(socket)
                 .map_err(|error| -> Box<dyn Error> { format!("{name}: {error}").into() })?;
         }
         Ok(())

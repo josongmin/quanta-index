@@ -2,9 +2,8 @@ use std::time::{Duration, Instant};
 
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    AuxEpochV1, BatchPublishReceipt, HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryRefDelete,
-    HistoryRefMutation, HistoryRefUpsert, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneErrorCodeV2, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    AuxEpochV1, BatchPublishReceipt, HistoryDiffHunkUpsert, HistoryRefUpsert, ManifestGeneration,
+    RepoId, RevisionId, SearchPlaneErrorCodeV2,
     index::Digest,
     lex::{CommitRecord, CommitSha, DiffHunkRecord},
     results::DiffHunkSide,
@@ -15,11 +14,17 @@ use quanta_index_core::{
     index::{IndexError, WorkBudget, WorkLimits, WorkUsage},
 };
 use quanta_index_ipc::encode_cbor_payload;
+use quanta_index_sdk::{ConnectOptions, HistoryBatch, QuantaIndex};
 use quanta_index_search_plane::DirectHistoryMaterializer;
+use quanta_index_searchd_harness::{
+    legacy_reference::{LegacySearchdBinary, publish_legacy_source},
+    private_tempdir,
+    scale_runtime_policy::DEFAULT_HISTORY_MAX_GENERATIONS,
+};
 use rusqlite::{Connection, params};
 use sha2::{Digest as _, Sha256};
 
-use super::{E2eRuntime, TestResult};
+use super::TestResult;
 
 const PATH: &str = "src/history_readback.rs";
 const MAIN: &str = "refs/heads/main";
@@ -58,17 +63,6 @@ pub(super) fn diff(side: DiffHunkSide, text: &str) -> DiffHunkRecord {
         byte_start: 21,
         byte_end: 42,
     }
-}
-
-fn upsert(name: &str, sha: CommitSha) -> HistoryRefMutation {
-    HistoryRefMutation::Upsert(HistoryRefUpsert {
-        name: name.into(),
-        sha,
-    })
-}
-
-fn delete(name: &str) -> HistoryRefMutation {
-    HistoryRefMutation::Delete(HistoryRefDelete { name: name.into() })
 }
 
 pub(super) fn budget() -> WorkBudget {
@@ -139,12 +133,20 @@ fn assert_refused(
 
 #[test]
 fn history_source_readback_binds_two_legacy_publications_after_reopen() -> TestResult {
-    let mut rt = E2eRuntime::boot_with_client_request_timeout(Duration::from_secs(60))?;
-    rt.ingest_text("repo", PATH, "fn history_readback() {}")?;
+    let root = private_tempdir()?;
+    let binary = LegacySearchdBinary::from_environment()?;
+    let connect = || {
+        QuantaIndex::connect_legacy(
+            ConnectOptions::from_state_root(root.path())
+                .with_request_io_timeout(Duration::from_secs(60)),
+        )
+    };
+    let daemon = binary.start(root.path(), DEFAULT_HISTORY_MAX_GENERATIONS)?;
+    let client = connect()?;
     let generation = AuxiliaryGenerationKeyV1 {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
-        generation: rt.current_generation(),
+        repo_id: RepoId::new("repo-e2e")?,
+        revision_id: RevisionId::new("rev-e2e")?,
+        generation: ManifestGeneration::new(1),
     };
     let first = commit(
         CommitSha::from_bytes([1; 20]),
@@ -158,87 +160,73 @@ fn history_source_readback_binds_two_legacy_publications_after_reopen() -> TestR
     );
     let first_diff = diff(DiffHunkSide::After, "original addition");
     let second_diff = diff(DiffHunkSide::After, "next addition");
-    let mut prior_publication = None::<(_, BatchPublishReceipt)>;
+    let history_batch = |commit: &CommitRecord, record: &DiffHunkRecord| {
+        HistoryBatch::new(
+            generation.repo_id.clone(),
+            generation.revision_id.clone(),
+            generation.generation,
+        )
+        .commit(commit.clone())
+        .diff_hunk(commit.sha, PATH, record.clone())
+    };
+    let first_batch = history_batch(&first, &first_diff)
+        .ref_upsert(MAIN, first.sha)
+        .ref_upsert(OLD_REF, first.sha)
+        .tag_upsert(TAG, first.sha)
+        .tag_upsert(OLD_TAG, first.sha);
+    let second_batch = history_batch(&second, &second_diff)
+        .ref_upsert(MAIN, second.sha)
+        .ref_delete(OLD_REF)
+        .tag_upsert(TAG, second.sha)
+        .tag_delete(OLD_TAG);
+    let mut prior: Option<BatchPublishReceipt> = None;
     let mut last_predecessor = None;
-    for (commit, refs, tags, record, replaces, tombstones) in [
-        (
-            &first,
-            vec![upsert(MAIN, first.sha), upsert(OLD_REF, first.sha)],
-            vec![upsert(TAG, first.sha), upsert(OLD_TAG, first.sha)],
-            &first_diff,
-            6,
-            0,
-        ),
-        (
-            &second,
-            vec![upsert(MAIN, second.sha), delete(OLD_REF)],
-            vec![upsert(TAG, second.sha), delete(OLD_TAG)],
-            &second_diff,
-            4,
-            2,
-        ),
-    ] {
-        let batch = HistoryIngestBatch {
-            repo_id: generation.repo_id.clone(),
-            revision_id: generation.revision_id.clone(),
-            generation: generation.generation,
-            manifest_digest: None,
-            batch_digest: String::new(),
-            commits: vec![commit.clone()],
-            refs,
-            tags,
-            diff_hunks: vec![HistoryDiffHunkUpsert {
-                commit_sha: commit.sha,
-                file_path: PATH.into(),
-                record: record.clone(),
-            }],
-        };
-        let request = super::e2e_harness::stamped_ingest_request(
-            SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch),
-        )?;
-        let response = rt.ingest_once(request.clone())?;
-        let SearchPlaneIngestIpcResponse::HistoryReceipt(receipt) = response else {
-            return Err(
-                format!("Legacy ingest did not return a History receipt: {response:?}").into(),
-            );
-        };
+    for (batch, replaces, tombstones) in [(&first_batch, 6, 0), (&second_batch, 4, 2)] {
+        let receipt = client.history().publish(batch)?;
         if !receipt.applied
             || receipt.generation != generation.generation
             || receipt.durable_sequence == 0
-            || prior_publication
+            || receipt.batch_digest != batch.batch_digest()?
+            || prior
                 .as_ref()
-                .is_some_and(|(_, prior)| receipt.durable_sequence <= prior.durable_sequence)
+                .is_some_and(|prior| receipt.durable_sequence <= prior.durable_sequence)
             || receipt.accepted_replace_scopes != replaces
             || receipt.accepted_tombstone_scopes != tombstones
         {
             return Err(format!("unexpected Legacy History receipt: {receipt:?}").into());
         }
-        if let Some((_, prior_receipt)) = prior_publication.replace((request, receipt)) {
-            last_predecessor = Some(replay_start_fixture(&prior_receipt));
+        if let Some(first_receipt) = prior.replace(receipt) {
+            last_predecessor = Some(replay_start_fixture(&first_receipt));
         }
     }
+    let (_head, _receipt) = publish_legacy_source(
+        &client,
+        &generation.repo_id,
+        &generation.revision_id,
+        generation.generation.get(),
+        None,
+        &[(PATH, "fn history_readback() {}", 1)],
+        None,
+    )?;
+    drop(client);
+    daemon.stop()?;
+    binary.verify()?;
 
-    let sealed = rt.seal()?;
-    if sealed != generation.generation {
-        return Err("Legacy fixture sealed a different generation from the History batches".into());
-    }
-    rt.activate_last_sealed_generation()?;
-
-    // Retry the exact body across boot as if the terminal ACK had been lost.
-    // A new apply would overwrite the epoch even though its final rows match.
-    rt.try_reopen_in_place()?;
-    let (request, receipt) = prior_publication.ok_or("missing second History publication")?;
+    // Replay exactly the second SDK body after boot. A fresh apply would
+    // advance the epoch even if it reproduced the same rows.
+    let reopened = binary.start(root.path(), DEFAULT_HISTORY_MAX_GENERATIONS)?;
+    let client = connect()?;
+    let receipt = prior.ok_or("missing second History publication")?;
     let replay_start = replay_start_fixture(&receipt);
-    let response = rt.ingest_once(request)?;
-    let SearchPlaneIngestIpcResponse::HistoryReceipt(replayed) = response else {
-        return Err(format!("Legacy ingest did not return a replay receipt: {response:?}").into());
-    };
+    let replayed = client.history().publish(&second_batch)?;
     if replayed != receipt.replayed() {
         return Err(format!("Legacy History retry diverged after restart: {replayed:?}").into());
     }
-    rt.try_reopen_in_place()?;
+    drop(client);
+    reopened.stop()?;
+    binary.verify()?;
 
-    let catalog = SqliteCatalog::open(rt.state_root(), Duration::from_millis(500))?;
+    let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(500))?;
     let epoch = AuxEpochV1::new(2);
     let diff_key = |sha: CommitSha| [sha.as_bytes().as_slice(), b"\x1f", PATH.as_bytes()].concat();
     // Independent fixture in the specified stream order. Never read the

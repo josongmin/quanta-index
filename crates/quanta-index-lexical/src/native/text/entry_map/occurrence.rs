@@ -113,7 +113,7 @@ impl ColdInventoryKeySeal {
     }
 }
 
-fn open_cold_inline(
+pub(in crate::native::text) fn open_cold_inline(
     reference: ObjectRef,
     terms: u64,
     anchor: &EntryMap,
@@ -165,9 +165,13 @@ fn open_cold_inline(
     Ok(checked)
 }
 
-/// Validate the independently sealed inline block while streaming disposable
-/// diff edits. The first count retains its separate read admission; no second
-/// whole-DATA admission is needed between the initial read and this visitor.
+/// Validate the current attempt's sealed inline block while streaming
+/// disposable diff edits. The persisted get and complete parse above
+/// authenticate the DATA reused for counts and the key seal.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the fixed Copy root is returned after validation; this private path has one bounded root"
+)]
 pub(in crate::native::text) fn visit_cold_inline(
     root: EntryMap,
     reference: ObjectRef,
@@ -193,15 +197,6 @@ pub(in crate::native::text) fn visit_cold_inline(
             ..WorkUsage::default()
         })?;
         keys.push(key, budget)?;
-        if slot == 0 {
-            let retained = objects.read_retained(checked.object(), budget)?;
-            budget.checkpoint()?;
-            if retained != *checked.object() {
-                return Err(IndexError::CorruptObject(
-                    "retained occurrence count data changed".into(),
-                ));
-            }
-        }
         let count = checked
             .position_count_if_at(slot, key, budget)?
             .ok_or_else(|| {
@@ -220,6 +215,11 @@ pub(in crate::native::text) fn visit_cold_inline(
 
 /// Walk the persisted directory and compare the independently constructed
 /// source seals at EOF. A visitor may only stage disposable effects.
+#[expect(
+    clippy::large_types_passed_by_value,
+    clippy::too_many_arguments,
+    reason = "the fixed Copy root is returned after checking independent sealed fields in this bounded private path"
+)]
 pub(in crate::native::text) fn visit_cold_directory(
     root: EntryMap,
     terms: u64,
@@ -298,7 +298,7 @@ fn corrupt(reason: &str) -> IndexError {
     IndexError::CorruptObject(reason.into())
 }
 
-fn read(
+pub(in crate::native::text) fn read(
     objects: &dyn ImmutableObjectPort,
     reference: ObjectRef,
     budget: &mut WorkBudget,

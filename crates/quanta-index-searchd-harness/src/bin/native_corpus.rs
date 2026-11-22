@@ -5,7 +5,7 @@ use std::{io::Write as _, path::PathBuf};
 use anyhow::{Context as _, Result};
 use quanta_index_searchd::DiagnosticCaptureLimitsV1;
 use quanta_index_searchd_harness::native_index::{
-    NativeCorpusInput, NativeSemanticCorpusInput, measure_native_corpus,
+    NativeCorpusInput, NativeCorpusTextLayout, NativeSemanticCorpusInput, measure_native_corpus,
     measure_native_corpus_with_semantic,
 };
 
@@ -35,6 +35,7 @@ fn run() -> Result<()> {
     let mut output_root = None;
     let mut trace_mode = None;
     let mut trace_max_output_bytes = None;
+    let mut text_layout = None;
     let mut semantic_native_config = None;
     let mut semantic_native_config_sha256 = None;
     let mut semantic_native_socket = None;
@@ -63,6 +64,7 @@ fn run() -> Result<()> {
             "--output-root" => &mut output_root,
             "--trace-mode" => &mut trace_mode,
             "--trace-max-output-bytes" => &mut trace_max_output_bytes,
+            "--text-layout" => &mut text_layout,
             "--semantic-native-config" => &mut semantic_native_config,
             "--semantic-native-config-sha256" => &mut semantic_native_config_sha256,
             "--semantic-native-socket" => &mut semantic_native_socket,
@@ -87,6 +89,14 @@ fn run() -> Result<()> {
     let query_token: String = query_token.context("--query-token required")?;
     let daemon_bin = PathBuf::from(daemon_bin.context("--native-daemon-bin required")?);
     let output_root = PathBuf::from(output_root.context("--output-root required")?);
+    let text_layout = match text_layout.as_deref().unwrap_or("tree-v1") {
+        "tree-v1" => NativeCorpusTextLayout::TreeV1,
+        "segmented-full-v1" => NativeCorpusTextLayout::SegmentedFullV1,
+        "segmented-layered-v2" => NativeCorpusTextLayout::SegmentedLayeredV2,
+        _ => anyhow::bail!(
+            "--text-layout must be tree-v1, segmented-full-v1, or segmented-layered-v2"
+        ),
+    };
     let trace_max_output_bytes = match trace_mode.as_deref().unwrap_or("off") {
         "off" => {
             anyhow::ensure!(
@@ -196,6 +206,7 @@ fn run() -> Result<()> {
         daemon_bin: &daemon_bin,
         output_root: &output_root,
         trace_max_output_bytes,
+        text_layout,
     };
     let result = match semantic.as_ref() {
         Some(semantic) => measure_native_corpus_with_semantic(&input, semantic),

@@ -4,10 +4,13 @@ use quanta_index_contract::{
     SemanticQueryRequest, TextQueryRequest,
     index::{IndexInstanceId, InstanceSpec, ViewSelection},
     native_protocol::{
-        NativeGraphQuery, NativeGraphResult, NativeHybridFileResult, NativeReadSessionProfile,
+        NativeDslKindV1, NativeDslPageV1, NativeDslQueryV1, NativeDslScopeV1, NativeGraphQuery,
+        NativeGraphResult, NativeHybridFileResult, NativeIndexRequest, NativeIndexResponse,
+        NativeProjectionRead, NativeReadSessionProfile,
         NativeReadSessionSettlement, NativeReadSessionState, NativeReadSessionStatus,
         NativeRepoMapQuery, NativeRepoMapResult, NativeSemanticResult, NativeTextCursor,
-        NativeTextPage, NativeTextResult,
+        NativeTextPage, NativeTextResult, NativeTextPathCursorV1, NativeTextPathPageV1,
+        NativeTextPathResultV1,
     },
 };
 use quanta_index_ipc::{ClientIoPolicy, MemoryScope, RequestBudgetV1};
@@ -72,6 +75,54 @@ impl<'a> NativeQueryReader<'a> {
             status,
             profile: None,
         })
+    }
+
+    /// Read a DSL projection from the same exact view the caller verified.
+    pub fn dsl_projection_exact_admitted_v1(
+        &self,
+        view: quanta_index_contract::index::ViewRef,
+        scope: &NativeDslScopeV1,
+        kind: NativeDslKindV1,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<NativeProjectionRead, NativeQueryError> {
+        let reader = self.exact_reader_in_scope_v1(view)?;
+        let reply = reader.client.request_publication_admitted(
+            NativeIndexRequest::ReadProjection {
+                selection: reader.selection,
+                projection: scope.projection(kind),
+            },
+            &reader.budget(budget)?,
+            memory,
+        )?;
+        match reply.response() {
+            NativeIndexResponse::Projection(observed) => Ok(*observed),
+            NativeIndexResponse::Error(error) => Err(NativeUdsError::Refused(error.clone()).into()),
+            _ => Err(NativeUdsError::Protocol("missing Native DSL projection response".into()).into()),
+        }
+    }
+
+    pub fn open_exact_in_scope_v1(
+        self,
+        view: quanta_index_contract::index::ViewRef,
+        open_key: [u8; 32],
+        budget: &RequestBudgetV1,
+    ) -> Result<NativeQuerySession<'a>, NativeQueryError> {
+        self.exact_reader_in_scope_v1(view)?.open(open_key, budget)
+    }
+
+    fn exact_reader_in_scope_v1(
+        self,
+        view: quanta_index_contract::index::ViewRef,
+    ) -> Result<Self, NativeQueryError> {
+        let same = match self.selection {
+            ViewSelection::Exact(expected) => view == expected,
+            ViewSelection::Latest { workspace, epoch } => view.workspace == workspace && view.epoch == epoch,
+        };
+        if !same {
+            return Err(NativeQueryError::ProfileBindingMismatch);
+        }
+        Ok(Self { selection: ViewSelection::Exact(view), ..self })
     }
 
     pub fn repomap(
@@ -163,6 +214,20 @@ impl NativeQuerySession<'_> {
         captured_instance(&self.status, profile, expected)
     }
 
+    /// Query a published Native DSL projection against the session's exact view.
+    pub fn dsl_v1(
+        &self,
+        query: NativeDslQueryV1,
+        budget: &RequestBudgetV1,
+    ) -> Result<NativeDslPageV1, NativeQueryError> {
+        self.active()?;
+        Ok(self.reader.client.search_dsl_in_read_session_v1(
+            &self.status,
+            query,
+            &self.reader.budget(budget)?,
+        )?)
+    }
+
     pub fn text(
         &self,
         instance: &InstanceSpec,
@@ -170,6 +235,21 @@ impl NativeQuerySession<'_> {
         budget: &RequestBudgetV1,
     ) -> Result<NativeTextResult, NativeQueryError> {
         Ok(self.reader.client.search_text_in_read_session(
+            &self.status,
+            self.instance(instance)?,
+            query,
+            &self.reader.budget(budget)?,
+        )?)
+    }
+
+    /// Preserve repository identities for an unpaged retained `select:path` query.
+    pub fn text_paths(
+        &self,
+        instance: &InstanceSpec,
+        query: TextQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<NativeTextPathResultV1, NativeQueryError> {
+        Ok(self.reader.client.search_text_paths_in_read_session(
             &self.status,
             self.instance(instance)?,
             query,
@@ -185,6 +265,22 @@ impl NativeQuerySession<'_> {
         budget: &RequestBudgetV1,
     ) -> Result<NativeTextPage, NativeQueryError> {
         Ok(self.reader.client.search_text_page_in_read_session(
+            &self.status,
+            self.instance(instance)?,
+            query,
+            after,
+            &self.reader.budget(budget)?,
+        )?)
+    }
+
+    pub fn text_path_page(
+        &self,
+        instance: &InstanceSpec,
+        query: TextQueryRequest,
+        after: Option<NativeTextPathCursorV1>,
+        budget: &RequestBudgetV1,
+    ) -> Result<NativeTextPathPageV1, NativeQueryError> {
+        Ok(self.reader.client.search_text_path_page_in_read_session(
             &self.status,
             self.instance(instance)?,
             query,
@@ -308,6 +404,32 @@ fn captured_instance(
 }
 
 impl NativeQueryReader<'_> {
+    pub fn open_exact_admitted_in_scope_v1(
+        &self,
+        view: quanta_index_contract::index::ViewRef,
+        open_key: [u8; 32],
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeQueryError> {
+        self.exact_reader_in_scope_v1(view)?.open_admitted(open_key, budget, memory)
+    }
+
+    pub fn dsl_admitted_v1(
+        &self,
+        expected: &NativeReadSessionStatus,
+        query: NativeDslQueryV1,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeQueryError> {
+        let scoped = self.exact_reader_in_scope_v1(expected.view)?;
+        Ok(scoped.client.search_dsl_in_read_session_admitted_v1(
+            expected,
+            query,
+            &scoped.budget(budget)?,
+            memory,
+        )?)
+    }
+
     /// The response owns its original raw/decoded grants, including Error.
     /// Borrow response() only while this owner remains in caller DATA.
     pub fn open_admitted(
@@ -382,6 +504,26 @@ impl NativeQueryReader<'_> {
         memory: &MemoryScope,
     ) -> Result<AdmittedNativePublicationReply, NativeQueryError> {
         Ok(self.client.search_text_page_in_read_session_admitted(
+            expected,
+            self.admitted_instance(expected, profile, instance)?,
+            query,
+            after,
+            &self.budget(budget)?,
+            memory,
+        )?)
+    }
+
+    pub fn text_path_page_admitted(
+        &self,
+        expected: &NativeReadSessionStatus,
+        profile: &AdmittedNativePublicationReply,
+        instance: &InstanceSpec,
+        query: TextQueryRequest,
+        after: Option<NativeTextPathCursorV1>,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeQueryError> {
+        Ok(self.client.search_text_path_page_in_read_session_admitted(
             expected,
             self.admitted_instance(expected, profile, instance)?,
             query,

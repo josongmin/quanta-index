@@ -4,12 +4,13 @@ mod admitted;
 mod history;
 mod hybrid;
 mod page;
+mod path_page_v1;
 mod profile;
 
 use super::{
     IndexInstanceId, MAX_NATIVE_TEXT_TOP_K, NativeIndexRequest, NativeIndexResponse,
-    NativeTextResult, NativeUdsClient, NativeUdsError, Path, RequestBudgetV1, TextQueryRequest,
-    ViewSelection, selection_matches, validate_text_result,
+    NativeTextPathResultV1, NativeTextResult, NativeUdsClient, NativeUdsError, Path,
+    RequestBudgetV1, TextQueryRequest, ViewSelection, selection_matches, validate_text_result,
 };
 use quanta_index_contract::native_protocol::{
     NativeReadSessionId, NativeReadSessionReply, NativeReadSessionRequest,
@@ -197,9 +198,54 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         query: TextQueryRequest,
         budget: &RequestBudgetV1,
     ) -> Result<NativeTextResult, NativeUdsError> {
-        let limit = prepare_text(expected, &query, None)?;
+        let (limit, path_projection) = prepare_text(expected, &query, None)?;
+        if path_projection {
+            return Err(NativeUdsError::Protocol(
+                "select:path requires search_text_paths_in_read_session".into(),
+            ));
+        }
         let constraints = query.constraints.clone();
-        let NativeIndexResponse::TextRanked(result) = self.request(
+        let response = self.request(
+            NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchText {
+                session: expected.session,
+                instance,
+                query,
+            }),
+            budget,
+        )?;
+        match response {
+            NativeIndexResponse::TextRanked(result) => {
+                validate_text_result(
+                    ViewSelection::Exact(expected.view),
+                    instance,
+                    limit,
+                    &constraints,
+                    &result,
+                )?;
+                Ok(result)
+            }
+            _ => Err(NativeUdsError::Protocol(
+                "unexpected retained text reply".into(),
+            )),
+        }
+    }
+
+    /// Preserve repository identities for an unpaged retained `select:path` query.
+    pub fn search_text_paths_in_read_session(
+        &self,
+        expected: &NativeReadSessionStatus,
+        instance: IndexInstanceId,
+        query: TextQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<NativeTextPathResultV1, NativeUdsError> {
+        let (limit, path_projection) = prepare_text(expected, &query, None)?;
+        if !path_projection {
+            return Err(NativeUdsError::Protocol(
+                "text path projection required".into(),
+            ));
+        }
+        let constraints = query.constraints.clone();
+        let NativeIndexResponse::TextPathRankedV1(result) = self.request(
             NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchText {
                 session: expected.session,
                 instance,
@@ -209,15 +255,23 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         )?
         else {
             return Err(NativeUdsError::Protocol(
-                "unexpected retained text reply".into(),
+                "unexpected retained text path reply".into(),
             ));
         };
-        validate_text_result(
+        if result.previews.is_some() {
+            return Err(NativeUdsError::Protocol(
+                "unexpected retained text path previews".into(),
+            ));
+        }
+        let count = result.ranked.ranking.matched.min(u64::from(limit));
+        super::path_output_v1::validate_ranking(
             ViewSelection::Exact(expected.view),
             instance,
             limit,
+            count,
             &constraints,
-            &result,
+            &result.ranked,
+            None,
         )?;
         Ok(result)
     }
@@ -280,6 +334,7 @@ pub(super) fn response_matches_request(
             result.session == *session
         }
         (R::ReadProfile { session }, S::ReadSessionProfile(result)) => result.session == *session,
+        (R::SearchDslV1 { session, .. }, S::DslPageV1(page)) => page.session == *session,
         (R::ReadHistoryCut { session, instance }, S::HistoryCut(result)) => {
             result.session == *session && result.instance == *instance
         }
@@ -316,7 +371,7 @@ fn prepare_text(
     expected: &NativeReadSessionStatus,
     query: &TextQueryRequest,
     memory: Option<&super::MemoryScope>,
-) -> Result<u32, NativeUdsError> {
+) -> Result<(u32, bool), NativeUdsError> {
     if expected.state != NativeReadSessionState::Active
         || !(1..=MAX_NATIVE_TEXT_TOP_K).contains(&query.top_k)
     {
@@ -324,5 +379,17 @@ fn prepare_text(
             "read session query is not active or exceeds bounds".into(),
         ));
     }
-    super::native_text_result_limit_checked_with_memory(query, memory, |_| Ok(()))
+    let mut path_projection = false;
+    let limit = super::native_text_result_limit_checked_with_memory(query, memory, |parsed| {
+        path_projection = parsed.filters.iter().any(|filter| {
+            matches!(
+                filter,
+                quanta_index_contract::LqFilter::Select {
+                    dim: quanta_index_contract::LqSelect::Path
+                }
+            )
+        });
+        Ok(())
+    })?;
+    Ok((limit, path_projection))
 }

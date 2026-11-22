@@ -286,6 +286,20 @@ def test_native_control_parser_reads_record_and_newtype_variants():
     }
 
 
+def test_native_control_parser_reads_explicitly_tagged_unit_variants():
+    source = NATIVE_RS.replace("Submit(UpdateRequest),", "ObserveCandidateInstallationV1,\n    Submit(UpdateRequest),")
+    source += """
+        quanta_index_contract_base::native_serde_enum!(NativeIndexRequest {
+            units { ObserveCandidateInstallationV1 = 68 }
+            newtypes { Submit = 6 => UpdateRequest }
+            structs { }
+        });
+    """
+    assert MODULE.parse_native_enums(textwrap.dedent(source))["NativeIndexRequest"] == [
+        "CreateWorkspace", "ObserveCandidateInstallationV1", "Submit",
+    ]
+
+
 def test_native_control_parser_refuses_unrecognized_variant_shape():
     source = NATIVE_RS.replace("Submit(UpdateRequest)", "Submit")
     try:

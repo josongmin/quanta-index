@@ -183,15 +183,26 @@ fn legacy_active_repomap_recovery_holds_a_separate_real_root() -> TestResult {
                         // selection and physical RepoMap authority. Its
                         // signed Required input must still hold a real root.
                         let native_required = expected(activation.clone(), locator);
-                        let native_verified = boot::restore_forward::verify_native_separate_repomap_v1(
-                            &native_required, &config, search, native,
-                            authority.io.as_ref(), locked, budget,
-                        )?.ok_or(IndexError::SnapshotUnavailable)?;
-                        let native_held = native_verified.separate.as_ref()
+                        let native_verified =
+                            boot::restore_forward::verify_native_separate_repomap_v1(
+                                &native_required,
+                                &config,
+                                search,
+                                native,
+                                authority.io.as_ref(),
+                                locked,
+                                budget,
+                            )?
+                            .ok_or(IndexError::SnapshotUnavailable)?;
+                        let native_held = native_verified
+                            .separate
+                            .as_ref()
                             .ok_or(IndexError::SnapshotUnavailable)?;
                         native_held.require_repomap_locator_v1(locator, budget)?;
                         native_verified.files.require_current_v1(
-                            native_held.root(), native_held.objects(), budget,
+                            native_held.root(),
+                            native_held.objects(),
+                            budget,
                         )?;
                         drop(native_verified);
                         let native_na = NativeCutoverEvidenceLegacyRepoMapV1::NotApplicable {
@@ -199,23 +210,28 @@ fn legacy_active_repomap_recovery_holds_a_separate_real_root() -> TestResult {
                             policy_digest: NativeCutoverDigest64V1([b'a'; 64]),
                             product_scope_digest: NativeCutoverDigest64V1([b'b'; 64]),
                         };
-                        anyhow::ensure!(matches!(
-                            boot::restore_forward::verify_native_separate_repomap_v1(
-                                &native_na, &config, search, native,
-                                authority.io.as_ref(), locked, budget,
+                        anyhow::ensure!(
+                            matches!(
+                                boot::restore_forward::verify_native_separate_repomap_v1(
+                                    &native_na, &config, search, native,
+                                    authority.io.as_ref(), locked, budget,
+                                ),
+                                Err(error) if error.downcast_ref::<IndexError>() == Some(&IndexError::DigestConflict)
                             ),
-                            Err(error) if error.downcast_ref::<IndexError>() == Some(&IndexError::DigestConflict)
-                        ), "Native NotApplicable accepted an active saved RepoMap selection");
-                        let native_foreign_locator = expected(
-                            activation.clone(), NativeCutoverDigest64V1([b'a'; 64]),
+                            "Native NotApplicable accepted an active saved RepoMap selection"
                         );
-                        anyhow::ensure!(matches!(
-                            boot::restore_forward::verify_native_separate_repomap_v1(
-                                &native_foreign_locator, &config, search, native,
-                                authority.io.as_ref(), locked, budget,
+                        let native_foreign_locator =
+                            expected(activation.clone(), NativeCutoverDigest64V1([b'a'; 64]));
+                        anyhow::ensure!(
+                            matches!(
+                                boot::restore_forward::verify_native_separate_repomap_v1(
+                                    &native_foreign_locator, &config, search, native,
+                                    authority.io.as_ref(), locked, budget,
+                                ),
+                                Err(error) if error.downcast_ref::<IndexError>() == Some(&IndexError::DigestConflict)
                             ),
-                            Err(error) if error.downcast_ref::<IndexError>() == Some(&IndexError::DigestConflict)
-                        ), "Native Required accepted a foreign physical locator");
+                            "Native Required accepted a foreign physical locator"
+                        );
                         let mut foreign = activation.clone();
                         foreign.mutation.activation_epoch += 1;
                         let wrong_receipt = verify(&expected(foreign, locator), budget);

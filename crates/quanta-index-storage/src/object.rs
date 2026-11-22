@@ -21,8 +21,8 @@ use quanta_index_core::index::{
 use quanta_index_core::publication_capacity::InodeKey;
 use quanta_index_core::{
     DiagnosticCounterV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
-    DiagnosticObjectInstallPhaseV1 as InstallPhase, DiagnosticSpanGuardV1, DiagnosticStageV1,
-    DiagnosticTerminalV1, DiagnosticTraceErrorV1,
+    DiagnosticManagedInstallCensusKindV1, DiagnosticObjectInstallPhaseV1 as InstallPhase,
+    DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1, DiagnosticTraceErrorV1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -82,10 +82,57 @@ pub(crate) const MAX_BATCH_INPUTS: usize =
     quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH;
 pub(crate) const MAX_INSTALL_BATCH_INPUTS: usize =
     quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH;
-pub(crate) const MAX_BATCH_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_BATCH_BYTES: u64 =
+    quanta_index_core::index::MAX_NATIVE_IMMUTABLE_OBJECT_WIRE_BYTES_V1;
 // Bound live packet backing and the number of installs under one gate union.
 pub(crate) const MAX_PREPARED_INSTALL_GROUPS: usize = 4;
 type InstallGateGuards<'a> = [Option<MutexGuard<'a, ()>>; 256];
+
+/// Diagnostic-only evidence of physically validated reuse within one bounded
+/// install group. Catalog custody still has to succeed before it is emitted.
+#[derive(Clone, Copy, Default)]
+struct CasReuseMask([u64; MAX_INSTALL_BATCH_INPUTS.div_ceil(64)]);
+
+impl CasReuseMask {
+    fn single() -> Self {
+        let mut mask = Self::default();
+        mask.mark(0);
+        mask
+    }
+
+    fn mark(&mut self, index: usize) {
+        if let Some(word) = self.0.get_mut(index / 64) {
+            *word |= 1u64 << (index % 64);
+        }
+    }
+
+    fn contains(&self, index: usize) -> bool {
+        self.0
+            .get(index / 64)
+            .is_some_and(|word| word & (1u64 << (index % 64)) != 0)
+    }
+
+    fn count(&self) -> u64 {
+        self.0.iter().map(|word| u64::from(word.count_ones())).sum()
+    }
+}
+
+fn emit_confirmed_cas_reuse(
+    objects: &[RegisteredObject],
+    reuse: &CasReuseMask,
+    budget: &WorkBudget,
+) {
+    let Some(context) = budget.request().diagnostic_context() else {
+        return;
+    };
+    let kind = DiagnosticManagedInstallCensusKindV1::StorageCasReuse;
+    context.managed_install_census_batch(kind, reuse.count());
+    for (index, object) in objects.iter().enumerate() {
+        if reuse.contains(index) {
+            context.managed_install_census_entry(kind, object.reference, None);
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn batch_barrier(file: &File) -> Result<(), IndexError> {
@@ -565,6 +612,7 @@ impl FileObjectStore {
         objects: &[RegisteredObject],
         budget: &mut WorkBudget,
         batch: bool,
+        cas_reuse: &CasReuseMask,
     ) -> Result<(), IndexError> {
         if let Some(authority) = &self.authority {
             let scope = scope.ok_or_else(|| {
@@ -575,7 +623,11 @@ impl FileObjectStore {
                     budget,
                     DiagnosticStageV1::ManagedObjectConfirm,
                     objects.len(),
-                    |budget| authority.confirm_managed(scope, objects, budget),
+                    |budget| {
+                        authority.confirm_managed(scope, objects, budget)?;
+                        emit_confirmed_cas_reuse(objects, cas_reuse, budget);
+                        Ok(())
+                    },
                 )
             })
         } else if !batch {
@@ -684,6 +736,7 @@ impl FileObjectStore {
             }
         };
         let gates = self.lock_install_gates(groups, budget)?;
+        let mut prior_cas_reuse = CasReuseMask::default();
         for (index, group) in groups.iter().enumerate() {
             let current = prepared[index].as_ref().ok_or_else(|| {
                 IndexError::BackendViolation("prepared run metadata absent".into())
@@ -704,7 +757,9 @@ impl FileObjectStore {
                         DiagnosticStageV1::ManagedObjectAdvance,
                         transition_inputs,
                         |budget| {
-                            authority.advance_attempt_managed(attempt, confirmed, next, budget)
+                            authority.advance_attempt_managed(attempt, confirmed, next, budget)?;
+                            emit_confirmed_cas_reuse(confirmed, &prior_cas_reuse, budget);
+                            Ok(())
                         },
                     )
                 };
@@ -713,6 +768,7 @@ impl FileObjectStore {
                     None => advance(),
                 }?;
             }
+            let mut current_cas_reuse = CasReuseMask::default();
             self.install_prepared_batch_with_barrier_plan(
                 group,
                 sink,
@@ -726,7 +782,9 @@ impl FileObjectStore {
                     reserve: index == 0,
                     confirm: index + 1 == groups.len(),
                 },
+                &mut current_cas_reuse,
             )?;
+            prior_cas_reuse = current_cas_reuse;
         }
         Ok(())
     }
@@ -781,12 +839,14 @@ impl FileObjectStore {
         budget: &mut WorkBudget,
         barrier: impl FnOnce(&File) -> Result<(), IndexError>,
     ) -> Result<(), IndexError> {
+        let mut cas_reuse = CasReuseMask::default();
         self.install_prepared_batch_with_barrier_plan(
             objects,
             sink,
             budget,
             barrier,
             BatchInstallPlan::Single,
+            &mut cas_reuse,
         )
     }
 
@@ -797,6 +857,7 @@ impl FileObjectStore {
         budget: &mut WorkBudget,
         barrier: impl FnOnce(&File) -> Result<(), IndexError>,
         plan: BatchInstallPlan<'_>,
+        cas_reuse: &mut CasReuseMask,
     ) -> Result<(), IndexError> {
         if objects.is_empty() {
             return Ok(());
@@ -865,6 +926,8 @@ impl FileObjectStore {
         }
         let mut physical =
             PhysicalObservation::new(budget, self.authority.is_some(), objects.len());
+        let track_cas_reuse =
+            self.authority.is_some() && budget.request().diagnostic_context().is_some();
         let protected_gates = match plan {
             BatchInstallPlan::Single => None,
             BatchInstallPlan::Run { gates, .. } => Some(gates),
@@ -965,6 +1028,9 @@ impl FileObjectStore {
                                 budget,
                             )
                         })?;
+                        if track_cas_reuse {
+                            cas_reuse.mark(position);
+                        }
                         continue;
                     }
                     let mut writer = self.create_writer_observed(
@@ -1076,6 +1142,9 @@ impl FileObjectStore {
                                     budget,
                                 )
                             })?;
+                            if track_cas_reuse {
+                                cas_reuse.mark(position);
+                            }
                         }
                         Err(error) => return Err(error),
                     }
@@ -1169,7 +1238,7 @@ impl FileObjectStore {
             plan,
             BatchInstallPlan::Single | BatchInstallPlan::Run { confirm: true, .. }
         ) {
-            self.confirm_install(sink, scope, registrations, budget, true)
+            self.confirm_install(sink, scope, registrations, budget, true, cas_reuse)
         } else {
             Ok(())
         }
@@ -1261,6 +1330,7 @@ impl FileObjectStore {
                     std::slice::from_ref(registration),
                     budget,
                     false,
+                    &CasReuseMask::single(),
                 )?;
             }
             return Ok((prepared.registration, false));
@@ -1301,6 +1371,7 @@ impl FileObjectStore {
                         std::slice::from_ref(registration),
                         budget,
                         false,
+                        &CasReuseMask::default(),
                     )?;
                 }
                 Ok((prepared.registration, true))
@@ -1317,6 +1388,7 @@ impl FileObjectStore {
                         std::slice::from_ref(registration),
                         budget,
                         false,
+                        &CasReuseMask::single(),
                     )?;
                 }
                 Ok((prepared.registration, false))
@@ -1698,6 +1770,51 @@ impl FileObjectStore {
             reference,
             budget,
         )
+    }
+
+    /// One canonical map-node read inside a pre-admitted scan window. The
+    /// caller supplies the map codec's payload and child bounds, rather than
+    /// the generic object store's much larger accepted wire bounds.
+    pub(crate) fn canonical_map_read_memory_credit_limits(
+        &self,
+        payload: usize,
+        children: usize,
+    ) -> Result<Option<quanta_index_core::index::MemoryCreditLimits>, IndexError> {
+        let io = if let Some(io) = &self.read_io {
+            let Some(bound) = io.read_owner_memory_bound()? else {
+                return Ok(None);
+            };
+            bound
+        } else {
+            quanta_index_core::index::MemoryCreditLimits {
+                temporary_data_bytes: 0,
+                retained_data_bytes: 0,
+                max_live_temporary_leases: 0,
+                max_live_retained_leases: 0,
+            }
+        };
+        let wire = HEADER_LEN
+            .checked_add(payload)
+            .and_then(|bytes| bytes.checked_add(children.checked_mul(32)?))
+            .ok_or(IndexError::ResourceLimited)?;
+        let wire = u64::try_from(wire).map_err(|_error| IndexError::ResourceLimited)?;
+        Ok(Some(quanta_index_core::index::MemoryCreditLimits {
+            temporary_data_bytes: read_io::path_memory_bytes(&self.objects)?
+                .checked_add(wire)
+                .and_then(|bytes| bytes.checked_add(io.temporary_data_bytes))
+                .ok_or(IndexError::ResourceLimited)?,
+            retained_data_bytes: StoredObject::allocation_bytes(payload, children)?
+                .checked_add(io.retained_data_bytes)
+                .ok_or(IndexError::ResourceLimited)?,
+            max_live_temporary_leases: io
+                .max_live_temporary_leases
+                .checked_add(2)
+                .ok_or(IndexError::ResourceLimited)?,
+            max_live_retained_leases: io
+                .max_live_retained_leases
+                .checked_add(2)
+                .ok_or(IndexError::ResourceLimited)?,
+        }))
     }
 }
 

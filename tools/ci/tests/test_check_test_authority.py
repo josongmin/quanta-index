@@ -120,6 +120,103 @@ def _write_catalog(path: Path, body: str) -> Path:
     return catalog
 
 
+@pytest.mark.parametrize(
+    ("mutation", "expected_fragment"),
+    [
+        ("background", "foreground"),
+        ("on_fail", "conditional"),
+        ("job_type", "build job"),
+        ("job_shell", "Bash shell"),
+        ("step_shell", "Bash shell"),
+        ("bash_shell", None),
+        ("duplicate", "exactly one"),
+        ("prior_halt", "halt"),
+        ("shorthand_halt", "halt"),
+        ("conditional_halt", "halt"),
+        ("target_halt", "halt"),
+        ("quoted_halt", None),
+    ],
+)
+def test_circleci_rail_requires_a_synchronous_reachable_body(
+    tmp_path: Path, mutation: str, expected_fragment: str | None
+) -> None:
+    module = _load_module()
+    command = "./scripts/cargow nextest run --workspace --all-features --locked"
+    target = {"run": {"name": "rust nextest", "command": f"set -euo pipefail\n{command}\n"}}
+    steps = [{"run": {"name": "prepare", "command": "set -euo pipefail\ntrue\n"}}, target]
+    job = {"steps": steps}
+    if mutation == "background":
+        target["run"]["background"] = True
+    elif mutation == "on_fail":
+        target["run"]["when"] = "on_fail"
+    elif mutation == "job_type":
+        job["type"] = "no-op"
+    elif mutation == "job_shell":
+        job["shell"] = "/usr/bin/true"
+    elif mutation == "step_shell":
+        job["shell"] = "/bin/bash -eo pipefail"
+        target["run"]["shell"] = "/usr/bin/true"
+    elif mutation == "bash_shell":
+        job["shell"] = "/bin/bash -eo pipefail"
+    elif mutation == "duplicate":
+        steps.append(target.copy())
+    elif mutation == "prior_halt":
+        steps[0]["run"]["command"] += "circleci-agent step halt\n"
+    elif mutation == "shorthand_halt":
+        steps[0]["run"] = "circleci-agent step halt"
+    elif mutation == "conditional_halt":
+        steps[0]["run"]["command"] += "if true; then circleci-agent step halt; fi\n"
+    elif mutation == "target_halt":
+        target["run"]["command"] = "set -euo pipefail\ncircleci-agent step halt\n" + command
+    elif mutation == "quoted_halt":
+        steps[0]["run"]["command"] += "echo 'circleci-agent step halt'\n"
+    workflow = {
+        "version": 2.1,
+        "parameters": {"run_heavy": {"type": "boolean", "default": False}},
+        "workflows": {
+            "regular": {
+                "when": {
+                    "and": [
+                        {"not": "<< pipeline.parameters.run_heavy >>"},
+                        {
+                            "or": [
+                                {"equal": ["<< pipeline.event.name >>", "pull_request"]},
+                                {
+                                    "and": [
+                                        {"equal": ["<< pipeline.event.name >>", "push"]},
+                                        {"equal": ["<< pipeline.git.branch >>", "main"]},
+                                    ]
+                                },
+                            ]
+                        },
+                    ]
+                },
+                "jobs": ["verify-rust-tests"],
+            }
+        },
+        "jobs": {"verify-rust-tests": job},
+    }
+    path = tmp_path / ".circleci" / "config.yml"
+    path.parent.mkdir()
+    path.write_text(yaml.safe_dump(workflow), encoding="utf-8")
+    violations = []
+    module._validate_circleci_rail_binding(
+        root=tmp_path,
+        catalog=tmp_path / "authority.toml",
+        rail_id="pr-workspace",
+        workflow_path=".circleci/config.yml",
+        job_id="verify-rust-tests",
+        step_name="rust nextest",
+        command=command,
+        tier="pr",
+        violations=violations,
+    )
+    if expected_fragment is None:
+        assert not violations
+    else:
+        assert any(expected_fragment in violation.message for violation in violations), violations
+
+
 def test_rail_binding_requires_an_executed_command() -> None:
     module = _load_module()
     command = (
@@ -1134,6 +1231,37 @@ def test_local_scope_rejects_unknown_target(tmp_path: Path):
     assert any(
         "unknown integration target missing" in violation.message for violation in violations
     )
+
+
+def test_local_module_scope_rejects_a_standalone_binary(tmp_path: Path):
+    module = _load_module()
+    tests = tmp_path / "crates" / "demo" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "standalone.rs").write_text("", encoding="utf-8")
+    catalog = _write_catalog(
+        tmp_path,
+        """
+        format_version = 1
+        [rails.pr-workspace]
+        tier = "pr"
+        command = "./scripts/cargow nextest run --workspace --all-features --locked"
+        target_kind = "integration"
+
+        [local_scopes.fast]
+        lane = "test-fast-lane"
+        test_threads = 2
+        module_targets = ["demo-standalone"]
+
+        [[integration_targets]]
+        id = "demo-standalone"
+        path = "crates/demo/tests/standalone.rs"
+        owner = "demo"
+        rail = "pr-workspace"
+        """,
+    )
+
+    violations = module.audit_catalog(tmp_path, catalog)
+    assert any("demo-standalone must name a grouped test source" in v.message for v in violations)
 
 
 def test_local_scope_owner_selection_is_valid(tmp_path: Path):

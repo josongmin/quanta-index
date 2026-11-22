@@ -579,6 +579,7 @@ fn native_ann_nonseal_member_is_authenticated_once_and_checks_children() -> Test
         ann_materialization::prepare(
             &spec,
             &recipe,
+            ann_directory::AnnBackend::Graph,
             None,
             owners,
             Some((selected_owner, member)),
@@ -608,6 +609,7 @@ fn native_ann_nonseal_member_is_authenticated_once_and_checks_children() -> Test
         ann_materialization::prepare(
             &spec,
             &recipe,
+            ann_directory::AnnBackend::Graph,
             None,
             owners,
             Some((selected_owner, malformed)),
@@ -628,20 +630,25 @@ fn native_ann_nonseal_member_is_authenticated_once_and_checks_children() -> Test
 
 // Observe the existing GraphMap fixture's page contract without replacing its
 // lookup, COW, custody, or budget behavior.
-struct RecordingMap<'a, 'b> {
-    inner: &'a GraphMap<'b>,
+pub(crate) struct RecordingMap<'a> {
+    inner: &'a dyn PersistentMapPort,
     members: MapRoot,
     overfull_first: bool,
     scans: Mutex<Vec<MemberScan>>,
     applies: Mutex<Vec<(MapRoot, Vec<MapEdit>)>>,
     member_lookups: AtomicU64,
+    lookup_key: Option<[u8; 38]>,
     refuse_apply: AtomicBool,
     empty_apply_root: bool,
     reuse_apply_root: bool,
 }
 
-impl<'a, 'b> RecordingMap<'a, 'b> {
-    fn new(inner: &'a GraphMap<'b>, members: MapRoot, overfull_first: bool) -> Self {
+impl<'a> RecordingMap<'a> {
+    pub(crate) fn new(
+        inner: &'a dyn PersistentMapPort,
+        members: MapRoot,
+        overfull_first: bool,
+    ) -> Self {
         Self {
             inner,
             members,
@@ -649,10 +656,19 @@ impl<'a, 'b> RecordingMap<'a, 'b> {
             scans: Mutex::new(Vec::new()),
             applies: Mutex::new(Vec::new()),
             member_lookups: AtomicU64::new(0),
+            lookup_key: None,
             refuse_apply: AtomicBool::new(false),
             empty_apply_root: false,
             reuse_apply_root: false,
         }
+    }
+
+    pub(crate) fn observe_lookup_key(&mut self, key: [u8; 38]) {
+        self.lookup_key = Some(key);
+    }
+
+    pub(crate) fn take_lookup_count(&self) -> u64 {
+        self.member_lookups.swap(0, AtomicOrdering::SeqCst)
     }
 
     fn take_member_scans(&self) -> TestResult<Vec<MemberScan>> {
@@ -674,14 +690,18 @@ impl<'a, 'b> RecordingMap<'a, 'b> {
     }
 }
 
-impl PersistentMapPort for RecordingMap<'_, '_> {
+impl PersistentMapPort for RecordingMap<'_> {
     fn lookup(
         &self,
         root: MapRoot,
         key: &[u8],
         budget: &mut WorkBudget,
     ) -> Result<Option<MapValue>, IndexError> {
-        if root == self.members {
+        if root == self.members
+            && self
+                .lookup_key
+                .is_none_or(|wanted| wanted.as_slice() == key)
+        {
             let _previous = self.member_lookups.fetch_add(1, AtomicOrdering::SeqCst);
         }
         self.inner.lookup(root, key, budget)
@@ -1091,6 +1111,7 @@ fn native_materialization_installed_region_observation_has_seal_owner() -> TestR
                 ann_materialization::prepare(
                     &spec,
                     &recipe,
+                    ann_directory::AnnBackend::Graph,
                     prior.as_ref(),
                     owners,
                     Some((item.owner, item.member)),
@@ -2252,6 +2273,7 @@ fn ann_publication_rejects_member_outside_current_coverage() -> TestResult {
             ann_materialization::prepare(
                 &spec,
                 &recipe,
+                ann_directory::AnnBackend::Graph,
                 None,
                 owners,
                 Some((old.owner, member)),
@@ -2315,6 +2337,7 @@ fn whole_file_artifact_rejects_payload_outside_selected_source() -> TestResult {
         ann_materialization::prepare(
             &spec,
             &recipe,
+            ann_directory::AnnBackend::Graph,
             None,
             owners,
             Some((forged.owner, forged.member)),
@@ -2369,7 +2392,6 @@ fn whole_file_artifact_rejects_payload_outside_selected_source() -> TestResult {
         let query = SearchQuery {
             source_files: true,
             lexical_eligibility: None,
-            lexical_owners: None,
             exact_path: None,
             coverage: &coverage,
             projection: None,
@@ -2438,7 +2460,6 @@ fn mixed_ann_ranks_current_delta_member_without_reopening_it() -> TestResult {
     let query = SearchQuery {
         source_files: true,
         lexical_eligibility: None,
-        lexical_owners: None,
         exact_path: None,
         coverage: &coverage,
         projection: None,
@@ -2479,6 +2500,20 @@ fn mixed_ann_ranks_current_delta_member_without_reopening_it() -> TestResult {
 
 #[test]
 fn small_ann_exact_fallback_reuses_delta_members_and_checks_unselected_rows() -> TestResult {
+    struct NoFullRankWindow {
+        meter: QueryMemoryScope,
+        full_window_bytes: u64,
+    }
+
+    impl MemoryScopePort for NoFullRankWindow {
+        fn reserve(&self, bytes: u64, lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+            if bytes == self.full_window_bytes {
+                return Err(IndexError::ResourceLimited);
+            }
+            self.meter.reserve(bytes, lifetime)
+        }
+    }
+
     let store = MemoryStore::default();
     let maps = GraphMap::new(&store);
     let custody = TestCustody;
@@ -2501,7 +2536,6 @@ fn small_ann_exact_fallback_reuses_delta_members_and_checks_unselected_rows() ->
     let mut query = SearchQuery {
         source_files: true,
         lexical_eligibility: None,
-        lexical_owners: None,
         exact_path: None,
         coverage: &coverage,
         projection: None,
@@ -2511,26 +2545,67 @@ fn small_ann_exact_fallback_reuses_delta_members_and_checks_unselected_rows() ->
         format: spec.format,
         recipe: &recipe,
         vector: &[1.0, 0.0],
-        top_k: 2,
+        // Only two hits can be selected. A reservation proportional to this
+        // window would refuse the search even though both hits fit.
+        top_k: 4093,
         page_size: 1,
         max_owners: 2,
         overlay: None,
     };
+    let memory = Arc::new(QueryMemory::default());
+    let scope = Arc::new(NoFullRankWindow {
+        meter: QueryMemoryScope(Arc::clone(&memory)),
+        full_window_bytes: u64::try_from(
+            usize::try_from(query.top_k)? * std::mem::size_of::<SearchHit>(),
+        )?,
+    });
+    let mut query_work = ann_budget()?;
+    query_work.bind_memory_scope(Some(MemoryScope::new(scope)));
     let objects = ReadOnceDescriptor::new(&store, delta.member);
+    let mut source_reads = RecordingMap::new(&maps, sources, false);
+    source_reads.observe_lookup_key(owner_map_key(delta.owner));
     let result = ann_query::search(
         &query,
         &mut ReadContext {
             objects: &objects,
-            maps: &maps,
-            budget: &mut work,
+            maps: &source_reads,
+            budget: &mut query_work,
         },
     )?;
     check_eq!(objects.reads(), 1);
+    check_eq!(source_reads.take_lookup_count(), 1);
     check!(result.exhaustive);
     check_eq!(result.traversal, NativeSemanticTraversal::ExactExhausted);
     check_eq!(
         result.hits.iter().map(|hit| hit.owner).collect::<Vec<_>>(),
         vec![delta.owner, current.owner]
+    );
+
+    check_eq!(result.hits.capacity(), 2);
+    check_eq!(query_work.first_denial(), None);
+    drop(result);
+    check_query_memory_released(&memory)?;
+
+    let mut context = ReadContext {
+        objects: &store,
+        maps: &maps,
+        budget: &mut work,
+    };
+    let selected = selected_owner::SelectedOwner::load(
+        &owner_map_key(delta.owner),
+        delta.coverage,
+        &query,
+        &mut context,
+    )?;
+    let member = selected.current_member(&query, &mut context)?;
+    query.source_owners = MapRoot(None);
+    let wrong_root = source_file::load(&member, &selected, None, &query, &mut context);
+    query.source_owners = sources;
+    check_eq!(
+        wrong_root.err(),
+        Some(IndexError::CorruptObject(
+            "file semantic source is outside the selected view".into()
+        ))
     );
 
     // Wrong owner under the last delta key must fail even if exact ranking is capped earlier.
@@ -2553,6 +2628,113 @@ fn small_ann_exact_fallback_reuses_delta_members_and_checks_unselected_rows() ->
         ),
         Err(IndexError::CorruptObject(_))
     ));
+    Ok(())
+}
+
+#[test]
+fn routed_ann_releases_candidate_scratch_before_overlay() -> TestResult {
+    struct OverlayMemoryCheck<'a> {
+        bridge: &'a TextEmbeddingBridge<FixedTextProvider>,
+        memory: &'a QueryMemory,
+        slots: u64,
+    }
+
+    impl overlay::OverlayEmbeddingPort for OverlayMemoryCheck<'_> {
+        fn embed_overlay(
+            &self,
+            text: &str,
+            recipe: &EmbeddingRecipe,
+            budget: &mut WorkBudget,
+        ) -> Result<overlay::OverlayVectors, IndexError> {
+            if self.memory.live.load(AtomicOrdering::SeqCst) != self.slots {
+                return Err(IndexError::BackendViolation(
+                    "ANN candidate memory is live at overlay embedding".into(),
+                ));
+            }
+            overlay::OverlayEmbeddingPort::embed_overlay(self.bridge, text, recipe, budget)
+        }
+    }
+
+    let store = MemoryStore::default();
+    let maps = GraphMap::new(&store);
+    let custody = TestCustody;
+    let mut work = ann_budget()?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let bridge = TextEmbeddingBridge::new(FixedTextProvider {
+        calls: Arc::clone(&calls),
+        deadline: work.request().deadline(),
+        normalization: EmbeddingNormalization::L2Unit,
+    })?;
+    let recipe = bridge.recipe(1024)?;
+    let spec = instance(&recipe);
+    let retired = selected_owner(&store, &spec, &recipe, 1, b"removed", [1.0, 0.0])?;
+    // Immutable region rows can remain after their source owner is deleted.
+    let mut directory = ann_directory::AnnDirectory::empty(recipe.fingerprint(), MapRoot(None));
+    let (_region, fileset, _generation) = seal_one(
+        &store,
+        &maps,
+        &custody,
+        &recipe,
+        &mut directory,
+        &retired,
+        &mut work,
+    )?;
+    let reference = save_directory(&store, &maps, &custody, &directory, &mut work)?;
+    let coverage = binding(&spec, &recipe, MapRoot(None), MapRoot(None), reference);
+    let documents = [SemanticOverlayDocument {
+        owner: owner(2),
+        revision: 1,
+        path: None,
+        text: Some(Arc::from("editor change")),
+    }];
+    let memory = Arc::new(QueryMemory::default());
+    work.bind_memory_scope(Some(MemoryScope::new(Arc::new(QueryMemoryScope(
+        Arc::clone(&memory),
+    )))));
+    let bridge = OverlayMemoryCheck {
+        bridge: &bridge,
+        memory: memory.as_ref(),
+        slots: u64::try_from(std::mem::size_of::<SearchHit>())?,
+    };
+    let objects = ReadOnceDescriptor::new(&store, fileset);
+    let result = ann_query::search(
+        &SearchQuery {
+            source_files: false,
+            lexical_eligibility: None,
+            exact_path: None,
+            coverage: &coverage,
+            projection: None,
+            source_owners: MapRoot(None),
+            source_paths: MapRoot(None),
+            instance: spec.instance,
+            format: spec.format,
+            recipe: &recipe,
+            vector: &[1.0, 0.0],
+            // This selected view contains only one live whole-file overlay.
+            // An oversized requested window must still admit one hit slot.
+            top_k: 4093,
+            page_size: 1,
+            max_owners: 2,
+            overlay: Some(overlay::OverlaySearch {
+                documents: &documents,
+                bridge: &bridge,
+            }),
+        },
+        &mut ReadContext {
+            objects: &objects,
+            maps: &maps,
+            budget: &mut work,
+        },
+    )?;
+    check_eq!(objects.reads(), 1);
+    check_eq!(result.scanned_owners, 1);
+    check_eq!(result.hits.len(), 1);
+    let hit = result.hits.first().ok_or("overlay hit missing")?;
+    check_eq!(hit.owner, owner(2));
+    check!(hit.overlay.is_some());
+    check_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+    drop(result);
+    check_query_memory_released(&memory)?;
     Ok(())
 }
 
@@ -2585,7 +2767,6 @@ fn superseded_ann_region_member_does_not_consume_current_owner_slot() -> TestRes
     let query = SearchQuery {
         source_files: true,
         lexical_eligibility: None,
-        lexical_owners: None,
         exact_path: None,
         coverage: &coverage,
         projection: None,
@@ -2648,7 +2829,6 @@ fn only_superseded_rows_beyond_ann_owner_limit_do_not_report_cap() -> TestResult
     let query = SearchQuery {
         source_files: false,
         lexical_eligibility: None,
-        lexical_owners: None,
         exact_path: None,
         coverage: &coverage,
         projection: None,
@@ -2804,7 +2984,6 @@ fn projected_file_window_ignores_source_free_and_certified_empty_rows() -> TestR
         let query = SearchQuery {
             source_files,
             lexical_eligibility: None,
-            lexical_owners: None,
             exact_path: None,
             coverage: &coverage,
             projection: Some(projection),
@@ -2843,7 +3022,6 @@ fn projected_file_window_ignores_source_free_and_certified_empty_rows() -> TestR
         let query = SearchQuery {
             source_files: true,
             lexical_eligibility: None,
-            lexical_owners: None,
             exact_path: None,
             coverage: &exact_coverage,
             projection: Some(projection),
@@ -2995,7 +3173,6 @@ fn sealed_ann_shared_projection_source_reuses_retained_witness() -> TestResult {
             &SearchQuery {
                 source_files: true,
                 lexical_eligibility: None,
-                lexical_owners: None,
                 exact_path,
                 coverage: &query_coverage,
                 projection: Some(projection),
@@ -3030,6 +3207,213 @@ fn sealed_ann_shared_projection_source_reuses_retained_witness() -> TestResult {
         drop(result);
         check_query_memory_released(&memory)?;
     }
+    Ok(())
+}
+
+#[test]
+fn lance_file_refill_across_shared_projection_source() -> TestResult {
+    let store = MemoryStore::default();
+    let maps = GraphMap::new(&store);
+    let custody = TestCustody;
+    let projection_id = ProjectionId([51; 16]);
+    let producer = ProducerId([52; 16]);
+    let schema = SchemaId([53; 16]);
+    let mut recipe = whole_file_recipe_gold();
+    recipe.input_policy = EmbeddingInputPolicy::ProjectionUtf8 {
+        projection: projection_id,
+        producer,
+        schema,
+    };
+    let mut spec = instance(&recipe);
+    spec.input_domain = InputDomain::Projection {
+        projection: projection_id,
+        producer,
+    };
+    spec.schema = schema;
+
+    let shared_owner = owner(200);
+    let tail_owner = owner(201);
+    let weak_owner = owner(202);
+    let weakest_owner = owner(203);
+    let (shared_source, _) = semantic_source(&store, "src/shared.rs", b"shared source")?;
+    let (tail_source, _) = semantic_source(&store, "src/tail.rs", b"tail source")?;
+    let (weak_source, _) = semantic_source(&store, "src/weak.rs", b"weak source")?;
+    let (weakest_source, _) = semantic_source(&store, "src/weakest.rs", b"weakest source")?;
+    let sources = maps.seed(BTreeMap::from([
+        (owner_map_key(shared_owner).to_vec(), shared_source),
+        (owner_map_key(tail_owner).to_vec(), tail_source),
+        (owner_map_key(weak_owner).to_vec(), weak_source),
+        (owner_map_key(weakest_owner).to_vec(), weakest_source),
+    ]))?;
+    let mut projection_rows = BTreeMap::new();
+    let mut coverage_rows = BTreeMap::new();
+    let mut selected_owners = Vec::new();
+    let mut work = ann_budget()?;
+
+    // Two exact delta files fill the global heap before the Lance region.
+    // Its first 64 nearest vectors share a file. The 65th vector belongs to
+    // another file and outranks both delta files, so refill must reach it.
+    for ordinal in 1..=67u8 {
+        let semantic_owner = owner(ordinal);
+        let (file_owner, source, vector) = match ordinal {
+            65 => (tail_owner, tail_source, [0.0, 1.0]),
+            66 => (weak_owner, weak_source, [-0.8, 0.6]),
+            67 => (weakest_owner, weakest_source, [-1.0, 0.0]),
+            _ => (shared_owner, shared_source, [1.0, 0.0]),
+        };
+        let (contribution, coverage) =
+            super::super::lexical_projected_tests::projected_owner_vectors(
+                &store,
+                &spec,
+                &recipe,
+                projection_id,
+                producer,
+                semantic_owner,
+                Some((file_owner, source)),
+                vec![EmbeddingVector {
+                    id: b"whole-file".to_vec(),
+                    values: vector.to_vec(),
+                }],
+                false,
+            )?;
+        let owner_coverage: OwnerCoverage =
+            serde_json::from_slice(&store.get(coverage, &mut work)?.payload)?;
+        let member = owner_coverage
+            .searchable
+            .ok_or("missing projected Lance member")?;
+        let binding: OwnerMemberBinding =
+            serde_json::from_slice(&store.get(member, &mut work)?.payload)?;
+        let selected = SelectedOwner {
+            owner: semantic_owner,
+            source,
+            member,
+            coverage,
+            input: binding.input,
+            commitment: binding.logical_commitment,
+            vector,
+        };
+        selected_owners.push(selected);
+        let key = owner_map_key(semantic_owner).to_vec();
+        check_eq!(projection_rows.insert(key.clone(), contribution), None);
+        check_eq!(coverage_rows.insert(key, coverage), None);
+    }
+    let projection_owners = maps.seed(projection_rows)?;
+    let owners = maps.seed(coverage_rows)?;
+    let projection = ProjectionBinding {
+        projection: projection_id,
+        producer,
+        owners: projection_owners,
+        source: SourceCut {
+            owners: sources,
+            paths: MapRoot(None),
+            frontiers: MapRoot(None),
+        },
+        schema,
+        producer_policy: Digest([54; 32]),
+        dependency_context: Digest([55; 32]),
+        certificate: store.insert(b"shared file refill certificate".to_vec(), vec![])?,
+    };
+    let mut directory = ann_directory::AnnDirectory::empty_with_backend(
+        recipe.fingerprint(),
+        owners,
+        ann_directory::AnnBackend::LanceDb,
+    );
+    let _members = seal_many(
+        &store,
+        &maps,
+        &custody,
+        &recipe,
+        &mut directory,
+        &selected_owners[..65],
+        &mut work,
+    )?;
+    for item in &selected_owners[65..] {
+        directory.put_delta(
+            item.owner,
+            item.member,
+            &recipe,
+            &mut AttemptContext {
+                attempt: attempt(),
+                objects: &store,
+                maps: &maps,
+                custody: &custody,
+                scratch: &NoScratch,
+                budget: &mut work,
+            },
+        )?;
+    }
+    let reference = save_directory(&store, &maps, &custody, &directory, &mut work)?;
+    let mut coverage = binding(&spec, &recipe, sources, owners, reference);
+    coverage.desired.root = projection_owners;
+    coverage.desired.context = projection.materialization_context();
+    coverage.covered = Some(coverage.desired);
+
+    let memory = Arc::new(QueryMemory::default());
+    let mut query_budget = ann_budget()?;
+    query_budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(QueryMemoryScope(
+        Arc::clone(&memory),
+    )))));
+    let query = SearchQuery {
+        source_files: true,
+        lexical_eligibility: None,
+        exact_path: None,
+        coverage: &coverage,
+        projection: Some(projection),
+        source_owners: sources,
+        source_paths: MapRoot(None),
+        instance: spec.instance,
+        format: spec.format,
+        recipe: &recipe,
+        vector: &[1.0, 0.0],
+        top_k: 2,
+        page_size: 67,
+        max_owners: 67,
+        overlay: None,
+    };
+    let result = {
+        let mut read = ReadContext {
+            objects: &store,
+            maps: &maps,
+            budget: &mut query_budget,
+        };
+        let selected =
+            ann_directory::AnnDirectory::load_for_coverage(&coverage, &recipe, &mut read)?;
+        let runtime = test_runtime()?;
+        ann_query::search_loaded(&query, selected.as_ref(), None, &mut read, Some(&runtime))?
+    };
+    check_eq!(result.hits.len(), 2);
+    check_eq!(result.scanned_owners, 67);
+    check_eq!(
+        result.traversal,
+        NativeSemanticTraversal::Approximate { capped: false }
+    );
+    check!(!result.exhaustive);
+    let first = result.hits.first().ok_or("shared file hit absent")?;
+    let second = result.hits.get(1).ok_or("tail file hit absent")?;
+    let first_file = first.source_file().ok_or("shared file witness absent")?;
+    let second_file = second.source_file().ok_or("tail file witness absent")?;
+    check_eq!(
+        (
+            first.owner,
+            first_file.owner,
+            first_file.source,
+            first_file.path()
+        ),
+        (owner(1), shared_owner, shared_source, "src/shared.rs")
+    );
+    check_eq!(
+        (
+            second.owner,
+            second_file.owner,
+            second_file.source,
+            second_file.path()
+        ),
+        (owner(65), tail_owner, tail_source, "src/tail.rs")
+    );
+    check_eq!(first.cosine.to_bits(), 1.0_f64.to_bits());
+    check_eq!(second.cosine.to_bits(), 0.0_f64.to_bits());
+    drop(result);
+    check_query_memory_released(&memory)?;
     Ok(())
 }
 
@@ -3083,7 +3467,6 @@ fn partial_path_file_search_filters_before_owner_limit() -> TestResult {
         let query = SearchQuery {
             source_files: true,
             lexical_eligibility: None,
-            lexical_owners: None,
             exact_path: Some("src/2.rs"),
             coverage: &coverage,
             projection: None,
@@ -3240,6 +3623,7 @@ fn delta_edits_reject_unchanged_map_root() -> TestResult {
         ann_materialization::prepare(
             &spec,
             &recipe,
+            ann_directory::AnnBackend::Graph,
             Some(&prior),
             replaced_owners,
             Some((replacement.owner, replacement.member)),
@@ -3253,6 +3637,7 @@ fn delta_edits_reject_unchanged_map_root() -> TestResult {
         ann_materialization::prepare(
             &spec,
             &recipe,
+            ann_directory::AnnBackend::Graph,
             Some(&prior),
             replaced_owners,
             Some((replacement.owner, replacement.member)),
@@ -3350,7 +3735,6 @@ fn selected_owner_scans_refuse_invalid_pages_and_replayed_cursor() -> TestResult
             let query = SearchQuery {
                 source_files: false,
                 lexical_eligibility: None,
-                lexical_owners: None,
                 exact_path: None,
                 coverage: &coverage,
                 projection: None,
@@ -3572,15 +3956,6 @@ fn seal_many(
             .map(|item| (owner_map_key(item.owner).to_vec(), item.member))
             .collect(),
     )?;
-    let rows: Vec<_> = selected
-        .iter()
-        .map(|item| native_graph::RegionRow {
-            owner: item.owner,
-            member: item.commitment,
-            vector_id: b"whole-file",
-            vector: &item.vector,
-        })
-        .collect();
     let generation = directory
         .next_region
         .checked_add(1)
@@ -3593,7 +3968,42 @@ fn seal_many(
         scratch: &NoScratch,
         budget,
     };
-    let fileset = native_graph::install(&rows, recipe.fingerprint(), generation, 2, &mut context)?;
+    let fileset = match directory.backend()? {
+        ann_directory::AnnBackend::Graph => {
+            let rows: Vec<_> = selected
+                .iter()
+                .map(|item| native_graph::RegionRow {
+                    owner: item.owner,
+                    member: item.commitment,
+                    vector_id: b"whole-file",
+                    vector: &item.vector,
+                })
+                .collect();
+            native_graph::install(&rows, recipe.fingerprint(), generation, 2, &mut context)?
+        }
+        ann_directory::AnnBackend::LanceDb => {
+            let rows: Vec<_> = selected
+                .iter()
+                .map(|item| ann_lance::RegionRow {
+                    owner: item.owner,
+                    member: item.commitment,
+                    vector_id: b"whole-file",
+                    input: item.input,
+                    vector: &item.vector,
+                })
+                .collect();
+            crate::run_blocking(
+                &test_runtime()?,
+                ann_materialization::install_lance_region(
+                    &rows,
+                    recipe.fingerprint(),
+                    generation,
+                    2,
+                    &mut context,
+                ),
+            )?
+        }
+    };
     let mut center = vec![0.0, 0.0];
     for item in selected {
         center[0] += item.vector[0];
@@ -3703,7 +4113,6 @@ fn empty_promised_continuation_refuses_search_and_retirement() -> TestResult {
     let query = SearchQuery {
         source_files: false,
         lexical_eligibility: None,
-        lexical_owners: None,
         exact_path: None,
         coverage: &coverage,
         projection: None,
@@ -4864,6 +5273,61 @@ fn consolidation_rotates_past_full_runs_and_finds_capacity_candidate() -> TestRe
 }
 
 #[test]
+fn full_consolidation_scan_rejects_underdeclared_region_count() -> TestResult {
+    let store = MemoryStore::default();
+    let maps = GraphMap::new(&store);
+    let recipe = recipe();
+    let spec = instance(&recipe);
+    let owner = selected_owner(&store, &spec, &recipe, 1, b"delta", [1.0, 0.0])?;
+    let (_, owners) = owner_roots(&maps, &[owner])?;
+    let mut directory = ann_directory::AnnDirectory::empty(recipe.fingerprint(), owners);
+    let mut work = ann_budget()?;
+    let mut context = AttemptContext {
+        attempt: attempt(),
+        objects: &store,
+        maps: &maps,
+        custody: &TestCustody,
+        scratch: &NoScratch,
+        budget: &mut work,
+    };
+    directory.put_delta(owner.owner, owner.member, &recipe, &mut context)?;
+    // These runs are too large to be merged with the delta. The candidate
+    // scan still has to validate the complete directory count.
+    let fileset = store.insert(b"unopened region".to_vec(), Vec::new())?;
+    let descriptor = ann_directory::RegionDescriptor {
+        fileset,
+        members: directory.delta,
+        center: vec![1.0, 0.0],
+        rows: 8192,
+    };
+    let children = ObjectChildren::from_references([Some(fileset), directory.delta.0, None, None]);
+    let reference = store.insert(
+        serde_json::to_vec(&descriptor)?,
+        children.as_slice().to_vec(),
+    )?;
+    // The old rotation saw 2, 3, then 0, and stopped before seeing ordinal 1.
+    let regions = maps.seed(
+        (0..4u64)
+            .map(|id| (id.to_be_bytes().to_vec(), reference))
+            .collect(),
+    )?;
+    directory.regions = regions;
+    directory.region_count = 3;
+    directory.next_region = 4;
+    directory.maintenance_after = Some(1);
+    let delta = directory.delta;
+    check!(matches!(
+        directory.consolidated_members(&recipe, &mut context),
+        Err(IndexError::CorruptObject(_))
+    ));
+    check_eq!(directory.regions, regions);
+    check_eq!(directory.region_count, 3);
+    check_eq!(directory.maintenance_after, Some(1));
+    check_eq!(directory.delta, delta);
+    Ok(())
+}
+
+#[test]
 fn consolidation_multi_page_carry_installs_one_final_member_map() -> TestResult {
     let store = MemoryStore::default();
     let maps = GraphMap::new(&store);
@@ -5003,6 +5467,10 @@ fn consolidation_multi_page_carry_installs_one_final_member_map() -> TestResult 
     check!(graph_reaches(&store, pinned, first_fileset)?);
     check_query_memory_released(&refused_memory)?;
 
+    let repeated = selected.first().ok_or("repeated owner missing")?;
+    let repeated_artifact =
+        ann_directory::load_member(repeated.member, repeated.owner, &store, &mut setup)?.artifact;
+    let objects = ReadOnceDescriptor::new(&store, repeated_artifact);
     let mut work = WorkBudget::new(limits, deadline);
     let memory = Arc::new(QueryMemory::default());
     work.bind_memory_scope(Some(MemoryScope::new(Arc::new(QueryMemoryScope(
@@ -5013,13 +5481,14 @@ fn consolidation_multi_page_carry_installs_one_final_member_map() -> TestResult 
         &recipe,
         &mut AttemptContext {
             attempt: attempt(),
-            objects: &store,
+            objects: &objects,
             maps: &recording,
             custody: &custody,
             scratch: &NoScratch,
             budget: &mut work,
         },
     )?;
+    check_eq!(objects.reads(), 1);
     let scan_boundary_owner = selected
         .get(127)
         .ok_or("scan boundary owner missing")?
@@ -5063,6 +5532,124 @@ fn consolidation_multi_page_carry_installs_one_final_member_map() -> TestResult 
     check!(graph_reaches(&store, pinned, first_fileset)?);
     drop(result);
     check_query_memory_released(&memory)?;
+    Ok(())
+}
+
+#[test]
+fn consolidation_does_not_grow_artifact_table_for_repeated_run() -> TestResult {
+    struct DenyArtifactBacking {
+        inner: QueryMemoryScope,
+        bytes: u64,
+        refused: AtomicBool,
+    }
+
+    impl MemoryScopePort for DenyArtifactBacking {
+        fn reserve(&self, bytes: u64, lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+            if bytes == self.bytes && lifetime == MemoryLifetime::Temporary {
+                self.refused.store(true, AtomicOrdering::SeqCst);
+                return Err(IndexError::ResourceLimited);
+            }
+            self.inner.reserve(bytes, lifetime)
+        }
+    }
+
+    let store = MemoryStore::default();
+    let maps = GraphMap::new(&store);
+    let custody = TestCustody;
+    let recipe = recipe();
+    let spec = instance(&recipe);
+    let selected = (0..64u8)
+        .map(|id| selected_owner(&store, &spec, &recipe, id, b"selected input", [1.0, 0.0]))
+        .collect::<TestResult<Vec<_>>>()?;
+    let (_, owners) = owner_roots(&maps, &selected)?;
+    let mut directory = ann_directory::AnnDirectory::empty(recipe.fingerprint(), owners);
+    let mut setup = ann_budget()?;
+    let prior_members = seal_many(
+        &store,
+        &maps,
+        &custody,
+        &recipe,
+        &mut directory,
+        &selected,
+        &mut setup,
+    )?;
+    let mut context = AttemptContext {
+        attempt: attempt(),
+        objects: &store,
+        maps: &maps,
+        custody: &custody,
+        scratch: &NoScratch,
+        budget: &mut setup,
+    };
+    for item in &selected {
+        directory.put_delta(item.owner, item.member, &recipe, &mut context)?;
+    }
+    let mut delta_only = directory;
+    delta_only.regions = MapRoot(None);
+    delta_only.region_count = 0;
+    let baseline = delta_only.consolidated_members(&recipe, &mut context)?;
+    check_eq!(baseline.artifacts.len(), selected.len());
+    let delta_backing = u64::try_from(std::mem::size_of_val(baseline.artifacts.as_slice()))?;
+    let duplicate_backing = delta_backing
+        .checked_mul(2)
+        .ok_or("duplicate carry metadata bound overflow")?;
+    drop(baseline);
+
+    check_eq!(directory.region_count, 1);
+    // One stale delta member leaves 63 selected owners. Refusing the optional
+    // 64-slot allocation must still admit the exact required backing.
+    let live = selected.get(..63).ok_or("missing sparse delta fixture")?;
+    delta_only.owners = owner_roots(&maps, live)?.1;
+    let live_members = maps.seed(
+        live.iter()
+            .map(|item| (owner_map_key(item.owner).to_vec(), item.member))
+            .collect(),
+    )?;
+    for (mut directory, expected_count, expected_map, denied_bytes, expect_refusal) in [
+        (
+            directory,
+            selected.len(),
+            prior_members,
+            duplicate_backing,
+            false,
+        ),
+        (delta_only, live.len(), live_members, delta_backing, true),
+    ] {
+        let mut work = ann_budget()?;
+        let memory = Arc::new(QueryMemory::default());
+        let scope = Arc::new(DenyArtifactBacking {
+            inner: QueryMemoryScope(Arc::clone(&memory)),
+            bytes: denied_bytes,
+            refused: AtomicBool::new(false),
+        });
+        work.bind_memory_scope(Some(MemoryScope::new(scope.clone())));
+        let result = directory.consolidated_members(
+            &recipe,
+            &mut AttemptContext {
+                attempt: attempt(),
+                objects: &store,
+                maps: &maps,
+                custody: &custody,
+                scratch: &NoScratch,
+                budget: &mut work,
+            },
+        );
+        let result = result.map_err(|error| {
+            format!(
+                "carry allocation refused with {:?}: {error}",
+                work.first_denial()
+            )
+        })?;
+        check_eq!(work.first_denial(), None);
+        check_eq!(scope.refused.load(AtomicOrdering::SeqCst), expect_refusal);
+        check_eq!(result.artifacts.len(), expected_count);
+        check_eq!(result.owners, u32::try_from(expected_count)?);
+        check_eq!(result.rows, result.owners);
+        check_eq!(maps.state(result.root)?, maps.state(expected_map)?);
+        check_eq!(directory.region_count, 0);
+        drop(result);
+        check_query_memory_released(&memory)?;
+    }
     Ok(())
 }
 
@@ -5774,6 +6361,16 @@ fn provider_query_spans_classify_typed_and_budget_cancellation_without_changing_
 
 #[test]
 fn native_region_routing_reports_ninth_region_loss_against_independent_exact() -> TestResult {
+    for backend in [
+        ann_directory::AnnBackend::Graph,
+        ann_directory::AnnBackend::LanceDb,
+    ] {
+        check_ninth_region_routing(backend)?;
+    }
+    Ok(())
+}
+
+fn check_ninth_region_routing(backend: ann_directory::AnnBackend) -> TestResult {
     let store = MemoryStore::default();
     let maps = GraphMap::new(&store);
     let custody = TestCustody;
@@ -5808,15 +6405,16 @@ fn native_region_routing_reports_ninth_region_loss_against_independent_exact() -
         [-0.99995, 0.01],
     )?);
     let (sources, owners) = owner_roots(&maps, &selected)?;
-    let mut directory = ann_directory::AnnDirectory::empty(recipe.fingerprint(), owners);
+    let mut directory =
+        ann_directory::AnnDirectory::empty_with_backend(recipe.fingerprint(), owners, backend);
     for item in &selected[..8] {
-        let _region = seal_one(
+        let _members = seal_many(
             &store,
             &maps,
             &custody,
             &recipe,
             &mut directory,
-            item,
+            std::slice::from_ref(item),
             &mut work,
         )?;
     }
@@ -5834,9 +6432,8 @@ fn native_region_routing_reports_ninth_region_loss_against_independent_exact() -
     let reference = save_directory(&store, &maps, &custody, &directory, &mut work)?;
     let coverage = binding(&spec, &recipe, sources, owners, reference);
     let query = SearchQuery {
-        source_files: false,
+        source_files: matches!(backend, ann_directory::AnnBackend::LanceDb),
         lexical_eligibility: None,
-        lexical_owners: None,
         exact_path: None,
         coverage: &coverage,
         projection: None,
@@ -5860,14 +6457,15 @@ fn native_region_routing_reports_ninth_region_loss_against_independent_exact() -
         },
     )?;
     check_eq!(exact.hits.first().ok_or("exact answer")?.owner, owner(9));
-    let ann = ann_query::search(
-        &query,
-        &mut ReadContext {
-            objects: &store,
-            maps: &maps,
-            budget: &mut work,
-        },
-    )?;
+    let mut read = ReadContext {
+        objects: &store,
+        maps: &maps,
+        budget: &mut work,
+    };
+    let directory = ann_directory::AnnDirectory::load_for_coverage(&coverage, &recipe, &mut read)?;
+    let runtime = test_runtime()?;
+    let ann =
+        ann_query::search_loaded(&query, directory.as_ref(), None, &mut read, Some(&runtime))?;
     check_eq!(ann.hits.first().ok_or("routed answer")?.owner, owner(1));
     check_eq!(
         ann.traversal,
@@ -5966,32 +6564,35 @@ fn sealed_ann_reuses_member_and_artifact_across_vector_candidates() -> TestResul
                 Arc::clone(&memory),
             )))));
             let objects = ReadOnceDescriptor::new(&store, reference);
+            let mut coverage_reads = RecordingMap::new(&maps, owners, false);
+            coverage_reads.observe_lookup_key(owner_map_key(chosen.owner));
+            let query = SearchQuery {
+                source_files,
+                lexical_eligibility: None,
+                exact_path: path,
+                coverage: &partial_coverage,
+                projection: None,
+                source_owners: sources,
+                source_paths: MapRoot(None),
+                instance: spec.instance,
+                format: spec.format,
+                recipe: &recipe,
+                vector: &[1.0, 0.0],
+                top_k: 2,
+                page_size: 2,
+                max_owners: 1,
+                overlay: None,
+            };
             let result = ann_query::search(
-                &SearchQuery {
-                    source_files,
-                    lexical_eligibility: None,
-                    lexical_owners: None,
-                    exact_path: path,
-                    coverage: &partial_coverage,
-                    projection: None,
-                    source_owners: sources,
-                    source_paths: MapRoot(None),
-                    instance: spec.instance,
-                    format: spec.format,
-                    recipe: &recipe,
-                    vector: &[1.0, 0.0],
-                    top_k: 2,
-                    page_size: 2,
-                    max_owners: 1,
-                    overlay: None,
-                },
+                &query,
                 &mut ReadContext {
                     objects: &objects,
-                    maps: &maps,
+                    maps: &coverage_reads,
                     budget: &mut query_budget,
                 },
             );
             check_eq!(objects.reads(), 1);
+            check_eq!(coverage_reads.take_lookup_count(), 1);
             if final_candidate == b"0" {
                 check_eq!(
                     result.err(),
@@ -6025,6 +6626,26 @@ fn sealed_ann_reuses_member_and_artifact_across_vector_candidates() -> TestResul
             );
             drop(result);
             check_query_memory_released(&memory)?;
+            if !source_files && path.is_none() && reference == member.artifact {
+                let objects = ReadOnceDescriptor::new(&store, member.artifact);
+                let mut member_reads = RecordingMap::new(&maps, members, false);
+                member_reads.observe_lookup_key(owner_map_key(chosen.owner));
+                check_ann_scratch_before_overlay(
+                    SearchQuery {
+                        max_owners: 2,
+                        ..query
+                    },
+                    owner(2),
+                    &mut ReadContext {
+                        objects: &objects,
+                        maps: &member_reads,
+                        budget: &mut ann_budget()?,
+                    },
+                    ann_query::search,
+                )?;
+                check_eq!(objects.reads(), 1);
+                check_eq!(member_reads.take_lookup_count(), 2);
+            }
         }
     }
     Ok(())
@@ -6178,7 +6799,6 @@ fn sealed_ann_interleaved_members_fit_single_decode_memory_envelope() -> TestRes
             &SearchQuery {
                 source_files,
                 lexical_eligibility: None,
-                lexical_owners: None,
                 exact_path: None,
                 coverage: &coverage,
                 projection: None,
@@ -6285,7 +6905,6 @@ fn native_graph_candidates_are_reranked_from_original_member_vectors() -> TestRe
         &SearchQuery {
             source_files: true,
             lexical_eligibility: None,
-            lexical_owners: None,
             exact_path: None,
             coverage: &coverage,
             projection: None,

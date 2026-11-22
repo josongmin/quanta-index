@@ -6,12 +6,13 @@ use quanta_index_contract::{
     FileOwnershipIngestBatch, GenerationSnapshot, LexicalCandidate, LexicalCursor, LqQuery,
     ManifestGeneration, QueryConstraintSetV1, RepoCommitRecencyIngestBatch,
     RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId,
-    SearchCorpusIngestBatch, SymbolCandidate,
+    SearchCorpusIngestBatch, SourceFileRevision, SymbolCandidate,
 };
 
 use crate::diagnostic_trace::DiagnosticContextV1;
 use crate::domains::read_view::LexicalArtifactIdentityV1;
 use crate::error::CoreError;
+use crate::index::WorkBudget;
 use crate::request_budget::RequestBudgetV1;
 
 /// Lexical readiness for a given generation. Reported by the lexical module to
@@ -514,6 +515,30 @@ pub trait LexicalSearcher: Send + Sync {
     /// Publication lineage sealed with this same read handle.
     fn source_publication_event(&self) -> Option<&quanta_index_contract::SourcePublicationEvent> {
         None
+    }
+
+    /// Canonical source-head map root from the opened physical file authority.
+    fn source_file_heads_commitment_v1(
+        &self,
+    ) -> Option<quanta_index_contract::index::LexicalSourceHeadsCommitmentV1> {
+        None
+    }
+
+    /// Borrow every verified original file body of this exact sealed generation.
+    /// A query-only or old unbound generation must refuse this complete census.
+    fn visit_complete_source_files_v1(
+        &self,
+        _budget: &mut WorkBudget,
+        _visit: &mut dyn FnMut(
+            &SourceFileRevision,
+            bool,
+            &[u8],
+            &mut WorkBudget,
+        ) -> Result<(), CoreError>,
+    ) -> Result<u64, CoreError> {
+        Err(CoreError::NotImplemented(
+            "sealed source file census is unavailable".into(),
+        ))
     }
 
     /// Unconstrained page of results; the constrained form is the one

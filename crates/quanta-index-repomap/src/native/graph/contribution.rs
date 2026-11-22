@@ -1,13 +1,42 @@
 use quanta_index_contract::index::ProjectionOwnerContribution;
+use quanta_index_contract::index::MAX_SOURCE_PATH_BYTES;
+use quanta_index_contract::native_protocol::{
+    MAX_NATIVE_GRAPH_ITEMS, MAX_NATIVE_GRAPH_OUTPUT_BYTES, NativeRepoMapFileFactsV1,
+};
 pub use quanta_index_contract::native_protocol::{GraphEdge, GraphNode, GraphOwnerOutput};
 use quanta_index_core::index::{
-    IndexError, MemoryLease, MemoryLifetime, ObjectRef, OwnerKey, StoredObject, WorkBudget,
+    IndexError, MemoryLease, MemoryLifetime, ObjectRef, OwnerKey, SourceRecordOwner, StoredObject,
+    WorkBudget,
     ports::ImmutableObjectPort,
 };
 
 pub(super) struct LoadedGraphOutput {
     pub output: GraphOwnerOutput,
+    pub facts: Option<NativeRepoMapFileFactsV1>,
     _memory: Option<MemoryLease>,
+    _facts_memory: Option<MemoryLease>,
+}
+impl LoadedGraphOutput {
+    pub(super) fn into_prior_parts(
+        self,
+    ) -> Result<
+        (
+            GraphOwnerOutput,
+            NativeRepoMapFileFactsV1,
+            Option<MemoryLease>,
+            Option<MemoryLease>,
+        ),
+        IndexError,
+    > {
+        Ok((
+            self.output,
+            self.facts.ok_or(IndexError::CorruptObject(
+                "prior RepoMap file lacks typed facts".into(),
+            ))?,
+            self._memory,
+            self._facts_memory,
+        ))
+    }
 }
 pub(super) struct LoadedGraphSupport {
     pub support: GraphSupport,
@@ -70,13 +99,30 @@ pub(super) fn load_output(
     objects: &dyn ImmutableObjectPort,
     budget: &mut WorkBudget,
 ) -> Result<LoadedGraphOutput, IndexError> {
+    load_output_with_lifetime(reference, objects, budget, MemoryLifetime::Temporary)
+}
+
+pub(super) fn load_output_retained(
+    reference: ObjectRef,
+    objects: &dyn ImmutableObjectPort,
+    budget: &mut WorkBudget,
+) -> Result<LoadedGraphOutput, IndexError> {
+    load_output_with_lifetime(reference, objects, budget, MemoryLifetime::Retained)
+}
+
+fn load_output_with_lifetime(
+    reference: ObjectRef,
+    objects: &dyn ImmutableObjectPort,
+    budget: &mut WorkBudget,
+    lifetime: MemoryLifetime,
+) -> Result<LoadedGraphOutput, IndexError> {
     let stored = objects.get(reference, budget)?;
     if stored.payload.is_empty() {
         return Err(IndexError::CorruptObject(
             "graph output payload is empty".into(),
         ));
     }
-    if stored.payload.len() > 4 * 1024 * 1024 {
+    if stored.payload.len() > MAX_NATIVE_GRAPH_OUTPUT_BYTES {
         return Err(IndexError::ResourceLimited);
     }
     let allowance = stored
@@ -86,10 +132,11 @@ pub(super) fn load_output(
         .ok_or(IndexError::ResourceLimited)?;
     let memory = budget.reserve_memory(
         u64::try_from(allowance).map_err(|_error| IndexError::ResourceLimited)?,
-        MemoryLifetime::Temporary,
+        lifetime,
     )?;
     let output: GraphOwnerOutput = decode(&stored, reference)?;
     let mut children: Vec<ObjectRef> = output.projection.iter().map(|row| row.row).collect();
+    children.extend(output.facts);
     children.sort_unstable();
     children.dedup();
     if stored.registration.children != children {
@@ -98,10 +145,113 @@ pub(super) fn load_output(
         ));
     }
     validate_output(&output)?;
+    let (facts, facts_memory) = if let Some(facts_ref) = output.facts {
+        let (facts, memory) = load_file_facts(facts_ref, &output, objects, budget, lifetime)?;
+        (Some(facts), memory)
+    } else {
+        (None, None)
+    };
     Ok(LoadedGraphOutput {
         output,
+        facts,
         _memory: memory,
+        _facts_memory: facts_memory,
     })
+}
+
+fn load_file_facts(
+    reference: ObjectRef,
+    output: &GraphOwnerOutput,
+    objects: &dyn ImmutableObjectPort,
+    budget: &mut WorkBudget,
+    lifetime: MemoryLifetime,
+) -> Result<(NativeRepoMapFileFactsV1, Option<MemoryLease>), IndexError> {
+    let stored = objects.get(reference, budget)?;
+    if stored.payload.is_empty() || stored.payload.len() > MAX_NATIVE_GRAPH_OUTPUT_BYTES {
+        return Err(IndexError::ResourceLimited);
+    }
+    if !stored.registration.children.is_empty() {
+        return Err(IndexError::CorruptObject(
+            "graph file facts have children".into(),
+        ));
+    }
+    let allowance = stored
+        .payload
+        .len()
+        .checked_mul(8)
+        .ok_or(IndexError::ResourceLimited)?;
+    let memory = budget.reserve_memory(
+        u64::try_from(allowance).map_err(|_error| IndexError::ResourceLimited)?,
+        lifetime,
+    )?;
+    let facts: NativeRepoMapFileFactsV1 = decode(&stored, reference)?;
+    budget.charge(quanta_index_core::index::WorkUsage {
+        bytes: u64::try_from(stored.payload.len()).map_err(|_error| IndexError::ResourceLimited)?,
+        ..quanta_index_core::index::WorkUsage::default()
+    })?;
+    if facts.nodes.len() > MAX_NATIVE_GRAPH_ITEMS
+        || !facts
+            .matches_graph_nodes_v1(&output.nodes)
+            .map_err(|error| IndexError::CorruptObject(format!("graph file facts: {error}")))?
+    {
+        return Err(IndexError::CorruptObject(
+            "graph file facts differ from node identities, paths, or payload digests".into(),
+        ));
+    }
+    Ok((facts, memory))
+}
+
+pub(super) fn load_source_record(
+    reference: ObjectRef,
+    objects: &dyn ImmutableObjectPort,
+    budget: &mut WorkBudget,
+) -> Result<SourceRecordOwner, IndexError> {
+    let stored = objects.get(reference, budget)?;
+    if stored.registration.reference != reference
+        || stored.payload.is_empty()
+        || stored.payload.len() > quanta_index_core::index::MAX_BINDING_METADATA_BYTES
+    {
+        return Err(IndexError::CorruptObject(
+            "graph file Source record reference or bound differs".into(),
+        ));
+    }
+    let record = SourceRecordOwner::decode_json(&stored.payload, budget, MemoryLifetime::Temporary)?;
+    if record.path.is_empty()
+        || record.path.len() > MAX_SOURCE_PATH_BYTES
+        || record.path.starts_with('/')
+        || record.path.contains('\0')
+        || record
+            .path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || stored.registration.children.as_slice() != [record.bytes]
+    {
+        return Err(IndexError::CorruptObject(
+            "graph file Source record path or children differ".into(),
+        ));
+    }
+    Ok(record)
+}
+
+pub(super) fn validate_source_owned_facts(
+    graph: &LoadedGraphOutput,
+    contribution: &ProjectionOwnerContribution,
+    objects: &dyn ImmutableObjectPort,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    let facts = graph.facts.as_ref().ok_or(IndexError::InvalidInput(
+        "source-owned RepoMap file lacks typed facts".into(),
+    ))?;
+    let source_ref = contribution.source.ok_or(IndexError::InvalidInput(
+        "source-owned RepoMap file lacks exact Source record".into(),
+    ))?;
+    let source = load_source_record(source_ref, objects, budget)?;
+    if facts.owner_path.as_str() != source.path.as_str() {
+        return Err(IndexError::InvalidInput(
+            "RepoMap file facts path differs from exact Source record".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn load_owner(

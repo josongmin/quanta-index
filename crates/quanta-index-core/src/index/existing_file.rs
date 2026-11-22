@@ -1,6 +1,7 @@
 //! Bounded existing-only reads through the caller's actual physical I/O owner.
 //! This module supplies DATA; it creates no publication or root authority.
 
+pub use super::error::ExistingFileReadFailureV1;
 use crate::index::{
     IndexError, MemoryLease, MemoryLifetime, ObjectReadIoPort, WorkBudget, WorkUsage,
 };
@@ -9,47 +10,6 @@ use std::{
     os::unix::fs::{FileExt as _, MetadataExt as _},
     path::Path,
 };
-
-/// Preserve both native admission/I/O causes and the canonical Legacy cause.
-#[derive(Debug)]
-pub enum ExistingFileReadFailureV1 {
-    AdmissionOrIo(IndexError),
-    Canonical(crate::CoreError),
-}
-impl From<IndexError> for ExistingFileReadFailureV1 {
-    fn from(error: IndexError) -> Self {
-        Self::AdmissionOrIo(error)
-    }
-}
-impl From<crate::CoreError> for ExistingFileReadFailureV1 {
-    fn from(error: crate::CoreError) -> Self {
-        Self::Canonical(error)
-    }
-}
-impl From<std::io::Error> for ExistingFileReadFailureV1 {
-    fn from(error: std::io::Error) -> Self {
-        Self::Canonical(crate::CoreError::storage_io(
-            "existing read metadata",
-            &error,
-        ))
-    }
-}
-impl std::fmt::Display for ExistingFileReadFailureV1 {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::AdmissionOrIo(error) => std::fmt::Display::fmt(error, formatter),
-            Self::Canonical(error) => std::fmt::Display::fmt(error, formatter),
-        }
-    }
-}
-impl std::error::Error for ExistingFileReadFailureV1 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::AdmissionOrIo(error) => Some(error),
-            Self::Canonical(error) => Some(error),
-        }
-    }
-}
 
 /// Identity observed on the same admitted file descriptor as the read bytes.
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -145,7 +105,30 @@ pub fn read_existing_file_v1(
     io: &dyn ObjectReadIoPort,
     budget: &mut WorkBudget,
 ) -> Result<ExistingFileBytesV1, ExistingFileReadFailureV1> {
-    read_existing_file_with_policy(path, owner, bound, io, budget, ReadPolicy::Sidecar)
+    read_existing_file_with_oversize_error_v1(path, owner, bound, io, budget, |_, _, _| {
+        IndexError::DigestConflict.into()
+    })
+}
+
+/// Read a sidecar with a caller-specific diagnostic for exceeding its byte bound.
+/// The diagnostic is constructed from the admitted descriptor's metadata after
+/// file custody checks and before allocating or reading the file body.
+pub fn read_existing_file_with_oversize_error_v1(
+    path: &Path,
+    owner: u32,
+    bound: u64,
+    io: &dyn ObjectReadIoPort,
+    budget: &mut WorkBudget,
+    oversize_error: fn(&Path, u64, u64) -> ExistingFileReadFailureV1,
+) -> Result<ExistingFileBytesV1, ExistingFileReadFailureV1> {
+    read_existing_file_with_policy(
+        path,
+        owner,
+        bound,
+        io,
+        budget,
+        ReadPolicy::Sidecar(oversize_error),
+    )
 }
 
 /// Read a nonempty, single-link private file through the caller's physical port.
@@ -161,9 +144,9 @@ pub fn read_existing_private_file_bytes_v1(
     read_existing_file_with_policy(path, owner, bound, io, budget, ReadPolicy::PrivateBytes)
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy)]
 enum ReadPolicy {
-    Sidecar,
+    Sidecar(fn(&Path, u64, u64) -> ExistingFileReadFailureV1),
     PrivateBytes,
     Committed,
 }
@@ -187,20 +170,26 @@ fn read_existing_file_with_policy(
     let before = Identity::from(&metadata);
     if !metadata.is_file()
         || metadata.nlink() == 0
-        || policy != ReadPolicy::Committed && (metadata.nlink() != 1 || metadata.len() == 0)
+        || !matches!(policy, ReadPolicy::Committed)
+            && (metadata.nlink() != 1 || metadata.len() == 0)
         || metadata.uid() != owner
-        || metadata.len() > bound
     {
         return Err(IndexError::DigestConflict.into());
     }
     let length = metadata.len();
+    if length > bound {
+        return Err(match policy {
+            ReadPolicy::Sidecar(oversize_error) => oversize_error(path, length, bound),
+            ReadPolicy::PrivateBytes | ReadPolicy::Committed => IndexError::DigestConflict.into(),
+        });
+    }
     // The recovery consumers decode bounded owner records. This conservative
     // logical envelope includes input bytes, transient DOM/CBOR nodes, typed
     // rows, Vec growth, strings and maps; consumers must use a separate grant
     // if their actual decode envelope exceeds it. It is admission accounting, not an RSS measurement or a
     // production limit increase. Insufficient original admission must refuse.
     let (memory_multiplier, work_multiplier) = match policy {
-        ReadPolicy::Sidecar => (64, 32),
+        ReadPolicy::Sidecar(_) => (64, 32),
         // The canonical decoder admits its own work and memory separately.
         ReadPolicy::PrivateBytes | ReadPolicy::Committed => (2, 0),
     };

@@ -16,7 +16,7 @@ use futures::executor::block_on;
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::index::{
     AdmissionOutcome, CollectionId, Digest, GroupActivation, ImmutableOperation, IndexError,
-    IndexInstanceId, IndexKind, IndexProfile, IndexQueryPort, IngressRef, InstanceSpec,
+    IndexInstanceId, IndexKind, IndexProfile, IndexQueryPort, IngressRef, InstanceSpec, MapRoot,
     MemberBinding, ObjectRef, OperationKey, OperationStatus, OwnedReadyOutcome, OwnedWorkBegin,
     OwnedWorkDefer, OwnedWorkGrant, OwnedWorkTerminal, OwnerKey, OwnerMutation, OwnerMutationSet,
     ProducerId, PublicationGroupId, QueryReadContext, Refusal, SchemaId, SlotId, SourceCut,
@@ -598,7 +598,7 @@ fn source_path_bucket_preserves_repository_owners_and_rejects_scope_changes() ->
             source_repo_id: repository
                 .map(quanta_index_contract::RepoId::new)
                 .transpose()?,
-            language: None,
+                language: None,
         };
         Ok(objects
             .put(&serde_json::to_vec(&record)?, &[body], &mut budget())?
@@ -672,23 +672,43 @@ fn source_path_bucket_preserves_repository_owners_and_rejects_scope_changes() ->
     for (repo, id) in [(None, 3), (Some("corp-a"), 1), (Some("corp-b"), 2)] {
         assert_eq!(bucket_owner(original, repo)?, Some(owner(id)));
     }
-    for (operation_sequence, repository) in [(3, Some("corp-b")), (4, None)] {
+    // A refused event claim keeps its identity. Give each negative probe a
+    // separate source stream so neither reuses the other's sequence/payload.
+    for (operation_sequence, stream_byte, repository) in [(3, 7, Some("corp-b")), (4, 8, None)] {
         let replacement = put_record(repository)?;
-        let outcome = block_on(engine.submit(
-            request(
+        let key = OperationKey {
+            stream: StreamId([stream_byte; 16]),
+            ..operation(operation_sequence)
+        };
+        let mut transition = SourceTransition {
+            expected_source: original,
+            owners: stage_manifest(
                 &engine,
                 &catalog,
                 &objects,
-                initial_view,
-                original,
-                operation_sequence,
-                3,
+                key,
                 vec![OwnerMutation {
                     owner: owner(1),
                     expected: Some(initial),
                     next: Some(replacement),
                 }],
             )?,
+            events: Vec::new(),
+        };
+        transition.events.push(SourceEvent {
+            producer: key.producer,
+            stream: key.stream,
+            stream_epoch: key.stream_epoch,
+            predecessor: 0,
+            sequence: 1,
+            payload: transition.owner_digest()?,
+        });
+        let outcome = block_on(engine.submit(
+            UpdateRequest {
+                operation: key,
+                expected_view: initial_view,
+                kind: UpdateKind::SourceAdvance(transition),
+            },
             &mut budget(),
         ))?;
         assert_eq!(
@@ -2546,6 +2566,8 @@ fn materialize_trace_preserves_result_and_work_with_balanced_owner_phases() -> T
             | DiagnosticEventKindV1::OwnedRenewalRefusal { .. }
             | DiagnosticEventKindV1::SyncAggregate { .. }
             | DiagnosticEventKindV1::ObjectInstallAggregate { .. }
+            | DiagnosticEventKindV1::ManagedInstallCensusBatch { .. }
+            | DiagnosticEventKindV1::ManagedInstallCensusEntry { .. }
             | DiagnosticEventKindV1::ObjectKindAggregate { .. }
             | DiagnosticEventKindV1::AdoptionGroupAggregate { .. }
             | DiagnosticEventKindV1::Bm25CensusAggregate { .. }
@@ -3521,19 +3543,13 @@ fn terminal_replay_survives_pruned_physical_request() -> TestResult {
         }],
     )?;
     let view = published(block_on(engine.submit(update.clone(), &mut budget()))?)?;
+    let UpdateKind::SourceAdvance(transition) = &update.kind else {
+        return Err("expected source request fixture".into());
+    };
     let request_ref = objects
         .identify(
             &serde_json::to_vec(&update)?,
-            &match &update.kind {
-                UpdateKind::SourceAdvance(transition) => transition.owners.object_children(),
-                UpdateKind::SourceResync { .. }
-                | UpdateKind::ProjectionAdvance(_)
-                | UpdateKind::HistoryAdvance(_)
-                | UpdateKind::Reconfigure { .. }
-                | UpdateKind::Materialize { .. } => {
-                    return Err("expected source request fixture".into());
-                }
-            },
+            &transition.owners.object_children(),
             &mut budget(),
         )?
         .reference;
@@ -6361,10 +6377,17 @@ struct UpdateCostSpyState {
     retained_reads: std::collections::BTreeMap<ObjectRef, u64>,
     cancel_after_get: Option<ObjectRef>,
     prior_source_owners: Option<quanta_index_core::index::MapRoot>,
+    prior_literal_blocks: Option<MapRoot>,
+    next_literal_blocks: Option<MapRoot>,
+    literal_work_reads: u64,
+    literal_work_writes: u64,
     unrelated_records: std::collections::BTreeSet<ObjectRef>,
     prior_source_scans: u64,
     unrelated_record_reads: u64,
     scanned_entries: u64,
+    literal_directory_scans: u64,
+    literal_directory_entries: u64,
+    literal_directory_diff_calls: u64,
     occurrence_inputs: u64,
     occurrence_install_calls: u64,
     inventory_block_install_calls: u64,
@@ -6386,6 +6409,12 @@ struct UpdateCostObservation {
     prior_source_scans: u64,
     unrelated_record_reads: u64,
     scanned_entries: u64,
+    literal_directory_scans: u64,
+    literal_directory_entries: u64,
+    literal_directory_diff_calls: u64,
+    literal_work_reads: u64,
+    literal_work_writes: u64,
+    object_get_calls: u64,
     occurrence_inputs: u64,
     occurrence_install_calls: u64,
     inventory_block_install_calls: u64,
@@ -6416,6 +6445,34 @@ struct UpdateCostObservation {
 }
 
 impl UpdateCostSpy {
+    fn record_literal_work(
+        &self,
+        before: quanta_index_core::index::WorkUsage,
+        after: quanta_index_core::index::WorkUsage,
+    ) -> Result<(), IndexError> {
+        let reads = after
+            .reads
+            .checked_sub(before.reads)
+            .ok_or(IndexError::ResourceLimited)?;
+        let writes = after
+            .writes
+            .checked_sub(before.writes)
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))?;
+        state.literal_work_reads = state
+            .literal_work_reads
+            .checked_add(reads)
+            .ok_or(IndexError::ResourceLimited)?;
+        state.literal_work_writes = state
+            .literal_work_writes
+            .checked_add(writes)
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok(())
+    }
+
     fn record_map_stream(
         &self,
         roots: usize,
@@ -6557,6 +6614,54 @@ impl UpdateCostSpy {
         Ok(())
     }
 
+    fn record_map_page(
+        &self,
+        root: MapRoot,
+        page: quanta_index_core::index::MapPage,
+    ) -> Result<quanta_index_core::index::MapPage, IndexError> {
+        if self.active.load(std::sync::atomic::Ordering::Acquire) {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?;
+            if state.prior_source_owners == Some(root) {
+                state.prior_source_scans = state
+                    .prior_source_scans
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+            }
+            if state.prior_literal_blocks == Some(root) || state.next_literal_blocks == Some(root) {
+                state.literal_directory_scans = state
+                    .literal_directory_scans
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                state.literal_directory_entries = state
+                    .literal_directory_entries
+                    .checked_add(
+                        u64::try_from(page.entries.len())
+                            .map_err(|_error| IndexError::ResourceLimited)?,
+                    )
+                    .ok_or(IndexError::ResourceLimited)?;
+            }
+            state.scanned_entries = state
+                .scanned_entries
+                .checked_add(
+                    u64::try_from(page.entries.len())
+                        .map_err(|_error| IndexError::ResourceLimited)?,
+                )
+                .ok_or(IndexError::ResourceLimited)?;
+        }
+        Ok(page)
+    }
+
+    fn observe_literal_directory(&self, root: MapRoot) -> TestResult {
+        self.state
+            .lock()
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .prior_literal_blocks = Some(root);
+        Ok(())
+    }
+
     fn disarm(&self) -> TestResult<UpdateCostObservation> {
         self.active
             .store(false, std::sync::atomic::Ordering::Release);
@@ -6571,6 +6676,16 @@ impl UpdateCostSpy {
             prior_source_scans: state.prior_source_scans,
             unrelated_record_reads: state.unrelated_record_reads,
             scanned_entries: state.scanned_entries,
+            literal_directory_scans: state.literal_directory_scans,
+            literal_directory_entries: state.literal_directory_entries,
+            literal_directory_diff_calls: state.literal_directory_diff_calls,
+            literal_work_reads: state.literal_work_reads,
+            literal_work_writes: state.literal_work_writes,
+            object_get_calls: state
+                .physical_reads
+                .values()
+                .try_fold(0_u64, |sum, reads| sum.checked_add(*reads))
+                .ok_or("observed object reads overflow")?,
             occurrence_inputs: state.occurrence_inputs,
             occurrence_install_calls: state.occurrence_install_calls,
             inventory_block_install_calls: state.inventory_block_install_calls,
@@ -6860,6 +6975,21 @@ impl PersistentMapPort for UpdateCostSpy {
         visitor: &mut dyn quanta_index_core::index::ports::MapDiffVisitor,
         budget: &mut WorkBudget,
     ) -> Result<bool, IndexError> {
+        if self.active.load(std::sync::atomic::Ordering::Acquire) {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?;
+            if state.prior_literal_blocks == Some(before)
+                && state.next_literal_blocks == Some(after)
+                && before != after
+            {
+                state.literal_directory_diff_calls = state
+                    .literal_directory_diff_calls
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+            }
+        }
         self.inner.visit_diff(before, after, range, visitor, budget)
     }
 
@@ -6880,26 +7010,16 @@ impl PersistentMapPort for UpdateCostSpy {
         budget: &mut WorkBudget,
     ) -> Result<quanta_index_core::index::MapPage, IndexError> {
         let page = self.inner.scan(root, after, limit, budget)?;
-        if self.active.load(std::sync::atomic::Ordering::Acquire) {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|error| IndexError::Storage(error.to_string()))?;
-            if state.prior_source_owners == Some(root) {
-                state.prior_source_scans = state
-                    .prior_source_scans
-                    .checked_add(1)
-                    .ok_or(IndexError::ResourceLimited)?;
-            }
-            state.scanned_entries = state
-                .scanned_entries
-                .checked_add(
-                    u64::try_from(page.entries.len())
-                        .map_err(|_error| IndexError::ResourceLimited)?,
-                )
-                .ok_or(IndexError::ResourceLimited)?;
-        }
-        Ok(page)
+        self.record_map_page(root, page)
+    }
+
+    fn last_entry(
+        &self,
+        root: MapRoot,
+        budget: &mut WorkBudget,
+    ) -> Result<quanta_index_core::index::MapPage, IndexError> {
+        let page = self.inner.last_entry(root, budget)?;
+        self.record_map_page(root, page)
     }
 
     fn apply(
@@ -6990,6 +7110,25 @@ impl PersistentMapPort for UpdateCostSpy {
             .map(|observer| observer.snapshot())
             .transpose()?;
         let roots = self.inner.apply_stream(bases, &mut counted, sink, budget)?;
+        {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?;
+            if let Some(prior) = state.prior_literal_blocks {
+                let mut matches = bases.iter().enumerate().filter(|(_, base)| **base == prior);
+                if let Some((index, _)) = matches.next() {
+                    if matches.next().is_some() {
+                        return Err(IndexError::BackendViolation(
+                            "Literal fixture matched multiple stream bases".into(),
+                        ));
+                    }
+                    state.next_literal_blocks = Some(
+                        *roots.as_slice().get(index).ok_or(IndexError::ResourceLimited)?,
+                    );
+                }
+            }
+        }
         self.record_map_stream(bases.len(), counted.edits, before.as_ref())?;
         self.record_empty_base_edits(counted.empty_edits)?;
         Ok(roots)
@@ -7002,6 +7141,68 @@ type CostKernelFixture = (
     Arc<SqliteCatalog>,
     Arc<UpdateCostSpy>,
 );
+
+struct MeasuredLiteralIndex(Arc<UpdateCostSpy>);
+
+impl quanta_index_core::index::ports::IndexBuildPort for MeasuredLiteralIndex {
+    type Delta = quanta_index_core::index::SourceDelta;
+    type Plan = <NativeLiteralIndex as quanta_index_core::index::ports::IndexBuildPort>::Plan;
+    type Candidate =
+        <NativeLiteralIndex as quanta_index_core::index::ports::IndexBuildPort>::Candidate;
+
+    fn resource_demand(&self) -> quanta_index_core::index::effort::ResourceNeed {
+        quanta_index_core::index::ports::IndexBuildPort::resource_demand(&NativeLiteralIndex)
+    }
+
+    fn validate_instance(&self, instance: &InstanceSpec) -> Result<(), IndexError> {
+        quanta_index_core::index::ports::IndexBuildPort::validate_instance(
+            &NativeLiteralIndex,
+            instance,
+        )
+    }
+
+    fn plan(
+        &self,
+        base: quanta_index_core::index::BaseMember,
+        input: quanta_index_core::index::DeltaInput<Self::Delta>,
+        context: &quanta_index_core::index::PlanContext,
+        budget: &mut WorkBudget,
+    ) -> Result<quanta_index_core::index::PlanDecision<Self::Plan>, IndexError> {
+        quanta_index_core::index::ports::IndexBuildPort::plan(
+            &NativeLiteralIndex,
+            base,
+            input,
+            context,
+            budget,
+        )
+    }
+
+    fn prepare<'a>(
+        &'a self,
+        plan: Self::Plan,
+        context: &'a mut quanta_index_core::index::AttemptContext<'_>,
+    ) -> quanta_index_core::index::ports::IndexFuture<'a, Self::Candidate> {
+        Box::pin(async move {
+            let before = context.budget.usage();
+            let result = NativeLiteralIndex.prepare(plan, context).await;
+            self.0.record_literal_work(before, context.budget.usage())?;
+            result
+        })
+    }
+
+    fn verify_and_seal<'a>(
+        &'a self,
+        candidate: Self::Candidate,
+        context: &'a mut quanta_index_core::index::AttemptContext<'_>,
+    ) -> quanta_index_core::index::ports::IndexFuture<'a, MemberBinding> {
+        Box::pin(async move {
+            let before = context.budget.usage();
+            let result = NativeLiteralIndex.verify_and_seal(candidate, context).await;
+            self.0.record_literal_work(before, context.budget.usage())?;
+            result
+        })
+    }
+}
 
 fn cost_kernel(root: &std::path::Path) -> TestResult<CostKernelFixture> {
     let scratch = Arc::new(quanta_index_storage::FileScratchSpace::open_standalone(
@@ -7041,6 +7242,62 @@ fn cost_kernel(root: &std::path::Path) -> TestResult<CostKernelFixture> {
         Duration::from_secs(30),
     )?;
     Ok((Kernel::new(services, registry), objects, catalog, spy))
+}
+
+fn observed_literal_cost_kernel(
+    root: &std::path::Path,
+    observer: Arc<quanta_index_storage::ObjectIoObservation>,
+) -> TestResult<CostKernelFixture> {
+    let scratch = Arc::new(quanta_index_storage::FileScratchSpace::open_standalone(
+        root.join("scratch"),
+        16 * 1024 * 1024 * 1024,
+    )?);
+    let catalog = Arc::new(SqliteCatalog::open(root, Duration::from_millis(100))?);
+    let objects = Arc::new(
+        FileObjectStore::open_with_scratch(root.join("native-objects"), scratch.clone())?
+            .with_io_observation(Arc::clone(&observer)),
+    );
+    let mut observing_spy = UpdateCostSpy::new_observed(Arc::clone(&objects), observer);
+    observing_spy.observe_reads = true;
+    let spy = Arc::new(observing_spy);
+    let mut registry = AdapterRegistry::new();
+    registry.register(
+        AdapterDescriptor {
+            kind: spec().kind,
+            schema: spec().schema,
+            format: spec().format,
+        },
+        MeasuredLiteralIndex(spy.clone()),
+        |delta| Ok(delta.clone()),
+    )?;
+    let services = KernelServices::new(
+        spy.clone(),
+        spy.clone(),
+        catalog.clone(),
+        scratch,
+        Duration::from_secs(300),
+    )?;
+    Ok((Kernel::new(services, registry), objects, catalog, spy))
+}
+
+fn configured_literal(kernel: &Kernel<SqliteCatalog>) -> TestResult<ViewRef> {
+    let genesis = kernel.create_workspace(workspace(), 1, &mut budget())?;
+    let ingress = kernel.begin_input(operation(1))?;
+    let profile = kernel.stage_profile(
+        ingress,
+        &IndexProfile {
+            instances: vec![spec()],
+        },
+        &mut budget(),
+    )?;
+    published(block_on(kernel.submit(
+        UpdateRequest {
+            operation: operation(1),
+            expected_view: genesis,
+            kind: UpdateKind::Reconfigure { profile },
+        },
+        &mut budget(),
+    ))?)
 }
 
 #[test]
@@ -7457,6 +7714,613 @@ fn one_owner_patch_avoids_prior_corpus_walk_and_preserves_old_view() -> TestResu
             .iter()
             .all(|(_, work)| work.reads > 0 && work.writes > 0)
     );
+    Ok(())
+}
+
+fn literal_block_directory(
+    objects: &FileObjectStore,
+    member: &MemberBinding,
+) -> TestResult<MapRoot> {
+    let artifact = objects.get(member.artifact, &mut budget())?;
+    if !artifact.payload.starts_with(b"QLITBLK2") {
+        return Err("expected a packed Literal member".into());
+    }
+    let [source_root, block_root] = artifact.registration.children.as_slice() else {
+        return Err("packed Literal member needs source and block roots".into());
+    };
+    if source_root == block_root {
+        return Err("Literal source and block roots unexpectedly alias".into());
+    }
+    Ok(MapRoot(Some(*block_root)))
+}
+
+fn literal_directory_rows(
+    objects: &FileObjectStore,
+    root: MapRoot,
+) -> TestResult<Vec<(Vec<u8>, ObjectRef)>> {
+    let mut after = None;
+    let mut rows = Vec::new();
+    let mut work = large_fixture_budget();
+    loop {
+        let page = objects.scan(root, after.as_deref(), 64, &mut work)?;
+        if page.entries.is_empty() && page.has_more {
+            return Err("Literal directory returned an empty continuation".into());
+        }
+        for (key, value) in &page.entries {
+            rows.push((key.clone(), *value.as_object_ref()?));
+        }
+        if !page.has_more {
+            return Ok(rows);
+        }
+        after = Some(
+            page.entries
+                .last()
+                .ok_or("Literal directory continuation lacks a fence")?
+                .0
+                .clone(),
+        );
+    }
+}
+
+fn literal_owner_bytes(owner: OwnerKey) -> [u8; 32] {
+    let mut bytes = [0_u8; 32];
+    bytes[..16].copy_from_slice(&owner.producer.0);
+    bytes[16..].copy_from_slice(&owner.stable_id.0);
+    bytes
+}
+
+fn literal_expected_keys(unrelated: &[u8], hot: &[u8]) -> Vec<[u8; 35]> {
+    let mut keys = Vec::new();
+    let mut hot_grams = hot
+        .windows(3)
+        .map(|gram| [gram[0], gram[1], gram[2]])
+        .collect::<Vec<_>>();
+    hot_grams.sort_unstable();
+    hot_grams.dedup();
+    for gram in hot_grams {
+        let mut key = [0_u8; 35];
+        key[..3].copy_from_slice(&gram);
+        key[3..].copy_from_slice(&literal_owner_bytes(owner(8)));
+        keys.push(key);
+    }
+    let mut grams = unrelated
+        .windows(3)
+        .map(|gram| [gram[0], gram[1], gram[2]])
+        .collect::<Vec<_>>();
+    grams.sort_unstable();
+    grams.dedup();
+    for gram in grams {
+        for id in 1..=7 {
+            let mut key = [0_u8; 35];
+            key[..3].copy_from_slice(&gram);
+            key[3..].copy_from_slice(&literal_owner_bytes(owner(id)));
+            keys.push(key);
+        }
+    }
+    keys
+}
+
+fn literal_block_keys(payload: &[u8]) -> TestResult<Vec<[u8; 35]>> {
+    if payload.len() > 32 * 1024 || payload.get(..4) != Some(b"QILB") {
+        return Err("Literal block exceeds 32 KiB or lacks its magic".into());
+    }
+    let version = *payload.get(4).ok_or("Literal block version missing")?;
+    let (header_len, owner_end, shared) = match version {
+        2 => (13, 3, payload.get(13..13).ok_or("V2 header missing")?),
+        3 => (
+            29,
+            19,
+            payload.get(13..29).ok_or("V3 owner header missing")?,
+        ),
+        4 => {
+            let width = usize::from(*payload.get(13).ok_or("V4 owner width missing")?);
+            if !(17..=32).contains(&width) {
+                return Err("V4 owner width out of bounds".into());
+            }
+            let end = 14 + width;
+            (
+                end,
+                3 + width,
+                payload.get(14..end).ok_or("V4 owner header missing")?,
+            )
+        }
+        _ => return Err("unexpected Literal block version in owning fixture".into()),
+    };
+    let count = usize::from(u16::from_be_bytes(
+        payload.get(5..7).ok_or("block count missing")?.try_into()?,
+    ));
+    let restarts = usize::from(u16::from_be_bytes(
+        payload
+            .get(7..9)
+            .ok_or("restart count missing")?
+            .try_into()?,
+    ));
+    let body_len = usize::try_from(u32::from_be_bytes(
+        payload
+            .get(9..13)
+            .ok_or("body length missing")?
+            .try_into()?,
+    ))?;
+    let body_end = header_len
+        .checked_add(body_len)
+        .ok_or("block body length overflow")?;
+    if count == 0 || restarts != count.div_ceil(16) || body_end + restarts * 2 != payload.len() {
+        return Err("Literal block count, restart, or body sections differ".into());
+    }
+    let mut offset = header_len;
+    let mut keys: Vec<[u8; 35]> = Vec::with_capacity(count);
+    for index in 0..count {
+        if index.is_multiple_of(16) {
+            let at = body_end + index.div_euclid(16) * 2;
+            let restart = usize::from(u16::from_be_bytes(
+                payload
+                    .get(at..at + 2)
+                    .ok_or("restart missing")?
+                    .try_into()?,
+            ));
+            if restart != offset - header_len {
+                return Err("Literal block restart does not name its row".into());
+            }
+        }
+        let encoded = *payload
+            .get(offset)
+            .filter(|_| offset < body_end)
+            .ok_or("Literal row absent")?;
+        offset += 1;
+        let prefix = usize::from(encoded & 0x7f);
+        let omitted = encoded & 0x80 != 0;
+        if (index.is_multiple_of(16) && prefix != 0) || prefix >= 35 {
+            return Err("Literal prefix is not a valid restart or key prefix".into());
+        }
+        let omitted_bytes = if omitted {
+            owner_end.saturating_sub(prefix.max(3))
+        } else {
+            0
+        };
+        if omitted && omitted_bytes == 0 {
+            return Err("Literal owner omission is empty".into());
+        }
+        let suffix_len = 35_usize
+            .checked_sub(prefix + omitted_bytes)
+            .ok_or("Literal suffix width overflow")?;
+        let suffix = payload
+            .get(offset..offset + suffix_len)
+            .filter(|_| offset + suffix_len <= body_end)
+            .ok_or("Literal suffix exceeds block body")?;
+        offset += suffix_len;
+        let mut key = [0_u8; 35];
+        if prefix != 0 {
+            key[..prefix]
+                .copy_from_slice(&keys.last().ok_or("Literal row lacks predecessor")?[..prefix]);
+        }
+        if omitted {
+            let gram_len = 3_usize.saturating_sub(prefix);
+            key[prefix..prefix + gram_len].copy_from_slice(&suffix[..gram_len]);
+            key[3..owner_end].copy_from_slice(shared);
+            key[owner_end..].copy_from_slice(&suffix[gram_len..]);
+        } else {
+            key[prefix..].copy_from_slice(suffix);
+        }
+        if keys.last().is_some_and(|last| last >= &key) {
+            return Err("Literal block keys are not strictly ordered".into());
+        }
+        keys.push(key);
+    }
+    if offset != body_end {
+        return Err("Literal block has trailing row bytes".into());
+    }
+    Ok(keys)
+}
+
+fn assert_literal_postings_exact(
+    objects: &FileObjectStore,
+    member: &MemberBinding,
+    unrelated: &[u8],
+    hot: &[u8],
+) -> TestResult<u64> {
+    let directory = literal_block_directory(objects, member)?;
+    let rows = literal_directory_rows(objects, directory)?;
+    let expected = literal_expected_keys(unrelated, hot);
+    let mut actual_index = 0;
+    let mut last_key = None;
+    for (fence, reference) in &rows {
+        let block = objects.get(*reference, &mut large_fixture_budget())?;
+        let keys = literal_block_keys(&block.payload)?;
+        if fence.as_slice() != keys.last().ok_or("empty Literal block")?.as_slice() {
+            return Err("Literal descriptor fence differs from block last posting".into());
+        }
+        for key in keys {
+            if last_key.is_some_and(|last| last >= key) {
+                return Err("Literal directory postings are not strictly ordered".into());
+            }
+            if expected.get(actual_index) != Some(&key) {
+                return Err(format!(
+                    "Literal posting differs from independent source bytes at {actual_index}"
+                )
+                .into());
+            }
+            last_key = Some(key);
+            actual_index += 1;
+        }
+    }
+    if actual_index != expected.len() {
+        return Err("Literal directory omits expected source postings".into());
+    }
+    Ok(u64::try_from(rows.len())?)
+}
+
+fn literal_unrelated_corpus() -> Vec<u8> {
+    // Fixed high-byte trigrams stay disjoint from the ASCII hot posting.
+    // Owners differ in the first stable byte so the packed rows need at least
+    // sixteen suffix bytes each; 25k input bytes cross 64 directory blocks.
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut body = Vec::with_capacity(25_000);
+    for _ in 0..25_000 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        body.push(0x80 | (state.to_le_bytes()[0] & 0x7f));
+    }
+    body
+}
+
+fn literal_directory_patch_case(
+    unrelated_len: usize,
+) -> TestResult<(u64, UpdateCostObservation)> {
+    let directory = tempfile::tempdir()?;
+    let observer = Arc::new(quanta_index_storage::ObjectIoObservation::default());
+    let (engine, objects, catalog, spy) = observed_literal_cost_kernel(directory.path(), observer)?;
+    let configured = configured_literal(&engine)?;
+    let unrelated_body = literal_unrelated_corpus();
+    let unrelated_body = unrelated_body
+        .get(..unrelated_len)
+        .ok_or("Literal fixture length exceeds fixed corpus")?;
+    let mut mutations = Vec::new();
+    for id in 1..=7 {
+        let record = stage(&objects, &format!("unrelated-{id}.bin"), unrelated_body)?;
+        mutations.push(OwnerMutation {
+            owner: owner(id),
+            expected: None,
+            next: Some(record),
+        });
+    }
+    let hot_owner = owner(8);
+    let old_source = stage(&objects, "hot.bin", b"fixed-hotp-old-v1")?;
+    mutations.push(OwnerMutation {
+        owner: hot_owner,
+        expected: None,
+        next: Some(old_source),
+    });
+    let old_view = published(block_on(engine.submit(
+        request(
+            &engine,
+            &catalog,
+            &objects,
+            configured,
+            source(&engine, configured)?,
+            2,
+            1,
+            mutations,
+        )?,
+        &mut large_fixture_budget(),
+    ))?)?;
+    let old_member = member(&engine, &objects, old_view)?;
+    let old_blocks = literal_block_directory(&objects, &old_member)?;
+    let descriptors =
+        assert_literal_postings_exact(&objects, &old_member, unrelated_body, b"fixed-hotp-old-v1")?;
+    let old_ticket = engine.pin_view(ViewSelection::Exact(old_view), &budget())?;
+    let next_source = stage(&objects, "hot.bin", b"fixed-hotp-new-v1")?;
+    let update = request(
+        &engine,
+        &catalog,
+        &objects,
+        old_view,
+        old_ticket.view().source,
+        3,
+        2,
+        vec![OwnerMutation {
+            owner: hot_owner,
+            expected: Some(old_source),
+            next: Some(next_source),
+        }],
+    )?;
+    spy.arm(
+        old_ticket.view().source.owners,
+        std::collections::BTreeSet::new(),
+    )?;
+    spy.observe_literal_directory(old_blocks)?;
+    let mut work = large_fixture_budget();
+    let new_view = published(block_on(engine.submit(update, &mut work))?)?;
+    let observed = spy.disarm()?;
+    let new_member = member(&engine, &objects, new_view)?;
+    let _ = assert_literal_postings_exact(&objects, &new_member, unrelated_body, b"fixed-hotp-new-v1")?;
+    assert_eq!(
+        hits(&engine, old_view, &objects, &old_member, b"hotp-old")?,
+        vec![hot_owner]
+    );
+    assert!(hits(&engine, old_view, &objects, &old_member, b"hotp-new")?.is_empty());
+    assert!(hits(&engine, new_view, &objects, &new_member, b"hotp-old")?.is_empty());
+    assert_eq!(
+        hits(&engine, new_view, &objects, &new_member, b"hotp-new")?,
+        vec![hot_owner]
+    );
+    old_ticket.release()?;
+    Ok((descriptors, observed))
+}
+
+#[test]
+fn literal_patch_does_not_walk_unaffected_directory_pages() -> TestResult {
+    let (small_count, small) = literal_directory_patch_case(2_000)?;
+    let (large_count, large) = literal_directory_patch_case(25_000)?;
+    assert!(
+        small_count > 0 && small_count <= 64,
+        "small Literal directory has {small_count} descriptors"
+    );
+    assert!(
+        large_count > 64,
+        "large Literal directory has only {large_count} descriptors"
+    );
+    assert!(
+        large.literal_directory_entries <= 8,
+        "one hot posting visited {} of {large_count} prior Literal descriptors",
+        large.literal_directory_entries
+    );
+    assert!(large.literal_directory_scans <= 8);
+    assert!(small.literal_directory_diff_calls > 0 && large.literal_directory_diff_calls > 0);
+    assert!(small.literal_work_reads > 0 && large.literal_work_reads > 0);
+    assert!(small.literal_work_writes > 0 && large.literal_work_writes > 0);
+    assert!(small.object_get_calls > 0 && large.object_get_calls > 0);
+    assert!(
+        large.literal_work_reads <= small.literal_work_reads + 64,
+        "unrelated Literal blocks caused charged adapter reads to grow: small={} large={}",
+        small.literal_work_reads,
+        large.literal_work_reads
+    );
+    assert!(
+        large.literal_work_writes <= small.literal_work_writes + 64,
+        "unrelated Literal blocks caused charged adapter writes to grow: small={} large={}",
+        small.literal_work_writes,
+        large.literal_work_writes
+    );
+    let small_io = small
+        .object_io
+        .ok_or("small Patch lacks physical IO observation")?;
+    let large_io = large
+        .object_io
+        .ok_or("large Patch lacks physical IO observation")?;
+    // Whole-submit object IO includes Kernel publication and retention. The
+    // bounded claims above use the scoped Literal adapter and directory spy.
+    assert!(small_io.write_calls > 0 && large_io.write_calls > 0);
+    Ok(())
+}
+
+#[test]
+fn literal_repeated_tail_appends_match_one_batch_postings_and_block_reads() -> TestResult {
+    let ids: Vec<u8> = (1..=12).collect();
+    let expected_owners: Vec<_> = ids.iter().copied().map(owner).collect();
+    for batch_size in [1, ids.len()] {
+        let directory = tempfile::tempdir()?;
+        let (engine, objects, catalog) = kernel(directory.path())?;
+        let mut view = configured_literal(&engine)?;
+        for (index, chunk) in ids.chunks(batch_size).enumerate() {
+            let mut mutations = Vec::new();
+            for &id in chunk {
+                mutations.push(OwnerMutation {
+                    owner: owner(id),
+                    expected: None,
+                    next: Some(stage(&objects, &format!("owner-{id}.rs"), b"abc")?),
+                });
+            }
+            let event = u64::try_from(index)? + 1;
+            view = published(block_on(engine.submit(
+                request(
+                    &engine,
+                    &catalog,
+                    &objects,
+                    view,
+                    source(&engine, view)?,
+                    event + 1,
+                    event,
+                    mutations,
+                )?,
+                &mut budget(),
+            ))?)?;
+        }
+        let member = member(&engine, &objects, view)?;
+        let rows = literal_directory_rows(&objects, literal_block_directory(&objects, &member)?)?;
+        assert_eq!(
+            rows.len(),
+            1,
+            "12 postings fit in one block, batch size {batch_size}"
+        );
+        let block = objects.get(rows[0].1, &mut budget())?;
+        let expected_keys: Vec<_> = expected_owners
+            .iter()
+            .map(|&id| {
+                let mut key = [0_u8; 35];
+                key[..3].copy_from_slice(b"abc");
+                key[3..].copy_from_slice(&literal_owner_bytes(id));
+                key
+            })
+            .collect();
+        assert_eq!(literal_block_keys(&block.payload)?, expected_keys);
+
+        let ticket = engine.pin_view(ViewSelection::Exact(view), &budget())?;
+        let spy = UpdateCostSpy::new(Arc::clone(&objects));
+        spy.arm(
+            ticket.view().source.owners,
+            rows.iter().map(|(_, block)| *block).collect(),
+        )?;
+        let page = NativeLiteralIndex.search(
+            &member,
+            LiteralQuery {
+                literal: b"abc",
+                after: None,
+                limit: 100,
+            },
+            LiteralReadContext {
+                ticket: ticket.record(),
+                input: member.input,
+                objects: &spy,
+                maps: objects.as_ref(),
+                budget: &mut budget(),
+            },
+        )?;
+        let block_reads = spy.disarm()?.unrelated_record_reads;
+        assert_eq!(
+            page.hits.iter().map(|hit| hit.owner).collect::<Vec<_>>(),
+            expected_owners
+        );
+        // One scan counts the gram and one returns its owners.
+        assert!(
+            (1..=2).contains(&block_reads),
+            "batch size {batch_size}: {block_reads} block reads"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn literal_patch_uses_empty_directory_for_two_byte_sources() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let (engine, objects, catalog) = kernel(directory.path())?;
+    let configured = configured(&engine, &objects)?;
+    let owner = owner(1);
+    let mut prior_ref = None;
+    let mut prior_view = configured;
+
+    for (step, bytes, expected_postings) in [
+        (2, b"ab".as_slice(), 0),
+        (3, b"abc".as_slice(), 1),
+        (4, b"ab".as_slice(), 0),
+    ] {
+        let next_ref = stage(&objects, "short.rs", bytes)?;
+        let next_view = published(block_on(engine.submit(
+            request(
+                &engine,
+                &catalog,
+                &objects,
+                prior_view,
+                source(&engine, prior_view)?,
+                step,
+                step - 1,
+                vec![OwnerMutation {
+                    owner,
+                    expected: prior_ref,
+                    next: Some(next_ref),
+                }],
+            )?,
+            &mut budget(),
+        ))?)?;
+        let member = member(&engine, &objects, next_view)?;
+        let root = objects.get(member.artifact, &mut budget())?;
+        assert_eq!(root.payload.get(41), Some(&u8::from(expected_postings != 0)));
+        if expected_postings == 0 {
+            assert_eq!(root.registration.children.len(), 1);
+            assert!(hits(&engine, next_view, &objects, &member, b"abc")?.is_empty());
+        } else {
+            let rows = literal_directory_rows(&objects, literal_block_directory(&objects, &member)?)?;
+            assert_eq!(rows.len(), 1);
+            let block = objects.get(rows[0].1, &mut budget())?;
+            let keys = literal_block_keys(&block.payload)?;
+            assert_eq!(keys.len(), 1);
+            let mut expected = [0_u8; 35];
+            expected[..3].copy_from_slice(b"abc");
+            expected[3..].copy_from_slice(&literal_owner_bytes(owner));
+            assert_eq!(keys[0], expected);
+            assert_eq!(hits(&engine, next_view, &objects, &member, b"abc")?, vec![owner]);
+        }
+        prior_ref = Some(next_ref);
+        prior_view = next_view;
+    }
+    Ok(())
+}
+
+#[test]
+fn literal_patch_inserts_and_removes_first_and_last_postings() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let (engine, objects, catalog) = kernel(directory.path())?;
+    let configured = configured(&engine, &objects)?;
+    let base = stage(&objects, "middle.rs", b"mmm")?;
+    let first = stage(&objects, "first.rs", b"ab")?;
+    let last = stage(&objects, "last.rs", b"xy")?;
+    let initial = published(block_on(engine.submit(
+        request(
+            &engine,
+            &catalog,
+            &objects,
+            configured,
+            source(&engine, configured)?,
+            2,
+            1,
+            vec![
+                OwnerMutation { owner: owner(1), expected: None, next: Some(base) },
+                OwnerMutation { owner: owner(2), expected: None, next: Some(first) },
+                OwnerMutation { owner: owner(3), expected: None, next: Some(last) },
+            ],
+        )?,
+        &mut budget(),
+    ))?)?;
+    let mut view = initial;
+    let mut prior_first = first;
+    let mut prior_last = last;
+
+    for (sequence, id, body, expected_grams) in [
+        (3, 2, b"abc".as_slice(), [Some((b"abc".as_slice(), 2)), None]),
+        (4, 3, b"xyz".as_slice(), [Some((b"abc".as_slice(), 2)), Some((b"xyz".as_slice(), 3))]),
+        (5, 2, b"ab".as_slice(), [None, Some((b"xyz".as_slice(), 3))]),
+        (6, 3, b"xy".as_slice(), [None, None]),
+    ] {
+        let current_ref = stage(&objects, &format!("changed-{id}.rs"), body)?;
+        let prior_ref = if id == 2 { prior_first } else { prior_last };
+        let next_view = published(block_on(engine.submit(
+            request(
+                &engine,
+                &catalog,
+                &objects,
+                view,
+                source(&engine, view)?,
+                sequence,
+                sequence - 1,
+                vec![OwnerMutation {
+                    owner: owner(id),
+                    expected: Some(prior_ref),
+                    next: Some(current_ref),
+                }],
+            )?,
+            &mut budget(),
+        ))?)?;
+        if id == 2 { prior_first = current_ref; } else { prior_last = current_ref; }
+        let member = member(&engine, &objects, next_view)?;
+        let mut actual = Vec::new();
+        for (_, reference) in literal_directory_rows(
+            &objects,
+            literal_block_directory(&objects, &member)?,
+        )? {
+            actual.extend(literal_block_keys(&objects.get(reference, &mut budget())?.payload)?);
+        }
+        let mut expected = Vec::new();
+        for (gram, id) in [(b"mmm".as_slice(), 1)]
+            .into_iter()
+            .chain(expected_grams.into_iter().flatten())
+        {
+            let mut key = [0_u8; 35];
+            key[..3].copy_from_slice(gram);
+            key[3..].copy_from_slice(&literal_owner_bytes(owner(id)));
+            expected.push(key);
+        }
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+        for (gram, id) in [(b"abc".as_slice(), 2), (b"xyz".as_slice(), 3)] {
+            let observed = hits(&engine, next_view, &objects, &member, gram)?;
+            assert_eq!(observed, if expected_grams.into_iter().flatten().any(|(text, _)| text == gram) {
+                vec![owner(id)]
+            } else {
+                Vec::new()
+            });
+        }
+        view = next_view;
+    }
     Ok(())
 }
 

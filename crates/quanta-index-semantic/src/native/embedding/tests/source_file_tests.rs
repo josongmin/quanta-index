@@ -1,13 +1,21 @@
 //! Independent file oracle: multiple selected projections must occupy one slot.
 use super::*;
 
+fn rank_test_bytes(slots: usize, vector_ids: u64) -> Result<u64, IndexError> {
+    slots
+        .checked_mul(std::mem::size_of::<SearchHit>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .and_then(|bytes| bytes.checked_add(vector_ids))
+        .ok_or(IndexError::ResourceLimited)
+}
+
 #[test]
 fn full_ranked_window_releases_evicted_id_before_replacement()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryStore::default();
     let maps = TestMap::default();
     let memory = Arc::new(BoundedSelectionMemory {
-        limit: 1,
+        limit: rank_test_bytes(1, 1)?,
         deny_reservation: None,
         live: AtomicU64::new(0),
         peak: AtomicU64::new(0),
@@ -24,31 +32,32 @@ fn full_ranked_window_releases_evicted_id_before_replacement()
         budget: &mut work,
     };
     // This window can fund one retained ID, which is also its result limit.
-    let mut heap = BinaryHeap::with_capacity(1);
+    let mut heap = RankedHits::reserve_window(1, context.budget)?;
     for (key, score) in [(1, 0.25), (2, 0.75), (3, 0.5)] {
         source_file::admit(
-            RankedHit(SearchHit::from_parts(owner(key), vec![key], score, None)),
-            1,
+            SearchHit::from_parts(owner(key), vec![key], score, None),
             &mut heap,
             &mut context,
         )?;
-        check_eq!(memory.live.load(AtomicOrdering::SeqCst), 1);
+        check_eq!(
+            memory.live.load(AtomicOrdering::SeqCst),
+            rank_test_bytes(1, 1)?
+        );
     }
-    check_eq!(heap.len(), 1);
+    check!(heap.is_full());
     check_eq!(
-        heap.peek().ok_or("replacement hit absent")?.0.owner,
+        heap.worst().ok_or("replacement hit absent")?.owner,
         owner(2)
     );
     check_eq!(context.budget.first_denial(), None);
     // The next candidate cannot fit even after the previous ID is released.
     let denied = source_file::admit(
-        RankedHit(SearchHit::from_parts(owner(4), vec![4, 5], 1.0, None)),
-        1,
+        SearchHit::from_parts(owner(4), vec![4, 5], 1.0, None),
         &mut heap,
         &mut context,
     );
     check!(matches!(denied, Err(IndexError::ResourceLimited)));
-    check!(heap.is_empty());
+    check!(heap.worst().is_none());
     drop(heap);
     check_eq!(memory.live.load(AtomicOrdering::SeqCst), 0);
     check_eq!(
@@ -64,7 +73,7 @@ fn cancelled_ranked_replacement_refunds_evicted_id() -> Result<(), Box<dyn std::
     let store = MemoryStore::default();
     let maps = TestMap::default();
     let memory = Arc::new(BoundedSelectionMemory {
-        limit: 1,
+        limit: rank_test_bytes(1, 1)?,
         deny_reservation: None,
         live: AtomicU64::new(0),
         peak: AtomicU64::new(0),
@@ -75,16 +84,19 @@ fn cancelled_ranked_replacement_refunds_evicted_id() -> Result<(), Box<dyn std::
     work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
         BoundedSelectionScope(Arc::clone(&memory)),
     ))));
-    let mut heap = BinaryHeap::from([RankedHit(SearchHit::from_parts(
-        owner(1),
-        vec![1],
-        0.25,
-        work.reserve_memory(1, MemoryLifetime::Retained)?,
-    ))]);
+    let mut heap = RankedHits::reserve_window(1, &work)?;
+    heap.push(
+        SearchHit::from_parts(
+            owner(1),
+            vec![1],
+            0.25,
+            work.reserve_memory(1, MemoryLifetime::Retained)?,
+        ),
+        &work,
+    )?;
     work.request().cancel_handle().cancel();
     let result = source_file::admit(
-        RankedHit(SearchHit::from_parts(owner(2), vec![2], 0.75, None)),
-        1,
+        SearchHit::from_parts(owner(2), vec![2], 0.75, None),
         &mut heap,
         &mut ReadContext {
             objects: &store,
@@ -93,7 +105,7 @@ fn cancelled_ranked_replacement_refunds_evicted_id() -> Result<(), Box<dyn std::
         },
     );
     check!(matches!(result, Err(IndexError::Cancelled)));
-    check!(heap.is_empty());
+    check!(heap.worst().is_none());
     drop(heap);
     check_eq!(memory.live.load(AtomicOrdering::SeqCst), 0);
     check_eq!(
@@ -120,7 +132,7 @@ fn full_overlay_window_releases_evicted_id_before_replacement()
     let (source, _) = semantic_source(&store, "rank.rs", b"fixed ranking fixture")?;
     let (coverage, _) = semantic_group_coverage(&store, &spec, source, CoverageStatus::Complete)?;
     let memory = Arc::new(BoundedSelectionMemory {
-        limit: 64,
+        limit: rank_test_bytes(1, 64)?,
         deny_reservation: None,
         live: AtomicU64::new(0),
         peak: AtomicU64::new(0),
@@ -130,12 +142,16 @@ fn full_overlay_window_releases_evicted_id_before_replacement()
     work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
         BoundedSelectionScope(Arc::clone(&memory)),
     ))));
-    let mut heap = BinaryHeap::from([RankedHit(SearchHit::from_parts(
-        owner(1),
-        vec![b'a'],
-        0.0,
-        work.reserve_memory(1, MemoryLifetime::Retained)?,
-    ))]);
+    let mut heap = RankedHits::reserve_window(1, &work)?;
+    heap.push(
+        SearchHit::from_parts(
+            owner(1),
+            vec![b'a'],
+            0.0,
+            work.reserve_memory(1, MemoryLifetime::Retained)?,
+        ),
+        &work,
+    )?;
     let documents = [SemanticOverlayDocument {
         owner: owner(2),
         revision: 1,
@@ -149,7 +165,6 @@ fn full_overlay_window_releases_evicted_id_before_replacement()
     let query = SearchQuery {
         source_files: false,
         lexical_eligibility: None,
-        lexical_owners: None,
         exact_path: None,
         coverage: &coverage,
         projection: None,
@@ -168,7 +183,6 @@ fn full_overlay_window_releases_evicted_id_before_replacement()
         overlay,
         &query,
         1.0,
-        1,
         &mut heap,
         &mut ReadContext {
             objects: &store,
@@ -176,7 +190,7 @@ fn full_overlay_window_releases_evicted_id_before_replacement()
             budget: &mut work,
         },
     )?;
-    let winner = &heap.peek().ok_or("overlay replacement absent")?.0;
+    let winner = heap.worst().ok_or("overlay replacement absent")?;
     check_eq!(winner.owner, owner(2));
     check!(winner.overlay.is_some());
     check_eq!(work.first_denial(), None);
@@ -185,7 +199,7 @@ fn full_overlay_window_releases_evicted_id_before_replacement()
     check!(!memory.invalid.load(AtomicOrdering::SeqCst));
 
     let denied_memory = Arc::new(BoundedSelectionMemory {
-        limit: 63,
+        limit: rank_test_bytes(1, 63)?,
         deny_reservation: None,
         live: AtomicU64::new(0),
         peak: AtomicU64::new(0),
@@ -195,17 +209,20 @@ fn full_overlay_window_releases_evicted_id_before_replacement()
     work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
         BoundedSelectionScope(Arc::clone(&denied_memory)),
     ))));
-    let mut heap = BinaryHeap::from([RankedHit(SearchHit::from_parts(
-        owner(1),
-        vec![b'a'],
-        0.0,
-        work.reserve_memory(1, MemoryLifetime::Retained)?,
-    ))]);
+    let mut heap = RankedHits::reserve_window(1, &work)?;
+    heap.push(
+        SearchHit::from_parts(
+            owner(1),
+            vec![b'a'],
+            0.0,
+            work.reserve_memory(1, MemoryLifetime::Retained)?,
+        ),
+        &work,
+    )?;
     let denied = overlay::rank_overlay(
         overlay,
         &query,
         1.0,
-        1,
         &mut heap,
         &mut ReadContext {
             objects: &store,
@@ -214,7 +231,7 @@ fn full_overlay_window_releases_evicted_id_before_replacement()
         },
     );
     check!(matches!(denied, Err(IndexError::ResourceLimited)));
-    check!(heap.is_empty());
+    check!(heap.worst().is_none());
     drop(heap);
     check_eq!(denied_memory.live.load(AtomicOrdering::SeqCst), 0);
     check_eq!(
@@ -272,36 +289,14 @@ fn source_file_window_follows_authentication_and_deduplication()
 }
 
 #[test]
-fn final_ranking_preserves_large_score_owner_and_vector_id_ties()
+fn rank_growth_uses_exact_capacity_without_discarding_cache()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Already-ranked fixture inputs; this checks final order and outgoing
-    // grant lifetime, not a global allocator or Source-authority witness.
     let store = MemoryStore::default();
     let maps = TestMap::default();
-    let recipe = recipe();
-    let spec = instance(&recipe);
-    let (source, _) = semantic_source(&store, "rank.rs", b"fixed ranking fixture")?;
-    let (coverage, _) = semantic_group_coverage(&store, &spec, source, CoverageStatus::Complete)?;
-    let heap: BinaryHeap<_> = (0_u8..32)
-        .rev()
-        .flat_map(|id| {
-            [b'b', b'a'].into_iter().map(move |vector_id| {
-                RankedHit(SearchHit::from_parts(
-                    owner(id),
-                    vec![vector_id],
-                    if id >= 16 { 0.75 } else { 0.25 },
-                    None,
-                ))
-            })
-        })
-        .collect();
-    let expected_backing = u64::try_from(
-        heap.len()
-            .checked_mul(std::mem::size_of::<SearchHit>())
-            .ok_or("hit backing overflow")?,
-    )?;
     let memory = Arc::new(BoundedSelectionMemory {
-        limit: expected_backing,
+        // Two old slots, three new slots, three IDs, and the cache fit.
+        // Speculatively allocating four new slots would evict the cache.
+        limit: rank_test_bytes(6, 3)?,
         deny_reservation: None,
         live: AtomicU64::new(0),
         peak: AtomicU64::new(0),
@@ -312,11 +307,105 @@ fn final_ranking_preserves_large_score_owner_and_vector_id_ties()
     work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
         BoundedSelectionScope(Arc::clone(&memory)),
     ))));
+    let cache = work
+        .reserve_memory(rank_test_bytes(1, 0)?, MemoryLifetime::Temporary)?
+        .ok_or("missing cache lease")?;
+    let (result, cached) = work.with_discardable_memory(Box::new(cache), |work| {
+        // The full window does not fit at admission. A later mandatory
+        // three-slot allocation must be able to use the released scratch.
+        let scratch = work.reserve_memory(rank_test_bytes(2, 0)?, MemoryLifetime::Temporary)?;
+        let mut heap = RankedHits::reserve_window(4, work)?;
+        drop(scratch);
+        let mut context = ReadContext {
+            objects: &store,
+            maps: &maps,
+            budget: work,
+        };
+        for id in [3, 1, 2] {
+            source_file::admit(
+                SearchHit::from_parts(owner(id), vec![id], 0.25, None),
+                &mut heap,
+                &mut context,
+            )?;
+        }
+        heap.into_sorted(context.budget)
+    });
+    let (hits, lease) = result?;
+    check!(cached.is_some());
+    check_eq!(work.first_denial(), None);
+    check_eq!(hits.capacity(), 3);
+    check_eq!(
+        hits.iter().map(|hit| hit.owner).collect::<Vec<_>>(),
+        [owner(1), owner(2), owner(3)]
+    );
+    check_eq!(
+        memory.live.load(AtomicOrdering::SeqCst),
+        rank_test_bytes(4, 3)?
+    );
+    check_eq!(
+        memory.peak.load(AtomicOrdering::SeqCst),
+        rank_test_bytes(6, 3)?
+    );
+    drop(hits);
+    drop(lease);
+    drop(cached);
+    check_eq!(memory.live.load(AtomicOrdering::SeqCst), 0);
+    check!(!memory.invalid.load(AtomicOrdering::SeqCst));
+    Ok(())
+}
+
+#[test]
+fn final_ranking_preserves_large_score_owner_and_vector_id_ties()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryStore::default();
+    let maps = TestMap::default();
+    let recipe = recipe();
+    let spec = instance(&recipe);
+    let (source, _) = semantic_source(&store, "rank.rs", b"fixed ranking fixture")?;
+    let (coverage, _) = semantic_group_coverage(&store, &spec, source, CoverageStatus::Complete)?;
+    let memory = Arc::new(BoundedSelectionMemory {
+        // The 64 result slots fit with 32 slots' worth of candidate scratch.
+        // Growing a live 32-slot heap to 33 or copying the final 64 results
+        // to another buffer would exceed this limit while scratch is live.
+        limit: rank_test_bytes(96, 64)?,
+        deny_reservation: None,
+        live: AtomicU64::new(0),
+        peak: AtomicU64::new(0),
+        denied: AtomicU64::new(0),
+        invalid: AtomicBool::new(false),
+    });
+    let mut work = budget()?;
+    work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+        BoundedSelectionScope(Arc::clone(&memory)),
+    ))));
+    let mut context = ReadContext {
+        objects: &store,
+        maps: &maps,
+        budget: &mut work,
+    };
+    let mut heap = RankedHits::reserve_window(64, context.budget)?;
+    let candidate_scratch = context
+        .budget
+        .reserve_memory(rank_test_bytes(32, 0)?, MemoryLifetime::Temporary)?;
+    for id in (0_u8..32).rev() {
+        for vector_id in [b'b', b'a'] {
+            source_file::admit(
+                SearchHit::from_parts(
+                    owner(id),
+                    vec![vector_id],
+                    if id >= 16 { 0.75 } else { 0.25 },
+                    None,
+                ),
+                &mut heap,
+                &mut context,
+            )?;
+        }
+    }
+    let ranked_backing = heap.iter().as_slice().as_ptr();
     let result = finish_ranked(
         &SearchQuery {
             source_files: false,
             lexical_eligibility: None,
-            lexical_owners: None,
             exact_path: None,
             coverage: &coverage,
             projection: None,
@@ -332,16 +421,11 @@ fn final_ranking_preserves_large_score_owner_and_vector_id_ties()
             overlay: None,
         },
         1.0,
-        64,
         heap,
         32,
         0,
         NativeSemanticTraversal::ExactExhausted,
-        &mut ReadContext {
-            objects: &store,
-            maps: &maps,
-            budget: &mut work,
-        },
+        &mut context,
     )?;
     let expected: Vec<_> = (16_u8..32)
         .chain(0..16)
@@ -357,7 +441,16 @@ fn final_ranking_preserves_large_score_owner_and_vector_id_ties()
         .map(|hit| (hit.owner, hit.vector_id.clone()))
         .collect();
     check_eq!(actual, expected);
-    check_eq!(memory.live.load(AtomicOrdering::SeqCst), expected_backing);
+    check_eq!(result.hits.as_ptr(), ranked_backing);
+    check_eq!(
+        memory.peak.load(AtomicOrdering::SeqCst),
+        rank_test_bytes(96, 64)?
+    );
+    drop(candidate_scratch);
+    check_eq!(
+        memory.live.load(AtomicOrdering::SeqCst),
+        rank_test_bytes(64, 64)?
+    );
     drop(result);
     check_eq!(memory.live.load(AtomicOrdering::SeqCst), 0);
     check_eq!(memory.denied.load(AtomicOrdering::SeqCst), 0);

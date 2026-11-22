@@ -1,7 +1,7 @@
 //! Native, owner-local exact vector materialization and bounded cosine oracle.
 //! No ANN generation or producer dependency inference is hidden in this module.
 
-use std::{cmp::Ordering, collections::BinaryHeap, sync::Arc, time::Duration};
+use std::{cmp::Ordering, sync::Arc, time::Duration};
 
 use quanta_index_contract::{
     EmbeddingNormalization, SearchPlaneErrorCodeV2, SemanticQueryRequest,
@@ -35,6 +35,11 @@ use super::certified_chunks;
 use super::chunks::{
     ChunkLocation, ChunkMember, Utf8ChunkPolicy, plan_chunks, plan_chunks_within_work,
 };
+use super::recipe::{
+    EmbeddingInputPolicy, EmbeddingRecipe, MAX_CELLS, MAX_DIMENSION, MAX_SOURCE_BYTES, MAX_VECTORS,
+    VectorNormalization, certified_chunk_output_policy, text_model_identity,
+    whole_file_output_policy,
+};
 
 mod ann_directory;
 mod ann_materialization;
@@ -44,15 +49,18 @@ mod source_file;
 pub use source_file::{SemanticSourceFile, SemanticSourceFileHitParts};
 mod chunk_materialization;
 mod chunk_reuse;
+mod lexical_eligibility;
 mod lexical_scope;
 mod path_scope;
 use path_scope::{search as search_selected_exact_path, validate_path_roots};
 mod overlay;
-pub use lexical_scope::{SemanticLexicalEligibility, SemanticLexicalEligibleSource};
+mod ranked_hits;
+pub use lexical_eligibility::{SemanticLexicalEligibility, SemanticLexicalEligibleSource};
+use ranked_hits::{RankedHits, compare_hits};
 mod selected_owner;
 #[cfg(test)]
 use chunk_materialization::prepare_chunk_members;
-use chunk_materialization::{ChunkLookup, validate_chunk_artifact, validate_chunk_bijection};
+use chunk_materialization::{validate_chunk_artifact, validate_chunk_bijection};
 pub use chunk_reuse::EmbeddingPrior;
 pub use overlay::{
     MAX_SEMANTIC_OVERLAY_DOCUMENTS, SemanticOverlayChunk, SemanticOverlayDocument,
@@ -61,231 +69,9 @@ pub use overlay::{
 mod memory_envelope;
 pub use memory_envelope::{chunk_owner_memory_envelope, max_chunk_owner_artifact_json_bytes};
 
-// Bind the mandatory persisted reuse-identity field to profile admission.
-// Older recipe policies require an explicit rebuild, never a legacy reader.
-const RECIPE_DOMAIN: &[u8] = b"quanta-index-native-semantic-recipe-v4\0";
-const MODEL_DOMAIN: &[u8] = b"quanta-index-native-semantic-text-model-v1\0";
-// One vector from the complete selected UTF-8 payload. The domain stays
-// stable for SourceUtf8; input selection is separately pinned by the recipe.
-const WHOLE_FILE_POLICY: &[u8] = b"quanta-index-native-semantic-utf8-whole-file-one-vector-v1\0";
 const COMMIT_DOMAIN: &[u8] = b"quanta-index-native-semantic-owner-v1\0";
 const REUSE_DOMAIN: &[u8] = b"quanta-index-native-semantic-text-payload-reuse-v1\0";
-const MAX_DIMENSION: u32 = 4096;
-const MAX_VECTORS: u32 = 4096;
-const MAX_CELLS: u64 = 200_000;
-const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_PAGE: u32 = 4096;
-
-fn whole_file_output_policy() -> Digest {
-    Digest(Sha256::digest(WHOLE_FILE_POLICY).into())
-}
-
-fn text_model_identity(model_id: &str, model_revision: &str) -> Result<Digest, IndexError> {
-    if model_id.is_empty()
-        || model_revision.is_empty()
-        || model_id.len() > 1024
-        || model_revision.len() > 1024
-    {
-        return Err(IndexError::InvalidInput(
-            "text provider lacks a bounded model identity and revision".into(),
-        ));
-    }
-    let mut hash = Sha256::new();
-    hash.update(MODEL_DOMAIN);
-    hash.update(
-        u64::try_from(model_id.len())
-            .map_err(|_conversion_error| IndexError::ResourceLimited)?
-            .to_be_bytes(),
-    );
-    hash.update(model_id.as_bytes());
-    hash.update(
-        u64::try_from(model_revision.len())
-            .map_err(|_conversion_error| IndexError::ResourceLimited)?
-            .to_be_bytes(),
-    );
-    hash.update(model_revision.as_bytes());
-    Ok(Digest(hash.finalize().into()))
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EmbeddingInputPolicy {
-    SourceUtf8,
-    ProjectionUtf8 {
-        projection: ProjectionId,
-        producer: ProducerId,
-        schema: SchemaId,
-    },
-    ProjectionChunks {
-        projection: ProjectionId,
-        producer: ProducerId,
-        schema: SchemaId,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum VectorNormalization {
-    L2Unit,
-    CosineRaw,
-}
-quanta_index_contract::native_serde_enum!(VectorNormalization {
-    units { L2Unit = 0, CosineRaw = 1 }
-    newtypes {}
-    records {}
-});
-
-impl From<EmbeddingNormalization> for VectorNormalization {
-    fn from(normalization: EmbeddingNormalization) -> Self {
-        match normalization {
-            EmbeddingNormalization::None => Self::CosineRaw,
-            EmbeddingNormalization::L2Unit => Self::L2Unit,
-        }
-    }
-}
-
-/// `max_vectors` and `max_source_bytes` are admission limits; they do not
-/// alter output identity. The remaining fields are pinned by `fingerprint`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EmbeddingRecipe {
-    pub input_policy: EmbeddingInputPolicy,
-    pub model_identity: Digest,
-    pub dimension: u32,
-    pub normalization: VectorNormalization,
-    pub output_policy: Digest,
-    pub chunk_policy: Option<Utf8ChunkPolicy>,
-    pub max_vectors: u32,
-    pub max_source_bytes: u64,
-}
-
-impl EmbeddingRecipe {
-    /// Compose the existing text recipe from pinned, explicit model metadata.
-    /// This performs no provider, transport, credential or environment access.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the existing recipe's independent identity and admission inputs are explicit"
-    )]
-    pub fn from_text_model(
-        model_id: &str,
-        model_revision: &str,
-        dimension: u32,
-        normalization: VectorNormalization,
-        input_policy: EmbeddingInputPolicy,
-        chunk_policy: Option<Utf8ChunkPolicy>,
-        max_vectors: u32,
-        max_source_bytes: u64,
-    ) -> Result<Self, IndexError> {
-        let model_identity = text_model_identity(model_id, model_revision)?;
-        let output_policy = match input_policy {
-            EmbeddingInputPolicy::ProjectionChunks { .. } => certified_chunks::output_policy(),
-            EmbeddingInputPolicy::SourceUtf8 | EmbeddingInputPolicy::ProjectionUtf8 { .. } => {
-                chunk_policy.map_or_else(whole_file_output_policy, Utf8ChunkPolicy::output_policy)
-            }
-        };
-        let recipe = Self {
-            input_policy,
-            model_identity,
-            dimension,
-            normalization,
-            output_policy,
-            chunk_policy,
-            max_vectors,
-            max_source_bytes,
-        };
-        recipe.validate()?;
-        Ok(recipe)
-    }
-
-    pub fn validate(&self) -> Result<(), IndexError> {
-        if self.is_certified_chunks()
-            && (self.chunk_policy.is_some()
-                || self.output_policy != certified_chunks::output_policy())
-        {
-            return Err(IndexError::InvalidInput(
-                "certified member recipe policy mismatch".into(),
-            ));
-        }
-        if let Some(policy) = self.chunk_policy {
-            policy.validate()?;
-            if self.output_policy != policy.output_policy() {
-                return Err(IndexError::InvalidInput(
-                    "chunk recipe output policy mismatch".into(),
-                ));
-            }
-        }
-        let cells = u64::from(self.dimension)
-            .checked_mul(u64::from(self.max_vectors))
-            .ok_or(IndexError::ResourceLimited)?;
-        if self.dimension == 0
-            || self.dimension > MAX_DIMENSION
-            || self.max_vectors == 0
-            || self.max_vectors > MAX_VECTORS
-            || cells > MAX_CELLS
-            || self.max_source_bytes == 0
-            || self.max_source_bytes > MAX_SOURCE_BYTES
-        {
-            return Err(IndexError::InvalidInput(
-                "semantic recipe exceeds exact owner limits".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    #[must_use]
-    pub fn is_certified_chunks(&self) -> bool {
-        matches!(
-            self.input_policy,
-            EmbeddingInputPolicy::ProjectionChunks { .. }
-        )
-    }
-
-    #[must_use]
-    pub fn uses_chunks(&self) -> bool {
-        self.chunk_policy.is_some() || self.is_certified_chunks()
-    }
-
-    #[must_use]
-    pub fn fingerprint(&self) -> Digest {
-        let mut hash = Sha256::new();
-        hash.update(RECIPE_DOMAIN);
-        hash.update(self.model_identity.0);
-        hash.update(self.dimension.to_be_bytes());
-        hash.update([match self.normalization {
-            VectorNormalization::L2Unit => 1,
-            VectorNormalization::CosineRaw => 2,
-        }]);
-        hash.update(self.output_policy.0);
-        match self.chunk_policy {
-            None => hash.update([0]),
-            Some(policy) => {
-                hash.update([1]);
-                hash.update(policy.max_utf8_bytes.to_be_bytes());
-            }
-        }
-        match self.input_policy {
-            EmbeddingInputPolicy::SourceUtf8 => hash.update([1]),
-            EmbeddingInputPolicy::ProjectionUtf8 {
-                projection,
-                producer,
-                schema,
-            } => {
-                hash.update([2]);
-                hash.update(projection.0);
-                hash.update(producer.0);
-                hash.update(schema.0);
-            }
-            EmbeddingInputPolicy::ProjectionChunks {
-                projection,
-                producer,
-                schema,
-            } => {
-                hash.update([3]);
-                hash.update(projection.0);
-                hash.update(producer.0);
-                hash.update(schema.0);
-            }
-        }
-        Digest(hash.finalize().into())
-    }
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbeddingVector {
@@ -489,7 +275,7 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
     /// Embed producer-certified stable members through the same provider and owner artifact.
     pub fn with_certified_chunks(provider: P) -> Result<Self, IndexError> {
         let mut bridge = Self::new(provider)?;
-        bridge.output_policy = certified_chunks::output_policy();
+        bridge.output_policy = certified_chunk_output_policy();
         Ok(bridge)
     }
 
@@ -501,7 +287,7 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
         max_input_bytes: u64,
         max_vectors: u32,
     ) -> Result<EmbeddingRecipe, IndexError> {
-        if self.output_policy != certified_chunks::output_policy() || self.chunk_policy.is_some() {
+        if self.output_policy != certified_chunk_output_policy() || self.chunk_policy.is_some() {
             return Err(IndexError::InvalidInput(
                 "bridge has no certified chunk policy".into(),
             ));
@@ -527,7 +313,7 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
                 "bridge has no chunk policy".into(),
             ));
         }
-        if self.output_policy == certified_chunks::output_policy() {
+        if self.output_policy == certified_chunk_output_policy() {
             return Err(IndexError::InvalidInput(
                 "certified bridge requires projection identity".into(),
             ));
@@ -540,7 +326,7 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
     }
 
     pub fn recipe(&self, max_source_bytes: u64) -> Result<EmbeddingRecipe, IndexError> {
-        if self.output_policy == certified_chunks::output_policy() {
+        if self.output_policy == certified_chunk_output_policy() {
             return Err(IndexError::InvalidInput(
                 "certified bridge requires projection identity".into(),
             ));
@@ -555,7 +341,7 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
         schema: SchemaId,
         max_input_bytes: u64,
     ) -> Result<EmbeddingRecipe, IndexError> {
-        if self.output_policy == certified_chunks::output_policy() {
+        if self.output_policy == certified_chunk_output_policy() {
             return Err(IndexError::InvalidInput(
                 "certified bridge requires projection identity".into(),
             ));
@@ -603,7 +389,7 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
             || input.recipe.output_policy != self.output_policy
             || input.recipe.chunk_policy != self.chunk_policy
             || input.recipe.is_certified_chunks()
-                != (self.output_policy == certified_chunks::output_policy())
+                != (self.output_policy == certified_chunk_output_policy())
             || (matches!(input.recipe.input_policy, EmbeddingInputPolicy::SourceUtf8)
                 && input.source.is_none())
         {
@@ -1010,7 +796,7 @@ fn encode_owner_artifact(
 pub struct NativeSemantic<P> {
     provider: P,
     recipe: EmbeddingRecipe,
-    ann: bool,
+    ann: Option<ann_directory::AnnBackend>,
 }
 
 fn reserve_json_decode(
@@ -1126,16 +912,22 @@ impl<P: EmbeddingProvider> NativeSemantic<P> {
         Ok(Self {
             provider,
             recipe,
-            ann: false,
+            ann: None,
         })
     }
 
-    /// Select the immutable multi-owner region layout for this adapter.
-    /// Publication futures that seal a region must run inside a Tokio runtime.
-    /// A missing runtime is refused before invoking the Lance backend.
+    /// Select the native graph region layout for this adapter.
     #[must_use]
     pub fn with_ann(mut self) -> Self {
-        self.ann = true;
+        self.ann = Some(ann_directory::AnnBackend::Graph);
+        self
+    }
+
+    /// Publish immutable LanceDB regions under the Native coverage binding.
+    /// Publication futures that seal a region require a Tokio runtime.
+    #[must_use]
+    pub fn with_lancedb_ann(mut self) -> Self {
+        self.ann = Some(ann_directory::AnnBackend::LanceDb);
         self
     }
 
@@ -1198,7 +990,7 @@ impl<P: EmbeddingProvider> IndexOwnerBuildPort for NativeSemantic<P> {
     type Candidate = SemanticCandidate;
 
     fn validate_coverage(&self, coverage: &CoverageBinding) -> Result<(), IndexError> {
-        if self.ann {
+        if self.ann.is_some() {
             ann_directory::validate_coverage_layout(coverage)?;
         }
         Ok(())
@@ -1217,10 +1009,11 @@ impl<P: EmbeddingProvider> IndexOwnerBuildPort for NativeSemantic<P> {
     ) -> IndexFuture<'a, quanta_index_core::index::SearchablePreparation> {
         Box::pin(async move {
             self.validate_instance(instance)?;
-            if self.ann {
+            if let Some(backend) = self.ann {
                 ann_materialization::prepare(
                     instance,
                     &self.recipe,
+                    backend,
                     prior,
                     owners,
                     materialized,
@@ -1765,6 +1558,59 @@ struct LoadedOwnerArtifact {
     decode_memory: Option<MemoryLease>,
 }
 
+/// Authenticated ranking-only data. Each chunk occupies its vector's slot
+/// even after the vector's ID has moved into a hit.
+struct RankArtifact(OwnerArtifact);
+
+impl RankArtifact {
+    fn vector_index(&self, only: Option<&[u8]>) -> Result<Option<usize>, IndexError> {
+        let Some(id) = only else { return Ok(None) };
+        let index = if self.0.chunks.is_empty() {
+            self.0.vectors.iter().position(|vector| vector.id == id)
+        } else {
+            // Chunk IDs remain sorted after earlier hits take their vector IDs.
+            self.0
+                .chunks
+                .binary_search_by(|chunk| chunk.id.0.as_slice().cmp(id))
+                .ok()
+        };
+        match index {
+            Some(index)
+                if !id.is_empty()
+                    && self
+                        .0
+                        .vectors
+                        .get(index)
+                        .is_some_and(|vector| vector.id == id) =>
+            {
+                Ok(Some(index))
+            }
+            _ => Err(IndexError::CorruptObject(
+                "ANN candidate vector is absent from its member".into(),
+            )),
+        }
+    }
+}
+
+struct LoadedRankArtifact {
+    artifact: RankArtifact,
+    decode_memory: Option<MemoryLease>,
+}
+
+struct LoadedRankMember {
+    loaded: LoadedRankArtifact,
+    file: Option<SemanticSourceFile>,
+    vector_index: Option<usize>,
+}
+
+impl std::ops::Deref for LoadedRankArtifact {
+    type Target = OwnerArtifact;
+
+    fn deref(&self) -> &Self::Target {
+        &self.artifact.0
+    }
+}
+
 /// An input already authenticated through the selected view.
 enum SelectedArtifactInput {
     Source {
@@ -2061,6 +1907,7 @@ pub struct NativeSemanticReader<P> {
     recipe: EmbeddingRecipe,
     config: NativeSemanticReadConfig,
     ann_enabled: bool,
+    lance_runtime: Option<Arc<tokio::runtime::Runtime>>,
 }
 
 impl<P: TextEmbeddingProvider> NativeSemanticReader<P> {
@@ -2077,13 +1924,22 @@ impl<P: TextEmbeddingProvider> NativeSemanticReader<P> {
             recipe,
             config,
             ann_enabled: false,
+            lance_runtime: None,
         })
     }
 
-    /// Use the native region layout under the original request budget.
+    /// Read native graph regions under the original request budget.
     #[must_use]
     pub fn with_ann(mut self) -> Self {
         self.ann_enabled = true;
+        self
+    }
+
+    /// Read LanceDB regions and retained native graph views under the request budget.
+    #[must_use]
+    pub fn with_lancedb_ann(mut self, runtime: Arc<tokio::runtime::Runtime>) -> Self {
+        self.ann_enabled = true;
+        self.lance_runtime = Some(runtime);
         self
     }
 
@@ -2236,7 +2092,6 @@ impl<P: TextEmbeddingProvider> IndexQueryPort<SemanticReadRequest, SearchResult>
         let query = SearchQuery {
             source_files: request.source_files,
             lexical_eligibility: request.lexical_eligibility.as_ref(),
-            lexical_owners: lexical.as_ref().map(|scope| scope.owners.as_slice()),
             exact_path: request
                 .query
                 .constraints
@@ -2262,14 +2117,19 @@ impl<P: TextEmbeddingProvider> IndexQueryPort<SemanticReadRequest, SearchResult>
             }),
         };
         let result = if self.ann_enabled {
-            ann_query::search_loaded(&query, directory.as_ref(), &mut read)?
+            ann_query::search_loaded(
+                &query,
+                directory.as_ref(),
+                lexical,
+                &mut read,
+                self.lance_runtime.as_deref(),
+            )?
+        } else if let Some(selected) = lexical {
+            lexical_scope::rank_selected(&query, selected, None, &mut read)?
         } else {
-            match lexical_scope::search(&query, &mut read)? {
+            match search_selected_exact_path(&query, None, &mut read)? {
                 Some(result) => result,
-                None => match search_selected_exact_path(&query, None, &mut read)? {
-                    Some(result) => result,
-                    None => search_exact(&query, &mut read)?,
-                },
+                None => search_exact(&query, &mut read)?,
             }
         };
         let exhaustive = result.exhaustive;
@@ -2286,7 +2146,6 @@ impl<P: TextEmbeddingProvider> IndexQueryPort<SemanticReadRequest, SearchResult>
 struct SearchQuery<'a> {
     pub source_files: bool,
     pub lexical_eligibility: Option<&'a SemanticLexicalEligibility>,
-    pub lexical_owners: Option<&'a [selected_owner::SelectedOwner]>,
     pub exact_path: Option<&'a str>,
     pub coverage: &'a CoverageBinding,
     pub projection: Option<ProjectionBinding>,
@@ -2421,7 +2280,6 @@ fn search_exact_at_view(
         &SearchQuery {
             source_files: false,
             lexical_eligibility: None,
-            lexical_owners: None,
             exact_path: None,
             coverage: &coverage,
             projection,
@@ -2708,43 +2566,11 @@ impl SearchResult {
     }
 }
 
-struct RankedHit(SearchHit);
-
-impl PartialEq for RankedHit {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-impl Eq for RankedHit {}
-impl PartialOrd for RankedHit {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for RankedHit {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .0
-            .cosine
-            .total_cmp(&self.0.cosine)
-            .then_with(|| {
-                self.0
-                    .source_file
-                    .as_ref()
-                    .map(|file| file.owner)
-                    .cmp(&other.0.source_file.as_ref().map(|file| file.owner))
-            })
-            .then_with(|| self.0.owner.cmp(&other.0.owner))
-            .then_with(|| self.0.vector_id.cmp(&other.0.vector_id))
-    }
-}
-
 /// Exact cosine oracle for bounded owner populations. Budget exhaustion and
 /// object failures propagate; neither can be represented as an empty result.
 fn validate_search_query(query: &SearchQuery<'_>) -> Result<f64, IndexError> {
     if query.source_files
         && (query.lexical_eligibility.is_some()
-            || query.lexical_owners.is_some()
             || query
                 .overlay
                 .as_ref()
@@ -2803,7 +2629,7 @@ fn search_exact(
 
 fn search_exact_with_delta(
     query: &SearchQuery<'_>,
-    delta: Option<&ann_query::ExactDeltaMembers>,
+    delta: Option<ann_query::ExactDeltaMembers>,
     context: &mut ReadContext<'_>,
 ) -> Result<SearchResult, IndexError> {
     let query_norm = validate_search_query(query)?;
@@ -2822,17 +2648,7 @@ fn search_exact_with_delta(
         .checked_sub(overlay_rows)
         .ok_or(IndexError::ResourceLimited)?;
     let mut after: Option<[u8; 38]> = None;
-    let top_k = usize::try_from(query.top_k).map_err(|_error| IndexError::ResourceLimited)?;
-    let heap_bytes = top_k
-        .checked_mul(std::mem::size_of::<RankedHit>())
-        .ok_or(IndexError::ResourceLimited)?;
-    let _heap_memory = context.budget.reserve_memory(
-        u64::try_from(heap_bytes).map_err(|_error| IndexError::ResourceLimited)?,
-        MemoryLifetime::Temporary,
-    )?;
-    let mut heap = BinaryHeap::new();
-    heap.try_reserve_exact(top_k)
-        .map_err(|_error| IndexError::ResourceLimited)?;
+    let mut heap = RankedHits::for_query(query, context.budget)?;
     'pages: loop {
         if durable_limit == 0 {
             if query.coverage.owners != MapRoot(None) {
@@ -2881,17 +2697,19 @@ fn search_exact_with_delta(
                 continue;
             }
             let owned_member;
-            let member =
-                match delta.and_then(|members| members.current(owner.owner, owner.searchable?)) {
-                    Some(member) => {
-                        selected.validate_member_identity(member, query)?;
-                        member
-                    }
-                    None => {
-                        owned_member = selected.current_member(query, context)?;
-                        &owned_member
-                    }
-                };
+            let member = match delta
+                .as_ref()
+                .and_then(|members| members.current(owner.owner, owner.searchable?))
+            {
+                Some(member) => {
+                    selected.validate_member_identity(member, query)?;
+                    member
+                }
+                None => {
+                    owned_member = selected.current_member(query, context)?;
+                    &owned_member
+                }
+            };
             let selected_input = if query.source_files {
                 selected_input
             } else {
@@ -2903,12 +2721,12 @@ fn search_exact_with_delta(
                 input
             };
             let _rescored = rank_member(
+                &selected,
                 member,
                 selected_input,
                 None,
                 query,
                 query_norm,
-                top_k,
                 &mut heap,
                 context,
             )?;
@@ -2934,10 +2752,10 @@ fn search_exact_with_delta(
             IndexError::CorruptObject("semantic owner cursor width differs".into())
         })?);
     }
+    drop(delta);
     finish_ranked(
         query,
         query_norm,
-        top_k,
         heap,
         scanned_owners,
         skipped_stale,
@@ -2949,8 +2767,7 @@ fn search_exact_with_delta(
 fn finish_ranked(
     query: &SearchQuery<'_>,
     query_norm: f64,
-    top_k: usize,
-    mut heap: BinaryHeap<RankedHit>,
+    mut heap: RankedHits,
     mut scanned_owners: u32,
     skipped_stale: u32,
     traversal: NativeSemanticTraversal,
@@ -2975,7 +2792,6 @@ fn finish_ranked(
             },
             query,
             query_norm,
-            top_k,
             &mut heap,
             context,
         )?;
@@ -2983,62 +2799,47 @@ fn finish_ranked(
     scanned_owners = scanned_owners
         .checked_add(overlay_rows)
         .ok_or(IndexError::ResourceLimited)?;
-    let mut ranked = heap.into_vec();
-    // The full score/owner/vector-ID order needs no stable tie ordering.
-    // Reuse the admitted heap backing instead of allocating sort scratch.
-    ranked.sort_unstable();
-    let result_bytes = ranked
-        .len()
-        .checked_mul(std::mem::size_of::<SearchHit>())
-        .ok_or(IndexError::ResourceLimited)?;
-    let hit_memory = if result_bytes == 0 {
-        None
-    } else {
-        context.budget.reserve_memory(
-            u64::try_from(result_bytes).map_err(|_error| IndexError::ResourceLimited)?,
-            MemoryLifetime::Retained,
-        )?
-    };
+    context.budget.checkpoint()?;
+    let (hits, hit_memory) = heap.into_sorted(context.budget)?;
     let complete = traversal.certifies_exhaustive(query.coverage, skipped_stale);
-    let mut result = SearchResult::from_parts(
-        Vec::new(),
+    Ok(SearchResult::from_parts(
+        hits,
         scanned_owners,
         skipped_stale,
         traversal,
         complete,
         hit_memory,
-    );
-    result
-        .hits
-        .try_reserve_exact(ranked.len())
-        .map_err(|_error| IndexError::ResourceLimited)?;
-    for hit in ranked {
-        result.hits.push(hit.0);
-    }
-    Ok(result)
+    ))
 }
 
 /// Report actual original-vector scoring, independently of bounded heap
 /// admission. Ineligible members must not consume ANN's rescore window.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "file ranking carries the authenticated owner with the member and query budget"
+)]
 fn rank_member(
+    selected: &selected_owner::SelectedOwner,
     member: &OwnerMemberBinding,
     selected_input: Option<SelectedArtifactInput>,
     only: Option<&[u8]>,
     query: &SearchQuery<'_>,
     query_norm: f64,
-    top_k: usize,
-    heap: &mut BinaryHeap<RankedHit>,
+    heap: &mut RankedHits,
     context: &mut ReadContext<'_>,
 ) -> Result<bool, IndexError> {
-    let (mut artifact, file) = load_rank_member(member, selected_input, only, query, context)?;
+    let LoadedRankMember {
+        mut loaded,
+        file,
+        vector_index,
+    } = load_rank_member(member, Some(selected), selected_input, only, query, context)?;
     rank_decoded_member(
         member.owner,
-        &mut artifact.artifact,
+        &mut loaded.artifact,
         file,
-        only,
+        vector_index,
         query,
         query_norm,
-        top_k,
         heap,
         context,
     )
@@ -3046,19 +2847,21 @@ fn rank_member(
 
 fn load_rank_member(
     member: &OwnerMemberBinding,
+    selected: Option<&selected_owner::SelectedOwner>,
     mut selected_input: Option<SelectedArtifactInput>,
     only: Option<&[u8]>,
     query: &SearchQuery<'_>,
     context: &mut ReadContext<'_>,
-) -> Result<(LoadedOwnerArtifact, Option<SemanticSourceFile>), IndexError> {
-    let (contribution, file_record) = match &mut selected_input {
-        Some(SelectedArtifactInput::Projection {
-            contribution,
-            file_record,
-        }) => (Some(*contribution), file_record.take()),
-        _ => (None, None),
+) -> Result<LoadedRankMember, IndexError> {
+    let file_record = match &mut selected_input {
+        Some(SelectedArtifactInput::Projection { file_record, .. }) => file_record.take(),
+        _ => None,
     };
-    let mut artifact = load_owner_artifact_scoped(
+    let LoadedOwnerArtifact {
+        mut artifact,
+        mut source,
+        decode_memory,
+    } = load_owner_artifact_scoped(
         context.objects,
         context.budget,
         member,
@@ -3067,29 +2870,34 @@ fn load_rank_member(
         selected_input,
         query.source_files,
     )?;
+    // The persisted coordinate order has been checked against the input.
+    // Reorder the existing allocation only for the ranking and cache path.
+    artifact.chunks.sort_unstable_by_key(|chunk| chunk.id);
+    context.budget.checkpoint()?;
+    let artifact = RankArtifact(artifact);
     // Verify the candidate before opening any separate source-file record.
-    validate_rank_vector(&artifact, only)?;
+    let vector_index = artifact.vector_index(only)?;
     let file = if query.source_files {
         source_file::load(
             member,
-            contribution,
-            file_record.or_else(|| artifact.source.take().map(source_file::FileRecord::Owned)),
+            selected.ok_or_else(|| {
+                IndexError::BackendViolation("file semantic rank lacks selected owner".into())
+            })?,
+            file_record.or_else(|| source.take().map(source_file::FileRecord::Owned)),
             query,
             context,
         )?
     } else {
         None
     };
-    Ok((artifact, file))
-}
-
-fn validate_rank_vector(artifact: &OwnerArtifact, only: Option<&[u8]>) -> Result<(), IndexError> {
-    if only.is_some_and(|id| !artifact.vectors.iter().any(|vector| vector.id == id)) {
-        return Err(IndexError::CorruptObject(
-            "ANN candidate vector is absent from its member".into(),
-        ));
-    }
-    Ok(())
+    Ok(LoadedRankMember {
+        loaded: LoadedRankArtifact {
+            artifact,
+            decode_memory,
+        },
+        file,
+        vector_index,
+    })
 }
 
 #[expect(
@@ -3098,13 +2906,12 @@ fn validate_rank_vector(artifact: &OwnerArtifact, only: Option<&[u8]>) -> Result
 )]
 fn rank_decoded_member(
     owner: OwnerKey,
-    artifact: &mut OwnerArtifact,
+    artifact: &mut RankArtifact,
     mut file: Option<SemanticSourceFile>,
-    only: Option<&[u8]>,
+    vector_index: Option<usize>,
     query: &SearchQuery<'_>,
     query_norm: f64,
-    top_k: usize,
-    heap: &mut BinaryHeap<RankedHit>,
+    heap: &mut RankedHits,
     context: &mut ReadContext<'_>,
 ) -> Result<bool, IndexError> {
     if query.source_files && file.is_none()
@@ -3115,24 +2922,31 @@ fn rank_decoded_member(
     {
         return Ok(false);
     }
+    let artifact = &mut artifact.0;
+    let vectors = if let Some(index) = vector_index {
+        let vector = artifact.vectors.get_mut(index).ok_or_else(|| {
+            IndexError::BackendViolation("validated semantic vector index is absent".into())
+        })?;
+        std::slice::from_mut(vector)
+    } else {
+        artifact.vectors.as_mut_slice()
+    };
     let recipe_fingerprint = query.recipe.fingerprint();
     let file_best = if query.source_files {
-        source_file::best_vector(&artifact.vectors, only, query, query_norm, context)?
+        source_file::best_vector(vectors, query, query_norm, context)?
     } else {
         None
     };
     // File selection already evaluated its best original vector, even when
     // that ID is already retained. Other paths count only computed cosines.
     let mut rescored = file_best.is_some();
-    let chunk_lookup = ChunkLookup::new(&artifact.chunks, context.budget)?;
-    for (index, vector) in artifact.vectors.iter_mut().enumerate() {
+    for (index, vector) in vectors.iter_mut().enumerate() {
         if file_best.is_some_and(|(best, _score)| best != index) {
             continue;
         }
-        if only.is_some_and(|id| id != vector.id.as_slice())
-            || heap
-                .iter()
-                .any(|hit| hit.0.owner == owner && hit.0.vector_id == vector.id)
+        if heap
+            .iter()
+            .any(|hit| hit.owner == owner && hit.vector_id == vector.id)
         {
             continue;
         }
@@ -3148,13 +2962,20 @@ fn rank_decoded_member(
             score
         };
         let id = std::mem::take(&mut vector.id);
-        let mut hit = RankedHit(SearchHit::from_parts(owner, id, cosine, None));
+        let mut hit = SearchHit::from_parts(owner, id, cosine, None);
         if query.source_files {
-            hit.0.source_file = Some(file.take().ok_or_else(|| {
+            hit.source_file = Some(file.take().ok_or_else(|| {
                 IndexError::BackendViolation("file semantic rank lost source custody".into())
             })?);
         }
-        if let Some(member) = chunk_lookup.find(&artifact.chunks, &hit.0.vector_id)? {
+        if !artifact.chunks.is_empty() {
+            let member = artifact
+                .chunks
+                .get(vector_index.unwrap_or(index))
+                .filter(|member| member.id.0.as_slice() == hit.vector_id.as_slice())
+                .ok_or_else(|| {
+                    IndexError::CorruptObject("selected vector lacks chunk membership".into())
+                })?;
             let span = match (member.location, query.recipe.input_policy) {
                 (ChunkLocation::PayloadBytes { start, end }, EmbeddingInputPolicy::SourceUtf8) => {
                     NativeSemanticChunkSpan::SourcePayload {
@@ -3187,13 +3008,13 @@ fn rank_decoded_member(
                 span,
             };
             chunk
-                .validate_binding(&hit.0.vector_id, recipe_fingerprint)
+                .validate_binding(&hit.vector_id, recipe_fingerprint)
                 .map_err(|error| {
                     IndexError::CorruptObject(format!("selected chunk binding: {error}"))
                 })?;
-            hit.0.chunk = Some(chunk);
+            hit.chunk = Some(chunk);
         }
-        source_file::admit(hit, top_k, heap, context)?;
+        source_file::admit(hit, heap, context)?;
     }
     Ok(rescored)
 }
@@ -3640,10 +3461,7 @@ mod tests {
                 usize::try_from(limit).map_err(|_conversion_error| IndexError::ResourceLimited)?;
             let has_more = filtered.len() > limit;
             Ok(MapPage::new(
-                filtered
-                    .into_iter()
-                    .take(limit)
-                    .collect(),
+                filtered.into_iter().take(limit).collect(),
                 has_more,
                 Vec::new(),
                 None,
@@ -5636,7 +5454,6 @@ mod tests {
             &SearchQuery {
                 source_files: false,
                 lexical_eligibility: None,
-                lexical_owners: None,
                 exact_path: None,
                 coverage: &coverage,
                 projection: None,
@@ -5670,7 +5487,6 @@ mod tests {
             &SearchQuery {
                 source_files: false,
                 lexical_eligibility: None,
-                lexical_owners: None,
                 exact_path: None,
                 coverage: &fully_covered,
                 projection: None,
@@ -5693,7 +5509,6 @@ mod tests {
             &SearchQuery {
                 source_files: false,
                 lexical_eligibility: None,
-                lexical_owners: None,
                 exact_path: None,
                 coverage: &coverage,
                 projection: None,
@@ -5745,7 +5560,6 @@ mod tests {
             &SearchQuery {
                 source_files: false,
                 lexical_eligibility: None,
-                lexical_owners: None,
                 exact_path: None,
                 coverage: &fully_covered,
                 projection: None,
@@ -5790,7 +5604,6 @@ mod tests {
             &SearchQuery {
                 source_files: false,
                 lexical_eligibility: None,
-                lexical_owners: None,
                 exact_path: None,
                 coverage: &fully_covered,
                 projection: None,
@@ -5828,7 +5641,6 @@ mod tests {
                 &SearchQuery {
                     source_files: false,
                     lexical_eligibility: None,
-                    lexical_owners: None,
                     exact_path: None,
                     coverage: &coverage,
                     projection: None,

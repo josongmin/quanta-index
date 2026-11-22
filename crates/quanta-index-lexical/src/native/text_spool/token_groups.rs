@@ -5,7 +5,7 @@ use std::cell::Cell;
 use quanta_index_core::index::{IndexError, WorkBudget, WorkUsage};
 
 use super::{TextSpool, check_term_key, sql};
-use crate::native::{text::PreparedPositions, text_memory::PreparedKey};
+use crate::native::{text_occurrence::positions::PreparedPositions, text_memory::PreparedKey};
 
 struct TokenReadGuard<'a>(&'a Cell<bool>);
 

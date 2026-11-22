@@ -193,6 +193,21 @@ def test_prepare_control_uses_fixed_policy_not_caller_patch(source, tmp_path):
     capture(repo, base, overlay)
 
 
+def test_prepare_control_refuses_a_revision_after_scanner_retirement(source, tmp_path):
+    repo, _, _, _, _, _ = source
+    _run(repo, "rm", "-f", PATH)
+    _run(
+        repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "commit", "-qm", "retire scanner",
+    )
+    head = _run(repo, "rev-parse", "HEAD").decode().strip()
+    patch, overlay = tmp_path / "retired.patch", tmp_path / "retired.json"
+    with pytest.raises(CustodyError, match="requires an archived revision"):
+        prepare_control(repo, head, patch, overlay)
+    assert not patch.exists()
+    assert not overlay.exists()
+
+
 def test_arbitrary_claimed_patch_and_extra_change_refused(source):
     repo, base, _, path, patch, overlay = source
     patch.write_bytes(patch.read_bytes() + b"\n")

@@ -16,14 +16,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     chunks::{ChunkLocation, ChunkMember, ChunkPlan},
-    embedding::{EmbeddingInputPolicy, EmbeddingRecipe},
+    recipe::{EmbeddingInputPolicy, EmbeddingRecipe},
 };
-
-const OUTPUT_POLICY: &[u8] = b"quanta-index-native-semantic-certified-rendered-members-v1\0";
-
-pub(crate) fn output_policy() -> Digest {
-    Digest(Sha256::digest(OUTPUT_POLICY).into())
-}
 
 /// The encoder keeps allocated wire backing charged until its consumer drops it.
 pub struct CertifiedChunkPayload {

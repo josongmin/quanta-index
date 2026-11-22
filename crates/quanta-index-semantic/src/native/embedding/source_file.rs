@@ -88,13 +88,13 @@ impl SemanticSourceFile {
 /// Borrow an authenticated record from the live file window by its exact
 /// selected source identity. The candidate must still validate its own input.
 pub(super) fn retained_record(
-    heap: &BinaryHeap<RankedHit>,
+    heap: &RankedHits,
     owner: OwnerKey,
     source: ObjectRef,
 ) -> Option<FileRecord> {
     let file = heap
         .iter()
-        .filter_map(|hit| hit.0.source_file())
+        .filter_map(SearchHit::source_file)
         .find(|file| file.owner == owner && file.source == source)?;
     let FileRecord::Shared(record) = &file.record else {
         return None;
@@ -145,12 +145,13 @@ impl SearchHit {
 
 pub(super) fn load(
     member: &OwnerMemberBinding,
-    contribution: Option<ProjectionOwnerContribution>,
+    selected: &selected_owner::SelectedOwner,
     authenticated_record: Option<FileRecord>,
     query: &SearchQuery<'_>,
     context: &mut ReadContext<'_>,
 ) -> Result<Option<SemanticSourceFile>, IndexError> {
-    let (owner, reference) = match contribution {
+    selected.validate_file_scope(member, query)?;
+    let (owner, reference) = match selected.contribution {
         Some(contribution) => match (contribution.source_owner, contribution.source) {
             (Some(owner), Some(reference)) if member.input.source == Some(reference) => {
                 (owner, reference)
@@ -169,15 +170,6 @@ pub(super) fn load(
             })?,
         ),
     };
-    if context
-        .maps
-        .lookup_object(query.source_owners, &owner_map_key(owner), context.budget)?
-        != Some(reference)
-    {
-        return Err(IndexError::CorruptObject(
-            "file semantic source is outside the selected view".into(),
-        ));
-    }
     let record = match authenticated_record {
         Some(record) => record,
         None => FileRecord::Owned(load_source_record_with_lifetime(
@@ -203,22 +195,19 @@ pub(super) fn load(
 /// Choose max cosine per source file before applying the bounded file window.
 /// The heap's ordering supplies source-owner and vector provenance tie breaks.
 pub(super) fn admit(
-    mut hit: RankedHit,
-    top_k: usize,
-    heap: &mut BinaryHeap<RankedHit>,
+    mut hit: SearchHit,
+    heap: &mut RankedHits,
     context: &mut ReadContext<'_>,
 ) -> Result<(), IndexError> {
-    if let Some(file) = hit.0.source_file.as_ref()
-        && let Some(prior) = heap.iter().find(|prior| {
+    if let Some(file) = hit.source_file.as_ref()
+        && let Some((index, prior)) = heap.iter().enumerate().find(|(_, prior)| {
             prior
-                .0
                 .source_file
                 .as_ref()
                 .is_some_and(|other| other.owner == file.owner)
         })
     {
         if prior
-            .0
             .source_file
             .as_ref()
             .is_some_and(|other| other.source != file.source)
@@ -227,29 +216,26 @@ pub(super) fn admit(
                 "same-view semantic file has two source refs".into(),
             ));
         }
-        if hit >= *prior {
+        if !compare_hits(&hit, prior).is_lt() {
             return Ok(());
         }
-        let owner = file.owner;
-        heap.retain(|entry| {
-            !entry
-                .0
-                .source_file
-                .as_ref()
-                .is_some_and(|file| file.owner == owner)
-        });
+        drop(heap.remove(index));
     }
-    if heap.len() < top_k || heap.peek().is_some_and(|worst| hit < *worst) {
+    if !heap.is_full()
+        || heap
+            .worst()
+            .is_some_and(|worst| compare_hits(&hit, worst).is_lt())
+    {
         let bytes =
-            u64::try_from(hit.0.vector_id.capacity()).map_err(|_| IndexError::ResourceLimited)?;
+            u64::try_from(hit.vector_id.capacity()).map_err(|_| IndexError::ResourceLimited)?;
         // Release the displaced hit before charging the replacement.
-        if heap.len() == top_k {
-            drop(heap.pop());
+        if heap.is_full() {
+            drop(heap.remove(0));
         }
-        hit.0.vector_id_memory = context
+        hit.vector_id_memory = context
             .budget
             .reserve_memory(bytes, MemoryLifetime::Retained)?;
-        heap.push(hit);
+        heap.push(hit, context.budget)?;
     }
     Ok(())
 }
@@ -258,16 +244,12 @@ pub(super) fn admit(
 /// Select before transferring any ID/path backing into the bounded file heap.
 pub(super) fn best_vector(
     vectors: &[EmbeddingVector],
-    only: Option<&[u8]>,
     query: &SearchQuery<'_>,
     query_norm: f64,
     context: &mut ReadContext<'_>,
 ) -> Result<Option<(usize, f64)>, IndexError> {
     let mut best: Option<(usize, f64)> = None;
     for (index, vector) in vectors.iter().enumerate() {
-        if only.is_some_and(|id| id != vector.id.as_slice()) {
-            continue;
-        }
         context.budget.charge(WorkUsage {
             mutations: 1,
             ..WorkUsage::default()

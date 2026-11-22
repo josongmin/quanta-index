@@ -6,9 +6,72 @@ use std::{collections::BTreeMap, os::unix::fs::MetadataExt as _, path::PathBuf, 
 
 use sha2::{Digest as _, Sha256};
 
-#[cfg(feature = "legacy-tantivy")]
+use crate::legacy_searchd_binary::LegacySearchdBinary;
+use quanta_index_contract::index::{
+    NATIVE_INDEX_STATE_MARKER_CONTENT, NATIVE_INDEX_STATE_MARKER_NAME, ViewRef,
+};
+use quanta_index_searchd_harness::legacy_reference::publish_legacy_source;
+
 #[path = "../common/searchd_fixture_env.rs"]
 mod searchd_fixture_env;
+
+#[test]
+fn a_world_writable_pre_created_state_root_is_refused_typed_before_any_socket() -> TestResult {
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    fs::create_dir(&state_root)?;
+    fs::set_permissions(&state_root, fs::Permissions::from_mode(0o777))?;
+    let socket = parent.path().join("native.sock");
+    let config_path = parent.path().join("native-config.json");
+    fs::write(
+        &config_path,
+        serde_json::to_vec(&config(&state_root, &socket))?,
+    )?;
+    fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
+
+    let args = vec![
+        "serve-native".to_owned(),
+        "--config".to_owned(),
+        config_path.to_string_lossy().into_owned(),
+    ];
+    let mut command = Command::new("sh");
+    let _configured = command
+        .arg("-c")
+        .arg(r#"umask "$1" && exec "$2" serve-native --config "$3""#)
+        .arg("native-umask-hardening")
+        .arg("000")
+        .arg(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+        .arg(&config_path);
+    let output = bounded_output(
+        |stdout, stderr| Ok(command.stdout(stdout).stderr(stderr).spawn()?),
+        &args,
+        false,
+    )?;
+    require(
+        !output.status.success(),
+        "a world-writable state root must refuse boot",
+    )?;
+    require(
+        output.stdout.is_empty(),
+        "a refused Native boot emitted stdout",
+    )?;
+    let stderr = String::from_utf8(output.stderr)?;
+    require(
+        stderr.contains("STATE_ROOT_INSECURE") && stderr.contains("mode 0777"),
+        format!("the refusal must name the typed code and the mode: {stderr}"),
+    )?;
+    require(!socket.exists(), "a refused Native boot created a socket")?;
+    require_equal(
+        &(fs::metadata(&state_root)?.permissions().mode() & 0o7777),
+        &0o777,
+        "refused state-root mode",
+    )?;
+    require_equal(
+        &fs::read_dir(&state_root)?.count(),
+        &0,
+        "a refused boot leaves the state root untouched",
+    )
+}
 
 #[test]
 fn recovery_helper_returns_a_bound_startup_refusal_over_inherited_fd() -> TestResult {
@@ -196,15 +259,16 @@ fn hex(bytes: &[u8]) -> TestResult<String> {
     Ok(encoded)
 }
 
-fn bounded_output(mut command: Command, args: &[String], launcher: bool) -> TestResult<Output> {
+fn bounded_output(
+    spawn: impl FnOnce(Stdio, Stdio) -> TestResult<Child>,
+    args: &[String],
+    launcher: bool,
+) -> TestResult<Output> {
     // A launcher child inherits stdout/stderr. Anonymous files keep a parent
     // exit from blocking forever while a grandchild still owns either FD.
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
-    let mut child = command
-        .stdout(stdout.try_clone()?)
-        .stderr(stderr.try_clone()?)
-        .spawn()?;
+    let mut child = spawn(stdout.try_clone()?.into(), stderr.try_clone()?.into())?;
     let deadline = Instant::now()
         .checked_add(NATIVE_STARTUP_LIMIT)
         .ok_or("native boot command deadline overflow")?;
@@ -258,32 +322,81 @@ fn bounded_output(mut command: Command, args: &[String], launcher: bool) -> Test
 }
 
 fn run_one_shot(args: &[String]) -> TestResult<Output> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
-    let _args = command.args(args);
-    bounded_output(command, args, false)
+    run_one_shot_from(Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")), args)
 }
 
-#[cfg(feature = "legacy-tantivy")]
+fn run_one_shot_from(binary: &Path, args: &[String]) -> TestResult<Output> {
+    let mut command = Command::new(binary);
+    let _args = command.args(args);
+    bounded_output(
+        |stdout, stderr| Ok(command.stdout(stdout).stderr(stderr).spawn()?),
+        args,
+        false,
+    )
+}
+
 fn run_private_pipe_one_shot(args: &[&str]) -> TestResult<Output> {
+    fn drain(mut pipe: impl std::io::Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
+        let mut bytes = Vec::new();
+        let mut overflow = false;
+        let mut chunk = [0_u8; 64 * 1024];
+        loop {
+            let count = pipe.read(&mut chunk)?;
+            if count == 0 {
+                return Ok((bytes, overflow));
+            }
+            let keep = count.min(limit.saturating_sub(bytes.len()));
+            bytes.extend_from_slice(&chunk[..keep]);
+            overflow |= keep != count;
+        }
+    }
+
     let mut child = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("History exporter stdout pipe absent")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("History exporter stderr pipe absent")?;
+    let stdout_reader = thread::spawn(move || drain(stdout, 128 * 1024 * 1024));
+    let stderr_reader = thread::spawn(move || drain(stderr, 1024 * 1024));
     let deadline = Instant::now()
-        .checked_add(NATIVE_STARTUP_LIMIT)
+        .checked_add(Duration::from_secs(120))
         .ok_or("History exporter process deadline overflow")?;
-    loop {
-        if child.try_wait()?.is_some() {
-            return Ok(child.wait_with_output()?);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
         }
         if Instant::now() >= deadline {
             let _killed = child.kill();
             let _waited = child.wait();
+            let _stdout = stdout_reader.join();
+            let _stderr = stderr_reader.join();
             return Err("History exporter process exceeded startup deadline".into());
         }
         thread::sleep(Duration::from_millis(10));
-    }
+    };
+    let (stdout, stdout_overflow) = stdout_reader
+        .join()
+        .map_err(|_| "History exporter stdout reader panicked")??;
+    let (stderr, stderr_overflow) = stderr_reader
+        .join()
+        .map_err(|_| "History exporter stderr reader panicked")??;
+    require(
+        !stdout_overflow && !stderr_overflow,
+        "History exporter output exceeded bound",
+    )?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 fn launcher_script() -> TestResult<PathBuf> {
@@ -295,7 +408,11 @@ fn launcher_script() -> TestResult<PathBuf> {
 fn run_launcher(args: &[String]) -> TestResult<Output> {
     let mut command = Command::new("python3");
     let _args = command.arg(launcher_script()?).args(args);
-    bounded_output(command, args, true)
+    bounded_output(
+        |stdout, stderr| Ok(command.stdout(stdout).stderr(stderr).spawn()?),
+        args,
+        true,
+    )
 }
 
 fn launcher_succeeded(args: &[String]) -> TestResult {
@@ -323,7 +440,11 @@ fn launcher_refused(args: &[String]) -> TestResult {
 }
 
 fn successful(args: &[String]) -> TestResult<Output> {
-    let output = run_one_shot(args)?;
+    successful_from(Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")), args)
+}
+
+fn successful_from(binary: &Path, args: &[String]) -> TestResult<Output> {
+    let output = run_one_shot_from(binary, args)?;
     require(
         output.status.success(),
         format!(
@@ -335,7 +456,10 @@ fn successful(args: &[String]) -> TestResult<Output> {
 }
 
 fn refused(args: &[String]) -> TestResult {
-    let output = run_one_shot(args)?;
+    require_boot_refusal(run_one_shot(args)?)
+}
+
+fn require_boot_refusal(output: Output) -> TestResult {
     require_equal(&output.status.code(), &Some(70), "native boot refusal exit")?;
     require(
         output.stdout.is_empty(),
@@ -381,6 +505,53 @@ fn root_files(root: &Path) -> TestResult<RootFiles> {
     let mut files = BTreeMap::new();
     visit(root, root, &mut files)?;
     Ok(files)
+}
+
+pub(super) fn require_native_only_legacy_offline_refusal(binary: &Path) -> TestResult {
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
+    let source = temp.path().join("legacy-source");
+    fs::create_dir(&source)?;
+    fs::write(
+        source.join("state-root-manifest-v1.txt"),
+        b"legacy state sentinel",
+    )?;
+    let original_root = fs::symlink_metadata(&source)?;
+    let original = root_files(&source)?;
+    let destination = temp.path().join("destination");
+    for operation in ["backup-state", "restore-state", "verify-state"] {
+        let mut args = vec![
+            operation.into(),
+            "--source".into(),
+            source.to_string_lossy().into_owned(),
+        ];
+        if operation != "verify-state" {
+            args.extend([
+                "--destination".into(),
+                destination.to_string_lossy().into_owned(),
+            ]);
+        }
+        let output = run_one_shot_from(binary, &args)?;
+        let stderr = std::str::from_utf8(&output.stderr)?;
+        require(
+            stderr.contains("legacy state command unavailable in Native-only build"),
+            format!("{operation} reached the wrong refusal boundary: {stderr}"),
+        )?;
+        require_boot_refusal(output)?;
+        match fs::symlink_metadata(&destination) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => return Err(format!("{operation} created a destination").into()),
+        }
+        let root = fs::symlink_metadata(&source)?;
+        require(
+            root.is_dir() && root.dev() == original_root.dev() && root.ino() == original_root.ino(),
+            format!("{operation} replaced the source directory"),
+        )?;
+        require_equal(&root_files(&source)?, &original, operation)?;
+        let entries = fs::read_dir(&source)?.collect::<std::io::Result<Vec<_>>>()?;
+        require_equal(&entries.len(), &1, operation)?;
+    }
+    Ok(())
 }
 
 fn identity_args(
@@ -447,7 +618,15 @@ fn wait_for_socket(child: &mut Child, socket: &Path) -> TestResult {
 }
 
 fn selected_daemon(args: &[String], socket: &Path) -> TestResult<Daemon> {
-    let child = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+    selected_daemon_from(
+        Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")),
+        args,
+        socket,
+    )
+}
+
+fn selected_daemon_from(binary: &Path, args: &[String], socket: &Path) -> TestResult<Daemon> {
+    let child = Command::new(binary)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1300,10 +1479,16 @@ fn native_boot_selection_verification_and_selected_serve_preserve_real_publicati
     let renewed_receipt: serde_json::Value =
         serde_json::from_slice(&fs::read(&renewed_receipt_path)?)?;
     let renewed_verify = identity_args(
-        "verify-native-state", &config_path, &renewed_receipt, &config_digest,
+        "verify-native-state",
+        &config_path,
+        &renewed_receipt,
+        &config_digest,
     )?;
     let renewed_candidate_verify = identity_args(
-        "verify-native-candidate", &config_path, &renewed_receipt, &config_digest,
+        "verify-native-candidate",
+        &config_path,
+        &renewed_receipt,
+        &config_digest,
     )?;
     let before_renewed_verification = root_files(&root)?;
     let _verified_historical_boot = successful(&renewed_verify)?;
@@ -1370,26 +1555,34 @@ fn native_boot_selection_verification_and_selected_serve_preserve_real_publicati
     Ok(())
 }
 
+const REBUILD_SOURCE_PATH: &str = "rebuild.rs";
+const CANDIDATE_REBUILD_SOURCE_PATH: &str = "candidate-rebuild.rs";
+
 struct RebuiltNativeRoot {
+    binary: PathBuf,
     root: PathBuf,
     socket: PathBuf,
     config: PathBuf,
     receipt: PathBuf,
-    #[cfg(feature = "legacy-tantivy")]
+    published_view: ViewRef,
+    published_source: ObjectRef,
     published_operation_json: String,
-    #[cfg(feature = "legacy-tantivy")]
     published_source_cut_digest_hex: String,
+    startup_observation: Option<read_view_daemon_witness::Observation>,
 }
 
 impl RebuiltNativeRoot {
     fn launcher_args(&self, mode: &str, selection: &Path) -> TestResult<Vec<String>> {
-        let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")).canonicalize()?;
+        let binary = self
+            .binary
+            .to_str()
+            .ok_or("rebuild daemon path is not UTF-8")?;
         Ok(vec![
             mode.into(),
             "--selection".into(),
             selection.to_string_lossy().into_owned(),
             "--binary".into(),
-            binary.to_string_lossy().into_owned(),
+            binary.into(),
             "--state-root".into(),
             self.root.to_string_lossy().into_owned(),
             "--config".into(),
@@ -1401,15 +1594,32 @@ impl RebuiltNativeRoot {
 }
 
 fn rebuild_fixed_native_source(base: &Path, name: &str) -> TestResult<RebuiltNativeRoot> {
+    rebuild_fixed_native_source_from(
+        base,
+        name,
+        Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")),
+        REBUILD_SOURCE_PATH,
+        false,
+    )
+}
+
+fn rebuild_fixed_native_source_from(
+    base: &Path,
+    name: &str,
+    binary: &Path,
+    source_path: &str,
+    observe_startup: bool,
+) -> TestResult<RebuiltNativeRoot> {
     // Use the production SDK ingress/build path, never copy a Catalog, object
     // store, index root or an old view into the fresh incarnation.
+    let binary = binary.canonicalize()?;
     let root = base.join(format!("{name}-state"));
     let socket = base.join(format!("{name}.sock"));
     let config_path = base.join(format!("{name}.json"));
     let receipt_path = base.join(format!("{name}-receipt.json"));
     fs::write(&config_path, serde_json::to_vec(&config(&root, &socket))?)?;
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
-    let daemon = Daemon::start(&config_path, &socket)?;
+    let daemon = Daemon::start_binary(&binary, &config_path, &socket, None, None)?;
     let client = NativeUdsClient::new(socket.clone());
     let NativeIndexResponse::Created(genesis) = client.request(
         NativeIndexRequest::CreateWorkspace {
@@ -1441,7 +1651,7 @@ fn rebuild_fixed_native_source(base: &Path, name: &str) -> TestResult<RebuiltNat
     let records = client.stage_sources(
         input,
         vec![SourceInput {
-            path: "rebuild.rs".into(),
+            path: source_path.into(),
             bytes: b"fixed rebuild needle".to_vec(),
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
@@ -1480,7 +1690,6 @@ fn rebuild_fixed_native_source(base: &Path, name: &str) -> TestResult<RebuiltNat
         payload: transition.owner_digest()?,
     });
     let producer_operation = operation(2);
-    #[cfg(feature = "legacy-tantivy")]
     let published_operation_json = serde_json::to_string(&producer_operation)?;
     let rebuilt = published(&client.submit(
         UpdateRequest {
@@ -1490,32 +1699,11 @@ fn rebuild_fixed_native_source(base: &Path, name: &str) -> TestResult<RebuiltNat
         },
         &budget(),
     )?)?;
-    let ranked = client.search_text(
-        ViewSelection::Exact(rebuilt),
-        text_spec().instance,
-        TextQueryRequest {
-            syntax: TextQuerySyntax::Native,
-            query_text: "needle".into(),
-            constraints: QueryConstraintSetV1::unconstrained(),
-            generation: None,
-            generation_selector: None,
-            top_k: 1,
-            cursor: None,
-        },
-        &budget(),
-    )?;
-    require_equal(&ranked.matched, &1, "fresh SDK rebuild fixed match")?;
     require_equal(
-        &ranked
-            .hits
-            .first()
-            .ok_or("fresh SDK rebuild hit absent")?
-            .path
-            .as_str(),
-        &"rebuild.rs",
-        "fresh SDK rebuild fixed path",
+        &rebuilt_query_source(&client, ViewSelection::Exact(rebuilt), source_path)?,
+        source,
+        "fresh SDK rebuild hit Source",
     )?;
-    #[cfg(feature = "legacy-tantivy")]
     let published_source_cut_digest_hex =
         hex(&quanta_index_contract::native_boot_source_cut_digest_v1(
             &client
@@ -1523,25 +1711,35 @@ fn rebuild_fixed_native_source(base: &Path, name: &str) -> TestResult<RebuiltNat
                 .source,
         )?
         .0)?;
+    let startup_observation = if observe_startup {
+        read_view_daemon_witness::observe(daemon.0.id())?
+    } else {
+        None
+    };
     daemon.stop()?;
-    let _selected = successful(&[
-        "select-native-state".into(),
-        "--config".into(),
-        config_path.to_string_lossy().into_owned(),
-        "--manifest-operation".into(),
-        serde_json::to_string(&operation(2))?,
-        "--receipt".into(),
-        receipt_path.to_string_lossy().into_owned(),
-    ])?;
+    let _selected = successful_from(
+        &binary,
+        &[
+            "select-native-state".into(),
+            "--config".into(),
+            config_path.to_string_lossy().into_owned(),
+            "--manifest-operation".into(),
+            serde_json::to_string(&operation(2))?,
+            "--receipt".into(),
+            receipt_path.to_string_lossy().into_owned(),
+        ],
+    )?;
     Ok(RebuiltNativeRoot {
+        binary,
         root,
         socket,
         config: config_path,
         receipt: receipt_path,
-        #[cfg(feature = "legacy-tantivy")]
+        published_view: rebuilt,
+        published_source: *source,
         published_operation_json,
-        #[cfg(feature = "legacy-tantivy")]
         published_source_cut_digest_hex,
+        startup_observation,
     })
 }
 
@@ -1562,11 +1760,24 @@ fn inspected_selection_digest(selection: &Path) -> TestResult<String> {
 
 fn require_rebuilt_query(socket: &Path) -> TestResult {
     let client = NativeUdsClient::new(socket.to_path_buf());
-    let ranked = client.search_text(
+    let _source = rebuilt_query_source(
+        &client,
         ViewSelection::Latest {
             workspace: workspace(),
             epoch: 1,
         },
+        REBUILD_SOURCE_PATH,
+    )?;
+    Ok(())
+}
+
+fn rebuilt_query_source(
+    client: &NativeUdsClient,
+    selection: ViewSelection,
+    expected_path: &str,
+) -> TestResult<ObjectRef> {
+    let ranked = client.search_text(
+        selection,
         text_spec().instance,
         TextQueryRequest {
             syntax: TextQuerySyntax::Native,
@@ -1586,28 +1797,23 @@ fn require_rebuilt_query(socket: &Path) -> TestResult {
         .ok_or("rebuilt source fixed hit missing")?;
     require_equal(
         &hit.path.as_str(),
-        &"rebuild.rs",
+        &expected_path,
         "rebuilt source fixed path",
     )?;
-    Ok(())
+    Ok(hit.source)
 }
 
-#[cfg(feature = "legacy-tantivy")]
 const LEGACY_BOOT_PATH: &str = "src/legacy-cutover.rs";
-#[cfg(feature = "legacy-tantivy")]
+const LEGACY_FIXTURE_HISTORY_KEEP: usize = 8;
 const LEGACY_BOOT_TOKEN: &str = "legacy_boot_needle_47";
-#[cfg(feature = "legacy-tantivy")]
 const LEGACY_BOOT_BODY: &str = "pub fn legacy_boot_needle_47() -> bool { true }";
 // SHA-256 of the public CodeSearch file framing for repo-e2e and the fixed path.
-#[cfg(feature = "legacy-tantivy")]
 const LEGACY_BOOT_FILE_ID: &str =
     "file:98f1a21b71fc15f0456e9b0ac28176f1c4261e2eb0788b61d7ee4c0adbd922b1";
 // SHA-256 of the fixed seed body followed by the harness's framing newline.
-#[cfg(feature = "legacy-tantivy")]
 const LEGACY_BOOT_SOURCE_SHA256: &str =
     "c11c4b4ecb8ae5a07425bf8531bbd61bb31f69f54275640474b215fce1adef46";
 
-#[cfg(feature = "legacy-tantivy")]
 fn legacy_boot_environment(base: &Path) -> TestResult<Vec<(String, String)>> {
     let home = base.join("legacy-home");
     let temporary = base.join("legacy-tmp");
@@ -1621,10 +1827,7 @@ fn legacy_boot_environment(base: &Path) -> TestResult<Vec<(String, String)>> {
         ("PATH".into(), "/usr/bin:/bin".into()),
     ];
     let mut source = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
-    searchd_fixture_env::apply_searchd_env(
-        &mut source,
-        quanta_index_searchd_harness::DEFAULT_HISTORY_MAX_GENERATIONS,
-    );
+    searchd_fixture_env::apply_searchd_env(&mut source, LEGACY_FIXTURE_HISTORY_KEEP);
     for (name, value) in source.get_envs() {
         let name = name
             .to_str()
@@ -1638,17 +1841,22 @@ fn legacy_boot_environment(base: &Path) -> TestResult<Vec<(String, String)>> {
     Ok(environment)
 }
 
-#[cfg(feature = "legacy-tantivy")]
 fn successful_legacy_state_command(
+    binary: &LegacySearchdBinary,
     args: &[String],
     environment: &[(String, String)],
 ) -> TestResult {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
+    let mut command = binary.command()?;
     let _configured = command
         .env_clear()
         .envs(environment.iter().map(|(name, value)| (name, value)))
         .args(args);
-    let output = bounded_output(command, args, false)?;
+    let output = bounded_output(
+        |stdout, stderr| Ok(command.stdout(stdout).stderr(stderr).spawn()?),
+        args,
+        false,
+    )?;
+    binary.verify()?;
     require(
         output.status.success(),
         format!(
@@ -1658,7 +1866,6 @@ fn successful_legacy_state_command(
     )
 }
 
-#[cfg(feature = "legacy-tantivy")]
 fn require_legacy_boot_query(root: &Path) -> TestResult {
     let client = quanta_index_sdk::QuantaIndex::connect_legacy_query_only(
         quanta_index_sdk::ConnectOptions::from_state_root(root),
@@ -1716,24 +1923,25 @@ fn require_legacy_boot_query(root: &Path) -> TestResult {
 }
 
 #[test]
-#[cfg(all(feature = "legacy-tantivy", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestResult {
-    use quanta_index_contract::HistoryIngestBatch;
     use quanta_index_contract::index::AuxiliaryGenerationKeyV1;
+    use quanta_index_contract::lex::DiffHunkRecord;
     use quanta_index_contract::lex::{CommitRecord, CommitSha};
-    use quanta_index_sdk::{ConnectOptions, QuantaIndex};
+    use quanta_index_contract::results::DiffHunkSide;
+    use quanta_index_contract::{HistoryDiffHunkUpsert, HistoryIngestBatch};
 
     let temp = tempfile::Builder::new()
         .prefix("q-history-export-")
         .tempdir_in("/tmp")?;
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
     let base = temp.path().canonicalize()?;
+    let legacy = LegacySearchdBinary::from_environment()?;
     let environment = legacy_boot_environment(&base)?;
     let seed = base.join("legacy-seed");
     fs::create_dir(&seed)?;
     fs::set_permissions(&seed, fs::Permissions::from_mode(0o700))?;
-    let mut bootstrap = quanta_index_searchd_harness::E2eRuntime::boot_in(&seed)?;
-    bootstrap.start()?;
+    let bootstrap = legacy.start(&seed, LEGACY_FIXTURE_HISTORY_KEEP)?;
     bootstrap.stop()?;
 
     // Install the manifest-backed root before ordinary Legacy writes. The
@@ -1746,6 +1954,7 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
         ("restore-state", backup.as_path(), old_root.as_path()),
     ] {
         successful_legacy_state_command(
+            &legacy,
             &[
                 operation.into(),
                 "--source".into(),
@@ -1756,7 +1965,8 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
             &environment,
         )?;
     }
-    let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")).canonicalize()?;
+    let installed_old_binary = legacy.installer_binary()?;
+    let binary = installed_old_binary.path();
     let selection = base.join("selection.json");
     let mut install = vec![
         "install".into(),
@@ -1771,29 +1981,27 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
         install.extend(["--env".into(), format!("{name}={value}")]);
     }
     launcher_succeeded(&install)?;
+    installed_old_binary.verify()?;
+    legacy.verify()?;
     let selected_bytes = fs::read(&selection)?;
     let selected_sha = inspected_selection_digest(&selection)?;
 
-    let mut runtime = quanta_index_searchd_harness::E2eRuntime::boot_in(&old_root)?;
-    runtime.ingest_text(
-        "repo-e2e",
-        "src/history_export.rs",
-        "fn history_export() {}",
+    let old_process = legacy.start(&old_root, LEGACY_FIXTURE_HISTORY_KEEP)?;
+    let publisher = old_process.connect()?;
+    let (first_head, _) = publish_legacy_source(
+        &publisher,
+        &quanta_index_contract::RepoId::new("repo-e2e")?,
+        &quanta_index_contract::RevisionId::new("rev-e2e")?,
+        1,
+        None,
+        &[("src/history_export.rs", "fn history_export() {}", 1)],
+        None,
     )?;
-    let sealed = runtime.seal()?;
+    let sealed = first_head.generation.lexical.manifest_generation;
     require_equal(
         &sealed,
         &quanta_index_contract::ManifestGeneration::new(1),
         "Legacy History fixture generation",
-    )?;
-    runtime.activate_last_sealed_generation()?;
-    runtime.start()?;
-    let (query, control, ingest) = runtime.socket_paths().ok_or("Legacy sockets absent")?;
-    let publisher = QuantaIndex::connect_legacy(
-        ConnectOptions::from_state_root(runtime.state_root())
-            .with_query_socket(query)
-            .with_control_socket(control)
-            .with_ingest_socket(ingest),
     )?;
     let commit = CommitRecord {
         wire_version: 1,
@@ -1813,13 +2021,28 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
         tags: Vec::new(),
     };
     let generation = AuxiliaryGenerationKeyV1 {
-        repo_id: runtime.repo(),
-        revision_id: runtime.revision(),
+        repo_id: quanta_index_contract::RepoId::new("repo-e2e")?,
+        revision_id: quanta_index_contract::RevisionId::new("rev-e2e")?,
         generation: sealed,
     };
-    let manifest = runtime
-        .last_sealed_search_corpus_identity()
-        .ok_or("first sealed Legacy Source identity absent")?;
+    let manifest = first_head.generation.clone();
+    let hunk = |sha, width: usize| -> TestResult<HistoryDiffHunkUpsert> {
+        Ok(HistoryDiffHunkUpsert {
+            commit_sha: sha,
+            file_path: "src/history_export.rs".into(),
+            record: DiffHunkRecord {
+                wire_version: 1,
+                hunk_header: "@@".into(),
+                side: DiffHunkSide::After,
+                added_text: "x".repeat(width).into_boxed_str(),
+                removed_text: "".into(),
+                touched_text: "".into(),
+                byte_start: 0,
+                byte_end: u32::try_from(width)?,
+            },
+        })
+    };
+    let first_hunk = hunk(commit.sha, 3 * 1024 * 1024)?;
     let mut batch = HistoryIngestBatch {
         repo_id: generation.repo_id.clone(),
         revision_id: generation.revision_id.clone(),
@@ -1829,7 +2052,7 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
         commits: vec![commit.clone()],
         refs: Vec::new(),
         tags: Vec::new(),
-        diff_hunks: Vec::new(),
+        diff_hunks: vec![first_hunk.clone()],
     };
     quanta_index_ipc::stamp_batch_digest_v1(&mut batch)?;
     let ack = publisher.history().publish_history_borrowed_v1(&batch)?;
@@ -1837,47 +2060,71 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
         ack.applied && ack.durable_sequence > 0,
         "Legacy History ACK was not durable",
     )?;
-    runtime.ingest_text(
-        "repo-e2e",
-        "src/history_export.rs",
-        "fn history_export() { let _next = 2; }",
+    let (second_head, _) = publish_legacy_source(
+        &publisher,
+        &quanta_index_contract::RepoId::new("repo-e2e")?,
+        &quanta_index_contract::RevisionId::new("rev-e2e")?,
+        2,
+        Some(("src/history_export.rs", "fn history_export() {}", 1)),
+        &[(
+            "src/history_export.rs",
+            "fn history_export() { let _next = 2; }",
+            2,
+        )],
+        Some(first_head),
     )?;
-    let next_sealed = runtime.seal()?;
+    let next_sealed = second_head.generation.lexical.manifest_generation;
     require_equal(
         &next_sealed,
         &quanta_index_contract::ManifestGeneration::new(2),
         "second Legacy History fixture generation",
     )?;
-    runtime.activate_last_sealed_generation()?;
     let next_generation = AuxiliaryGenerationKeyV1 {
         generation: next_sealed,
         ..generation.clone()
     };
-    let next_manifest = runtime
-        .last_sealed_search_corpus_identity()
-        .ok_or("second sealed Legacy Source identity absent")?;
+    let next_manifest = second_head.generation;
     let next_commit = CommitRecord {
         sha: CommitSha::from_bytes([43; 20]),
         message: "exported second-generation commit".into(),
         ..commit.clone()
     };
+    let shared_commit = CommitRecord {
+        sha: CommitSha::from_bytes([44; 20]),
+        message: "exported shared-part commit".into(),
+        ..commit.clone()
+    };
+    let next_hunk = hunk(next_commit.sha, 5 * 1024 * 1024)?;
+    let shared_hunk = hunk(shared_commit.sha, 5 * 1024 * 1024)?;
+    require_equal(
+        &next_hunk.record,
+        &shared_hunk.record,
+        "fixture large History rows share their value",
+    )?;
     let mut next_batch = HistoryIngestBatch {
         generation: next_generation.generation,
         manifest_digest: Some(next_manifest.lexical.manifest_digest),
-        commits: vec![next_commit.clone()],
+        commits: vec![next_commit.clone(), shared_commit.clone()],
+        diff_hunks: vec![next_hunk.clone(), shared_hunk.clone()],
         batch_digest: String::new(),
         ..batch
     };
     quanta_index_ipc::stamp_batch_digest_v1(&mut next_batch)?;
-    let next_ack = publisher.history().publish_history_borrowed_v1(&next_batch)?;
+    let next_ack = publisher
+        .history()
+        .publish_history_borrowed_v1(&next_batch)?;
     require(
         next_ack.applied && next_ack.durable_sequence > ack.durable_sequence,
         "second Legacy History ACK must follow the first",
     )?;
     drop(publisher);
-    runtime.stop()?;
+    old_process.stop()?;
 
-    require_equal(&fs::read(&selection)?, &selected_bytes, "Legacy publication selection")?;
+    require_equal(
+        &fs::read(&selection)?,
+        &selected_bytes,
+        "Legacy publication selection",
+    )?;
     let old_files = root_files(&old_root)?;
 
     let native_root = base.join("candidate-state");
@@ -1915,9 +2162,15 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
         &generation.repo_id,
         &[generation.clone(), next_generation.clone()],
     )?;
-    for (generation, commit, ack) in [
-        (&generation, &commit, &ack),
-        (&next_generation, &next_commit, &next_ack),
+    for (generation, commits, hunks, ack, expect_shared_part) in [
+        (&generation, &[&commit][..], &[&first_hunk][..], &ack, false),
+        (
+            &next_generation,
+            &[&next_commit, &shared_commit][..],
+            &[&next_hunk, &shared_hunk][..],
+            &next_ack,
+            true,
+        ),
     ] {
         let generation_json = serde_json::to_string(generation)?;
         let output = run_private_pipe_one_shot(&[
@@ -1941,7 +2194,15 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
                 String::from_utf8_lossy(&output.stderr)
             ),
         )?;
-        assert_legacy_history_export_v1(&output.stdout, generation, commit, ack, &old_root)?;
+        assert_legacy_history_export_v1(
+            &output.stdout,
+            generation,
+            commits,
+            hunks,
+            ack,
+            &old_root,
+            expect_shared_part,
+        )?;
         require_equal(
             &fs::read(&selection)?,
             &selected_bytes,
@@ -1956,7 +2217,7 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
     Ok(())
 }
 
-#[cfg(all(feature = "legacy-tantivy", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn assert_legacy_history_inventory_v1(
     mut bytes: &[u8],
     repo: &quanta_index_contract::RepoId,
@@ -2003,7 +2264,13 @@ fn assert_legacy_history_inventory_v1(
                 completed = true;
             }
             HistorySnapshotExportFrameV1::Page(_)
-            | HistorySnapshotExportFrameV1::Complete { .. } => {
+            | HistorySnapshotExportFrameV1::Complete { .. }
+            | HistorySnapshotExportFrameV1::NativeObjectBegin { .. }
+            | HistorySnapshotExportFrameV1::NativeObjectChunk { .. }
+            | HistorySnapshotExportFrameV1::NativeObjectEnd { .. }
+            | HistorySnapshotExportFrameV1::NativeHistory { .. }
+            | HistorySnapshotExportFrameV1::NativeInventoryComplete { .. }
+            | HistorySnapshotExportFrameV1::NativeProtectedComplete { .. } => {
                 return Err("History inventory emitted a checkpoint frame".into());
             }
         }
@@ -2012,25 +2279,108 @@ fn assert_legacy_history_inventory_v1(
     Ok(())
 }
 
-#[cfg(all(feature = "legacy-tantivy", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn assert_legacy_history_export_v1(
     mut bytes: &[u8],
     generation: &quanta_index_contract::index::AuxiliaryGenerationKeyV1,
-    commit: &quanta_index_contract::lex::CommitRecord,
+    commits: &[&quanta_index_contract::lex::CommitRecord],
+    hunks: &[&quanta_index_contract::HistoryDiffHunkUpsert],
     ack: &quanta_index_contract::BatchPublishReceipt,
     old_root: &Path,
+    expect_shared_part: bool,
 ) -> TestResult {
     use quanta_index_contract::AuxEpochV1;
     use quanta_index_contract::index::{
-        HistorySnapshotExportFrameV1, MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1,
+        HistorySnapshotExportFrameV1, HistorySnapshotPageV1, MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1,
+        ObjectRef, native_immutable_object_ref_v1,
+    };
+    use quanta_index_core::index::{
+        IndexError, RegisteredObject, StoredObject, WorkBudget, WorkLimits,
+        history_checkpoint::{
+            LegacyHistoryCheckpointPageRefV2, decode_large_row_v2, is_large_row_v2,
+        },
     };
     use quanta_index_core::{AuxiliaryRowFamilyV1, domains::auxiliary::HistorySnapshotDigestV1};
 
     let mut next_ordinal = 1_u32;
     let mut rows = 0_u64;
+    let mut current_object: Option<(ObjectRef, usize, Vec<ObjectRef>, Vec<u8>)> = None;
+    let mut objects: Vec<(ObjectRef, Vec<u8>, Vec<ObjectRef>)> = Vec::new();
+    let mut seen_large_parts = BTreeMap::<ObjectRef, ()>::new();
+    let mut saw_shared_part = false;
+    let mut large_hunks = 0_usize;
     let mut digest = HistorySnapshotDigestV1::new(generation);
-    let expected_commit = quanta_index_ipc::encode_cbor_payload(commit)?;
-    let mut saw_commit = false;
+    let mut expected_commits = BTreeMap::<Vec<u8>, Vec<u8>>::new();
+    for commit in commits {
+        require(
+            expected_commits
+                .insert(
+                    commit.sha.as_bytes().to_vec(),
+                    quanta_index_ipc::encode_cbor_payload(*commit)?,
+                )
+                .is_none(),
+            "History fixture repeats a commit key",
+        )?;
+    }
+    let mut expected_hunks = BTreeMap::<Vec<u8>, Vec<u8>>::new();
+    for hunk in hunks {
+        let mut key = hunk.commit_sha.as_bytes().to_vec();
+        key.push(0x1f);
+        key.extend_from_slice(hunk.file_path.as_bytes());
+        require(
+            expected_hunks
+                .insert(key, quanta_index_ipc::encode_cbor_payload(&hunk.record)?)
+                .is_none(),
+            "History fixture repeats a diff-hunk key",
+        )?;
+    }
+    let expected_large_hunks = hunks
+        .iter()
+        .filter(|hunk| hunk.record.added_text.len() == 5 * 1024 * 1024)
+        .count();
+    let expected_epoch = quanta_index_ipc::encode_cbor_payload(&AuxEpochV1::new(1))?;
+    let mut seen_epoch = false;
+    let mut seen_meta = false;
+    let mut previous_row: Option<(String, Vec<u8>)> = None;
+    let mut check_row = |family: AuxiliaryRowFamilyV1, key: &[u8], value: &[u8]| -> TestResult {
+        if rows == 0 {
+            require_equal(&family, &AuxiliaryRowFamilyV1::Epoch, "first History row")?;
+        } else {
+            let current = (family.as_code_str().to_owned(), key.to_vec());
+            require(
+                previous_row.as_ref().is_none_or(|prior| prior < &current),
+                "History rows differ from physical family/key order",
+            )?;
+            previous_row = Some(current);
+        }
+        match family {
+            AuxiliaryRowFamilyV1::Epoch => {
+                require(!seen_epoch && key.is_empty(), "History epoch repeated")?;
+                require_equal(&value, &expected_epoch.as_slice(), "History original epoch")?;
+                seen_epoch = true;
+            }
+            AuxiliaryRowFamilyV1::Commit => {
+                let expected = expected_commits
+                    .remove(key)
+                    .ok_or("History export has a foreign or repeated commit")?;
+                require_equal(&value, &expected.as_slice(), "History original commit")?;
+            }
+            AuxiliaryRowFamilyV1::DiffHunk => {
+                let expected = expected_hunks
+                    .remove(key)
+                    .ok_or("History export has a foreign or repeated diff hunk")?;
+                require_equal(&value, &expected.as_slice(), "History original diff hunk")?;
+            }
+            AuxiliaryRowFamilyV1::StateMeta => {
+                require(!seen_meta && key.is_empty(), "History state meta repeated")?;
+                seen_meta = true;
+            }
+            _ => return Err("History export has an unexpected row family".into()),
+        }
+        digest.push_row(family, key, value);
+        rows += 1;
+        Ok(())
+    };
     let mut completion = None;
     while !bytes.is_empty() {
         require(
@@ -2043,37 +2393,191 @@ fn assert_legacy_history_export_v1(
             length <= MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1 + 4096 && bytes.len() >= length + 4,
             "History export frame exceeds bound or is truncated",
         )?;
-        let frame: HistorySnapshotExportFrameV1 = serde_json::from_slice(&bytes[4..4 + length])?;
+        let raw: serde_json::Value = serde_json::from_slice(&bytes[4..4 + length])?;
         bytes = &bytes[4 + length..];
-        match frame {
-            HistorySnapshotExportFrameV1::Page(page) => {
+        if raw.get("kind").and_then(serde_json::Value::as_str) == Some("checkpoint_page") {
+            require(
+                current_object.is_none(),
+                "History page marker interrupted an object",
+            )?;
+            let marker: LegacyHistoryCheckpointPageRefV2 = serde_json::from_value(
+                raw.get("body")
+                    .ok_or("History page marker lacks body")?
+                    .clone(),
+            )?;
+            require_equal(
+                &marker.ordinal,
+                &next_ordinal,
+                "History page marker ordinal",
+            )?;
+            let payload = objects.last().ok_or("History page marker has no object")?;
+            require_equal(&payload.0, &marker.reference, "History page root order")?;
+            require_equal(
+                &objects.len(),
+                &(payload.2.len() + 1),
+                "History page closure has an extra or missing object",
+            )?;
+            require(
+                objects[..objects.len() - 1]
+                    .iter()
+                    .all(|(reference, _, _)| payload.2.contains(reference)),
+                "History page closure has an unbound leaf",
+            )?;
+            if is_large_row_v2(&payload.1) {
+                require_equal(&marker.row_count, &1, "large History page row count")?;
+                large_hunks += 1;
+                for child in &payload.2 {
+                    saw_shared_part |= seen_large_parts.insert(*child, ()).is_some();
+                }
+                let storage = StoredObject::new(
+                    RegisteredObject::unscoped(
+                        marker.reference,
+                        u64::try_from(payload.1.len())?,
+                        payload.2.clone(),
+                    ),
+                    payload.1.clone(),
+                    None,
+                );
+                let mut budget = WorkBudget::new(
+                    WorkLimits {
+                        reads: 1_000_000,
+                        writes: 1_000_000,
+                        bytes: 1_000_000_000,
+                        mutations: 1_000_000,
+                    },
+                    Instant::now() + Duration::from_secs(60),
+                );
+                let (row, _row_memory) = decode_large_row_v2(
+                    generation,
+                    marker.ordinal,
+                    marker.reference,
+                    &storage,
+                    &mut budget,
+                    &mut |reference, _budget| {
+                        let (_, payload, children) = objects
+                            .iter()
+                            .find(|(observed, _, _)| *observed == reference)
+                            .ok_or(IndexError::DigestConflict)?;
+                        Ok(StoredObject::new(
+                            RegisteredObject::unscoped(
+                                reference,
+                                payload.len() as u64,
+                                children.clone(),
+                            ),
+                            payload.clone(),
+                            None,
+                        ))
+                    },
+                )?;
+                require_equal(
+                    &row.key.family,
+                    &AuxiliaryRowFamilyV1::DiffHunk,
+                    "large History row family",
+                )?;
+                check_row(row.key.family, &row.key.row_key, &row.value)?;
+            } else {
+                require(payload.2.is_empty(), "fixture V1 History page has children")?;
+                let page: HistorySnapshotPageV1 = serde_json::from_slice(&payload.1)?;
                 page.validate_shape()?;
+                require_equal(
+                    &payload.1,
+                    &serde_json::to_vec(&page)?,
+                    "History V1 page canonical bytes",
+                )?;
                 require_equal(
                     &page.generation,
                     generation,
                     "History export page generation",
                 )?;
                 require_equal(&page.ordinal, &next_ordinal, "History export page ordinal")?;
-                next_ordinal += 1;
+                require_equal(
+                    &marker.row_count,
+                    &u64::try_from(page.rows.len())?,
+                    "History page row count",
+                )?;
                 for row in page.rows {
                     let family = AuxiliaryRowFamilyV1::from_code_str(&row.family)
                         .ok_or("History export family is unknown")?;
-                    if family == AuxiliaryRowFamilyV1::Commit {
-                        require_equal(
-                            &row.row_key,
-                            &commit.sha.as_bytes().to_vec(),
-                            "History commit key",
-                        )?;
-                        require_equal(&row.value, &expected_commit, "History commit bytes")?;
-                        saw_commit = true;
-                    }
-                    digest.push_row(family, &row.row_key, &row.value);
-                    rows += 1;
+                    check_row(family, &row.row_key, &row.value)?;
                 }
             }
-            frame @ HistorySnapshotExportFrameV1::Complete { .. } => completion = Some(frame),
+            objects.clear();
+            next_ordinal += 1;
+            continue;
+        }
+        let frame: HistorySnapshotExportFrameV1 = serde_json::from_value(raw)?;
+        match frame {
+            HistorySnapshotExportFrameV1::NativeObjectBegin {
+                reference,
+                payload_bytes,
+                children,
+            } => {
+                require(
+                    current_object.is_none(),
+                    "History object begins before prior end",
+                )?;
+                let size = usize::try_from(payload_bytes)?;
+                require(
+                    size <= MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1,
+                    "History object exceeds bound",
+                )?;
+                require(
+                    children
+                        .iter()
+                        .all(|child| objects.iter().any(|(reference, _, _)| reference == child)),
+                    "History object child precedes parent",
+                )?;
+                current_object = Some((reference, size, children, Vec::new()));
+            }
+            HistorySnapshotExportFrameV1::NativeObjectChunk { offset, bytes } => {
+                let current = current_object
+                    .as_mut()
+                    .ok_or("History object chunk lacks begin")?;
+                require_equal(
+                    &offset,
+                    &u64::try_from(current.3.len())?,
+                    "History chunk offset",
+                )?;
+                require(
+                    current
+                        .3
+                        .len()
+                        .checked_add(bytes.len())
+                        .is_some_and(|len| len <= current.1),
+                    "History chunk exceeds object length",
+                )?;
+                current.3.extend_from_slice(&bytes);
+            }
+            HistorySnapshotExportFrameV1::NativeObjectEnd { reference } => {
+                let (expected, size, children, payload) = current_object
+                    .take()
+                    .ok_or("History object end lacks begin")?;
+                require_equal(&reference, &expected, "History object end ref")?;
+                require_equal(&payload.len(), &size, "History object length")?;
+                require_equal(
+                    &native_immutable_object_ref_v1(&payload, &children),
+                    &Some(reference),
+                    "History object hash",
+                )?;
+                require(
+                    !objects.iter().any(|(seen, _, _)| *seen == reference),
+                    "History object emitted twice",
+                )?;
+                objects.push((reference, payload, children));
+            }
+            frame @ HistorySnapshotExportFrameV1::Complete { .. } => {
+                require(
+                    current_object.is_none() && objects.is_empty(),
+                    "History completion interrupted an object or page",
+                )?;
+                completion = Some(frame);
+            }
             HistorySnapshotExportFrameV1::InventoryKey { .. }
-            | HistorySnapshotExportFrameV1::InventoryComplete { .. } => {
+            | HistorySnapshotExportFrameV1::InventoryComplete { .. }
+            | HistorySnapshotExportFrameV1::Page(_)
+            | HistorySnapshotExportFrameV1::NativeHistory { .. }
+            | HistorySnapshotExportFrameV1::NativeInventoryComplete { .. }
+            | HistorySnapshotExportFrameV1::NativeProtectedComplete { .. } => {
                 return Err("History checkpoint emitted an inventory frame".into());
             }
         }
@@ -2089,9 +2593,29 @@ fn assert_legacy_history_export_v1(
     else {
         return Err("History export completion absent".into());
     };
+    drop(check_row);
     require(
-        saw_commit && next_ordinal > 1,
-        "History export omitted page or commit",
+        seen_epoch
+            && seen_meta
+            && expected_commits.is_empty()
+            && expected_hunks.is_empty()
+            && next_ordinal > 1,
+        "History export omitted or changed an original row",
+    )?;
+    require_equal(
+        &rows,
+        &u64::try_from(commits.len() + hunks.len() + 2)?,
+        "History original row count",
+    )?;
+    require_equal(
+        &large_hunks,
+        &expected_large_hunks,
+        "History page V1 or large-row encoding",
+    )?;
+    require_equal(
+        &saw_shared_part,
+        &expect_shared_part,
+        "History large-row raw part reuse",
     )?;
     require_equal(
         &observed_generation,
@@ -2118,30 +2642,210 @@ fn assert_legacy_history_export_v1(
     Ok(())
 }
 
+fn assert_legacy_source_export_v1(
+    mut bytes: &[u8],
+    active: &quanta_index_contract::SearchCorpusActiveHeadV1,
+    receipt: &quanta_index_contract::BatchPublishReceipt,
+) -> TestResult {
+    use quanta_index_contract::index::{
+        MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1, SourceSnapshotExportFrameV1 as Frame,
+    };
+    use quanta_index_contract::{
+        RepoId, RepoRelativePath, RevisionId, SourceFileKey, SourceFileRevision,
+    };
+
+    let mut frames = Vec::new();
+    while !bytes.is_empty() {
+        require(
+            bytes.len() >= 4,
+            "Source export has a truncated frame length",
+        )?;
+        let length = usize::try_from(u32::from_le_bytes(bytes[..4].try_into()?))?;
+        require(
+            length > 0
+                && length <= MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1 + 4096
+                && bytes.len() >= length + 4,
+            "Source export frame exceeds bound or is truncated",
+        )?;
+        frames.push(serde_json::from_slice::<Frame>(&bytes[4..4 + length])?);
+        bytes = &bytes[4 + length..];
+    }
+    let [
+        Frame::HeadBegin {
+            repo_id,
+            revision_id,
+            active: exported_active,
+            applied_ack,
+            source_publication_event,
+            source_heads,
+            repomap_active,
+        },
+        Frame::FileBegin {
+            source: first,
+            text_admitted: first_admitted,
+            source_bytes: first_size,
+        },
+        Frame::FileChunk {
+            offset: first_offset,
+            bytes: first_bytes,
+        },
+        Frame::FileEnd { source: first_end },
+        Frame::FileBegin {
+            source: second,
+            text_admitted: second_admitted,
+            source_bytes: second_size,
+        },
+        Frame::FileChunk {
+            offset: second_offset,
+            bytes: second_bytes,
+        },
+        Frame::FileEnd { source: second_end },
+        Frame::HeadComplete {
+            repo_id: completed_repo,
+            revision_id: completed_revision,
+            file_count,
+            source_heads: completed_heads,
+        },
+        Frame::InventoryComplete {
+            head_count,
+            repomap_head_count,
+        },
+    ] = frames.as_slice()
+    else {
+        return Err(
+            "Source export frame order or count differs from fixed two-file inventory".into(),
+        );
+    };
+    let repo = RepoId::new("repo-e2e")?;
+    let revision = RevisionId::new("rev-e2e")?;
+    require_equal(repo_id, &repo, "Source head repository")?;
+    require_equal(revision_id, &revision, "Source head revision")?;
+    require_equal(exported_active, active, "Source active head")?;
+    require_equal(applied_ack, receipt, "Source original SDK ACK")?;
+    require(applied_ack.sealed, "Source head ACK is not sealed")?;
+    require_equal(
+        &applied_ack.generation,
+        &active.generation.lexical.manifest_generation,
+        "Source head ACK generation",
+    )?;
+    require_equal(
+        &applied_ack.manifest_digest.as_deref(),
+        &Some(active.generation.lexical.manifest_digest.as_str()),
+        "Source head ACK manifest",
+    )?;
+    require_equal(
+        &source_publication_event.stream_id.as_str(),
+        &"e2e-harness-source-v1",
+        "Source publication stream",
+    )?;
+    require_equal(
+        &source_publication_event.event_id.as_str(),
+        &"e2e-source-event-1",
+        "Source publication event",
+    )?;
+    require_equal(
+        &source_publication_event.expected_base_event_id,
+        &None,
+        "Source full publication base event",
+    )?;
+    require(
+        repomap_active.is_none(),
+        "fixed Source head unexpectedly has RepoMap",
+    )?;
+    require(
+        source_heads.is_canonical_v1(),
+        "Source head commitment is invalid",
+    )?;
+    require_equal(completed_repo, repo_id, "Source completed repository")?;
+    require_equal(completed_revision, revision_id, "Source completed revision")?;
+    require_equal(completed_heads, source_heads, "Source completed commitment")?;
+    require_equal(file_count, &2, "Source completed file count")?;
+    require_equal(head_count, &1, "Source inventory head count")?;
+    require_equal(repomap_head_count, &0, "Source inventory RepoMap count")?;
+
+    for (source, admitted, size, offset, observed, end, path, body) in [
+        (
+            first,
+            first_admitted,
+            first_size,
+            first_offset,
+            first_bytes,
+            first_end,
+            "src/decoy.rs",
+            "pub fn unrelated() {}\n",
+        ),
+        (
+            second,
+            second_admitted,
+            second_size,
+            second_offset,
+            second_bytes,
+            second_end,
+            LEGACY_BOOT_PATH,
+            "pub fn legacy_boot_needle_47() -> bool { true }\n",
+        ),
+    ] {
+        let expected_bytes = body.as_bytes();
+        let expected_source = SourceFileRevision {
+            file: SourceFileKey {
+                source_repo_id: repo.clone(),
+                repo_relative_path: RepoRelativePath::new(path),
+            },
+            revision_id: revision.clone(),
+            source_sha256: Sha256::digest(expected_bytes).into(),
+        };
+        require_equal(source, &expected_source, "Source file identity")?;
+        require(*admitted, "fixed Source text admission was lost")?;
+        require_equal(
+            size,
+            &u64::try_from(expected_bytes.len())?,
+            "Source file byte count",
+        )?;
+        require_equal(offset, &0, "Source first chunk offset")?;
+        require_equal(
+            &observed.as_slice(),
+            &expected_bytes,
+            "Source raw file bytes",
+        )?;
+        require_equal(end, source, "Source file completion identity")?;
+    }
+    Ok(())
+}
+
 #[test]
-#[cfg(feature = "legacy-tantivy")]
 fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -> TestResult {
-    // Q-only fixture: the actual external producer's S publication tuple is a
-    // separate handoff qualification. This test keeps the unsupported reverse
-    // transition closed after proving the selected Native root serves.
+    // Q-only fixture: the external old-Q publishes this fixed Source through
+    // its SDK, while production S authority remains a separate qualification.
     let temp = tempfile::Builder::new().prefix("qbl-").tempdir_in("/tmp")?;
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
     let base = temp.path().canonicalize()?;
+    let legacy = LegacySearchdBinary::from_environment()?;
     let environment = legacy_boot_environment(&base)?;
     let seed = base.join("legacy-seed");
     fs::create_dir(&seed)?;
     fs::set_permissions(&seed, fs::Permissions::from_mode(0o700))?;
-    let mut runtime = quanta_index_searchd_harness::E2eRuntime::boot_in(&seed)?;
-    runtime.ingest_text("repo-e2e", LEGACY_BOOT_PATH, LEGACY_BOOT_BODY)?;
-    runtime.ingest_text("repo-e2e", "src/decoy.rs", "pub fn unrelated() {}")?;
-    let generation = runtime.seal()?;
+    let old_process = legacy.start(&seed, LEGACY_FIXTURE_HISTORY_KEEP)?;
+    let publisher = old_process.connect()?;
+    let (head, source_receipt) = publish_legacy_source(
+        &publisher,
+        &quanta_index_contract::RepoId::new("repo-e2e")?,
+        &quanta_index_contract::RevisionId::new("rev-e2e")?,
+        1,
+        None,
+        &[
+            (LEGACY_BOOT_PATH, LEGACY_BOOT_BODY, 1),
+            ("src/decoy.rs", "pub fn unrelated() {}", 2),
+        ],
+        None,
+    )?;
+    let generation = head.generation.lexical.manifest_generation;
     require_equal(
         &generation,
         &quanta_index_contract::ManifestGeneration::new(1),
         "Legacy sealed fixture generation",
     )?;
-    runtime.activate_last_sealed_generation()?;
-    runtime.stop()?;
+    drop(publisher);
+    old_process.stop()?;
 
     let backup = base.join("legacy-backup");
     let old_root = base.join("legacy-current");
@@ -2150,6 +2854,7 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
         ("restore-state", backup.as_path(), old_root.as_path()),
     ] {
         successful_legacy_state_command(
+            &legacy,
             &[
                 operation.into(),
                 "--source".into(),
@@ -2165,6 +2870,7 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
         "restored Legacy root has no manifest",
     )?;
     successful_legacy_state_command(
+        &legacy,
         &[
             "verify-state".into(),
             "--source".into(),
@@ -2175,7 +2881,8 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
 
     let candidate = rebuild_fixed_native_source(&base, "candidate")?;
     let selection = base.join("selection.json");
-    let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")).canonicalize()?;
+    let installed_old_binary = legacy.installer_binary()?;
+    let binary = installed_old_binary.path();
     let mut install = vec![
         "install".into(),
         "--selection".into(),
@@ -2189,6 +2896,8 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
         install.extend(["--env".into(), format!("{name}={value}")]);
     }
     launcher_succeeded(&install)?;
+    installed_old_binary.verify()?;
+    legacy.verify()?;
     launcher_succeeded(&[
         "verify-bootstrap".into(),
         "--selection".into(),
@@ -2247,6 +2956,27 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
         &root_files(&old_root)?,
         &before_export,
         "stale History export root",
+    )?;
+    let source_export_args = |digest: &str| -> TestResult<Output> {
+        run_private_pipe_one_shot(&[
+            "export-native-source-snapshot",
+            "--selection-path",
+            selection.to_str().ok_or("selection is not UTF-8")?,
+            "--expected-current-sha256",
+            digest,
+            "--config",
+            candidate.config.to_str().ok_or("config is not UTF-8")?,
+            "--config-digest",
+            &config_digest,
+        ])
+    };
+    let stale_source_export = source_export_args(&wrong_digest)?;
+    let source_export = source_export_args(&old_digest)?;
+    require_equal(&fs::read(&selection)?, &old_wire, "Source export selection")?;
+    require_equal(
+        &root_files(&old_root)?,
+        &before_export,
+        "Source export Legacy root",
     )?;
     let legacy_socket = old_root.join("search-plane/query.sock");
     let daemon = launcher_daemon(&selection, &legacy_socket)?;
@@ -2366,6 +3096,45 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
         &native_quiescent_files,
         "Legacy rollback serve changed inactive Native root",
     )?;
+    if cfg!(target_os = "linux") {
+        require(
+            source_export.status.success(),
+            format!(
+                "selected Source export refused: {}",
+                String::from_utf8_lossy(&source_export.stderr)
+            ),
+        )?;
+        assert_legacy_source_export_v1(&source_export.stdout, &head, &source_receipt)?;
+    } else {
+        require_equal(
+            &source_export.status.code(),
+            &Some(70),
+            "Source export requires Linux owner",
+        )?;
+        require(
+            source_export.stdout.is_empty(),
+            "Source export emitted frames without Linux owner",
+        )?;
+        require(
+            String::from_utf8_lossy(&source_export.stderr)
+                .contains("admitted boot inventory requires the installed Linux getdents owner"),
+            "Source export did not refuse the missing Linux getdents owner",
+        )?;
+    }
+    require_equal(
+        &stale_source_export.status.code(),
+        &Some(70),
+        "stale Source export exit",
+    )?;
+    require(
+        stale_source_export.stdout.is_empty(),
+        "stale Source export emitted a frame",
+    )?;
+    require(
+        String::from_utf8_lossy(&stale_source_export.stderr)
+            .contains("active selection fingerprint changed"),
+        "stale Source export did not reach active selection CAS",
+    )?;
     Ok(())
 }
 
@@ -2374,8 +3143,31 @@ fn native_cross_root_sdk_rebuild_refuses_unverified_switch() -> TestResult {
     let temp = tempfile::tempdir()?;
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
     let base = temp.path().canonicalize()?;
-    let old = rebuild_fixed_native_source(&base, "old")?;
-    let new = rebuild_fixed_native_source(&base, "new")?;
+    let release_proof = std::env::var_os("QUANTA_PROOF_DAEMON_WITNESS_DIR").is_some();
+    let binary = if release_proof {
+        let path = PathBuf::from(
+            std::env::var_os("QUANTA_INDEX_SEARCHD_BIN")
+                .ok_or("P10 requires the release daemon path in QUANTA_INDEX_SEARCHD_BIN")?,
+        );
+        require(path.is_absolute(), "P10 daemon path must be absolute")?;
+        path
+    } else {
+        PathBuf::from(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+    };
+    let old = rebuild_fixed_native_source_from(&base, "old", &binary, REBUILD_SOURCE_PATH, true)?;
+    let new = rebuild_fixed_native_source_from(
+        &base,
+        "new",
+        &binary,
+        CANDIDATE_REBUILD_SOURCE_PATH,
+        true,
+    )?;
+    require(
+        old.published_view != new.published_view
+            && old.published_source != new.published_source
+            && old.published_source_cut_digest_hex != new.published_source_cut_digest_hex,
+        "old root and rebuild candidate must have distinct Published Source",
+    )?;
     let selection = base.join("selection.json");
     launcher_succeeded(&old.launcher_args("install-native", &selection)?)?;
     let old_wire = fs::read(&selection)?;
@@ -2423,11 +3215,127 @@ fn native_cross_root_sdk_rebuild_refuses_unverified_switch() -> TestResult {
     )?;
     let daemon = launcher_daemon(&selection, &old.socket)?;
     require_rebuilt_query(&old.socket)?;
+    let selected_pid = daemon
+        .owned_group
+        .ok_or("selected launcher has no owned daemon")?;
+    if release_proof {
+        use quanta_index_ipc::{KernelPeerCredentials, PeerCredentialsSource as _};
+        let stream = std::os::unix::net::UnixStream::connect(&old.socket)?;
+        require_equal(
+            &KernelPeerCredentials.peer_credentials(&stream)?.pid,
+            &Some(selected_pid),
+            "selected launcher UDS peer",
+        )?;
+    }
+    let selected_observation = read_view_daemon_witness::observe(selected_pid)?;
     daemon.stop()?;
     require_equal(
         &fs::read(&selection)?,
         &old_wire,
         "selected Native serve selection",
     )?;
-    Ok(())
+
+    let old_preserved = root_files(&old.root)?;
+    let receipt: serde_json::Value = serde_json::from_slice(&fs::read(&new.receipt)?)?;
+    require_equal(
+        &receipt["manifest_operation"],
+        &serde_json::to_value(operation(2))?,
+        "verified rebuild receipt operation",
+    )?;
+    require_equal(
+        &receipt["source_cut_digest_hex"].as_str(),
+        &Some(new.published_source_cut_digest_hex.as_str()),
+        "verified rebuild receipt Source",
+    )?;
+    let config_digest = hex(&Sha256::digest(fs::read(&new.config)?))?;
+    let old_receipt: serde_json::Value = serde_json::from_slice(&fs::read(&old.receipt)?)?;
+    let foreign_verify = identity_args(
+        "verify-native-state",
+        &new.config,
+        &old_receipt,
+        &config_digest,
+    )?;
+    require_boot_refusal(run_one_shot_from(&new.binary, &foreign_verify)?)?;
+    require_equal(
+        &root_files(&new.root)?,
+        &new_files,
+        "foreign receipt refusal kept candidate root",
+    )?;
+    let verify_args = identity_args("verify-native-state", &new.config, &receipt, &config_digest)?;
+    let _verified = successful_from(&new.binary, &verify_args)?;
+    require_equal(
+        &root_files(&new.root)?,
+        &new_files,
+        "verified rebuild root bytes/inodes",
+    )?;
+    require_equal(
+        &fs::read(new.root.join(NATIVE_INDEX_STATE_MARKER_NAME))?.as_slice(),
+        &NATIVE_INDEX_STATE_MARKER_CONTENT,
+        "verified rebuild persisted state format",
+    )?;
+
+    let serve_args = identity_args("serve-native", &new.config, &receipt, &config_digest)?;
+    let reopened = selected_daemon_from(&new.binary, &serve_args, &new.socket)?;
+    let client = NativeUdsClient::new(new.socket.clone());
+    let latest = client.read_view(
+        ViewSelection::Latest {
+            workspace: workspace(),
+            epoch: 1,
+        },
+        &budget(),
+    )?;
+    require_equal(
+        &latest.identity,
+        &new.published_view,
+        "reopened rebuild Latest",
+    )?;
+    let reopened_cut = quanta_index_contract::native_boot_source_cut_digest_v1(&latest.source)?;
+    require_equal(
+        &hex(&reopened_cut.0)?,
+        &new.published_source_cut_digest_hex,
+        "reopened rebuild Source",
+    )?;
+    require_equal(
+        &client.status(operation(2), &budget())?,
+        &OperationStatus::Published(new.published_view),
+        "reopened rebuild operation",
+    )?;
+    require_equal(
+        &rebuilt_query_source(
+            &client,
+            ViewSelection::Exact(new.published_view),
+            CANDIDATE_REBUILD_SOURCE_PATH,
+        )?,
+        &new.published_source,
+        "reopened rebuild hit Source",
+    )?;
+    let reopened_observation = read_view_daemon_witness::observe(reopened.0.id())?;
+    reopened.stop()?;
+    require_equal(
+        &root_files(&old.root)?,
+        &old_preserved,
+        "independent rebuild kept the old root",
+    )?;
+    require_equal(
+        &fs::read(&selection)?,
+        &old_wire,
+        "independent rebuild kept active selection",
+    )?;
+    if release_proof {
+        require_native_only_legacy_offline_refusal(&new.binary)?;
+    }
+    read_view_daemon_witness::write(
+        [
+            old.startup_observation,
+            new.startup_observation,
+            selected_observation,
+            reopened_observation,
+        ],
+        "native-p10-rebuild-daemon-witness.json",
+        &nextest_test_event(
+            module_path!(),
+            "native_cross_root_sdk_rebuild_refuses_unverified_switch",
+        ),
+        None,
+    )
 }

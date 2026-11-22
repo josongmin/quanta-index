@@ -7,11 +7,12 @@ use super::{CatalogView, Digest, ImmutableOperation, OperationKey, UpdateRequest
 use crate::{
     BatchPublishReceipt, ManifestGeneration, RepoId, RevisionId, SearchCorpusActiveHeadV1,
     SourceFileRevision, SourcePublicationEvent,
-    native_cutover_evidence_v1::{
+    native_cutover_evidence_v1::source_binding::{
         NativeCutoverEvidenceSourcePublicationBindingV1, NativeCutoverEvidenceTargetV1,
     },
     repomap::RepoMapExpectedActiveV2,
 };
+use quanta_index_contract_base::NativeCutoverDigest64V1;
 use sha2::{Digest as _, Sha256};
 use std::io::{self, Write};
 
@@ -104,7 +105,6 @@ impl Default for LegacySourceManifestDigestV1 {
 
 /// Bind the completed exporter, exact original file manifest and immutable Q
 /// request. The digest is DATA; only the retained producer journal issues it.
-#[allow(clippy::too_many_arguments)]
 pub fn imported_legacy_source_manifest_digest_v1(
     origin: &LegacySourceOriginV1,
     accepted_transcript_sha256: Digest,
@@ -156,14 +156,14 @@ pub fn imported_legacy_source_completed_digest_v1(
     Some(Digest(digest.finalize().into()))
 }
 
-fn digest64_lower_v1(digest: Digest) -> crate::native_cutover_evidence_v1::NativeCutoverDigest64V1 {
+fn digest64_lower_v1(digest: Digest) -> NativeCutoverDigest64V1 {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut bytes = [0_u8; 64];
     for (index, byte) in digest.0.iter().enumerate() {
         bytes[2 * index] = HEX[usize::from(byte >> 4)];
         bytes[2 * index + 1] = HEX[usize::from(byte & 15)];
     }
-    crate::native_cutover_evidence_v1::NativeCutoverDigest64V1(bytes)
+    NativeCutoverDigest64V1(bytes)
 }
 
 /// Exact source-head map root decoded from the committed lexical file authority.

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    ExactRepoRelativePathV1, LqCase, QueryConstraintSetV1, SearchPlaneErrorCodeV2,
+    ExactRepoRelativePathV1, LqCase, LqQuery, QueryConstraintSetV1, SearchPlaneErrorCodeV2,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SymbolQueryRequest, TextQueryRequest,
     TextQuerySyntax,
 };
@@ -38,6 +38,33 @@ fn symbol_request(text: &str, language: Option<&str>) -> Result<SymbolQueryReque
         top_k: 3,
         cursor: None,
     })
+}
+
+fn arm_preflight(
+    state: &Arc<Mutex<RecordingLexicalState>>,
+    refusal: Option<SearchPlaneErrorCodeV2>,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let mut state = state.lock().map_err(|error| error.to_string())?;
+    state.preflight_refusal = refusal;
+    Ok(state.primitive_queries.len())
+}
+
+fn assert_one_preflight(
+    state: &Arc<Mutex<RecordingLexicalState>>,
+    prior: usize,
+    expected: &LqQuery,
+) -> TestResult {
+    let state = state.lock().map_err(|error| error.to_string())?;
+    if state.primitive_queries.len() != prior.saturating_add(1)
+        || state.primitive_queries.get(prior) != Some(expected)
+    {
+        return Err(format!(
+            "dispatcher must pass the original query to one preflight call: expected={expected:?} recorded={:?}",
+            state.primitive_queries
+        )
+        .into());
+    }
+    Ok(())
 }
 
 #[test]
@@ -168,9 +195,8 @@ fn contradictory_languages_do_not_hide_zero_count() -> TestResult {
     Ok(())
 }
 
-// Native planner coverage pins the same phrase's rejection independently.
-// This regression requires shared primitive admission before LogicalEmpty;
-// authoring it alone does not establish a reproduced dispatcher defect.
+// The pinned old-Q SDK covers the actual adapter refusal. This test proves
+// the dispatcher asks preflight before treating contradictory languages as empty.
 #[test]
 fn contradictory_languages_do_not_hide_tokenless_phrase() -> TestResult {
     let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
@@ -183,6 +209,8 @@ fn contradictory_languages_do_not_hide_tokenless_phrase() -> TestResult {
         Arc::new(NoopQueryObsSink),
     )?;
     let request = TextQueryRequest::from(symbol_request("lang:python \"!!!\"", Some("rust"))?);
+    let expected_query = crate::lower_lexical_text_query(&request)?;
+    let prior = arm_preflight(&state, Some(SearchPlaneErrorCodeV2::LexTextQueryNoTokens))?;
     let (code, message) = ipc_error_from(dispatcher.dispatch(
         SearchPlaneQueryIpcRequest::Text(request),
         &RequestBudgetV1::unbounded(),
@@ -192,10 +220,8 @@ fn contradictory_languages_do_not_hide_tokenless_phrase() -> TestResult {
             format!("tokenless phrase changed meaning on empty scope: {code}: {message}").into(),
         );
     }
+    assert_one_preflight(&state, prior, &expected_query)?;
     let calls = state.lock().map_err(|error| error.to_string())?;
-    if calls.primitive_queries.len() != 1 {
-        return Err("dispatcher did not invoke exactly one primitive admission".into());
-    }
     let invoked = !calls.opened_pins.is_empty() || !calls.search_top_ks.is_empty();
     drop(calls);
     if invoked {
@@ -204,6 +230,8 @@ fn contradictory_languages_do_not_hide_tokenless_phrase() -> TestResult {
     Ok(())
 }
 
+// Typed primitive outcomes are injected here to test dispatch order and
+// propagation. The real adapter's matrix lives in the pinned old-Q SDK rail.
 #[test]
 fn l1_lexical_planner_admits_primitives_before_language_empty_or_generation_open() -> TestResult {
     let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
@@ -236,6 +264,8 @@ fn l1_lexical_planner_admits_primitives_before_language_empty_or_generation_open
             ] {
                 let query = format!("{manual}lang:python {primitive}");
                 let request = TextQueryRequest::from(symbol_request(&query, language)?);
+                let expected_query = crate::lower_lexical_text_query(&request)?;
+                let prior = arm_preflight(&state, Some(expected))?;
                 let (code, message) = ipc_error_from(dispatcher.dispatch(
                     SearchPlaneQueryIpcRequest::Text(request),
                     &RequestBudgetV1::unbounded(),
@@ -245,8 +275,12 @@ fn l1_lexical_planner_admits_primitives_before_language_empty_or_generation_open
                         format!("{query}, {language:?}: {code} != {expected}: {message}").into(),
                     );
                 }
+                assert_one_preflight(&state, prior, &expected_query)?;
             }
             let request = symbol_request(&format!("{manual}lang:python ..."), language)?;
+            let expected_query =
+                crate::lower_lexical_text_query(&TextQueryRequest::from(request.clone()))?;
+            let prior = arm_preflight(&state, Some(SearchPlaneErrorCodeV2::LexTextQueryNoTokens))?;
             let (code, message) = ipc_error_from(dispatcher.dispatch(
                 SearchPlaneQueryIpcRequest::Symbol(request),
                 &RequestBudgetV1::unbounded(),
@@ -254,11 +288,14 @@ fn l1_lexical_planner_admits_primitives_before_language_empty_or_generation_open
             if code != SearchPlaneErrorCodeV2::LexTextQueryNoTokens {
                 return Err(format!("symbol primitive admission: {code}: {message}").into());
             }
+            assert_one_preflight(&state, prior, &expected_query)?;
         }
         let request = TextQueryRequest::from(symbol_request(
             &format!("{manual}lang:python needle"),
             Some("rust"),
         )?);
+        let expected_query = crate::lower_lexical_text_query(&request)?;
+        let prior = arm_preflight(&state, None)?;
         let response = dispatcher.dispatch(
             SearchPlaneQueryIpcRequest::Text(request),
             &RequestBudgetV1::unbounded(),
@@ -272,6 +309,7 @@ fn l1_lexical_planner_admits_primitives_before_language_empty_or_generation_open
         if !response.results.is_empty() || !response.explanation.engines_executed.is_empty() {
             return Err("logical empty acquired execution facts".into());
         }
+        assert_one_preflight(&state, prior, &expected_query)?;
     }
     let calls = state.lock().map_err(|error| error.to_string())?;
     let invoked = !calls.opened_pins.is_empty()
@@ -379,7 +417,8 @@ fn language_empty_cannot_hide_unsupported_symbol_text_or_domain_override() -> Te
         }
     }
     let calls = state.lock().map_err(|error| error.to_string())?;
-    let invoked = !calls.opened_pins.is_empty()
+    let invoked = !calls.primitive_queries.is_empty()
+        || !calls.opened_pins.is_empty()
         || !calls.symbol_top_ks.is_empty()
         || !calls.search_top_ks.is_empty();
     drop(calls);

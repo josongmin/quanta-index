@@ -15,7 +15,6 @@ LIFECYCLE_DIR = PLANE / "search_corpus_lifecycle"
 READINESS_DIR = PLANE / "readiness"
 RETENTION = PLANE / "search_corpus_retention.rs"
 CONTROL = PLANE / "control_dispatcher.rs"
-RUNTIME = ROOT / "crates/quanta-index-searchd-runtime/src/lib.rs"
 APP_RUNTIME = ROOT / "crates/quanta-index-searchd/src/app/runtime.rs"
 RESTART_SCENARIO = (
     ROOT / "crates/quanta-index-searchd-runtime/tests/composite_generation_authority_restart.rs"
@@ -67,7 +66,6 @@ def test_one_pair_mutation_coordinator_owns_catalog_and_retention_v1() -> None:
 
 def test_lifecycle_owner_derives_mutable_roots_from_one_state_root_v1() -> None:
     lifecycle = read_lifecycle()
-    runtime = read(RUNTIME)
     app_runtime = read(APP_RUNTIME)
 
     assert "state_root: impl AsRef<Path>" in lifecycle
@@ -84,15 +82,12 @@ def test_lifecycle_owner_derives_mutable_roots_from_one_state_root_v1() -> None:
     assert canonicalize < activation_root < authority_root
     assert "activation_root: impl AsRef<Path>" not in lifecycle
     assert "authority_root: impl AsRef<Path>" not in lifecycle
-    assert "SearchCorpusLifecycleOwner::open(\n        &state_root," in runtime
-    lease = runtime.index("let state_root_lease = StateRootLease::acquire")
-    leased_root = runtime.index(
-        "let state_root = state_root_lease.state_root_identity_v1().to_path_buf();"
+    lease_guard = app_runtime.index("state_root_lease\n            .require_state_root_v1(config.state_root())")
+    lifecycle_guard = app_runtime.index("search_corpus_lifecycle\n            .require_state_root_v1(config.state_root())")
+    leased_root = app_runtime.index(
+        "let leased_state_root = state_root_lease.state_root_identity_v1().to_path_buf();"
     )
-    lexical_open = runtime.index("LexicalAdapter::with_state_root_and_policies(")
-    assert lease < leased_root < lexical_open
-    assert 'state_root.join("activations")' not in runtime
-    assert 'state_root.join("authorities")' not in runtime
+    assert lease_guard < lifecycle_guard < leased_root
     assert "state_root_identity_v1: PathBuf" in app_runtime
     assert "pub fn state_root_identity_v1(&self) -> &Path" in app_runtime
     assert app_runtime.count(".require_state_root_v1(config.state_root())") == 2
@@ -125,7 +120,6 @@ def test_retention_requires_active_pin_and_shared_guard_v1() -> None:
 
 def test_atomic_writes_stage_outside_canonical_roots_and_boot_reconciles_v1() -> None:
     readiness = read_readiness()
-    runtime = read(RUNTIME)
 
     assert 'join(".staging")' in readiness
     assert "atomic_replace_file_from_staging_v1" in readiness
@@ -135,10 +129,6 @@ def test_atomic_writes_stage_outside_canonical_roots_and_boot_reconciles_v1() ->
     assert "remove_abandoned_search_corpus_pair_directories_v1" in readiness
     assert "active pair directory is empty" in readiness
     assert "foreign staging entry" in readiness
-    assert "SearchCorpusLifecycleOwner::open" in runtime
-    assert runtime.index("StateRootLease::acquire") < runtime.index(
-        "SearchCorpusLifecycleOwner::open"
-    )
 
 
 def test_startup_accepts_the_canonical_uppercase_pair_digest_v1() -> None:
@@ -167,7 +157,7 @@ def test_restart_revalidates_active_composite_before_socket_bind_v1() -> None:
     # restored first — it is the serving boundary the inventory measures
     # orphans against — then the inventory seeds, then the active pairs are
     # proven, and only then does any socket bind.
-    restore = app_runtime.index(".restore_into(&mut guard)")
+    restore = app_runtime.index(".restore_into_with_diagnostic(&mut guard, diagnostic)")
     seed = app_runtime.index("boot_inventory::seed_track_readiness(")
     revalidate = app_runtime.index(".validate_rehydrated_active_generations_v1(")
     query_bind = app_runtime.index("SearchPlaneQueryServer::bind(")
@@ -183,19 +173,17 @@ def test_real_restart_proves_cross_repo_retention_rollback_and_exclusive_root_v1
     test_name = (
         "fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v1()"
     )
-    body = scenario[
-        scenario.index(test_name) : scenario.index(
-            "fn real_child_process_state_root_lease_rejects_second_owner_and_releases_v1()"
-        )
-    ]
+    start = scenario.index(test_name)
+    body = scenario[start : scenario.index("\n}", start)]
 
     assert 'const REPO_B: &str = "repo-composite-restart-b";' in body
-    assert body.count("SearchdBinaryProcess::start_with_history_max_generations(") == 3
+    assert "let binary = LegacySearchdBinary::from_environment()?;" in body
+    assert body.count("binary.start(directory.path(), 2)?") == 3
     assert body.count("publish_and_activate_for(") == 6
     assert body.count("SearchPlaneRollbackSearchCorpusGenerationCasRequest") == 2
     assert "repo A rollback ack did not bind the exact CAS transition" in body
     assert "repo B rollback ack did not bind the exact CAS transition" in body
-    assert "searchd_lease_probe::require_start_failure(directory.path())" in body
+    assert "legacy_start_probe::require_start_failure(&binary, directory.path(), 2)?" in body
     assert "ERR_STATE_ROOT_IN_USE" in body
     assert "restart aliased or lost one repo's active composite" in body
     assert "second restart did not preserve both independently rolled-back composites" in body
@@ -225,21 +213,27 @@ def require_fault_matrix_surface_v1(readiness: str) -> None:
 def test_retention_and_composite_fault_matrix_is_owner_local_v1() -> None:
     readiness = read_readiness()
     lifecycle = read_lifecycle()
+    history = read(READINESS_DIR / "search_corpus_history.rs")
 
     require_fault_matrix_surface_v1(readiness)
-    record_body = readiness[
-        readiness.index("pub fn record_sealed_search_corpus(") : readiness.index(
+    attempt = history[
+        history.index("fn record_sealed_search_corpus_once_v1(") : history.index(
+            "fn reconcile_existing_search_corpus_record_v1("
+        )
+    ]
+    pair_lock = attempt.index(".try_lock_pair_observed(repo_id, revision_id, diagnostic)")
+    root_lock = attempt.index("self.lock_search_corpus_root_observed(diagnostic)?")
+    assert pair_lock < root_lock < attempt.index("self.reconcile_existing_search_corpus_record_v1(")
+    assert root_lock < attempt.index("self.persist_new_search_corpus_record_v1(")
+    write = history[
+        history.index("fn persist_new_search_corpus_record_v1(") : history.index(
             "pub fn inspect_sealed_search_corpus("
         )
     ]
-    assert record_body.index("lock_pair(repo_id, revision_id)") < record_body.index(
-        "search_corpus_root_lock.lock()"
-    )
-    assert record_body.index("plan_search_corpus_pair_records_v1(") < record_body.index(
-        "atomic_replace_file_from_staging_v1("
-    )
-    assert "reconcile_existing_search_corpus_record_v1" in readiness
-    assert "persist_new_search_corpus_record_v1" in readiness
+    plan = write.index("plan_search_corpus_pair_records_v1(")
+    projection = write.index("validate_search_corpus_state_root_projection_v1(")
+    assert plan < projection < write.index("atomic_replace_file_from_staging_admitted_v1(")
+    assert projection < write.index("atomic_replace_file_from_staging_v1(")
     rollback_body = lifecycle[
         lifecycle.index("pub(crate) fn rollback_v1(") : lifecycle.index(
             "fn check_activation_preconditions_v1("

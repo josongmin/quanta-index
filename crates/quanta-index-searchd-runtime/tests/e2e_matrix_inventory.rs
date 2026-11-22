@@ -1,38 +1,46 @@
 //! E2E-00 — live DSL matrix inventory.
 //!
-//! Self-tests for the harness defined in the `quanta-index-searchd-harness` crate. Each row
-//! ingests through the real publish path, seals a generation, optionally
-//! reopens, then asserts against the live IPC response. No in-memory
-//! shortcut is permitted: a green here means storage + index + dispatcher
-//! all worked together for one matrix cell. Future E2E-01..07 rows live in
-//! their own files but use this harness.
+//! The fixed corpus is published and queried through the SDK against a
+//! pinned Legacy reference, including a process restart before the read.
 
 #![forbid(unsafe_code)]
 
-use anyhow::Result as AnyResult;
-use quanta_index_contract::TextQuerySyntax;
+use std::{error::Error, time::Duration};
 
-use crate::e2e_corpus::{SMOKE_CORPUS, SMOKE_NEEDLE_RUST, SMOKE_NEEDLE_RUST_IDENTITY, ingest_all};
-use crate::e2e_harness::E2eRuntime;
+use quanta_index_contract::{
+    GenerationPin, QueryConstraintSetV1, RepoId, RevisionId, SearchPlaneErrorCodeV2,
+    TextQueryRequest, TextQuerySyntax,
+};
+use quanta_index_sdk::{QuantaIndex, SdkError};
+use quanta_index_searchd_harness::legacy_reference::{LegacySearchdBinary, publish_legacy_source};
 
-fn verify_write_seal_reopen_query(rt: &mut E2eRuntime) -> AnyResult<()> {
-    // After reopen the harness pin still points at the just-sealed
-    // generation, so `query_text` pins to the durable manifest the
-    // restarted runtime replays from disk.
-    let result = rt.query_text(TextQuerySyntax::Native, SMOKE_NEEDLE_RUST, 10);
-    if let Some(error) = result.typed_error {
-        return Err(anyhow::anyhow!(
-            "expected no typed error, got code={} message={}",
-            error.code,
-            error.message
-        ));
-    }
+use crate::fail_closed_wait::{RealTicker, wait_for};
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+const REPO: &str = "repo-e2e";
+const SMOKE_CORPUS: &[(&str, &str, u64)] = &[
+    ("docs/intro.md", "smoke documentation lives here", 3),
+    ("src/lib.rs", "fn smoke_needle_rust() {}", 1),
+    ("src/util.py", "def smoke_needle_python(): pass", 2),
+];
+const SMOKE_NEEDLE_RUST: &str = "smoke_needle_rust";
+const SMOKE_NEEDLE_RUST_IDENTITY: &[(&str, &str)] = &[(REPO, "src/lib.rs")];
+
+fn verify_write_seal_reopen_query(client: &QuantaIndex, pin: &GenerationPin) -> TestResult {
+    let result = client
+        .lexical()
+        .query()
+        .native(SMOKE_NEEDLE_RUST)
+        .pinned(pin.clone())
+        .top_k(10)
+        .execute()?;
     // Exact identity oracle (TOPT-05 / WA-2): the returned `(repo, path)`
     // set must equal the fixture contract exactly. A different in-corpus
     // row (e.g. the python needle) or a dropped needle row both fail;
     // "at least one row matched something ingested" no longer passes.
     let actual: Vec<(&str, &str)> = result
-        .candidates
+        .results
         .iter()
         .map(|candidate| {
             (
@@ -41,15 +49,12 @@ fn verify_write_seal_reopen_query(rt: &mut E2eRuntime) -> AnyResult<()> {
             )
         })
         .collect();
-    verify_identity_set(&actual, SMOKE_NEEDLE_RUST_IDENTITY).map_err(|error| {
-        anyhow::anyhow!("write -> seal -> reopen -> query identity mismatch: {error:#}")
-    })?;
-    Ok(())
+    verify_identity_set(&actual, SMOKE_NEEDLE_RUST_IDENTITY)
 }
 
 /// The exact-set comparison behind the smoke oracle, factored pure so the
 /// mutation controls below prove it rejects precisely what it names.
-fn verify_identity_set(actual: &[(&str, &str)], expected: &[(&str, &str)]) -> AnyResult<()> {
+fn verify_identity_set(actual: &[(&str, &str)], expected: &[(&str, &str)]) -> TestResult {
     // Compare the full returned row inventory: deduplicating here would
     // turn a duplicated candidate into a false-green exact-set proof.
     let mut actual = actual.to_vec();
@@ -57,9 +62,10 @@ fn verify_identity_set(actual: &[(&str, &str)], expected: &[(&str, &str)]) -> An
     let mut expected = expected.to_vec();
     expected.sort_unstable();
     if actual != expected {
-        return Err(anyhow::anyhow!(
+        return Err(format!(
             "expected exactly the fixture-contract candidate identity set {expected:?}; got {actual:?}"
-        ));
+        )
+        .into());
     }
     Ok(())
 }
@@ -97,35 +103,72 @@ fn identity_oracle_rejects_missing_wrong_extra_duplicate_and_empty_rows() {
     }
 }
 
-fn verify_invalid_query_returns_typed_error(rt: &mut E2eRuntime) -> AnyResult<()> {
-    // No generation pin AND no selector → dispatcher should reject with
-    // `INVALID_REQUEST` ("text: generation pin required"). This proves the
-    // typed-error surface of the harness end-to-end.
-    let result = rt.query_text_with_pin(TextQuerySyntax::Native, SMOKE_NEEDLE_RUST, 10, None);
-    let Some(typed) = result.typed_error else {
-        return Err(anyhow::anyhow!(
-            "expected a typed error for missing generation pin"
-        ));
-    };
-    if typed.code.as_str() != "INVALID_REQUEST" {
-        return Err(anyhow::anyhow!(
-            "expected INVALID_REQUEST typed error code, got code={} message={}",
-            typed.code,
-            typed.message
-        ));
+fn verify_invalid_query_returns_typed_error(client: &QuantaIndex) -> TestResult {
+    let result = client.lexical().query_request(TextQueryRequest {
+        syntax: TextQuerySyntax::Native,
+        query_text: SMOKE_NEEDLE_RUST.to_owned(),
+        constraints: QueryConstraintSetV1::unconstrained(),
+        generation: None,
+        generation_selector: None,
+        top_k: 10,
+        cursor: None,
+    });
+    match result {
+        Err(SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::InvalidRequest,
+            ..
+        }) => Ok(()),
+        other => Err(format!(
+            "expected a server INVALID_REQUEST for missing generation: {other:?}"
+        )
+        .into()),
     }
-    Ok(())
 }
 
 #[test]
-fn harness_smoke_scenarios_share_one_reopened_fixture() -> AnyResult<()> {
-    let mut rt = E2eRuntime::boot()?;
-    ingest_all(&mut rt, SMOKE_CORPUS)?;
-    let _sealed = rt.seal()?;
-    let mut rt = rt.reopen();
+fn smoke_needle_contract_matches_corpus_contents() -> TestResult {
+    let matches = SMOKE_CORPUS
+        .iter()
+        .filter(|(_, body, _)| body.contains(SMOKE_NEEDLE_RUST))
+        .map(|(path, _, _)| (REPO, *path))
+        .collect::<Vec<_>>();
+    verify_identity_set(&matches, SMOKE_NEEDLE_RUST_IDENTITY)
+}
 
-    verify_write_seal_reopen_query(&mut rt).map_err(|error| anyhow::anyhow!("query: {error:#}"))?;
-    verify_invalid_query_returns_typed_error(&mut rt)
-        .map_err(|error| anyhow::anyhow!("typed_error: {error:#}"))?;
-    Ok(())
+#[test]
+fn harness_smoke_scenarios_share_one_reopened_fixture() -> TestResult {
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let binary = LegacySearchdBinary::from_environment()?;
+    let repo = RepoId::new(REPO)?;
+    let revision = RevisionId::new("rev-e2e")?;
+    let publishing = binary.start(&state_root, 8)?;
+    let published = (|| {
+        let client = publishing.connect()?;
+        publish_legacy_source(&client, &repo, &revision, 1, None, SMOKE_CORPUS, None)
+    })();
+    let stopped = publishing.stop();
+    let (head, _receipt) = published?;
+    stopped?;
+    let pin = GenerationPin::new(repo, revision, head.generation.lexical.manifest_generation);
+
+    let reopened = binary.start(&state_root, 8)?;
+    let result = (|| -> TestResult {
+        let client = reopened.connect()?;
+        let _ready = wait_for(
+            &RealTicker::new(),
+            Duration::from_secs(20),
+            Duration::from_millis(50),
+            "pinned old-Q matrix backend ready after reopen",
+            || client.observability().process_readiness(),
+            |report| report.ready,
+            |_| true,
+        )?;
+        verify_write_seal_reopen_query(&client, &pin)?;
+        verify_invalid_query_returns_typed_error(&client)?;
+        Ok(())
+    })();
+    let stopped = reopened.stop();
+    result.and(stopped)?;
+    binary.verify()
 }

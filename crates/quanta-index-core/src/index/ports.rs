@@ -1,16 +1,20 @@
 //! Small capability ports: physical data never owns the product head.
+use super::error::ExistingFileReadFailureV1;
+pub use super::install_ports::{MAX_OBJECT_INSTALL_BATCH, ObjectWriteSink, PreparedObjectMapBatch};
 use super::{
     AdmissionOutcome, AttemptRef, BaseMember, BootstrapRef, CatalogView, DeltaInput, Digest,
-    HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryTransition, ImmutableOperation, IndexError, IngressRef, InstanceSpec, MapBatchRequest,
-    MapBatchWrite, MapEdit, MapPage, MapRoot, MapWrite, MemberBinding, ObjectBatchInput,
-    ObjectInstallScope, ObjectRef, OperationKey, OperationStatus, OrdinalMapEdit,
-    OwnedReadyOutcome, OwnedWorkAssignment, OwnedWorkBegin, OwnedWorkGrant, OwnedWorkPolicy,
-    OwnedWorkReport, OwnerInputBinding, OwnerKey, OwnerMemberBinding, OwnerMutationSet,
-    PlanContext, PlanDecision, PreparedPublication, ProjectionBinding, ReclaimCandidate,
-    ReclaimDrainPage, ReclaimPermit, ReclaimTarget, ReclaimWork, ReclaimWorkPage, Refusal,
-    RegisteredObject, RetiringRef, SourceEvent, StoredObject, TicketRecord, ViewRef, ViewSelection,
-    WorkAction, WorkBudget, WorkClaim, WorkIntent, WorkStatus, WorkspaceKey,
+    HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryTransition, ImmutableOperation, IndexError,
+    IngressRef, InstanceSpec, MapBatchRequest, MapBatchWrite, MapEdit, MapPage, MapRoot, MapWrite,
+    MemberBinding, ObjectBatchInput, ObjectInstallScope, ObjectRef, OperationKey, OperationStatus,
+    OrdinalMapEdit, OwnedReadyOutcome, OwnedWorkAssignment, OwnedWorkBegin, OwnedWorkGrant,
+    OwnedWorkPolicy, OwnedWorkReport, OwnerInputBinding, OwnerKey, OwnerMemberBinding,
+    OwnerMutationSet, PlanContext, PlanDecision, PreparedPublication, ProjectionBinding,
+    ReclaimCandidate, ReclaimDrainPage, ReclaimPermit, ReclaimTarget, ReclaimWork, ReclaimWorkPage,
+    Refusal, RegisteredObject, RetiringRef, SourceEvent, StoredObject,
+    TicketRecord, ViewRef, ViewSelection, WorkAction, WorkBudget, WorkClaim, WorkIntent, WorkStatus,
+    WorkspaceKey,
 };
+use quanta_index_contract::native_protocol::SourceStageReplayReceiptV1;
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 pub type IndexFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, IndexError>> + Send + 'a>>;
@@ -125,10 +129,6 @@ pub trait ObjectWriteTicket: Send {
     /// file/parent fsync, then physically retire the independent pin.
     fn synced(self: Box<Self>, directories: ObjectWriteSyncDirectories) -> Result<(), IndexError>;
 }
-
-/// Shared object-count envelope for one child-first durable installation.
-/// Byte/work/memory limits are independently admitted by the original budget.
-pub const MAX_OBJECT_INSTALL_BATCH: usize = 256;
 
 /// Upper bounds for one batch's physical inputs, independent of object identity.
 /// The caller must enforce these bounds on the actual packet before effects.
@@ -418,34 +418,6 @@ pub trait ObjectMapBatchPort: Send + Sync {
     ) -> Result<Box<dyn PreparedObjectMapBatch>, IndexError>;
 }
 
-/// One original backend's prepared map and admitted resident COW stage.
-///
-/// Consumption appends at most two DATA objects and one original-base edit
-/// through the existing child-first installer. An owner scope additionally
-/// retains its two initial DATA/two roots within the explicit four/four bound.
-pub trait PreparedObjectMapBatch: Send {
-    fn root(&self) -> MapRoot;
-    /// Original owner metadata precedes newly supplied DATA in the result.
-    fn initial_objects(&self) -> &[ObjectRef] {
-        &[]
-    }
-    /// Original owner roots precede the optional prepared delta and final edit.
-    fn initial_roots(&self) -> &[MapRoot] {
-        &[]
-    }
-    fn has_prepared_root(&self) -> bool {
-        true
-    }
-    fn install(
-        self: Box<Self>,
-        objects: &[ObjectBatchInput],
-        additional: Option<(MapRoot, &MapEdit)>,
-        attempt: AttemptRef,
-        sink: &dyn ObjectWriteSink,
-        budget: &mut WorkBudget,
-    ) -> Result<(super::StagedObjectReferences, super::StagedMapRoots), IndexError>;
-}
-
 /// A single attempt's canonical resident stage, not publication authority.
 ///
 /// Its read facets authenticate prepared wire through the original decoder.
@@ -477,6 +449,16 @@ pub enum OwnerMapCompletion {
 }
 
 pub trait PersistentMapPort: Send + Sync {
+    /// Optional Original credit for scanning a freshly built canonical map
+    /// with at most `max_entries` values. The bound covers the backend's
+    /// simultaneous scan and read allocations; unknown backends return None.
+    fn cold_scan_memory_credit_limits(
+        &self,
+        _max_entries: usize,
+    ) -> Result<Option<super::MemoryCreditLimits>, IndexError> {
+        Ok(None)
+    }
+
     /// Optional DATA reuse inside one protected, funded read call. The caller
     /// keeps its original view pin and memory reservation until this reader is
     /// dropped. Reuse must retain the original object allocation custody and
@@ -553,6 +535,15 @@ pub trait PersistentMapPort: Send + Sync {
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<MapPage, IndexError>;
+    /// Return the greatest key in an immutable map, or an empty page. Backends
+    /// must follow only the rightmost path; a whole-map scan is not permitted.
+    /// The returned one-row page retains the same funded key/value custody as
+    /// `scan`. Unsupported backends fail instead of silently scanning.
+    fn last_entry(&self, _root: MapRoot, _budget: &mut WorkBudget) -> Result<MapPage, IndexError> {
+        Err(IndexError::BackendViolation(
+            "map backend has no bounded last-entry seek".into(),
+        ))
+    }
     /// Visit one-row scan pages through EOF under the same immutable-root
     /// authority and Work budget as `scan`. The visitor may stage disposable
     /// effects. It must not transfer the root's authority during the visit.
@@ -612,18 +603,6 @@ pub trait PersistentMapPort: Send + Sync {
         sink: &dyn ObjectWriteSink,
         budget: &mut WorkBudget,
     ) -> Result<crate::index::StagedMapRoots, IndexError>;
-}
-
-pub trait ObjectWriteSink: Send + Sync {
-    /// A typed hint, not authority. Managed stores require this scope and
-    /// invoke their own paired catalog instead of trusting these callbacks.
-    fn managed_scope(&self) -> Option<ObjectInstallScope> {
-        None
-    }
-    fn reserve(&self, object: &RegisteredObject) -> Result<(), IndexError>;
-    fn installed(&self, object: &RegisteredObject) -> Result<(), IndexError>;
-    fn reserve_batch(&self, objects: &[RegisteredObject]) -> Result<(), IndexError>;
-    fn installed_batch(&self, objects: &[RegisteredObject]) -> Result<(), IndexError>;
 }
 
 /// Catalog authority paired with one managed object namespace at service
@@ -787,6 +766,20 @@ pub trait InputStagingPort: Send + Sync {
         objects: &[RegisteredObject],
     ) -> Result<(), IndexError>;
     fn seal_inputs(&self, ingress: IngressRef, request: ObjectRef) -> Result<(), IndexError>;
+    /// Record the checked mutation set for the still-current open ingress.
+    /// The Catalog must recheck its fence and custody before the write commits.
+    fn persist_source_stage_replay_receipt_v1(
+        &self,
+        receipt: SourceStageReplayReceiptV1,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError>;
+    /// Recover a sealed stage only while its original ingress remains current.
+    fn read_source_stage_replay_receipt_v1(
+        &self,
+        operation: OperationKey,
+        correlation: Digest,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<SourceStageReplayReceiptV1>, IndexError>;
     /// Deletes stage metadata in bounded, budgeted groups. Interruption rolls
     /// back the whole discard, preserving its fence and custody for retry.
     fn discard_inputs(
@@ -888,6 +881,23 @@ pub trait OperationJournalPort: Send + Sync {
         key: OperationKey,
         access: OperationInspectAccess<'_>,
     ) -> Result<OperationStatus, IndexError>;
+    fn admit_projection(
+        &self,
+        operation: ImmutableOperation,
+        ingress: IngressRef,
+        events: &[SourceEvent],
+        _replay: quanta_index_contract::index::ProjectionReplayStamp,
+        budget: &mut WorkBudget,
+    ) -> Result<AdmissionOutcome, IndexError> {
+        self.admit(operation, ingress, events, budget)
+    }
+    fn projection_replay(
+        &self,
+        key: OperationKey,
+        budget: &mut WorkBudget,
+    ) -> Result<(OperationStatus, Option<quanta_index_contract::index::ProjectionReplayStamp>), IndexError> {
+        Ok((self.inspect(key, OperationInspectAccess::Request(budget))?, None))
+    }
     /// Exact Published operation metadata. This is not a Catalog read pin and
     /// must not substitute the current head or read immutable object bodies.
     /// Backends without an exact durable metadata reader refuse explicitly.
@@ -1272,13 +1282,15 @@ pub trait WorkClaimPort: Send + Sync {
     /// Validate materialization and issue its original session's latest-view
     /// read ticket in one transaction/clock sample. Managed requests require
     /// the exact immutable owned body and live claim. No pin is committed on
-    /// failure. Execution still checks prepared work before the provider and
+    /// failure. The original request funds view decoding and bounds entry and
+    /// pre-commit cancellation. Execution still checks prepared work before the provider and
     /// publication still checks the live claim and view CAS.
     fn acquire_materialization_ticket(
         &self,
         session: &dyn super::ReadSessionLease,
         request: &super::UpdateRequest,
         lease: Duration,
+        budget: &WorkBudget,
     ) -> Result<TicketRecord, IndexError>;
     /// The caller's original budget bounds mutex waiting. A successful read
     /// rechecks it after releasing the guard; in-flight `SQLite` calls are not preempted.
@@ -1431,6 +1443,21 @@ pub trait IndexBuildPort: Send + Sync {
         candidate: Self::Candidate,
         context: &'a mut AttemptContext<'_>,
     ) -> IndexFuture<'a, MemberBinding>;
+    /// Replace only the physical artifact for one owner range of the exact
+    /// selected member, preserving its input and logical commitment.
+    fn compact_source_local<'a>(
+        &'a self,
+        _prior: MemberBinding,
+        _owner: OwnerKey,
+        _plan: PlanContext,
+        _context: &'a mut AttemptContext<'_>,
+    ) -> IndexFuture<'a, MemberBinding> {
+        Box::pin(async {
+            Err(IndexError::InvalidInput(
+                "index format does not support physical compaction".into(),
+            ))
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1457,7 +1484,6 @@ pub trait ExistingTreeMetadataIoPortV1: std::fmt::Debug + Send + Sync {
             ExistingTreeEntryKindV1,
             u64,
             &mut WorkBudget,
-        )
-            -> Result<(), super::existing_file::ExistingFileReadFailureV1>,
-    ) -> Result<(), super::existing_file::ExistingFileReadFailureV1>;
+        ) -> Result<(), ExistingFileReadFailureV1>,
+    ) -> Result<(), ExistingFileReadFailureV1>;
 }

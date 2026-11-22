@@ -3,7 +3,7 @@
 use quanta_index_core::CoreError;
 use rusqlite::Connection;
 
-use crate::connection::engine_error;
+use crate::io_admission::engine_error;
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -120,6 +120,13 @@ struct Fixture {
 
 impl Fixture {
     fn open(root: &Path) -> TestResult<Self> {
+        Self::open_with_owner_validator(root, None)
+    }
+
+    fn open_with_owner_validator(
+        root: &Path,
+        validation_only: Option<AdapterDescriptor>,
+    ) -> TestResult<Self> {
         let scratch = Arc::new(FileScratchSpace::open_standalone(
             root.join("scratch"),
             16 * 1024 * 1024 * 1024,
@@ -149,6 +156,9 @@ impl Fixture {
             NativeFileMap,
             |delta| Ok(delta.clone()),
         )?;
+        if let Some(descriptor) = validation_only {
+            registry.register_owner_validator(descriptor, |_instance| Ok(()))?;
+        }
         let services = KernelServices::new(
             objects.clone(),
             objects.clone(),

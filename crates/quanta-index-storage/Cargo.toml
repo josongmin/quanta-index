@@ -18,4 +18,4 @@ rusqlite = { workspace = true, features = ["cache"] }
 tempfile.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
-libsqlite3-sys = { version = "=0.38.2", features = ["quanta-capacity-vfs"] }
+libsqlite3-sys = { workspace = true, features = ["quanta-capacity-vfs"] }

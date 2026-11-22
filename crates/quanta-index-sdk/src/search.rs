@@ -9,7 +9,10 @@ use quanta_index_contract::{
     TextQueryRequest,
 };
 
-use crate::{QuantaIndexClientPayloadV1, SdkError, text_query_builder::VectorQueryBuilderState};
+use crate::{
+    LegacyQueryCapabilityV1, QuantaIndexClientPayloadV1, SdkError,
+    text_query_builder::VectorQueryBuilderState,
+};
 
 pub struct SearchNamespace<'a> {
     client: &'a QuantaIndexClientPayloadV1,
@@ -86,9 +89,6 @@ impl<'a> SearchNamespace<'a> {
         &self,
         request: ClusterMembershipReadRequestV1,
     ) -> Result<ClusterMembershipReadOutcomeV1, SdkError> {
-        request
-            .validate_v1()
-            .map_err(|error| SdkError::Usage(error.to_string()))?;
         let mut response = self.cluster_membership_batch_read_v1(
             ClusterMembershipBatchReadRequestV1::single_v1(request),
         )?;
@@ -108,6 +108,8 @@ impl<'a> SearchNamespace<'a> {
         &self,
         request: ClusterMembershipBatchReadRequestV1,
     ) -> Result<ClusterMembershipBatchReadResponseV1, SdkError> {
+        self.client
+            .admit_legacy_query_v1(LegacyQueryCapabilityV1::ClusterMembershipRead)?;
         request
             .validate_v1()
             .map_err(|error| SdkError::Usage(error.to_string()))?;
@@ -383,7 +385,8 @@ impl<
 
 impl HybridSeedQueryBuilder<'_, true, true, true, true> {
     pub fn execute(self) -> Result<HybridSeedQueryResponse, SdkError> {
-        dispatch_hybrid_seed_query_request_v1(self.client, self.state.build_hybrid_seed_request()?)
+        let request = self.state.build_hybrid_seed_request(self.client)?;
+        dispatch_hybrid_seed_query_request_v1(self.client, request)
     }
 }
 
@@ -566,14 +569,19 @@ impl<
 
 impl HybridQueryBuilder<'_, true, true, true, true> {
     pub fn execute(self) -> Result<HybridQueryResponse, SdkError> {
-        dispatch_hybrid_query_request_v1(self.client, self.state.build_hybrid_request()?)
+        let request = self
+            .state
+            .build_hybrid_request(self.client, LegacyQueryCapabilityV1::Hybrid)?;
+        dispatch_hybrid_query_request_v1(self.client, request)
     }
 
     /// Return distinct files. `top_k` remains the per-lane chunk budget;
     /// `file_top_k` is the independent returned-file cap.
     pub fn files(self, file_top_k: u32) -> Result<HybridFileQueryResponseV1, SdkError> {
         let request = HybridFileQueryRequestV1 {
-            query: self.state.build_hybrid_request()?,
+            query: self
+                .state
+                .build_hybrid_request(self.client, LegacyQueryCapabilityV1::HybridFileV1)?,
             file_top_k,
         };
         dispatch_hybrid_file_request_v1(self.client, request)
@@ -656,7 +664,9 @@ impl HybridQueryBuilder<'_, true, true, true, true> {
         include_rank_pools: bool,
     ) -> Result<GoTestTraceFileQueryResponseV1, SdkError> {
         let request = GoTestTraceFileQueryRequestV1 {
-            query: self.state.build_hybrid_request()?,
+            query: self
+                .state
+                .build_hybrid_request(self.client, LegacyQueryCapabilityV1::GoTestTraceFileV1)?,
             failure_excerpt,
             failure_source_repo_id,
             failure_module_context,
@@ -671,6 +681,7 @@ fn dispatch_go_test_trace_file_request_v1(
     client: &QuantaIndexClientPayloadV1,
     request: &GoTestTraceFileQueryRequestV1,
 ) -> Result<GoTestTraceFileQueryResponseV1, SdkError> {
+    client.admit_legacy_query_v1(LegacyQueryCapabilityV1::GoTestTraceFileV1)?;
     request.validate_v1().map_err(SdkError::Usage)?;
     let response = client.dispatch_query(
         quanta_index_contract::SearchPlaneQueryIpcRequest::GoTestTraceFileV1((*request).clone()),
@@ -694,6 +705,7 @@ fn dispatch_hybrid_file_request_v1(
     client: &QuantaIndexClientPayloadV1,
     request: HybridFileQueryRequestV1,
 ) -> Result<HybridFileQueryResponseV1, SdkError> {
+    client.admit_legacy_query_v1(LegacyQueryCapabilityV1::HybridFileV1)?;
     request.validate_v1().map_err(SdkError::Usage)?;
     // Dispatch binds the effective selectors, caps, and ranking. Preserve the
     // explicit pins as well: a Pinned selector can shadow either of them.

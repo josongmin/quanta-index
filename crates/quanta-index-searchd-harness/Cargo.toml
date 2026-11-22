@@ -6,14 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = []
 semantic-bench = []
-legacy-bench = [
-    "semantic-bench",
-    "dep:quanta-index-searchd-runtime",
-    "quanta-index-lexical/legacy-tantivy",
-    "quanta-index-searchd-runtime/legacy-tantivy",
-]
 
 [lints]
 workspace = true
@@ -25,8 +18,7 @@ doc = false
 
 [dependencies]
 anyhow = { workspace = true }
-# Safe `getrusage(2)` (peak RSS) and `gethostname(2)` for the benchmark
-# artifact's resource and host provenance (QI-BB-010).
+# Benchmark resource and host provenance, plus cooperative fixture shutdown.
 nix = { workspace = true, features = ["resource", "hostname", "fs", "signal"] }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
@@ -37,7 +29,6 @@ quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical", default-features = false }
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane", default-features = false }
 quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd" }
-quanta-index-searchd-runtime = { version = "0.1.0", path = "../quanta-index-searchd-runtime", optional = true, default-features = false }
 quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk" }
 # The ANN rail seals and queries a semantic generation through the adapter
 # itself: the production build, seal and open, with no daemon between.
@@ -54,7 +45,6 @@ libproc = { workspace = true }
 [[bin]]
 name = "ambiguity_matrix"
 path = "src/bin/ambiguity_matrix.rs"
-required-features = ["legacy-bench"]
 
 [[bin]]
 name = "ann_matrix"
@@ -64,7 +54,6 @@ required-features = ["semantic-bench"]
 [[bin]]
 name = "concurrency_matrix"
 path = "src/bin/concurrency_matrix.rs"
-required-features = ["legacy-bench"]
 
 [[bin]]
 name = "dsl_warm_matrix"
@@ -73,17 +62,14 @@ path = "src/bin/dsl_warm_matrix.rs"
 [[bin]]
 name = "freshness_matrix"
 path = "src/bin/freshness_matrix.rs"
-required-features = ["legacy-bench"]
 
 [[bin]]
 name = "open_loop_matrix"
 path = "src/bin/open_loop_matrix.rs"
-required-features = ["legacy-bench"]
 
 [[bin]]
 name = "ops_matrix"
 path = "src/bin/ops_matrix.rs"
-required-features = ["legacy-bench"]
 
 [[bin]]
 name = "relevance_matrix"
@@ -96,14 +82,11 @@ path = "src/bin/relevance_openai_ab.rs"
 [[bin]]
 name = "snippet_matrix"
 path = "src/bin/snippet_matrix.rs"
-required-features = ["legacy-bench"]
 
 [[bin]]
 name = "tail_matrix"
 path = "src/bin/tail_matrix.rs"
-required-features = ["legacy-bench"]
 
 [[bin]]
 name = "ui_matrix"
 path = "src/bin/ui_matrix.rs"
-required-features = ["legacy-bench"]

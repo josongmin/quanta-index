@@ -244,6 +244,217 @@ fn ranked_leaf(
     )?)
 }
 
+/// DA-06: a retained incremental Text member and an independently bootstrapped
+/// member of the same final Source cut must have the same non-tied BM25 page.
+#[test]
+fn native_incremental_text_matches_fresh_full_rank_and_score() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let observer = Arc::new(quanta_index_storage::ObjectIoObservation::default());
+    let ((engine, objects, _catalog, _spy), text_spec) =
+        native_text_services(directory.path(), 64, 64, &observer)?;
+    let genesis = engine.create_workspace(workspace(), 1, &mut budget())?;
+    let profile = engine.stage_profile(
+        engine.begin_input(operation(1))?,
+        &IndexProfile {
+            instances: vec![text_spec.clone()],
+        },
+        &mut budget(),
+    )?;
+    let configured = published(block_on(engine.submit(
+        UpdateRequest {
+            operation: operation(1),
+            expected_view: genesis,
+            kind: UpdateKind::Reconfigure { profile },
+        },
+        &mut budget(),
+    ))?)?;
+    let admitted = SourceTextAdmission::Utf8 {
+        policy: Digest([31; 32]),
+    };
+    let first = engine.stage_source_text(
+        engine.begin_input(operation(2))?,
+        "first.rs",
+        b"quartz",
+        admitted,
+        &mut budget(),
+    )?;
+    let retained = engine.stage_source_text(
+        engine.begin_input(operation(2))?,
+        "retained.rs",
+        b"quartz",
+        admitted,
+        &mut budget(),
+    )?;
+    let deleted = engine.stage_source_text(
+        engine.begin_input(operation(2))?,
+        "deleted.rs",
+        b"obsolete",
+        admitted,
+        &mut budget(),
+    )?;
+    let initial = published(block_on(engine.submit(
+        native_text_cost_request(
+            &engine,
+            configured,
+            source(&engine, configured)?,
+            operation(2),
+            1,
+            vec![
+                OwnerMutation {
+                    owner: owner(1),
+                    expected: None,
+                    next: Some(first),
+                },
+                OwnerMutation {
+                    owner: owner(2),
+                    expected: None,
+                    next: Some(retained),
+                },
+                OwnerMutation {
+                    owner: owner(3),
+                    expected: None,
+                    next: Some(deleted),
+                },
+            ],
+        )?,
+        &mut budget(),
+    ))?)?;
+    let old_pin = engine.pin_view(ViewSelection::Exact(initial), &budget())?;
+    let changed = engine.stage_source_text(
+        engine.begin_input(operation(3))?,
+        "first.rs",
+        b"quartz quartz",
+        admitted,
+        &mut budget(),
+    )?;
+    let delta = published(block_on(engine.submit(
+        native_text_cost_request(
+            &engine,
+            initial,
+            source(&engine, initial)?,
+            operation(3),
+            2,
+            vec![
+                OwnerMutation {
+                    owner: owner(1),
+                    expected: Some(first),
+                    next: Some(changed),
+                },
+                OwnerMutation {
+                    owner: owner(3),
+                    expected: Some(deleted),
+                    next: None,
+                },
+            ],
+        )?,
+        &mut budget(),
+    ))?)?;
+    assert_ne!(
+        source(&engine, initial)?.owners,
+        source(&engine, delta)?.owners
+    );
+    let delta_pin = engine.pin_view(ViewSelection::Exact(delta), &budget())?;
+    let delta_artifact =
+        member_by_instance(&objects, delta_pin.record(), text_spec.instance)?.artifact;
+    delta_pin.release()?;
+    let fresh_spec = InstanceSpec {
+        instance: IndexInstanceId([47; 16]),
+        ..text_spec.clone()
+    };
+    assert_ne!(text_spec.instance, fresh_spec.instance);
+    let full_profile = engine.stage_profile(
+        engine.begin_input(operation(4))?,
+        &IndexProfile {
+            instances: vec![text_spec.clone(), fresh_spec.clone()],
+        },
+        &mut budget(),
+    )?;
+    let final_view = published(block_on(engine.submit(
+        UpdateRequest {
+            operation: operation(4),
+            expected_view: delta,
+            kind: UpdateKind::Reconfigure {
+                profile: full_profile,
+            },
+        },
+        &mut budget(),
+    ))?)?;
+    let final_pin = engine.pin_view(ViewSelection::Exact(final_view), &budget())?;
+    let incremental = member_by_instance(&objects, final_pin.record(), text_spec.instance)?;
+    let fresh = member_by_instance(&objects, final_pin.record(), fresh_spec.instance)?;
+    assert_eq!(incremental.artifact, delta_artifact);
+    assert_eq!(incremental.input.root, fresh.input.root);
+    assert_eq!(incremental.input.policy, fresh.input.policy);
+    assert_eq!(incremental.input.root, source(&engine, delta)?.owners);
+
+    let reader = NativeTextIndex::new(TextRecipe::new(Digest([31; 32])));
+    let old_member = member_by_instance(&objects, old_pin.record(), text_spec.instance)?;
+    let obsolete = || LqLeaf::Keyword("obsolete".into());
+    let historical = ranked_leaf(&reader, &old_member, old_pin.record(), &objects, obsolete())?;
+    assert_eq!(historical.matched, 1);
+    let [historical_hit] = historical.hits.as_slice() else {
+        return Err("pinned old view lost its deleted Source hit".into());
+    };
+    assert_eq!(
+        (
+            historical_hit.owner,
+            durable_text_source(historical_hit.source)?
+        ),
+        (owner(3), deleted)
+    );
+    for binding in [&incremental, &fresh] {
+        let retired = ranked_leaf(&reader, binding, final_pin.record(), &objects, obsolete())?;
+        assert_eq!(retired.matched, 0);
+        assert!(retired.hits.is_empty());
+    }
+    let mut query = LqQuery::empty(LqSpan::synthetic(0));
+    query.expr = LqExpr::Leaf(LqLeaf::Keyword("quartz".into()));
+    query.options.case = Some(LqCase::Sensitive);
+    let plan = LexicalPlanner::plan(&query)?;
+    let rank = |binding: &MemberBinding| {
+        reader.search_content(
+            binding,
+            &plan,
+            &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            3,
+            Bm25Policy { k1: 1.2, b: 0.75 },
+            TextReadContext {
+                ticket: final_pin.record(),
+                objects: objects.as_ref(),
+                maps: objects.as_ref(),
+                budget: &mut budget(),
+            },
+        )
+    };
+    let incremental_rank = rank(&incremental)?;
+    let fresh_rank = rank(&fresh)?;
+    assert_eq!(incremental_rank.matched, 2);
+    assert_eq!(fresh_rank.matched, 2);
+    assert_eq!(incremental_rank.remaining, fresh_rank.remaining);
+    assert_eq!(incremental_rank.hits, fresh_rank.hits);
+    assert_eq!(incremental_rank.hits.len(), 2);
+    // N=2, df=2, lengths 2 and 1, avgdl=3/2. The expected values follow
+    // directly from these fixed bodies and public k1/b, not either index.
+    let idf = (6.0_f64 / 5.0).ln();
+    for (hit, (expected_owner, expected_source, expected_score)) in
+        incremental_rank.hits.iter().zip([
+            (owner(1), changed, idf * 44.0 / 35.0),
+            (owner(2), retained, idf * 22.0 / 19.0),
+        ])
+    {
+        assert_eq!(
+            (hit.owner, durable_text_source(hit.source)?),
+            (expected_owner, expected_source)
+        );
+        assert!(score_within_16_ulps(hit.score, expected_score));
+    }
+    assert!(incremental_rank.hits[0].score > incremental_rank.hits[1].score);
+    old_pin.validate()?;
+    final_pin.release()?;
+    old_pin.release()?;
+    Ok(())
+}
+
 fn phrase_source(
     reader: &NativeTextIndex,
     binding: &MemberBinding,

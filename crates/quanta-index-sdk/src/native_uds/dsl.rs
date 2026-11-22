@@ -1,0 +1,750 @@
+//! Native DSL publication uses the ordinary immutable producer transaction.
+
+use std::{collections::BTreeSet, path::Path};
+
+use quanta_index_contract::{
+    index::{
+        Digest, IngressRef, ObjectRef, OperationKey, OwnerKey, OwnerMutation, ProducerCompleteness,
+        ProjectionBinding, ProjectionCertificate, ProjectionId, ProjectionOwnerContribution,
+        ProjectionTransition, SourceEvent, SubmitOutcome, UpdateKind, UpdateRequest, ViewRef,
+        ViewSelection,
+    },
+    native_protocol::{
+        NATIVE_DSL_HEADER_OWNER_V1, NATIVE_DSL_POLICY_V1, NATIVE_DSL_PRODUCER_V1,
+        NATIVE_DSL_SCHEMA_V1, NativeDslCorpusV1, NativeDslCursorV1, NativeDslFileV1,
+        NativeDslKindV1, NativeDslPageV1, NativeDslQueryV1, NativeDslReplayBasisV1,
+        NativeDslReplayV1, NativeDslRuntimeCatalogV1, NativeDslScopeV1, NativeIndexRequest,
+        NativeIndexResponse, NativeReadSessionRequest, NativeReadSessionState,
+        NativeReadSessionStatus, native_dsl_context_v1, native_dsl_file_owner_v1,
+        native_dsl_sequence_v1,
+    },
+};
+use quanta_index_ipc::{
+    CanonicalBatchDigestProgressError, MemoryLease, MemoryLifetime, MemoryScope, RequestBudgetV1,
+    canonical_batch_digest_with_progress_v1, matches_batch_digest_token_v1,
+};
+use serde::Serialize;
+use sha2::{Digest as _, Sha256};
+
+use super::{AdmittedNativePublicationReply, NativeUdsClient, NativeUdsError};
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeDslFileChangeV1 {
+    pub source_owner: OwnerKey,
+    /// None removes the previous contribution, including when the source was
+    /// deleted. An admitted file with no chunks is an explicit empty value.
+    pub next: Option<NativeDslFileV1>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum NativeDslChangesV1 {
+    Corpus {
+        header: NativeDslCorpusV1,
+        files: Vec<NativeDslFileChangeV1>,
+    },
+    RuntimeMetadata(NativeDslRuntimeCatalogV1),
+}
+
+impl NativeDslChangesV1 {
+    fn scope_kind(&self) -> (NativeDslScopeV1, NativeDslKindV1) {
+        match self {
+            Self::Corpus { header, .. } => (
+                NativeDslScopeV1::for_pin(&header.pin),
+                NativeDslKindV1::Structural,
+            ),
+            Self::RuntimeMetadata(runtime) => (
+                NativeDslScopeV1 {
+                    repository: runtime.catalog.repo_id.clone(),
+                    revision: runtime.catalog.revision_id.clone(),
+                },
+                NativeDslKindV1::RuntimeMetadata,
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeDslPublicationV1 {
+    pub operation: OperationKey,
+    pub expected_view: ViewRef,
+    pub event_predecessor: u64,
+    pub authority: Digest,
+    pub changes: NativeDslChangesV1,
+}
+
+impl<P: AsRef<Path>> NativeUdsClient<P> {
+    /// Prepare the exact operation. A caller requiring acknowledgement-loss
+    /// recovery retains this request and uses the existing submit/status door.
+    pub fn prepare_dsl_publication_v1(
+        &self,
+        input: &NativeDslPublicationV1,
+        budget: &RequestBudgetV1,
+    ) -> Result<UpdateRequest, NativeUdsError> {
+        self.prepare_dsl_publication_scoped_v1(input, input.authority, budget, None)
+    }
+
+    pub fn prepare_dsl_publication_admitted_v1(
+        &self,
+        input: &NativeDslPublicationV1,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<UpdateRequest, NativeUdsError> {
+        self.prepare_dsl_publication_scoped_v1(input, input.authority, budget, Some(memory))
+    }
+
+    fn prepare_dsl_publication_scoped_v1(
+        &self,
+        input: &NativeDslPublicationV1,
+        authority: Digest,
+        budget: &RequestBudgetV1,
+        memory: Option<&MemoryScope>,
+    ) -> Result<UpdateRequest, NativeUdsError> {
+        let access = DslAccess {
+            client: self,
+            memory,
+            budget,
+        };
+        let tracked_inputs = match &input.changes {
+            NativeDslChangesV1::Corpus { files, .. } => files.len(),
+            NativeDslChangesV1::RuntimeMetadata(runtime) => runtime.dirty.len(),
+        };
+        let scratch_bytes = u64::try_from(tracked_inputs)
+            .ok()
+            .and_then(|count| count.checked_mul(128))
+            .and_then(|bytes| bytes.checked_add(64 * 1024))
+            .ok_or_else(|| protocol("Native DSL publication allocation bounds overflow"))?;
+        let _scratch = access.reserve(scratch_bytes)?;
+        match &input.changes {
+            NativeDslChangesV1::Corpus { header, files } => {
+                let mut owners = BTreeSet::new();
+                for change in files {
+                    let owner = native_dsl_file_owner_v1(change.source_owner);
+                    if change.source_owner.producer != header.source_producer
+                        || owner == NATIVE_DSL_HEADER_OWNER_V1
+                        || !owners.insert(owner)
+                    {
+                        return Err(protocol("Native DSL file changes repeat an owner"));
+                    }
+                }
+            }
+            NativeDslChangesV1::RuntimeMetadata(runtime) => {
+                validate_runtime_catalog_payload(runtime, budget)?;
+            }
+        };
+        let (scope, kind) = input.changes.scope_kind();
+        let key = input.operation;
+        if key.producer != NATIVE_DSL_PRODUCER_V1
+            || key.stream != scope.stream(kind)
+            || key.workspace != input.expected_view.workspace
+            || key.epoch != input.expected_view.epoch
+            || key.stream_epoch != 1
+        {
+            return Err(protocol(
+                "Native DSL operation does not own the requested projection",
+            ));
+        }
+        let event_sequence = input
+            .event_predecessor
+            .checked_add(1)
+            .ok_or_else(|| protocol("Native DSL event sequence overflow"))?;
+        let selection = ViewSelection::Exact(input.expected_view);
+        let view = access.call(NativeIndexRequest::ReadView(selection), |response| {
+            if let NativeIndexResponse::View(view) = response {
+                Some(view.clone())
+            } else {
+                None
+            }
+        })?;
+        if memory.is_none() {
+            super::validate_catalog_view_selection(selection, &view)?;
+        }
+        let projection = scope.projection(kind);
+        let prior = access.projection(selection, projection)?;
+        if prior.is_some_and(|binding| !is_dsl_binding(binding, projection)) {
+            return Err(protocol("Native DSL predecessor binding differs"));
+        }
+        if let NativeDslChangesV1::RuntimeMetadata(runtime) = &input.changes {
+            let corpus = scope.projection(NativeDslKindV1::Structural);
+            let binding = access.projection(selection, corpus)?;
+            if !binding.is_some_and(|binding| {
+                is_dsl_binding(binding, corpus)
+                    && binding.source == view.source
+                    && binding.certificate == runtime.corpus_certificate
+            }) {
+                return Err(protocol(
+                    "Native RuntimeMetadata requires the current chunk projection",
+                ));
+            }
+        }
+        if prior.map_or(0, |binding| {
+            native_dsl_sequence_v1(binding.dependency_context)
+        }) != input.event_predecessor
+        {
+            return Err(protocol(
+                "Native DSL event predecessor differs from its retained projection",
+            ));
+        }
+        if input.authority == Digest([0; 32]) {
+            return Err(protocol(
+                "Native DSL publication requires the producer input identity",
+            ));
+        }
+        let context = native_dsl_context_v1(event_sequence, authority);
+        let ingress = access.call(NativeIndexRequest::BeginInput(key), |response| {
+            if let NativeIndexResponse::InputOpened(ingress) = response {
+                (ingress.operation == key).then_some(*ingress)
+            } else {
+                None
+            }
+        })?;
+        let stage = PublicationStage {
+            access,
+            selection,
+            ingress,
+            projection,
+            prior,
+        };
+        let header = match &input.changes {
+            NativeDslChangesV1::Corpus { header, .. } => {
+                stage.replace(NATIVE_DSL_HEADER_OWNER_V1, None, Some(header))?
+            }
+            NativeDslChangesV1::RuntimeMetadata(runtime) => {
+                stage.replace(NATIVE_DSL_HEADER_OWNER_V1, None, Some(runtime))?
+            }
+        }
+        .ok_or_else(|| protocol("Native DSL header mutation is missing"))?;
+        let changes = match &input.changes {
+            NativeDslChangesV1::Corpus { files, .. } => files.as_slice(),
+            NativeDslChangesV1::RuntimeMetadata(_) => &[],
+        };
+        let owners = self.stage_mutations_with_send(
+            ingress,
+            std::iter::once(Ok(header)).chain(changes.iter().filter_map(|file| {
+                match stage.file(file) {
+                    Ok(Some(change)) => Some(Ok(change)),
+                    Ok(None) => None,
+                    Err(error) => Some(Err(error)),
+                }
+            })),
+            |request| {
+                stage.access.call(request, |response| match response {
+                    NativeIndexResponse::MutationPageStaged(root) => {
+                        Some(NativeIndexResponse::MutationPageStaged(*root))
+                    }
+                    NativeIndexResponse::MutationsStaged(set) => {
+                        Some(NativeIndexResponse::MutationsStaged(*set))
+                    }
+                    _ => None,
+                })
+            },
+        )?;
+        let certificate = stage
+            .access
+            .staged(NativeIndexRequest::StageProjectionCertificate {
+                ingress,
+                certificate: ProjectionCertificate {
+                    projection,
+                    producer: key.producer,
+                    prior,
+                    target_source: view.source,
+                    schema: NATIVE_DSL_SCHEMA_V1,
+                    producer_policy: NATIVE_DSL_POLICY_V1,
+                    dependency_context: context,
+                    affected: owners,
+                },
+            })?;
+        let mut transition = ProjectionTransition {
+            projection,
+            producer: key.producer,
+            expected: prior,
+            target_source: view.source,
+            schema: NATIVE_DSL_SCHEMA_V1,
+            producer_policy: NATIVE_DSL_POLICY_V1,
+            dependency_context: context,
+            completeness: ProducerCompleteness::CompleteAffectedDomain { certificate },
+            owners,
+            events: Vec::new(),
+        };
+        transition.events.push(SourceEvent {
+            producer: key.producer,
+            stream: key.stream,
+            stream_epoch: key.stream_epoch,
+            predecessor: input.event_predecessor,
+            sequence: event_sequence,
+            payload: transition
+                .payload_digest()
+                .map_err(|error| NativeUdsError::Protocol(error.to_string()))?,
+        });
+        Ok(UpdateRequest {
+            operation: key,
+            expected_view: input.expected_view,
+            kind: UpdateKind::ProjectionAdvance(Box::new(transition)),
+        })
+    }
+
+    pub fn publish_dsl_v1(
+        &self,
+        input: &NativeDslPublicationV1,
+        budget: &RequestBudgetV1,
+    ) -> Result<SubmitOutcome, NativeUdsError> {
+        let authority = publication_digest(input, budget)?;
+        let (scope, kind) = input.changes.scope_kind();
+        let replay = NativeDslReplayV1 {
+            operation: input.operation,
+            projection: scope.projection(kind),
+            basis: NativeDslReplayBasisV1::Exact {
+                view: input.expected_view,
+                event_predecessor: input.event_predecessor,
+            },
+            authority,
+        };
+        let access = DslAccess {
+            client: self,
+            memory: None,
+            budget,
+        };
+        if let outcome @ (SubmitOutcome::Accepted(_) | SubmitOutcome::Terminal(_)) =
+            access.replay(replay)?
+        {
+            return Ok(outcome);
+        }
+        let request = match self.prepare_dsl_publication_scoped_v1(input, authority, budget, None) {
+            Ok(request) => request,
+            Err(error) => match access.replay(replay) {
+                Ok(SubmitOutcome::Unknown(_)) | Err(NativeUdsError::Unknown(_)) => {
+                    return Err(error);
+                }
+                result => return result,
+            },
+        };
+        self.submit_borrowed(&request, budget)
+    }
+
+    /// Reconcile producer-owned facts before any attempt to reopen staging.
+    pub fn replay_dsl_publication_admitted_v1(
+        &self,
+        input: NativeDslReplayV1,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<SubmitOutcome, NativeUdsError> {
+        DslAccess {
+            client: self,
+            memory: Some(memory),
+            budget,
+        }
+        .replay(input)
+    }
+
+    pub fn search_dsl_in_read_session_v1(
+        &self,
+        expected: &NativeReadSessionStatus,
+        query: NativeDslQueryV1,
+        budget: &RequestBudgetV1,
+    ) -> Result<NativeDslPageV1, NativeUdsError> {
+        let digest = prepare_dsl_read(expected, &query)?;
+        let kind = query.kind;
+        let limit = query.text.top_k;
+        let previous = query.after.clone();
+        let NativeIndexResponse::DslPageV1(page) = self.request(
+            NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchDslV1 {
+                session: expected.session,
+                query,
+            }),
+            budget,
+        )?
+        else {
+            return Err(protocol("unexpected retained Native DSL response"));
+        };
+        validate_dsl_page(expected, digest, kind, limit, previous.as_ref(), &page)?;
+        Ok(page)
+    }
+
+    /// Return the canonical page with its Original raw and decoded backing.
+    pub fn search_dsl_in_read_session_admitted_v1(
+        &self,
+        expected: &NativeReadSessionStatus,
+        query: NativeDslQueryV1,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        super::read_session::admitted_budget_checkpoint(budget)?;
+        let digest = prepare_dsl_read(expected, &query)?;
+        let wire = NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchDslV1 {
+            session: expected.session,
+            query,
+        });
+        let reply = self.request_publication_admitted_ref(&wire, budget, memory)?;
+        let NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchDslV1 {
+            query, ..
+        }) = &wire
+        else {
+            return Err(protocol("unexpected retained Native DSL request"));
+        };
+        match reply.response() {
+            NativeIndexResponse::DslPageV1(page) => validate_dsl_page(
+                expected,
+                digest,
+                query.kind,
+                query.text.top_k,
+                query.after.as_ref(),
+                page,
+            )?,
+            NativeIndexResponse::Error(_) => {}
+            _ => return Err(protocol("unexpected retained Native DSL response")),
+        }
+        super::read_session::admitted_budget_checkpoint(budget)?;
+        Ok(reply)
+    }
+}
+
+fn publication_digest(
+    input: &NativeDslPublicationV1,
+    budget: &RequestBudgetV1,
+) -> Result<Digest, NativeUdsError> {
+    struct HashWriter<'a>(Sha256, &'a RequestBudgetV1);
+    impl std::io::Write for HashWriter<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.1
+                .checkpoint("native-dsl:publication-identity")
+                .map_err(std::io::Error::other)?;
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    super::read_session::admitted_budget_checkpoint(budget)?;
+    let mut hash = HashWriter(Sha256::new(), budget);
+    hash.0.update(b"quanta-native-dsl-publication-v1\0");
+    let encoded = ciborium::ser::into_writer(input, &mut hash);
+    super::read_session::admitted_budget_checkpoint(budget)?;
+    encoded.map_err(|error| NativeUdsError::Protocol(error.to_string()))?;
+    Ok(Digest(hash.0.finalize().into()))
+}
+
+fn prepare_dsl_read(
+    expected: &NativeReadSessionStatus,
+    query: &NativeDslQueryV1,
+) -> Result<Digest, NativeUdsError> {
+    let digest = query.digest().map_err(protocol)?;
+    if expected.state != NativeReadSessionState::Active
+        || query.after.as_ref().is_some_and(|cursor| {
+            cursor.view != expected.view || cursor.query != digest || cursor.candidate_id.is_empty()
+        })
+    {
+        return Err(protocol(
+            "Native DSL session or cursor differs from the requested query",
+        ));
+    }
+    Ok(digest)
+}
+
+fn validate_dsl_page(
+    expected: &NativeReadSessionStatus,
+    digest: Digest,
+    kind: NativeDslKindV1,
+    limit: u32,
+    previous: Option<&NativeDslCursorV1>,
+    page: &NativeDslPageV1,
+) -> Result<(), NativeUdsError> {
+    if page.session != expected.session
+        || page.view != expected.view
+        || page.query != digest
+        || page.rows.kind() != kind
+        || page.window.returned() > limit
+        || page.window.has_more() != page.after.is_some()
+        || previous.is_some_and(|cursor| cursor.projection != page.projection)
+    {
+        return Err(protocol("Native DSL response authority differs"));
+    }
+    let mut boundary = previous.map(|cursor| cursor.candidate_id.as_str());
+    let mut count = 0;
+    for candidate in page.rows.candidate_ids() {
+        if candidate.is_empty() || boundary.is_some_and(|before| before >= candidate) {
+            return Err(protocol("Native DSL response candidate order differs"));
+        }
+        boundary = Some(candidate);
+        count += 1;
+    }
+    if count != page.window.returned()
+        || page.after.as_ref().is_some_and(|cursor| {
+            count == 0
+                || cursor.view != page.view
+                || cursor.projection != page.projection
+                || cursor.query != page.query
+                || Some(cursor.candidate_id.as_str()) != boundary
+        })
+    {
+        return Err(protocol("Native DSL response continuation differs"));
+    }
+    Ok(())
+}
+
+fn is_dsl_binding(binding: ProjectionBinding, projection: ProjectionId) -> bool {
+    binding.projection == projection
+        && binding.producer == NATIVE_DSL_PRODUCER_V1
+        && binding.schema == NATIVE_DSL_SCHEMA_V1
+        && binding.producer_policy == NATIVE_DSL_POLICY_V1
+}
+
+fn validate_runtime_catalog_payload(
+    runtime: &NativeDslRuntimeCatalogV1,
+    budget: &RequestBudgetV1,
+) -> Result<(), NativeUdsError> {
+    let checkpoint = || super::read_session::admitted_budget_checkpoint(budget);
+    let mut dirty = BTreeSet::new();
+    for record in &runtime.dirty {
+        checkpoint()?;
+        if record.wire_version != 1
+            || record.doc_id.as_str().is_empty()
+            || !dirty.insert(&record.doc_id)
+        {
+            return Err(protocol("invalid Native RuntimeMetadata dirty membership"));
+        }
+    }
+    if !runtime.catalog.batch_digest.is_empty() {
+        let digest =
+            canonical_batch_digest_with_progress_v1(&runtime.catalog, &mut |_| checkpoint())
+                .map_err(|error| match error {
+                    CanonicalBatchDigestProgressError::Progress(error) => error,
+                    CanonicalBatchDigestProgressError::Encode(error) => {
+                        NativeUdsError::Protocol(error.to_string())
+                    }
+                })?;
+        if !matches_batch_digest_token_v1(&runtime.catalog.batch_digest, &digest) {
+            return Err(protocol("Native RuntimeMetadata catalog digest differs"));
+        }
+    }
+    Ok(())
+}
+
+struct DslAccess<'a, P> {
+    client: &'a NativeUdsClient<P>,
+    memory: Option<&'a MemoryScope>,
+    budget: &'a RequestBudgetV1,
+}
+
+impl<P: AsRef<Path>> DslAccess<'_, P> {
+    fn replay(&self, input: NativeDslReplayV1) -> Result<SubmitOutcome, NativeUdsError> {
+        self.call(NativeIndexRequest::ReplayDslV1(input), |response| {
+            if let NativeIndexResponse::Submitted(reply) = response {
+                super::validate_submit_reply(input.operation, reply.clone()).ok()
+            } else {
+                None
+            }
+        })
+    }
+
+    fn reserve(&self, bytes: u64) -> Result<Option<MemoryLease>, NativeUdsError> {
+        self.memory
+            .map(|memory| {
+                memory
+                    .reserve(bytes, MemoryLifetime::Temporary)
+                    .map_err(|error| NativeUdsError::Protocol(error.to_string()))
+            })
+            .transpose()
+    }
+
+    fn call<T>(
+        &self,
+        request: NativeIndexRequest,
+        take: impl FnOnce(&NativeIndexResponse) -> Option<T>,
+    ) -> Result<T, NativeUdsError> {
+        let operation = super::publication_request_key(&request);
+        let convert = |response: &NativeIndexResponse| {
+            if let NativeIndexResponse::Error(error) = response {
+                return Err(NativeUdsError::Refused(error.clone()));
+            }
+            take(response).ok_or_else(|| {
+                operation.map_or_else(
+                    || protocol("unexpected Native DSL publication reply"),
+                    NativeUdsError::Unknown,
+                )
+            })
+        };
+        if let Some(memory) = self.memory {
+            let reply = self
+                .client
+                .request_publication_admitted(request, self.budget, memory)?;
+            convert(reply.response())
+        } else {
+            let reply = match operation {
+                Some(key) => self.client.write_stage(key, request, self.budget),
+                None => self.client.request(request, self.budget),
+            }?;
+            convert(&reply)
+        }
+    }
+
+    fn projection(
+        &self,
+        selection: ViewSelection,
+        projection: ProjectionId,
+    ) -> Result<Option<ProjectionBinding>, NativeUdsError> {
+        self.call(
+            NativeIndexRequest::ReadProjection {
+                selection,
+                projection,
+            },
+            |response| {
+                if let NativeIndexResponse::Projection(result) = response
+                    && super::projection_read_matches_request(selection, projection, result)
+                {
+                    Some(result.binding)
+                } else {
+                    None
+                }
+            },
+        )
+    }
+
+    fn staged(&self, request: NativeIndexRequest) -> Result<ObjectRef, NativeUdsError> {
+        self.call(request, |response| {
+            if let NativeIndexResponse::Staged(reference) = response {
+                Some(*reference)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+struct PublicationStage<'a, P> {
+    access: DslAccess<'a, P>,
+    selection: ViewSelection,
+    ingress: IngressRef,
+    projection: ProjectionId,
+    prior: Option<ProjectionBinding>,
+}
+
+impl<P: AsRef<Path>> PublicationStage<'_, P> {
+    fn file(
+        &self,
+        change: &NativeDslFileChangeV1,
+    ) -> Result<Option<OwnerMutation>, NativeUdsError> {
+        let owner = native_dsl_file_owner_v1(change.source_owner);
+        let source = if change.next.is_some() {
+            let owners =
+                super::NativeSourceOwnerKeys::new(vec![change.source_owner]).map_err(protocol)?;
+            let key = change.source_owner;
+            let source = self.access.call(NativeIndexRequest::LookupSourceOwners {
+                selection: self.selection, owners,
+            }, |response| {
+                if let NativeIndexResponse::SourceOwners(result) = response
+                    && matches!(self.selection, ViewSelection::Exact(view) if view == result.view)
+                    && let [row] = result.rows.as_slice()
+                    && row.owner == key
+                {
+                    Some(row.source)
+                } else { None }
+            })?.ok_or_else(|| protocol("Native DSL source file is absent"))?;
+            Some((key, source))
+        } else {
+            None
+        };
+        self.replace(owner, source, change.next.as_ref())
+    }
+
+    fn replace<T: Serialize>(
+        &self,
+        owner: OwnerKey,
+        source: Option<(OwnerKey, ObjectRef)>,
+        next: Option<&T>,
+    ) -> Result<Option<OwnerMutation>, NativeUdsError> {
+        let prior = if self.prior.is_some() {
+            let owners = super::NativeSourceOwnerKeys::new(vec![owner]).map_err(protocol)?;
+            self.access.call(NativeIndexRequest::LookupProjectionOwners {
+                selection: self.selection, projection: self.projection, owners,
+            }, |response| {
+                if let NativeIndexResponse::ProjectionOwners(result) = response
+                    && matches!(self.selection, ViewSelection::Exact(view) if view == result.view)
+                    && result.projection == self.projection && result.binding == self.prior
+                    && let [row] = result.rows.as_slice()
+                    && row.owner == owner
+                {
+                    Some(row.contribution)
+                } else { None }
+            })?
+        } else {
+            None
+        };
+        let next = next
+            .map(|value| {
+                let (payload, _memory) = encode_projection(value, &self.access)?;
+                let stamp = Digest(Sha256::digest(&payload).into());
+                let children =
+                    quanta_index_contract::native_protocol::NativeProjectionOutputChildren::new(
+                        Vec::new(),
+                    )
+                    .map_err(protocol)?;
+                let output = self
+                    .access
+                    .staged(NativeIndexRequest::StageProjectionOutput {
+                        ingress: self.ingress,
+                        bytes: payload,
+                        children,
+                    })?;
+                self.access
+                    .staged(NativeIndexRequest::StageProjectionOwner {
+                        ingress: self.ingress,
+                        contribution: ProjectionOwnerContribution {
+                            projection: self.projection,
+                            producer: NATIVE_DSL_PRODUCER_V1,
+                            owner,
+                            source_owner: source.map(|(owner, _)| owner),
+                            source: source.map(|(_, reference)| reference),
+                            dependency_stamp: stamp,
+                            output: Some(output),
+                        },
+                    })
+            })
+            .transpose()?;
+        Ok(
+            (prior.is_some() || next.is_some()).then_some(OwnerMutation {
+                owner,
+                expected: prior,
+                next,
+            }),
+        )
+    }
+}
+
+fn encode_projection(
+    value: &impl Serialize,
+    access: &DslAccess<'_, impl AsRef<Path>>,
+) -> Result<(Vec<u8>, Option<MemoryLease>), NativeUdsError> {
+    #[derive(Default)]
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .filter(|length| *length <= 16 * 1024 * 1024)
+                .ok_or_else(|| std::io::Error::other("Native DSL output exceeds 16 MiB"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut size = Count::default();
+    ciborium::ser::into_writer(value, &mut size)
+        .map_err(|error| NativeUdsError::Protocol(error.to_string()))?;
+    let memory = access
+        .reserve(u64::try_from(size.0).map_err(|_| protocol("Native DSL payload length"))?)?;
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(size.0)
+        .map_err(|_| protocol("Native DSL payload allocation"))?;
+    ciborium::ser::into_writer(value, &mut payload)
+        .map_err(|error| NativeUdsError::Protocol(error.to_string()))?;
+    Ok((payload, memory))
+}
+
+fn protocol(message: &str) -> NativeUdsError {
+    NativeUdsError::Protocol(message.into())
+}

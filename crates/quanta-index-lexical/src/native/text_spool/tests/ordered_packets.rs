@@ -39,17 +39,17 @@ impl DiagnosticEventSinkV1 for PacketSink {
 #[derive(Clone)]
 struct OrderedPacketEnvelope {
     live: Arc<AtomicU64>,
+    limit: u64,
 }
 
 impl MemoryScopePort for OrderedPacketEnvelope {
     fn reserve(&self, bytes: u64, _lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
-        // The original 128 KiB packet plus its 1,772-row backing, with only
-        // 4 KiB for the source token and input key leases.
-        const LIMIT: u64 = 128 * 1024 + 1_772 * 512 + 4_096;
+        // The existing single-packet fixture keeps its exact narrow bound;
+        // the multipage fixture supplies a separate explicit envelope.
         let _previous = self
             .live
             .fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::SeqCst, |used| {
-                used.checked_add(bytes).filter(|total| *total <= LIMIT)
+                used.checked_add(bytes).filter(|total| *total <= self.limit)
             })
             .map_err(|_used| IndexError::ResourceLimited)?;
         Ok(MemoryLease::new(bytes, Arc::new(self.clone())))
@@ -142,6 +142,7 @@ fn ordered_packet_path(
     let live = Arc::new(AtomicU64::new(0));
     work.bind_memory_scope(Some(MemoryScope::new(Arc::new(OrderedPacketEnvelope {
         live: Arc::clone(&live),
+        limit: 128 * 1024 + 1_772 * 512 + 4_096,
     }))));
     let spool = if cold {
         TextSpool::new_cold_postings(&TestScratch, &mut work)?
@@ -314,6 +315,326 @@ fn run_cold_owner_packets(record: bool) -> Result<(WorkUsage, Vec<DiagnosticEmit
         .map_err(|error| IndexError::BackendViolation(error.to_string()))?
         .clone();
     Ok((work.usage(), events))
+}
+
+fn run_ordered_cold_pages(record: bool) -> Result<(WorkUsage, Vec<DiagnosticEmitV1>), IndexError> {
+    const TERMS: u16 = 200;
+    const OWNERS: u8 = 18;
+    let (setup, sink, operation) = packet_trace_budget(record)?;
+    let mut work = WorkBudget::with_request(
+        WorkLimits {
+            reads: 10_000,
+            writes: 10_000,
+            bytes: 100_000_000,
+            mutations: 10_000,
+        },
+        setup.request().clone(),
+    );
+    let live = Arc::new(AtomicU64::new(0));
+    work.bind_memory_scope(Some(MemoryScope::new(Arc::new(OrderedPacketEnvelope {
+        live: Arc::clone(&live),
+        limit: 4 * 1024 * 1024,
+    }))));
+    let spool = TextSpool::new_cold_postings(&TestScratch, &mut work)?;
+    let before = work.usage();
+    check!(spool.prepare_ordered_cold_run_parent(&mut work)?);
+    let guard = spool
+        .begin_ordered_cold_run(&mut work)?
+        .ok_or(IndexError::ResourceLimited)?;
+    let mut batch = Vec::new();
+    for index in 0..TERMS {
+        let term = format!("\0t{index:04}");
+        for owner in 1..=OWNERS {
+            batch.push(cold_row(term.as_bytes(), owner, &work)?);
+            if batch.len() == 64 {
+                spool.posting_batch_rows(&batch, &mut work)?;
+                batch.clear();
+            }
+        }
+    }
+    if !batch.is_empty() {
+        spool.posting_batch_rows(&batch, &mut work)?;
+    }
+    guard.finish(&mut work)?;
+    let after = work.usage();
+
+    let pages: Vec<(i64, i64, Vec<u8>)> = {
+        let db = spool.db.scoped(&work)?;
+        let mut statement = db
+            .prepare("SELECT run,page,payload FROM posting_packet WHERE phase=0 ORDER BY run,page")
+            .map_err(|error| sql(&error))?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|error| sql(&error))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| sql(&error))?
+    };
+    check!(pages.len() >= 2);
+    for (index, (run, page, payload)) in pages.iter().enumerate() {
+        check_eq!(*run, 0);
+        check_eq!(
+            *page,
+            i64::try_from(index).map_err(|_error| IndexError::ResourceLimited)?
+        );
+        check_eq!(payload.get(..8), Some(b"QITXPR03".as_slice()));
+    }
+    // Every edit retains its original logical write charge; each physical
+    // phase-0 page adds exactly one scratch write.
+    check_eq!(
+        after.writes.checked_sub(before.writes),
+        Some(
+            u64::from(TERMS) * u64::from(OWNERS)
+                + u64::try_from(pages.len()).map_err(|_error| IndexError::ResourceLimited)?,
+        )
+    );
+
+    let mut range = PackedRangeCursor::new(&spool, b"\0t0000", &mut work)?;
+    for index in 0..TERMS {
+        let term = format!("\0t{index:04}");
+        for owner in 1..=OWNERS {
+            let row = range.next(&mut work)?.ok_or(IndexError::Conflict)?;
+            check_eq!(row.term.as_slice(), term.as_bytes());
+            check_eq!(row.owner, [owner; 32]);
+            check_eq!(row.expected, None);
+            check_eq!(row.next, Some(object(owner + 10)));
+        }
+    }
+    check!(range.next(&mut work)?.is_none());
+    let stable = work.usage();
+    check!(range.next(&mut work)?.is_none());
+    check_eq!(work.usage(), stable);
+    drop(range);
+    drop(spool);
+    check_eq!(live.load(AtomicOrdering::SeqCst), 0);
+    if let Some(operation) = operation {
+        operation
+            .finish(DiagnosticTerminalV1::Ok)
+            .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+    }
+    let events = sink
+        .0
+        .lock()
+        .map_err(|error| IndexError::BackendViolation(error.to_string()))?
+        .clone();
+    Ok((work.usage(), events))
+}
+
+#[test]
+fn ordered_cold_run_groups_multiple_pages_and_preserves_full_merge_output() -> Result<(), IndexError>
+{
+    let (off, off_events) = run_ordered_cold_pages(false)?;
+    let (record, events) = run_ordered_cold_pages(true)?;
+    check_eq!(off, record);
+    check!(off_events.is_empty());
+    check!(
+        events
+            .iter()
+            .all(|event| !matches!(event.kind, DiagnosticEventKindV1::Health { .. }))
+    );
+    Ok(())
+}
+
+#[test]
+fn ordered_cold_run_optional_credit_miss_keeps_original_spool_usable() -> Result<(), IndexError> {
+    let mut work = budget()?;
+    let spool = TextSpool::new_cold_postings(&TestScratch, &mut work)?;
+    let epoch = spool.db.change_count()?;
+    check!(!spool.prepare_ordered_cold_run_parent(&mut work)?);
+    check_eq!(spool.db.change_count()?, epoch);
+    check_eq!(work.first_denial(), None);
+    spool.check_posting_usable()?;
+    spool.posting_batch_rows(&[cold_row(b"\0fallback", 1, &work)?], &mut work)?;
+    let mut range = PackedRangeCursor::new(&spool, b"\0fallback", &mut work)?;
+    let row = range.next(&mut work)?.ok_or(IndexError::Conflict)?;
+    check_eq!(row.term.as_slice(), b"\0fallback");
+    check_eq!(row.owner, [1; 32]);
+    check_eq!(row.next, Some(object(11)));
+    check!(range.next(&mut work)?.is_none());
+    Ok(())
+}
+
+fn funded_ordered_run_work() -> Result<(WorkBudget, Arc<AtomicU64>), IndexError> {
+    let (setup, _sink, _operation) = packet_trace_budget(false)?;
+    let mut work = WorkBudget::with_request(
+        WorkLimits {
+            reads: 10_000,
+            writes: 10_000,
+            bytes: 100_000_000,
+            mutations: 10_000,
+        },
+        setup.request().clone(),
+    );
+    let live = Arc::new(AtomicU64::new(0));
+    work.bind_memory_scope(Some(MemoryScope::new(Arc::new(OrderedPacketEnvelope {
+        live: Arc::clone(&live),
+        limit: 4 * 1024 * 1024,
+    }))));
+    Ok((work, live))
+}
+
+#[test]
+fn abandoned_ordered_cold_run_refuses_partial_page_publication() -> Result<(), IndexError> {
+    let (mut work, live) = funded_ordered_run_work()?;
+    let spool = TextSpool::new_cold_postings(&TestScratch, &mut work)?;
+    let epoch = spool.db.change_count()?;
+    check!(spool.prepare_ordered_cold_run_parent(&mut work)?);
+    let guard = spool
+        .begin_ordered_cold_run(&mut work)?
+        .ok_or(IndexError::ResourceLimited)?;
+    let mut batch = Vec::new();
+    for index in 0..100_u16 {
+        let term = format!("\0t{index:04}");
+        for owner in 1..=18_u8 {
+            batch.push(cold_row(term.as_bytes(), owner, &work)?);
+            if batch.len() == 64 {
+                spool.posting_batch_rows(&batch, &mut work)?;
+                batch.clear();
+            }
+        }
+    }
+    if !batch.is_empty() {
+        spool.posting_batch_rows(&batch, &mut work)?;
+    }
+    check!(spool.db.change_count()? > epoch);
+    let count: i64 = spool
+        .db
+        .scoped(&work)?
+        .query_row(
+            "SELECT COUNT(*) FROM posting_packet WHERE phase=0",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| sql(&error))?;
+    check_eq!(count, 1);
+
+    let mut denied = WorkBudget::with_request(
+        WorkLimits {
+            reads: 10_000,
+            writes: 0,
+            bytes: 100_000_000,
+            mutations: 10_000,
+        },
+        work.request().clone(),
+    );
+    let next = [cold_row(b"\0tz", 1, &denied)?];
+    check_eq!(
+        spool.posting_batch_rows(&next, &mut denied).err(),
+        Some(IndexError::ResourceLimited)
+    );
+    check_eq!(denied.first_denial(), Some(WorkBudgetDenial::Writes));
+    drop(guard);
+    check!(matches!(
+        spool.check_posting_usable(),
+        Err(IndexError::BackendViolation(message))
+            if message == "posting scratch packet was abandoned"
+    ));
+    check!(PackedRangeCursor::new(&spool, b"\0t0000", &mut work).is_err());
+    drop(spool);
+    check_eq!(live.load(AtomicOrdering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn cancelled_ordered_cold_run_poisoned_without_sql_effect() -> Result<(), IndexError> {
+    let (mut work, live) = funded_ordered_run_work()?;
+    let spool = TextSpool::new_cold_postings(&TestScratch, &mut work)?;
+    let epoch = spool.db.change_count()?;
+    check!(spool.prepare_ordered_cold_run_parent(&mut work)?);
+    let guard = spool
+        .begin_ordered_cold_run(&mut work)?
+        .ok_or(IndexError::ResourceLimited)?;
+    let row = [cold_row(b"\0a", 1, &work)?];
+    work.request().cancel_handle().cancel();
+    check!(matches!(
+        spool.posting_batch_rows(&row, &mut work),
+        Err(IndexError::Cancelled)
+    ));
+    check_eq!(spool.db.change_count()?, epoch);
+    drop(guard);
+    check!(spool.check_posting_usable().is_err());
+    drop(spool);
+    check_eq!(live.load(AtomicOrdering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn ordered_cold_run_rejects_missing_extra_or_corrupt_second_page() -> Result<(), IndexError> {
+    for corruption in 0..6_u8 {
+        let (mut work, _live) = funded_ordered_run_work()?;
+        let spool = TextSpool::new_cold_postings(&TestScratch, &mut work)?;
+        check!(spool.prepare_ordered_cold_run_parent(&mut work)?);
+        let guard = spool
+            .begin_ordered_cold_run(&mut work)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut batch = Vec::new();
+        for index in 0..100_u16 {
+            let term = format!("\0t{index:04}");
+            for owner in 1..=18_u8 {
+                batch.push(cold_row(term.as_bytes(), owner, &work)?);
+                if batch.len() == 64 {
+                    spool.posting_batch_rows(&batch, &mut work)?;
+                    batch.clear();
+                }
+            }
+        }
+        if !batch.is_empty() {
+            spool.posting_batch_rows(&batch, &mut work)?;
+        }
+        guard.finish(&mut work)?;
+        let db = spool.db.scoped(&work)?;
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM posting_packet WHERE phase=0",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| sql(&error))?;
+        check_eq!(count, 2);
+        let changed = match corruption {
+            0 => db.execute(
+                "UPDATE posting_packet SET page=2 WHERE phase=0 AND run=0 AND page=1",
+                [],
+            ),
+            1 => db.execute(
+                "DELETE FROM posting_packet WHERE phase=0 AND run=0 AND page=1",
+                [],
+            ),
+            2 => db.execute(
+                "INSERT INTO posting_packet \
+                 SELECT phase,run,2,first_term,first_owner,last_term,last_owner,payload \
+                 FROM posting_packet WHERE phase=0 AND run=0 AND page=1",
+                [],
+            ),
+            3 => db.execute(
+                "UPDATE posting_packet SET first_term=x'00ff' \
+                 WHERE phase=0 AND run=0 AND page=1",
+                [],
+            ),
+            4 => db.execute(
+                "UPDATE posting_packet SET first_owner=zeroblob(32) \
+                 WHERE phase=0 AND run=0 AND page=1",
+                [],
+            ),
+            _ => db.execute(
+                "UPDATE posting_packet SET payload=zeroblob(length(payload)) \
+                 WHERE phase=0 AND run=0 AND page=1",
+                [],
+            ),
+        }
+        .map_err(|error| sql(&error))?;
+        check_eq!(changed, 1);
+        drop(db);
+        let result = PackedRangeCursor::new(&spool, b"\0t0000", &mut work).and_then(|mut range| {
+            for _ in 0..=1_800 {
+                if range.next(&mut work)?.is_none() {
+                    return Ok(());
+                }
+            }
+            Err(IndexError::Conflict)
+        });
+        check!(matches!(result, Err(IndexError::CorruptObject(_))));
+    }
+    Ok(())
 }
 
 #[test]
@@ -898,7 +1219,30 @@ fn cold_back_reference_multi_run_wire_work_and_eof() -> Result<(), IndexError> {
             let digest = Sha256::digest(&payload[42..]);
             check_eq!(&payload[10..42], digest.as_slice());
         }
+        let final_phase = spool
+            .postings
+            .final_phase()?
+            .ok_or(IndexError::ResourceLimited)?;
+        check!(final_phase > 0);
+        let final_first: Vec<u8> = db
+            .query_row(
+                "SELECT payload FROM posting_packet WHERE phase=?1 AND run=0 AND page=0",
+                [final_phase],
+                |row| row.get(0),
+            )
+            .map_err(|error| sql(&error))?;
+        // The final seekable stream can reuse the existing cold grouped
+        // format. Its first term has four owners, so the page must contain
+        // back references to the first literal.
+        check_eq!(&final_first[..8], b"QITXPR03");
         drop(db);
+        let mut middle = PackedRangeCursor::new(&spool, b"\0t0001", &mut work)?;
+        for owner in [1_u8, 2, 3, 4] {
+            let row = middle.next(&mut work)?.ok_or(IndexError::Conflict)?;
+            check_eq!(row.term.as_slice(), b"\0t0001");
+            check_eq!(row.owner, [owner; 32]);
+        }
+        drop(middle);
         for index in 0..1_772_u16 {
             let term = format!("\0t{index:04}");
             for (owner, count) in [(1_u8, 1_772_u16), (2, 600), (3, 600), (4, 572)] {

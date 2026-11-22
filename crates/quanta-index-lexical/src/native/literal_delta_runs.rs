@@ -1,5 +1,6 @@
 //! Bounded binary sorted runs for transient Native literal membership edits.
-//! A resident vector is preferred; managed SQLite stores only binary pages
+//!
+//! A resident vector is preferred; managed `SQLite` stores only binary pages
 //! when its 32 MiB envelope is reached. No scratch row is a published index.
 
 use std::cmp::{Ordering, Reverse};
@@ -14,7 +15,7 @@ use rusqlite::{OptionalExtension as _, params, types::ValueRef};
 
 use super::literal_memberships::MembershipEdit;
 
-const RESIDENT_CHUNK_ENTRIES: usize = 1024 * 1024 / 8;
+const RESIDENT_CHUNK_ENTRIES: usize = (1024_usize * 1024).div_euclid(8);
 const RESIDENT_CHUNKS: usize = 32;
 const PAGE_ENTRIES: usize = 8192;
 const PAGE_BYTES: usize = PAGE_ENTRIES * 8;
@@ -34,7 +35,11 @@ fn order(row: MembershipEdit) -> ([u8; 3], u32) {
 }
 
 fn validate_sorted(rows: &[MembershipEdit]) -> Result<(), IndexError> {
-    if rows.windows(2).any(|pair| order(pair[0]) >= order(pair[1])) {
+    if rows.windows(2).any(|pair| {
+        pair.first()
+            .zip(pair.get(1))
+            .is_some_and(|(left, right)| order(*left) >= order(*right))
+    }) {
         return Err(IndexError::BackendViolation(
             "literal delta run has duplicate or unordered keys".into(),
         ));
@@ -109,7 +114,10 @@ impl RunStore {
         )
         .map_err(|_error| IndexError::ResourceLimited)?;
         let runs_memory = budget.reserve_memory(runs_bytes, MemoryLifetime::Temporary)?;
-        let encoded_memory = budget.reserve_memory(PAGE_BYTES as u64, MemoryLifetime::Temporary)?;
+        let encoded_memory = budget.reserve_memory(
+            u64::try_from(PAGE_BYTES).map_err(|_error| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?;
         let mut runs = Vec::new();
         runs.try_reserve_exact(MAX_RUNS)
             .map_err(|_error| IndexError::ResourceLimited)?;
@@ -153,7 +161,13 @@ impl RunStore {
             self.encoded.extend_from_slice(&row.gram);
             self.encoded.push(u8::from(row.add));
         }
-        if self.encoded.len() != rows.len() * 8 || self.encoded.len() > PAGE_BYTES {
+        if self.encoded.len()
+            != rows
+                .len()
+                .checked_mul(8)
+                .ok_or(IndexError::ResourceLimited)?
+            || self.encoded.len() > PAGE_BYTES
+        {
             return Err(IndexError::BackendViolation(
                 "literal delta page encoding changed".into(),
             ));
@@ -255,7 +269,9 @@ impl RunStore {
         budget.charge(WorkUsage {
             writes: u64::from(run.pages),
             bytes: u64::from(run.pages)
-                .checked_mul(PAGE_BYTES as u64)
+                .checked_mul(
+                    u64::try_from(PAGE_BYTES).map_err(|_error| IndexError::ResourceLimited)?,
+                )
                 .ok_or(IndexError::ResourceLimited)?,
             mutations: 1,
             ..WorkUsage::default()
@@ -280,7 +296,7 @@ fn decode_page(
     output: &mut Vec<MembershipEdit>,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    if bytes.is_empty() || bytes.len() > PAGE_BYTES || bytes.len() % 8 != 0 {
+    if bytes.is_empty() || bytes.len() > PAGE_BYTES || !bytes.len().is_multiple_of(8) {
         return Err(IndexError::CorruptObject(
             "literal delta page length".into(),
         ));
@@ -324,7 +340,10 @@ struct RunReader {
 
 impl RunReader {
     fn new(run: RunMeta, budget: &WorkBudget) -> Result<Self, IndexError> {
-        let memory = budget.reserve_memory(PAGE_BYTES as u64, MemoryLifetime::Temporary)?;
+        let memory = budget.reserve_memory(
+            u64::try_from(PAGE_BYTES).map_err(|_error| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?;
         let mut page = Vec::new();
         page.try_reserve_exact(PAGE_ENTRIES)
             .map_err(|_error| IndexError::ResourceLimited)?;
@@ -380,10 +399,11 @@ struct ResidentChunk {
 
 impl ResidentChunk {
     fn new(budget: &WorkBudget) -> Result<Self, IndexError> {
-        let memory = budget.reserve_memory(
-            (RESIDENT_CHUNK_ENTRIES * 8) as u64,
-            MemoryLifetime::Temporary,
-        )?;
+        let bytes = RESIDENT_CHUNK_ENTRIES
+            .checked_mul(8)
+            .ok_or(IndexError::ResourceLimited)
+            .and_then(|bytes| u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited))?;
+        let memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
         let mut rows = Vec::new();
         rows.try_reserve_exact(RESIDENT_CHUNK_ENTRIES)
             .map_err(|_error| IndexError::ResourceLimited)?;
@@ -404,7 +424,7 @@ pub(super) struct DeltaCollector {
     resident: Vec<ResidentChunk>,
     active: usize,
     max_chunks: usize,
-    _resident_metadata: Option<MemoryLease>,
+    resident_metadata: Option<MemoryLease>,
     store: Option<RunStore>,
     poisoned: bool,
 }
@@ -429,7 +449,7 @@ impl DeltaCollector {
             resident,
             active: 0,
             max_chunks: RESIDENT_CHUNKS,
-            _resident_metadata: metadata,
+            resident_metadata: metadata,
             store: None,
             poisoned: false,
         })
@@ -480,7 +500,11 @@ impl DeltaCollector {
                 if self.active == 0
                     || self
                         .resident
-                        .get(self.active - 1)
+                        .get(
+                            self.active
+                                .checked_sub(1)
+                                .ok_or(IndexError::ResourceLimited)?,
+                        )
                         .is_some_and(|last| last.rows.len() == RESIDENT_CHUNK_ENTRIES)
                 {
                     if self.active == self.max_chunks {
@@ -495,7 +519,11 @@ impl DeltaCollector {
                         .ok_or(IndexError::ResourceLimited)?;
                 }
                 self.resident
-                    .get_mut(self.active - 1)
+                    .get_mut(
+                        self.active
+                            .checked_sub(1)
+                            .ok_or(IndexError::ResourceLimited)?,
+                    )
                     .ok_or(IndexError::ResourceLimited)?
                     .rows
                     .push(*row);
@@ -546,7 +574,7 @@ impl DeltaCollector {
                     chunks: self.resident,
                     frontier,
                     last: None,
-                    _metadata: self._resident_metadata,
+                    _metadata: self.resident_metadata,
                     _frontier_memory: frontier_memory,
                 },
                 false,
@@ -621,7 +649,10 @@ impl RunStore {
             readers.push(reader);
         }
         let mut output = Vec::new();
-        let _output_memory = budget.reserve_memory(PAGE_BYTES as u64, MemoryLifetime::Temporary)?;
+        let _output_memory = budget.reserve_memory(
+            u64::try_from(PAGE_BYTES).map_err(|_error| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?;
         output
             .try_reserve_exact(PAGE_ENTRIES)
             .map_err(|_error| IndexError::ResourceLimited)?;
@@ -682,6 +713,10 @@ impl PartialOrd for ResidentHead {
 
 pub(super) struct DeltaStream(DeltaStreamInner, bool);
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one bounded stream owns its already funded in-place run store; boxing adds another Original allocation"
+)]
 enum DeltaStreamInner {
     Resident {
         chunks: Vec<ResidentChunk>,

@@ -27,5 +27,5 @@ pub use legacy_import::{
 
 pub use graph::{
     GraphPage, GraphQuery, NativeGraph, NativeGraphReader, NativeRepoMapRankPage,
-    NativeRepoMapRankReader,
+    NativeRepoMapRankReader, NativeRepoMapPriorFileContextV1, NativeRepoMapPriorFileReaderV1,
 };

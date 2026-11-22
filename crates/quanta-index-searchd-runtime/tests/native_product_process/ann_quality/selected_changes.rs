@@ -5,8 +5,13 @@ use std::collections::BTreeSet;
 
 use quanta_index_contract::{
     ExactRepoRelativePathV1,
-    native_protocol::{NativeOverlayEffortContext, NativeOverlaySemanticResult},
+    native_protocol::{
+        NativeOverlayEffortContext, NativeOverlayRevision, NativeOverlaySemanticResult,
+        NativeOverlayTextResult, NativeOverlayTextSource,
+    },
 };
+
+pub(super) const OVERLAY_REPLACEMENT_PATH: &str = "src/0000.rs";
 
 fn check_exact_path_completion(
     traversal: NativeSemanticTraversal,
@@ -268,17 +273,127 @@ pub(super) fn check_delta_provider_inputs(inputs: &[String]) -> TestResult {
     )
 }
 
+fn check_overlay_fast(
+    result: &NativeOverlayTextResult,
+    selected: ViewRef,
+    text_instance: IndexInstanceId,
+    expected_owner: Option<OwnerKey>,
+) -> TestResult {
+    require_equal(&result.view, &selected, "ANN overlay Fast selected view")?;
+    require_equal(
+        &result.instance,
+        &text_instance,
+        "ANN overlay Fast text instance",
+    )?;
+    require_equal(
+        &result.matched,
+        &u64::from(expected_owner.is_some()),
+        "ANN overlay Fast match count",
+    )?;
+    let Some(owner) = expected_owner else {
+        return require(
+            result.hits.is_empty(),
+            "ANN overlay Fast returned an out-of-scope hit",
+        );
+    };
+    let [hit] = result.hits.as_slice() else {
+        return Err("ANN overlay Fast did not return exactly one replacement hit".into());
+    };
+    require_equal(&hit.owner, &owner, "ANN overlay Fast replacement owner")?;
+    require_equal(
+        &hit.path.as_str(),
+        &OVERLAY_REPLACEMENT_PATH,
+        "ANN overlay Fast replacement path",
+    )?;
+    require_equal(
+        &hit.source,
+        &NativeOverlayTextSource::Overlay { revision: 1 },
+        "ANN overlay Fast replacement source",
+    )
+}
+
+#[test]
+fn overlay_fast_oracle_rejects_empty_and_durable_replacement_hits() -> TestResult {
+    use quanta_index_contract::{
+        FiniteScore,
+        native_protocol::{
+            NativeInteractionPublisherId, NativeOverlayCorpusStamp, NativeOverlayTextHit,
+        },
+    };
+
+    let owner = quality_owner(0, &AnnRailConfig::DEFAULT)?;
+    let view = ViewRef {
+        workspace: workspace(),
+        epoch: 1,
+        sequence: 2,
+        digest: Digest([1; 32]),
+    };
+    let instance = text_spec().instance;
+    let mut result = NativeOverlayTextResult {
+        view,
+        instance,
+        artifact: ObjectRef(Digest([2; 32])),
+        matched: 1,
+        exhaustive: true,
+        corpus: NativeOverlayCorpusStamp {
+            session: NativeOverlaySession {
+                workspace: view.workspace,
+                publisher: NativeInteractionPublisherId([3; 32]),
+                epoch: view.epoch,
+            },
+            identity: Digest([4; 32]),
+            revisions: vec![NativeOverlayRevision {
+                owner,
+                revision: 1,
+                deleted: false,
+                retired: false,
+            }],
+        },
+        hits: vec![NativeOverlayTextHit {
+            owner,
+            path: OVERLAY_REPLACEMENT_PATH.into(),
+            source: NativeOverlayTextSource::Overlay { revision: 1 },
+            score: FiniteScore::new(1.0)?,
+        }],
+    };
+    check_overlay_fast(&result, view, instance, Some(owner))?;
+    require(
+        check_overlay_fast(&result, view, instance, None).is_err(),
+        "ANN overlay Fast accepted a replacement outside the selected path",
+    )?;
+
+    result
+        .hits
+        .first_mut()
+        .ok_or("ANN overlay Fast fixture missing hit")?
+        .source = NativeOverlayTextSource::Durable(ObjectRef(Digest([5; 32])));
+    require(
+        check_overlay_fast(&result, view, instance, Some(owner)).is_err(),
+        "ANN overlay Fast accepted a durable hit for an unsaved replacement",
+    )?;
+
+    result.matched = 0;
+    result.hits.clear();
+    check_overlay_fast(&result, view, instance, None)?;
+    require(
+        check_overlay_fast(&result, view, instance, Some(owner)).is_err(),
+        "ANN overlay Fast accepted an empty page for a matching replacement",
+    )
+}
+
 fn overlay_quality_query(
     client: &NativeUdsClient,
     selection: &QualitySelection<'_>,
-    session: NativeOverlaySession,
+    overlay: NativeOverlayEffortContext,
     seed: u64,
-    expected_corpus: Option<Digest>,
     path: Option<&str>,
+    expected_fast_owner: Option<OwnerKey>,
     deadline: Instant,
 ) -> TestResult<NativeOverlaySemanticResult> {
     let selected = selection.view;
+    let session = overlay.session;
     let instance = selection.instance;
+    let text_instance = text_spec().instance;
     let config = selection.config;
     let constraints = match path {
         Some(value) => QueryConstraintSetV1::from_exact_repo_relative_path(
@@ -298,12 +413,9 @@ fn overlay_quality_query(
     let mut deep = None;
     let done = client.query_effort_stream(
         NativeEffortStreamQuery {
-            overlay: Some(NativeOverlayEffortContext {
-                session,
-                expected_corpus,
-            }),
+            overlay: Some(overlay),
             selection: ViewSelection::Exact(selected),
-            text_instance: text_spec().instance,
+            text_instance,
             semantic_instance: instance,
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Native,
@@ -321,6 +433,8 @@ fn overlay_quality_query(
         &mut |stage| {
             match stage {
                 NativeEffortStreamStage::OverlayFast(fast) if fast_corpus.is_none() => {
+                    check_overlay_fast(fast, selected, text_instance, expected_fast_owner)
+                        .map_err(|error| NativeUdsError::Protocol(error.to_string()))?;
                     fast_corpus = Some(fast.corpus.clone());
                 }
                 NativeEffortStreamStage::OverlayDeep(result)
@@ -413,17 +527,11 @@ fn check_overlay_quality_result(
         result.scanned_owners <= u32::try_from(QUALITY_MAX_OWNERS)?,
         "ANN overlay scanned beyond fixed candidate bound",
     )?;
-    require(
-        result.corpus.revisions.iter().any(|row| {
-            row.owner == overlay_owner && row.revision == revision && !row.deleted && !row.retired
-        }),
-        "ANN overlay corpus does not bind the unsaved revision",
-    )?;
-    require(
-        result.corpus.revisions.iter().any(|row| {
-            row.owner == deleted_owner && row.revision == revision && row.deleted && !row.retired
-        }),
-        "ANN overlay corpus does not bind the active tombstone",
+    check_overlay_quality_revisions(
+        &result.corpus.revisions,
+        overlay_owner,
+        deleted_owner,
+        revision,
     )?;
     let deleted_id = quality_row_id(deleted_owner, selection.config)?;
     require(
@@ -473,19 +581,47 @@ fn check_overlay_quality_result(
     Ok(matches)
 }
 
+fn check_overlay_quality_revisions(
+    actual: &[NativeOverlayRevision],
+    overlay_owner: OwnerKey,
+    deleted_owner: OwnerKey,
+    revision: u64,
+) -> TestResult {
+    let mut expected = [
+        NativeOverlayRevision {
+            owner: overlay_owner,
+            revision,
+            deleted: false,
+            retired: false,
+        },
+        NativeOverlayRevision {
+            owner: deleted_owner,
+            revision,
+            deleted: true,
+            retired: false,
+        },
+    ];
+    expected.sort_unstable_by_key(|entry| entry.owner);
+    require_equal(
+        &actual,
+        &expected.as_slice(),
+        "ANN overlay exact revision inventory",
+    )
+}
+
 #[test]
-fn overlay_quality_oracle_rejects_misordered_page() -> TestResult {
+fn overlay_quality_oracle_rejects_misordered_page_and_foreign_revision() -> TestResult {
     use quanta_index_contract::{
         FiniteScore,
         index::{CoverageBinding, InputBinding, MapRoot},
         native_protocol::{
-            NativeInteractionPublisherId, NativeOverlayCorpusStamp, NativeOverlayRevision,
-            NativeOverlaySemanticHit, NativeOverlaySemanticHitOrigin,
+            NativeInteractionPublisherId, NativeOverlayCorpusStamp, NativeOverlaySemanticHit,
+            NativeOverlaySemanticHitOrigin,
         },
     };
 
     let config = AnnRailConfig {
-        rows: 3,
+        rows: 4,
         width: 2,
         queries: 1,
         k: 2,
@@ -593,6 +729,27 @@ fn overlay_quality_oracle_rejects_misordered_page() -> TestResult {
     require(
         refusal.to_string().contains("ANN result order"),
         format!("unexpected overlay page refusal: {refusal}"),
+    )?;
+    result.hits.swap(0, 1);
+    result.corpus.revisions.push(NativeOverlayRevision {
+        owner: quality_owner(3, &config)?,
+        revision: 1,
+        deleted: true,
+        retired: false,
+    });
+    result
+        .corpus
+        .revisions
+        .sort_unstable_by_key(|entry| entry.owner);
+    let refusal =
+        check_overlay_quality_result(&result, &selection, 0, overlay_owner, deleted_owner, 1)
+            .err()
+            .ok_or("the overlay oracle accepted a foreign revision")?;
+    require(
+        refusal
+            .to_string()
+            .contains("ANN overlay exact revision inventory"),
+        format!("unexpected overlay revision refusal: {refusal}"),
     )
 }
 
@@ -605,7 +762,7 @@ pub(super) fn overlay_quality_sweep(
     rows: &[(String, Vec<f32>)],
     owners: (OwnerKey, OwnerKey),
     deadline: Instant,
-) -> TestResult {
+) -> TestResult<(Digest, u64)> {
     let (overlay_owner, deleted_owner) = owners;
     let view = client.read_view(
         ViewSelection::Exact(selected),
@@ -638,12 +795,24 @@ pub(super) fn overlay_quality_sweep(
         let result = overlay_quality_query(
             client,
             &selection,
-            session,
+            NativeOverlayEffortContext {
+                session,
+                expected_corpus: corpus_identity,
+            },
             seed,
-            corpus_identity,
             None,
+            Some(overlay_owner),
             deadline,
-        )?;
+        )
+        .map_err(|error| {
+            format!(
+                "ANN overlay query failed at seed {seed}, watchdog remaining {}ms: {}",
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis(),
+                quality_error_chain(error.as_ref()),
+            )
+        })?;
         if let Some(expected) = corpus_identity {
             require_equal(
                 &result.corpus.identity,
@@ -668,7 +837,7 @@ pub(super) fn overlay_quality_sweep(
     require(overlay_owner_seen, "ANN unsaved replacement never ranked")?;
     let corpus_identity = corpus_identity.ok_or("ANN overlay corpus identity absent")?;
     for (path, expected_owner) in [
-        ("src/0000.rs", Some(overlay_owner)),
+        (OVERLAY_REPLACEMENT_PATH, Some(overlay_owner)),
         ("src/0001.rs", None),
         ("src/0122.rs", None),
     ] {
@@ -687,10 +856,13 @@ pub(super) fn overlay_quality_sweep(
         let result = overlay_quality_query(
             client,
             &selection,
-            session,
+            NativeOverlayEffortContext {
+                session,
+                expected_corpus: Some(corpus_identity),
+            },
             0,
-            Some(corpus_identity),
             Some(path),
+            expected_owner,
             deadline,
         )?;
         require_equal(&result.view, &selected, "ANN overlay path selected view")?;
@@ -716,6 +888,7 @@ pub(super) fn overlay_quality_sweep(
             &corpus_identity,
             "ANN overlay path same-session corpus",
         )?;
+        check_overlay_quality_revisions(&result.corpus.revisions, overlay_owner, deleted_owner, 1)?;
         require(
             result.scanned_owners <= u32::try_from(QUALITY_MAX_OWNERS)?,
             "ANN overlay path scanned beyond fixed candidate bound",
@@ -767,5 +940,6 @@ pub(super) fn overlay_quality_sweep(
     require(
         Instant::now() < deadline,
         "ANN overlay quality watchdog expired after final path",
-    )
+    )?;
+    Ok((corpus_identity, publisher_sequence))
 }

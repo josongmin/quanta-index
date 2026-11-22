@@ -19,6 +19,7 @@ from tools.benchmark.retrieval.causal_cost_timeline import (
     _schema_for_version,
     _selected_validator,
     chrome_export,
+    managed_install_census,
     parse,
     parse_stream,
     reconcile_legacy,
@@ -421,6 +422,66 @@ def _ann_region_rows() -> list[dict]:
     rows[-1]["closed_ns"] = 50
     _resequence_ann_region_rows(rows)
     return rows
+
+
+def _ann_region_repeated_query_rows(*, fileset: str, descriptor: str = "cd" * 32) -> list[dict]:
+    rows = _ann_region_rows()
+    rows[8:8] = [
+        {
+            "record_type": "event",
+            "capture_id": CAPTURE,
+            "ts_ns": 37,
+            "kind": {
+                "type": "span_begin",
+                "span_id": 4,
+                "parent_span_id": 1,
+                "stage": "query_candidate",
+                "lane_id": 0,
+            },
+        },
+        {
+            "record_type": "event",
+            "capture_id": CAPTURE,
+            "ts_ns": 38,
+            "kind": {
+                **rows[6]["kind"],
+                "span_id": 4,
+                "fileset_ref": fileset,
+                "descriptor_ref": descriptor,
+            },
+        },
+        {
+            "record_type": "event",
+            "capture_id": CAPTURE,
+            "ts_ns": 39,
+            "kind": {"type": "span_end", "span_id": 4, "outcome": "ok"},
+        },
+    ]
+    _resequence_ann_region_rows(rows)
+    return rows
+
+
+def _ann_region_bytes(rows: list[dict], version: int) -> bytes:
+    rows[0]["schema_version"] = rows[-1]["schema_version"] = version
+    if version == 5:
+        for index, row in enumerate(rows[1:-1], 1):
+            kind = row["kind"]
+            if kind["type"] == "span_begin":
+                payload = [
+                    "b",
+                    kind["span_id"],
+                    kind.get("parent_span_id"),
+                    kind["stage"],
+                    kind["lane_id"],
+                    kind.get("root_kind"),
+                ]
+            elif kind["type"] == "span_end":
+                payload = ["e", kind["span_id"], kind["outcome"], kind.get("error_code")]
+            else:
+                payload = kind
+            rows[index] = ["e", row["output_seq"], row["capture_id"], row["ts_ns"], payload]
+        return _v5_bytes(rows)
+    return b"".join(map(_line, rows))
 
 
 def _resequence_ann_region_rows(rows: list[dict]) -> None:
@@ -1155,6 +1216,104 @@ def test_ann_region_identity_is_bound_to_seal_and_query_spans() -> None:
     assert viewer["quantaIndexSummary"]["ann_region_observations"][1]["rows"] == "256"
 
 
+@pytest.mark.parametrize("version", (3, 4, 5))
+def test_ann_descriptor_retains_its_fileset_across_queries(version: int) -> None:
+    repeated = _ann_region_repeated_query_rows(fileset="ab" * 32)
+    capture = parse(_ann_region_bytes(repeated, version))
+    assert len(capture["ann_region_observations"]) == 3
+
+    shared_fileset = _ann_region_repeated_query_rows(fileset="ab" * 32, descriptor="ef" * 32)
+    assert len(parse(_ann_region_bytes(shared_fileset, version))["ann_region_observations"]) == 3
+
+    changed = _ann_region_repeated_query_rows(fileset="ef" * 32)
+    with pytest.raises(ValueError, match="ANN descriptor fileset differs"):
+        parse(_ann_region_bytes(changed, version))
+
+
+@pytest.mark.parametrize("version", (3, 4, 5))
+def test_ann_descriptor_rejects_conflict_in_partial_capture(version: int) -> None:
+    rows = _ann_region_repeated_query_rows(fileset="ef" * 32)
+    rows = rows[:10]
+    rows.append(
+        {
+            **_ann_region_rows()[-1],
+            "closed_ns": 40,
+            "open_spans": 2,
+        }
+    )
+    _mark_partial_footer(rows, dropped=1)
+    with pytest.raises(ValueError, match="ANN descriptor fileset differs"):
+        parse(_ann_region_bytes(rows, version))
+
+
+@pytest.mark.parametrize("version", (3, 4, 5))
+def test_ann_descriptor_rejects_conflict_with_orphan_observation(version: int) -> None:
+    for fileset in ("ab" * 32, "ef" * 32):
+        rows = _ann_region_repeated_query_rows(fileset=fileset)
+        del rows[10]  # The second query end was lost with its begin.
+        del rows[8]
+        _mark_partial_footer(rows, dropped=1)
+        if fileset == "ab" * 32:
+            capture = parse(_ann_region_bytes(rows, version))
+            assert capture["status"] == "partial"
+            assert capture["orphan_events"] == 1
+        else:
+            with pytest.raises(ValueError, match="ANN descriptor fileset differs"):
+                parse(_ann_region_bytes(rows, version))
+
+
+@pytest.mark.parametrize("version", (3, 4, 5))
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    (
+        ("shape", "ANN fileset observations disagree"),
+        ("counts", "ANN fileset observations disagree"),
+        ("duplicate", "duplicate ANN region observation"),
+    ),
+)
+def test_ann_orphan_observation_preserves_region_invariants(
+    version: int, mutation: str, error: str
+) -> None:
+    rows = _ann_region_repeated_query_rows(fileset="ab" * 32)
+    del rows[10]  # The second query end was lost with its begin.
+    del rows[8]
+    _mark_partial_footer(rows, dropped=1)
+    assert parse(_ann_region_bytes(copy.deepcopy(rows), version))["orphan_events"] == 1
+
+    orphan = rows[8]
+    if mutation == "shape":
+        orphan["kind"]["rows"] += 1
+    elif mutation == "counts":
+        orphan["kind"]["files"] = 3
+    else:
+        rows.insert(9, copy.deepcopy(orphan))
+        _mark_partial_footer(rows, dropped=1)
+    with pytest.raises(ValueError, match=error):
+        parse(_ann_region_bytes(rows, version))
+
+
+@pytest.mark.parametrize("version", (3, 4, 5))
+@pytest.mark.parametrize("capture_kind", ("complete", "partial", "orphan"))
+def test_lance_observation_accepts_empty_file_entries(
+    version: int, capture_kind: str
+) -> None:
+    rows = _ann_region_repeated_query_rows(fileset="ab" * 32)
+    for row in rows:
+        if row.get("kind", {}).get("type") == "ann_region_observation":
+            row["kind"].update(files=2, chunks=1)
+    if capture_kind == "orphan":
+        del rows[10]
+        del rows[8]
+    if capture_kind != "complete":
+        _mark_partial_footer(rows, dropped=1)
+    capture = parse(_ann_region_bytes(rows, version))
+    assert capture["status"] == ("complete" if capture_kind == "complete" else "partial")
+    assert capture["orphan_events"] == (1 if capture_kind == "orphan" else 0)
+    assert [(row["files"], row["chunks"]) for row in capture["ann_region_observations"]] == [
+        (2, 1), (2, 1), (2, 1)
+    ]
+
+
 def test_native_hnsw_region_observations_preserve_one_logical_graph_artifact() -> None:
     rows = _ann_region_rows()
     for row in rows:
@@ -1232,7 +1391,9 @@ def test_v5_native_hnsw_installed_descriptor_reference_replays() -> None:
         ("rows", True),
         ("rows", 8193),
         ("index_kind", "untrained"),
+        ("files", 0),
         ("files", 257),
+        ("chunks", 0),
         ("chunks", 289),
     ),
 )
@@ -1256,7 +1417,7 @@ def test_ann_region_identity_rejects_wrong_stage_interval_and_immutability() -> 
         (lambda rows: rows[3].update(ts_ns=31), "outside owner interval"),
         (lambda rows: rows[6]["kind"].update(rows=255), "observations disagree"),
         (lambda rows: rows[6]["kind"].update(ordinal=8), "observations disagree"),
-        (lambda rows: rows[3]["kind"].update(chunks=1), "fewer chunks than files"),
+        (lambda rows: rows[3]["kind"].update(chunks=1), "observations disagree"),
         (lambda rows: rows[4]["kind"].update(outcome="error"), "failed owner"),
     ):
         rows = _ann_region_rows()
@@ -2851,6 +3012,73 @@ def _v5_bytes(rows: list[dict | list]) -> bytes:
     return b"".join(json.dumps(row, separators=(",", ":")).encode() + b"\n" for row in rows)
 
 
+@pytest.mark.parametrize("outcome,code", (("ok", None), ("error", 1), ("cancelled", 1)))
+def test_v5_lance_query_stages_preserve_candidate_parent_and_terminal(
+    outcome: str, code: int | None
+) -> None:
+    rows = _v5_rows()
+    stages = (
+        "query_ann_file_set",
+        "query_ann_hydrate",
+        "query_ann_open",
+        "query_ann_candidate",
+    )
+    legacy_stages = _schema_for_version(json.loads(SCHEMA.read_text()), 4)["$defs"][
+        "spanBegin"
+    ]["properties"]["stage"]["enum"]
+    assert all(stage not in legacy_stages for stage in stages)
+    children = []
+    for offset, stage in enumerate(stages):
+        span_id = offset + 3
+        start = 21 + offset * 3
+        terminal = outcome if offset == len(stages) - 1 else "ok"
+        children.extend(
+            (
+                ["e", 0, CAPTURE, start, ["b", span_id, 2, stage, 3, None]],
+                [
+                    "e",
+                    0,
+                    CAPTURE,
+                    start + 2,
+                    ["e", span_id, terminal, code if terminal == outcome else None],
+                ],
+            )
+        )
+    rows[3:4] = children
+    rows[-3][4] = ["e", 2, outcome, code]
+    rows[-2][4] = ["e", 1, outcome, code]
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
+    )
+    captured = parse(_v5_bytes(rows))
+    assert captured["status"] == "complete"
+    assert [captured["spans"][span_id]["stage"] for span_id in range(3, 7)] == list(stages)
+    assert all(captured["spans"][span_id]["parent_span_id"] == 2 for span_id in range(3, 7))
+    assert captured["spans"][6]["outcome"] == outcome
+    assert captured["spans"][6]["counters"] == {}
+    # A killed worker can leave an open_index begin without an end or footer.
+    open_begin = next(
+        i for i, row in enumerate(rows[1:-1], 1) if row[4][:2] == ["b", 5]
+    )
+    interrupted = parse(_v5_bytes(rows[: open_begin + 1]))
+    assert interrupted["status"] == "partial"
+    assert interrupted["spans"][5]["end_ns"] is None
+    assert 6 not in interrupted["spans"]
+    rows[3][4][2] = 1
+    with pytest.raises(ValueError, match="ANN query stage lacks candidate parent"):
+        parse(_v5_bytes(rows))
+    rows[3][4][2] = None
+    rows[3][4][5] = "operation"
+    with pytest.raises(ValueError, match="ANN query stage lacks candidate parent"):
+        parse(_v5_bytes(rows))
+
+
 TEXT_SHAPE_RAW_KEYS = (
     "text_case_occurrences",
     "text_unique_canonical_terms",
@@ -3767,6 +3995,60 @@ def test_v5_object_install_phase_replay_summary_and_perfetto() -> None:
     assert exported["quantaIndexSummary"]["object_install_aggregates"][1][
         "thread_cpu_ns"
     ] is None
+
+
+@pytest.mark.parametrize("fault", (None, "incomplete", "absent", "short", "wrong_child"))
+def test_managed_install_census_uses_confirmed_distinct_identities(fault: str | None) -> None:
+    rows = _v5_rows()
+    rows[2][4] = ["b", 2, 1, "native_source_apply", 0, None]
+    reference, child = "01" * 32, "02" * 32
+    events = []
+    for span_id, stage in ((3, "managed_object_confirm"), (4, "managed_object_advance")):
+        events.append(["b", span_id, 2, stage, 0, None])
+        groups = {
+            "catalog_registration": [(reference, None)] if span_id == 3 else [],
+            "catalog_edge": [(reference, child), (reference, child)] if span_id == 3 else [],
+            "storage_cas_reuse": [(reference, None)],
+        }
+        for kind, identities in groups.items():
+            if fault == "absent" and span_id == 4 and kind == "storage_cas_reuse":
+                continue
+            count = len(identities)
+            if fault in {"short", "incomplete"} and span_id == 3 and kind == "catalog_edge":
+                count += 1
+            events.append(
+                {"type": "managed_install_census_batch", "span_id": span_id,
+                 "census_kind": kind, "entries": count}
+            )
+            for object_ref, child_ref in identities:
+                if fault == "wrong_child" and kind == "catalog_registration":
+                    child_ref = child
+                events.append(
+                    {"type": "managed_install_census_entry", "span_id": span_id,
+                     "census_kind": kind, "object_ref": object_ref, "child_ref": child_ref}
+                )
+        events.append(["e", span_id, "ok", None])
+    rows[3:4] = [["e", 0, CAPTURE, 25, event] for event in events]
+    for sequence, row in enumerate(rows[1:-1], 1):
+        row[1] = sequence
+    count = len(rows) - 2
+    rows[-1].update(last_output_seq=count, events_attempted=count, events_accepted=count,
+                    events_written=count)
+    if fault == "incomplete":
+        rows[-1]["status"] = "partial"
+    if fault in {"short", "wrong_child"}:
+        error = "batch size differs" if fault == "short" else "invalid causal timeline row"
+        with pytest.raises(ValueError, match=error):
+            parse(_v5_bytes(rows))
+        return
+    observed = managed_install_census(parse(_v5_bytes(rows)), [3, 4])
+    if fault in {"incomplete", "absent"}:
+        assert observed == {"status": "unavailable"}
+        return
+    assert observed == {
+        "status": "complete", "custody_spans": 2,
+        "registered_objects": 1, "registered_edges": 1, "cas_reused_objects": 1
+    }
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,5 @@
-//! End-to-end integration: preload repo-map owner state in searchd runtime and
-//! query it through the UDS search-plane IPC.
+//! End-to-end integration: publish repo-map owner state to the pinned Legacy
+//! daemon and query it through the UDS search-plane IPC.
 
 #![forbid(unsafe_code)]
 #![expect(
@@ -40,24 +40,21 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponseEnvelope, SymbolId,
 };
 use quanta_index_ipc::send_request;
-use quanta_index_searchd_harness::E2eRuntime;
+use quanta_index_searchd_harness::legacy_reference::{
+    LegacySearchdBinary, SearchdBinaryProcess, daemon_socket_paths,
+};
+use quanta_index_searchd_harness::private_tempdir;
 
 type TestResult = Result<(), Box<dyn Error>>;
 const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
+const HISTORY_MAX_GENERATIONS: usize = 8;
 
-/// Harness-owned three-socket scenario fixture (TOPT-03: runtime fixture
-/// ownership).
-///
-/// The daemon's tempdir, three-socket builder, and driver thread all live in
-/// [`E2eRuntime`]: boot binds query/control/ingest and waits for all three,
-/// and dropping the runtime performs the acknowledged lease-release (signal
-/// the driver, join it — which drops the old runtime and releases the
-/// state-root lease — before the tempdir is removed). Stale-socket cleanup
-/// tolerates races (`NotFound` is not an error). Tests therefore return
-/// `Err(..)` directly on failure paths with no manual shutdown/join
-/// bookkeeping; teardown is owned by the harness.
+/// Pinned three-socket process fixture. The process field precedes its state
+/// root so failure-path drop terminates the daemon before removing the root.
 struct ScenarioFixture {
-    runtime: E2eRuntime,
+    process: SearchdBinaryProcess,
+    state_root: tempfile::TempDir,
+    binary: LegacySearchdBinary,
     query_socket: std::path::PathBuf,
     control_socket: std::path::PathBuf,
     ingest_socket: std::path::PathBuf,
@@ -65,39 +62,49 @@ struct ScenarioFixture {
 
 impl ScenarioFixture {
     fn boot() -> Result<Self, Box<dyn Error>> {
-        let mut runtime = E2eRuntime::boot()?;
-        // Eager start surfaces a boot refusal here and binds all three
-        // sockets before any byte is published.
-        runtime.start()?;
-        Self::wrap(runtime)
+        Self::start(private_tempdir()?, LegacySearchdBinary::from_environment()?)
     }
 
-    /// Acknowledged restart: the old driver is signalled and joined (dropping
-    /// the old runtime and releasing the state-root lease) before a fresh
-    /// runtime is built over the same state root — no sleep-based handoff.
+    /// Stop and reap the old process before starting the same pinned binary
+    /// over the retained state root.
     fn restart(self) -> Result<Self, Box<dyn Error>> {
-        let mut runtime = self.runtime.reopen();
-        runtime.start()?;
-        Self::wrap(runtime)
+        let Self {
+            process,
+            state_root,
+            binary,
+            ..
+        } = self;
+        process.stop()?;
+        Self::start(state_root, binary)
     }
 
-    fn wrap(runtime: E2eRuntime) -> Result<Self, Box<dyn Error>> {
-        let (query_socket, control_socket, ingest_socket) = {
-            let (query, control, ingest) = runtime
-                .socket_paths()
-                .ok_or_else(|| "fixture: driver started without socket paths".to_string())?;
-            (
-                query.to_path_buf(),
-                control.to_path_buf(),
-                ingest.to_path_buf(),
-            )
-        };
+    fn start(
+        state_root: tempfile::TempDir,
+        binary: LegacySearchdBinary,
+    ) -> Result<Self, Box<dyn Error>> {
+        let process = binary.start(state_root.path(), HISTORY_MAX_GENERATIONS)?;
+        let [query_socket, control_socket, ingest_socket] = daemon_socket_paths(state_root.path());
         Ok(Self {
-            runtime,
+            process,
+            state_root,
+            binary,
             query_socket,
             control_socket,
             ingest_socket,
         })
+    }
+
+    fn finish(self) -> Result<(), Box<dyn Error>> {
+        let Self {
+            process,
+            state_root,
+            binary,
+            ..
+        } = self;
+        process.stop()?;
+        binary.verify()?;
+        drop(state_root);
+        Ok(())
     }
 }
 
@@ -367,9 +374,9 @@ fn assert_repo_map_transport_surface(
 #[test]
 fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
-    let query_socket = fixture.query_socket.clone();
-    let control_socket = fixture.control_socket.clone();
-    let ingest_socket = fixture.ingest_socket;
+    let query_socket = fixture.query_socket.as_path();
+    let control_socket = fixture.control_socket.as_path();
+    let ingest_socket = fixture.ingest_socket.as_path();
     let source = repo_map_bundle()?;
     let publish_request = RepoMapPublishBundleRequestV2::new(source.clone())?;
     let publish_envelope = SearchPlaneIngestIpcRequestEnvelope {
@@ -377,7 +384,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
         request_id: 75,
         payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(publish_request.clone()),
     };
-    let ingest = send_ingest_request(&ingest_socket, &publish_envelope)
+    let ingest = send_ingest_request(ingest_socket, &publish_envelope)
         .map_err(|err| format!("repo-map ingest request failed: {err}"))?;
     let publish = match ingest.payload {
         SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt)
@@ -391,7 +398,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
             return Err(format!("repo-map V2 publish did not ack: {other:?}").into());
         }
     };
-    let replay = send_ingest_request(&ingest_socket, &publish_envelope)
+    let replay = send_ingest_request(ingest_socket, &publish_envelope)
         .map_err(|err| format!("repo-map V2 replay request failed: {err}"))?;
     let mut expected_replay = publish.clone();
     expected_replay.mutation.replayed = true;
@@ -402,7 +409,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     let mut substituted = source.clone();
     substituted.snapshot_id.push_str("-foreign");
     let refusal = send_ingest_request(
-        &ingest_socket,
+        ingest_socket,
         &SearchPlaneIngestIpcRequestEnvelope {
             diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 76,
@@ -420,7 +427,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     }
 
     let activate = send_control_request(
-        &control_socket,
+        control_socket,
         &SearchPlaneControlIpcRequestEnvelope {
             diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 77,
@@ -439,7 +446,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
         return Err(format!("repo-map V2 activate did not bind publish: {activate:?}").into());
     }
     if !wait_until(READINESS_TIMEOUT, || {
-        send_query_request(&query_socket, &repo_map_request())
+        send_query_request(query_socket, &repo_map_request())
             .map(|response| {
                 matches!(
                     response.payload,
@@ -451,7 +458,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
         return Err("repo-map query path never became ready".into());
     }
 
-    let response = send_query_request(&query_socket, &repo_map_request())
+    let response = send_query_request(query_socket, &repo_map_request())
         .map_err(|err| format!("repo-map query request failed: {err}"))?;
     let repo_map = match response.payload {
         SearchPlaneQueryIpcResponse::RepoMapQuery(repo_map) => repo_map,
@@ -461,14 +468,14 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     };
     assert_repo_map_transport_surface(&repo_map)?;
 
-    Ok(())
+    fixture.finish()
 }
 
 #[test]
 fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
-    let control_socket = fixture.control_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let control_socket = fixture.control_socket.as_path();
+    let ingest_socket = fixture.ingest_socket.as_path();
     let source = repo_map_bundle()?;
     let publish_request = RepoMapPublishBundleRequestV2::new(source.clone())?;
     let publish_envelope = SearchPlaneIngestIpcRequestEnvelope {
@@ -476,7 +483,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         request_id: 75,
         payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(publish_request),
     };
-    let ingest = send_ingest_request(&ingest_socket, &publish_envelope)
+    let ingest = send_ingest_request(ingest_socket, &publish_envelope)
         .map_err(|err| format!("repo-map ingest request failed: {err}"))?;
     let publish = match ingest.payload {
         SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt)
@@ -495,7 +502,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
             RepoMapActivateGenerationRequestV2::for_bundle(&source)?,
         ),
     };
-    let activate = send_control_request(&control_socket, &activate_envelope)
+    let activate = send_control_request(control_socket, &activate_envelope)
         .map_err(|err| format!("repo-map activate request failed: {err}"))?;
     let activation = match activate.payload {
         SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(receipt)
@@ -510,10 +517,10 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     };
 
     let fixture = fixture.restart()?;
-    let query_socket = fixture.query_socket;
-    let control_socket = fixture.control_socket;
-    let ingest_socket = fixture.ingest_socket;
-    let replay = send_ingest_request(&ingest_socket, &publish_envelope)?;
+    let query_socket = fixture.query_socket.as_path();
+    let control_socket = fixture.control_socket.as_path();
+    let ingest_socket = fixture.ingest_socket.as_path();
+    let replay = send_ingest_request(ingest_socket, &publish_envelope)?;
     let mut expected_publish_replay = publish;
     expected_publish_replay.mutation.replayed = true;
     if replay.payload
@@ -521,7 +528,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     {
         return Err(format!("repo-map V2 restart publish replay drifted: {replay:?}").into());
     }
-    let activate_replay = send_control_request(&control_socket, &activate_envelope)?;
+    let activate_replay = send_control_request(control_socket, &activate_envelope)?;
     let mut expected_activation_replay = activation;
     expected_activation_replay.mutation.replayed = true;
     if activate_replay.payload
@@ -532,7 +539,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         );
     }
     if !wait_until(READINESS_TIMEOUT, || {
-        send_query_request(&query_socket, &repo_map_request())
+        send_query_request(query_socket, &repo_map_request())
             .map(|response| {
                 matches!(
                     response.payload,
@@ -544,7 +551,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         return Err("repo-map persisted query path never became ready".into());
     }
 
-    let response = send_query_request(&query_socket, &repo_map_request())
+    let response = send_query_request(query_socket, &repo_map_request())
         .map_err(|err| format!("repo-map query request after restart failed: {err}"))?;
     let repo_map = match response.payload {
         SearchPlaneQueryIpcResponse::RepoMapQuery(repo_map) => repo_map,
@@ -556,15 +563,15 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     };
     assert_repo_map_transport_surface(&repo_map)?;
 
-    Ok(())
+    fixture.finish()
 }
 
 #[test]
 fn repo_map_query_without_materialized_snapshot_fails_closed() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
-    let query_socket = fixture.query_socket;
+    let query_socket = fixture.query_socket.as_path();
 
-    let response = send_query_request(&query_socket, &repo_map_request())
+    let response = send_query_request(query_socket, &repo_map_request())
         .map_err(|err| format!("repo-map missing-snapshot query failed: {err}"))?;
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
@@ -575,16 +582,16 @@ fn repo_map_query_without_materialized_snapshot_fails_closed() -> TestResult {
     assert_eq!(err.code.as_wire_str(), "NOT_FOUND");
     assert!(err.message.contains("no activated generation"));
 
-    Ok(())
+    fixture.finish()
 }
 
 #[test]
 fn cross_socket_requests_fail_closed() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
-    let query_socket = fixture.query_socket;
-    let control_socket = fixture.control_socket;
+    let query_socket = fixture.query_socket.as_path();
+    let control_socket = fixture.control_socket.as_path();
 
-    match send_ingest_request(&query_socket, &repo_map_ingest_envelope()?) {
+    match send_ingest_request(query_socket, &repo_map_ingest_envelope()?) {
         Ok(unexpected) => {
             return Err(format!(
                 "ingest envelope on query socket must fail closed, got {unexpected:?}"
@@ -594,7 +601,7 @@ fn cross_socket_requests_fail_closed() -> TestResult {
         Err(err) => check_connection_fatal(err)?,
     }
 
-    match send_query_request(&control_socket, &repo_map_request()) {
+    match send_query_request(control_socket, &repo_map_request()) {
         Ok(unexpected) => {
             return Err(format!(
                 "query envelope on control socket must fail closed, got {unexpected:?}"
@@ -604,5 +611,5 @@ fn cross_socket_requests_fail_closed() -> TestResult {
         Err(err) => check_connection_fatal(err)?,
     }
 
-    Ok(())
+    fixture.finish()
 }

@@ -18,7 +18,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::codec::cbor_serde;
 
-use super::ann_lance::{MAX_REGION_CELLS, MAX_REGION_DIMENSION, MAX_REGION_ROWS, RegionSeal};
+use super::ann_lance::RegionSeal;
+use super::ann_region_policy::{MAX_REGION_CELLS, MAX_REGION_DIMENSION, MAX_REGION_ROWS};
 use crate::manifest::{VECTOR_INDEX_MODE_EXACT, VECTOR_INDEX_MODE_IVF_HNSW_SQ};
 
 const FILE_SET_FORMAT: u32 = 1;
@@ -203,11 +204,13 @@ cbor_serde!(AnnFileSet {
 });
 
 pub(super) struct LoadedAnnChunk {
+    pub length: u32,
     pub object: StoredObject,
 }
 
 pub(super) struct LoadedAnnFile {
     pub path: String,
+    pub length: u64,
     pub chunks: Vec<LoadedAnnChunk>,
 }
 
@@ -218,11 +221,19 @@ struct LoadedAnnManifest {
 }
 
 pub(super) struct LoadedAnnFileSet {
+    pub seal: RegionSeal,
     pub total_length: u64,
     pub files: Vec<LoadedAnnFile>,
     // The descriptor and decoded metadata remain funded alongside file data.
     _descriptor: StoredObject,
     _metadata_memory: Option<MemoryLease>,
+}
+
+pub(super) struct VerifiedAnnFileSet {
+    pub seal: RegionSeal,
+    pub index_kind: DiagnosticAnnIndexKindV1,
+    pub files: u32,
+    pub chunks: u32,
 }
 
 fn invalid(message: &'static str) -> IndexError {
@@ -455,15 +466,40 @@ fn read_metadata_memory_bytes(payload_bytes: usize) -> Result<u64, IndexError> {
 ///
 /// An aborted attempt leaves only attempt-owned objects for the existing
 /// Catalog reclaim path.
+#[cfg(test)]
 pub(super) fn install_fileset(
     context: &mut AttemptContext<'_>,
     seal: RegionSeal,
     files: &[AnnFileInput<'_>],
 ) -> Result<ObjectRef, IndexError> {
-    let span = crate::build_diagnostic::begin_build_stage(
-        context.budget.request().diagnostic_context(),
-        quanta_index_core::DiagnosticStageV1::SemanticSeal,
-    );
+    install_fileset_inner(context, seal, files, true)
+}
+
+/// Directory publication emits the canonical Installed observation with its
+/// authenticated descriptor reference. Keep standalone installs observable
+/// through `install_fileset` for existing diagnostic callers and tests.
+pub(super) fn install_fileset_for_directory(
+    context: &mut AttemptContext<'_>,
+    seal: RegionSeal,
+    files: &[AnnFileInput<'_>],
+) -> Result<ObjectRef, IndexError> {
+    install_fileset_inner(context, seal, files, false)
+}
+
+fn install_fileset_inner(
+    context: &mut AttemptContext<'_>,
+    seal: RegionSeal,
+    files: &[AnnFileInput<'_>],
+    observe_install: bool,
+) -> Result<ObjectRef, IndexError> {
+    let span = if observe_install {
+        crate::build_diagnostic::begin_build_stage(
+            context.budget.request().diagnostic_context(),
+            quanta_index_core::DiagnosticStageV1::SemanticSeal,
+        )
+    } else {
+        None
+    };
     let result = (|| -> Result<ObjectRef, IndexError> {
         validate_inputs(files, &seal)?;
         let _metadata_memory = context
@@ -692,6 +728,86 @@ fn load_manifest(
     })
 }
 
+/// Authenticate a selected file set without retaining every chunk at once.
+/// The returned shape is derived only from the canonical manifest and checked
+/// chunk bytes; it is safe to use for directory seal and diagnostic decisions.
+pub(super) fn inspect_fileset(
+    objects: &dyn ImmutableObjectPort,
+    reference: ObjectRef,
+    budget: &mut WorkBudget,
+) -> Result<VerifiedAnnFileSet, IndexError> {
+    let loaded = load_manifest(objects, reference, budget)?;
+    let manifest = &loaded.manifest;
+    let files =
+        u32::try_from(manifest.files.len()).map_err(|_error| IndexError::ResourceLimited)?;
+    let mut chunks = 0u32;
+    for file in &manifest.files {
+        budget.checkpoint()?;
+        let mut hash = Sha256::new();
+        for chunk in &file.chunks {
+            let object = read_verified_chunk(objects, chunk, budget)?;
+            hash.update(&object.payload);
+            chunks = chunks.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        }
+        if Digest(hash.finalize().into()) != file.sha256 {
+            return Err(corrupt("Native ANN file-set file digest mismatch"));
+        }
+    }
+    Ok(VerifiedAnnFileSet {
+        seal: manifest.seal.clone(),
+        index_kind: diagnostic_index_kind(&manifest.seal)?,
+        files,
+        chunks,
+    })
+}
+
+fn read_verified_chunk(
+    objects: &dyn ImmutableObjectPort,
+    chunk: &AnnChunk,
+    budget: &mut WorkBudget,
+) -> Result<StoredObject, IndexError> {
+    let object = objects.get(chunk.reference, budget)?;
+    if object.registration.reference != chunk.reference
+        || !object.registration.children.is_empty()
+        || u64::try_from(object.payload.len()).map_err(|_error| IndexError::ResourceLimited)?
+            != u64::from(chunk.length)
+    {
+        return Err(corrupt("Native ANN file-set chunk binding mismatch"));
+    }
+    budget.charge(WorkUsage {
+        bytes: u64::from(chunk.length),
+        ..WorkUsage::default()
+    })?;
+    Ok(object)
+}
+
+/// Inspect authenticated manifest metadata and its registered child union.
+/// Chunk payload digests are authenticated by `inspect_fileset` or
+/// `load_fileset` before a file set is used for build or query.
+pub(super) fn inspect_fileset_manifest(
+    objects: &dyn ImmutableObjectPort,
+    reference: ObjectRef,
+    budget: &mut WorkBudget,
+) -> Result<VerifiedAnnFileSet, IndexError> {
+    let loaded = load_manifest(objects, reference, budget)?;
+    let manifest = &loaded.manifest;
+    let files =
+        u32::try_from(manifest.files.len()).map_err(|_error| IndexError::ResourceLimited)?;
+    let chunks = manifest.files.iter().try_fold(0u32, |count, file| {
+        count
+            .checked_add(
+                u32::try_from(file.chunks.len()).map_err(|_error| IndexError::ResourceLimited)?,
+            )
+            .ok_or(IndexError::ResourceLimited)
+    })?;
+    Ok(VerifiedAnnFileSet {
+        seal: manifest.seal.clone(),
+        index_kind: diagnostic_index_kind(&manifest.seal)?,
+        files,
+        chunks,
+    })
+}
+
 /// Verify a selected immutable descriptor and retain each chunk's original
 /// storage grant. A caller may replay the ordered chunks into its admitted
 /// filesystem without assembling a second dataset buffer.
@@ -717,31 +833,24 @@ pub(super) fn load_fileset(
             .map_err(|_error| IndexError::ResourceLimited)?;
         let mut hash = Sha256::new();
         for chunk in file.chunks {
-            let object = objects.get(chunk.reference, budget)?;
-            if object.registration.reference != chunk.reference
-                || !object.registration.children.is_empty()
-                || u64::try_from(object.payload.len())
-                    .map_err(|_error| IndexError::ResourceLimited)?
-                    != u64::from(chunk.length)
-            {
-                return Err(corrupt("Native ANN file-set chunk binding mismatch"));
-            }
-            budget.charge(WorkUsage {
-                bytes: u64::from(chunk.length),
-                ..WorkUsage::default()
-            })?;
+            let object = read_verified_chunk(objects, &chunk, budget)?;
             hash.update(&object.payload);
-            chunks.push(LoadedAnnChunk { object });
+            chunks.push(LoadedAnnChunk {
+                length: chunk.length,
+                object,
+            });
         }
         if Digest(hash.finalize().into()) != file.sha256 {
             return Err(corrupt("Native ANN file-set file digest mismatch"));
         }
         loaded.push(LoadedAnnFile {
             path: file.path,
+            length: file.length,
             chunks,
         });
     }
     Ok(LoadedAnnFileSet {
+        seal: manifest.seal,
         total_length: manifest.total_length,
         files: loaded,
         _descriptor: descriptor,

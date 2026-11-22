@@ -1662,11 +1662,18 @@ impl CatalogReadOnlyIoAdmission for SqliteCapacityVfs {
         &self.name
     }
 
-    fn enter_read_only_scope(&self, request: &RequestBudgetV1) -> Box<dyn CatalogIoScope> {
+    fn enter_read_only_scope(
+        &self,
+        request: &RequestBudgetV1,
+        main_bytes: u64,
+        wal_bytes: u64,
+    ) -> Box<dyn CatalogIoScope> {
         let previous =
             CURRENT_VERIFICATION.with(|slot| slot.replace(Some((self.scope, request.clone()))));
         Box::new(CatalogVerificationScope {
-            scope: self.vfs.enter_verification_scope(self.scope),
+            scope: self
+                .vfs
+                .enter_verification_scope(self.scope, main_bytes, wal_bytes),
             _diagnostics: diagnostic::Scope::enter(self.scope, None),
             previous,
         })

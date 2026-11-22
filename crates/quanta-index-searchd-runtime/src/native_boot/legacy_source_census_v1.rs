@@ -139,6 +139,17 @@ pub(crate) fn collect_active_source_heads_v1(
             ) else {
                 return Err(IndexError::Conflict);
             };
+            // The journal stores the fresh, pre-sequence receipt. Its actual
+            // commit sequence is authenticated separately by the Catalog row
+            // and event; only the returned ACK is stamped with that sequence.
+            if sequence == 0
+                || receipt.durable_sequence != 0
+                || !receipt.applied
+                || receipt.generation != key.generation
+                || receipt.batch_digest != key.batch_digest
+            {
+                return Err(IndexError::DigestConflict);
+            }
             head.latest_committed_sequence = Some(
                 head.latest_committed_sequence
                     .map_or(sequence, |prior| prior.max(sequence)),
@@ -152,15 +163,10 @@ pub(crate) fn collect_active_source_heads_v1(
             {
                 return Ok(());
             }
-            if receipt.generation != key.generation
-                || receipt.batch_digest != key.batch_digest
-                || receipt.durable_sequence != sequence
-                || !receipt.applied
-                || head.applied_ack.is_some()
-            {
+            if head.applied_ack.is_some() {
                 return Err(IndexError::DigestConflict);
             }
-            head.applied_ack = Some(receipt.clone());
+            head.applied_ack = Some(receipt.clone().recorded_at(sequence));
             Ok(())
         },
         &mut |candidate, activation, budget| {
@@ -298,3 +304,9 @@ pub(crate) fn verify_active_source_head_files_v1(
     )?;
     Ok(())
 }
+
+// The physical activation census uses Common's Linux-only directory reader;
+// other platforms deliberately refuse that port with RebuildRequired.
+#[cfg(all(test, target_os = "linux"))]
+#[path = "legacy_source_census_v1/tests.rs"]
+mod tests;

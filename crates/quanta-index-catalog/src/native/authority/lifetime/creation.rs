@@ -5,6 +5,7 @@ use super::*;
 
 const CREATION_LOCK: &str = ".creation.lease";
 type OpenRow = (i64, i64, Vec<u8>);
+type OpenCandidate = (OpenRow, Option<(LockFile, (Vec<u8>, Vec<u8>))>);
 
 pub(in crate::native::authority) fn open_intent_digest(
     binding: ReadSessionRef,
@@ -49,23 +50,29 @@ pub(super) fn creation_lock(
 fn open_snapshot(
     catalog: &SqliteCatalog,
     budget: &mut WorkBudget,
-) -> Result<Vec<OpenRow>, IndexError> {
+) -> Result<RecoveryRows<OpenCandidate>, IndexError> {
     let connection = catalog.lock_native_budget(budget)?;
     let mut statement = connection
         .prepare(
             "SELECT id,fence,
              CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN row_digest END
-             FROM native_read_session_open_v1 ORDER BY id LIMIT 257",
+             FROM native_read_session_open_v1 ORDER BY id LIMIT ?1",
         )
         .map_err(|error| sql(&error))?;
-    let mut rows = statement.query([]).map_err(|error| sql(&error))?;
-    let mut result = Vec::new();
+    let mut rows = statement
+        .query(params![RECOVERY_LOOKAHEAD_SLOTS as i64])
+        .map_err(|error| sql(&error))?;
+    let mut page = RecoveryRows::empty();
     while let Some(row) = rows.next().map_err(|error| sql(&error))? {
         budget.charge(WorkUsage {
             reads: 1,
             bytes: 32,
             ..WorkUsage::default()
         })?;
+        if page.rows.is_empty() {
+            // Each slot can hold its open-intent digest and a probed inode.
+            page.reserve(RECOVERY_LOOKAHEAD_SLOTS, 32 + 8 + 8, budget)?;
+        }
         let digest: Option<Vec<u8>> = row.get(2).map_err(|error| sql(&error))?;
         let Some(digest) = digest else {
             return Err(IndexError::Storage(
@@ -77,37 +84,52 @@ fn open_snapshot(
                 "native read session open intent row shape changed".into(),
             ));
         }
-        result.push((
-            row.get(0).map_err(|error| sql(&error))?,
-            row.get(1).map_err(|error| sql(&error))?,
-            digest,
+        page.rows.push((
+            (
+                row.get(0).map_err(|error| sql(&error))?,
+                row.get(1).map_err(|error| sql(&error))?,
+                digest,
+            ),
+            None,
         ));
     }
     drop(rows);
     drop(statement);
     drop(connection);
-    Ok(result)
+    Ok(page)
 }
 
-/// Reap at most 256 pre-insert intents. Physical files transfer to the existing
-/// retirement tombstone and are unlinked only after the SQL commit.
-pub(super) fn reap_open_intents(
+pub(super) struct PreparedOpenIntents {
+    page: RecoveryRows<OpenCandidate>,
+    _namespace_lock: Option<LockFile>,
+    pub(super) has_more: bool,
+}
+
+/// Probe at most 256 open intents without holding the Catalog transaction.
+/// Keep the locks and their memory until the caller commits or rolls back.
+pub(super) fn prepare_open_intents(
     catalog: &SqliteCatalog,
     directory: &Path,
     budget: &mut WorkBudget,
-) -> Result<(u32, bool), IndexError> {
+) -> Result<PreparedOpenIntents, IndexError> {
     budget.checkpoint()?;
-    let Some(_namespace_lock) = creation_lock(catalog, directory)? else {
-        return Ok((0, true));
+    let Some(namespace_lock) = creation_lock(catalog, directory)? else {
+        return Ok(PreparedOpenIntents {
+            page: RecoveryRows::empty(),
+            _namespace_lock: None,
+            has_more: true,
+        });
     };
     budget.charge(WorkUsage {
         reads: 1,
         ..WorkUsage::default()
     })?;
-    let snapshot = open_snapshot(catalog, budget)?;
-    let has_more = snapshot.len() > 256;
-    let mut candidates = Vec::with_capacity(snapshot.len().min(256));
-    for row in snapshot.into_iter().take(256) {
+    let mut page = open_snapshot(catalog, budget)?;
+    let limit = RECOVERY_LOOKAHEAD_SLOTS - 1;
+    let has_more = page.rows.len() > limit;
+    page.rows.truncate(limit);
+    for (row, lock) in &mut page.rows {
+        budget.checkpoint()?;
         budget.charge(WorkUsage {
             reads: 1,
             ..WorkUsage::default()
@@ -127,7 +149,7 @@ pub(super) fn reap_open_intents(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(io_error("stat open intent lock", &path, &error)),
         };
-        let identity = if let Some(ref file) = file {
+        if let Some(file) = file {
             match file.file()?.try_lock() {
                 Ok(()) => {}
                 Err(TryLockError::WouldBlock) => {
@@ -141,7 +163,7 @@ pub(super) fn reap_open_intents(
             }
             let pathname = fs::symlink_metadata(&path)
                 .map_err(|error| io_error("restat orphan session", &path, &error))?;
-            let (device, number) = inode(file)?;
+            let (device, number) = inode(&file)?;
             if pathname.dev().to_le_bytes().as_slice() != device.as_slice()
                 || pathname.ino().to_le_bytes().as_slice() != number.as_slice()
                 || !pathname.is_file()
@@ -150,25 +172,36 @@ pub(super) fn reap_open_intents(
                     "orphan read session lock pathname changed inode".into(),
                 ));
             }
-            Some((device, number))
-        } else {
-            None
-        };
-        candidates.push((row, file, identity));
+            *lock = Some((file, (device, number)));
+        }
     }
     // Missing files are only confirmed after a durable directory observation.
-    if candidates.iter().any(|(_, file, _)| file.is_none()) {
+    if page.rows.iter().any(|(_, lock)| lock.is_none()) {
         open_directory(directory)?
             .sync_all()
             .map_err(|error| io_error("sync missing session directory", directory, &error))?;
     }
-    let mut connection = catalog.lock_native_budget(budget)?;
-    let tx = begin(&mut connection)?;
+    // An empty page has no intent rows to protect during session retirement.
+    let namespace_lock = (!page.rows.is_empty()).then_some(namespace_lock);
+    Ok(PreparedOpenIntents {
+        page,
+        _namespace_lock: namespace_lock,
+        has_more,
+    })
+}
+
+/// Move orphan lock ownership into the retirement table in the same
+/// transaction that retires the selected sessions and their pins.
+pub(super) fn reap_open_intents(
+    tx: &rusqlite::Transaction<'_>,
+    prepared: &PreparedOpenIntents,
+    budget: &mut WorkBudget,
+) -> Result<u32, IndexError> {
     let mut reaped = 0u32;
-    for (row, file, identity) in &candidates {
+    for (row, lock) in &prepared.page.rows {
         budget.charge(WorkUsage {
             reads: 2,
-            writes: if file.is_some() { 2 } else { 1 },
+            writes: if lock.is_some() { 2 } else { 1 },
             ..WorkUsage::default()
         })?;
         let current = tx
@@ -214,7 +247,7 @@ pub(super) fn reap_open_intents(
                 "read session open intent overlaps committed session".into(),
             ));
         }
-        if let Some((device, number)) = identity {
+        if let Some((_, (device, number))) = lock {
             let retired: RetiredRow = (row.0, device.clone(), number.clone(), Vec::new());
             let inserted = tx
                 .execute(
@@ -233,11 +266,7 @@ pub(super) fn reap_open_intents(
         exactly_one(deleted, "reap read session open intent")?;
         reaped = reaped.checked_add(1).ok_or(IndexError::ResourceLimited)?;
     }
-    budget.checkpoint()?;
-    tx.commit().map_err(|error| sql(&error))?;
-    drop(connection);
-    drop(candidates);
-    Ok((reaped, has_more))
+    Ok(reaped)
 }
 
 #[cfg(test)]

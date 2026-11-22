@@ -27,9 +27,9 @@
 | [B05](../nov-12-bugbash-c0-p09/tickets/B05-final-verification.md) | 현행 common owner·Native caller 조합을 검토하고 공식 worker/searchd를 공급한다. | 같은 입력의 P09 설치 본문 1/1과 container·claim 정리. |
 | [NC-B](../nov-12-native-cutover/tickets/NC-B-semantic.md#current-remaining-acceptance) | Kernel carry 3/3 결과를 재사용하고 수정본 ANN4K·전체 SDK를 검증한다. | 독립 품질, materialization deadline, 이전 view·overlay·두 번째 재시작. |
 | [NC-D](../nov-12-native-cutover/tickets/NC-D-boot.md#d-current-disposition-20261116) | 영향받은 S/Q owning 검증과 CP2 mixed를 실행하고 동일 서명 입력을 인수한다. | 정상·게시 후·ACK 유실 복구에서 Original Source·선택·조회와 유실·중복 0. |
-| [NC-F](../nov-12-native-cutover/tickets/NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16) | R16·수리 후 WorkStorage3·Caller/Published 잔여를 실행한다. 명시적 Legacy 조립·벤치·Cargo/lock/vendor를 퇴역시킨다. | Linux DSL·독립 홀드아웃·Mixed, 전체 그래프와 서명 설치 번들 수용. |
+| [NC-F](../nov-12-native-cutover/tickets/NC-F-integration.md#이-채팅의-잔여-코드-범위--2026-11-15) | F-DSL-H/A·F-CODE-1/2의 현행 코드·인수를 마감한다. 실행은 기존 Root 큐를 따른다. | R16·WorkStorage·Caller/Published, Linux DSL·독립 홀드아웃·Mixed, 전체 그래프와 서명 설치 번들 수용. |
 | [NC-H](../nov-12-native-cutover/tickets/NC-H-history.md#current-actionable-backlog--2026-11-16-re-audit) | 수리본 S CLI와 서명 설치를 검증한다. 복수 Legacy 활성 head 및 이전 Native History의 이관·유지 경로를 공급한다. | 서명 FULL/DELTA·누락 inventory 거절·ACK 유실·재시작. |
-| [NC-TEXT](../nov-12-native-cutover/tickets/NC-TEXT-build-final.md#admission-decision-and-remaining-product-verification) | 기록된 연속 스캔·SQL 회귀를 재사용하고 etcd의 고정 Work·mutation 한도를 함께 충족할 생산 경로를 확정한다. | Caddy Record·동일 daemon Large는 고정 후보 결과를 재사용한다. Caddy quiet Off와 etcd Record·Off가 남았다. 최종 후보의 영향 수용을 재검증한다. |
+| [NC-TEXT](../nov-12-native-cutover/tickets/NC-TEXT-build-final.md#admission-decision-and-remaining-product-verification) | Scan·SQL 구현과 고정 코호트 결과를 재사용하고 원 etcd FULL·고정 funding 충돌을 해결한다. | 원 Caddy Record·동일 daemon Large는 해당 코호트에서 재사용한다. Quiet Off 두 본문과 원 etcd 수용·최종 후보 영향 검증은 남았다. |
 
 완료된 NC-C의 Query·History 공급과 인터페이스 마감은 [구현 ADR](../../adr/NOV-12-001-native-query-and-semantic-engine.md#closed-query-supplier-scope)로 통합했다. 실제 caller·설치 수용은 D/F/H에 남긴다.
 Provider/P07의 현행 입력·검증은 [NC-F 실행 패킷](../nov-12-native-cutover/tickets/NC-F-integration.md#p07-final-actions-20261115)으로 통합했다.

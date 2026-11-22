@@ -87,10 +87,16 @@ pub(super) fn convert(
     let mut hits = Vec::new();
     hits.try_reserve_exact(count)
         .map_err(|_error| IndexError::ResourceLimited)?;
+    if hits.capacity() > count {
+        return Err(IndexError::ResourceLimited);
+    }
     let mut payload_memory = Vec::new();
     payload_memory
         .try_reserve_exact(count)
         .map_err(|_error| IndexError::ResourceLimited)?;
+    if payload_memory.capacity() > count {
+        return Err(IndexError::ResourceLimited);
+    }
     let traversal = result.traversal;
     let scanned_owners = result.scanned_owners;
     let skipped_stale = result.skipped_stale;
@@ -108,13 +114,16 @@ pub(super) fn convert(
         payload_memory,
         _capacity_memory: capacity_memory,
     };
-    let (input_hits, old_capacity) = result.into_parts();
+    let parts = result.into_parts();
+    let old_capacity = parts.1;
+    let input_hits = parts.0;
     for hit in input_hits {
-        let (owner, vector_id, cosine, chunk, memory) = hit.into_parts();
+        let score = checked_score(hit.cosine)?;
+        let (owner, vector_id, _cosine, chunk, memory) = hit.into_parts();
         converted.result.hits.push(NativeSemanticHit {
             owner,
             vector_id,
-            score: checked_score(cosine)?,
+            score,
             chunk,
         });
         converted.payload_memory.push(memory);
@@ -144,6 +153,9 @@ fn validate_hits(
     identities
         .try_reserve_exact(count)
         .map_err(|_error| IndexError::ResourceLimited)?;
+    if identities.capacity() > count {
+        return Err(IndexError::ResourceLimited);
+    }
     identities.extend(result.hits.iter());
     identities.sort_unstable_by(|left, right| {
         left.owner

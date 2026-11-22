@@ -3,7 +3,10 @@
 use super::*;
 use quanta_index_contract::{
     SemanticQueryRequest,
-    native_protocol::{MAX_NATIVE_SEMANTIC_TOP_K, NativeReadSessionStatus, NativeTextCursor},
+    native_protocol::{
+        MAX_NATIVE_SEMANTIC_TOP_K, NativeReadSessionStatus, NativeTextCursor,
+        NativeTextPathCursorV1,
+    },
 };
 
 pub(super) fn handles(command: &str) -> bool {
@@ -16,6 +19,7 @@ pub(super) fn handles(command: &str) -> bool {
             | "read-session-release"
             | "read-session-settlement"
             | "search-text-page"
+            | "search-text-path-page"
             | "search-hybrid-file"
     )
 }
@@ -40,6 +44,7 @@ pub(super) fn run(args: &[String], stdout: &mut dyn Write) -> CliResult<ExitCode
     let mut top_k = None;
     let mut file_top_k = None;
     let mut after: Option<NativeTextCursor> = None;
+    let mut after_path: Option<NativeTextPathCursorV1> = None;
     let mut path_exact = None;
     let mut output = None;
     while let Some(flag) = rest.pop_front() {
@@ -71,7 +76,12 @@ pub(super) fn run(args: &[String], stdout: &mut dyn Write) -> CliResult<ExitCode
                 &flag,
             )?,
             "--query-text" => set_once(&mut query_text, raw, &flag)?,
-            "--syntax" if command == "search-text-page" => {
+            "--syntax"
+                if matches!(
+                    command.as_str(),
+                    "search-text-page" | "search-text-path-page"
+                ) =>
+            {
                 set_once(&mut syntax, text_syntax(&raw)?, &flag)?;
             }
             "--semantic-query-text" => set_once(&mut semantic_text, raw, &flag)?,
@@ -85,6 +95,12 @@ pub(super) fn run(args: &[String], stdout: &mut dyn Write) -> CliResult<ExitCode
                 &mut file_top_k,
                 raw.parse::<u32>()
                     .map_err(|error| CliError::usage(error.to_string()))?,
+                &flag,
+            )?,
+            "--after-json" if command == "search-text-path-page" => set_once(
+                &mut after_path,
+                serde_json::from_str(&raw)
+                    .map_err(|error| CliError::usage(format!("invalid {flag}: {error}")))?,
                 &flag,
             )?,
             "--after-json" => set_once(
@@ -120,6 +136,7 @@ pub(super) fn run(args: &[String], stdout: &mut dyn Write) -> CliResult<ExitCode
             || top_k.is_some()
             || file_top_k.is_some()
             || after.is_some()
+            || after_path.is_some()
             || path_exact.is_some())
     {
         return Err(CliError::usage(
@@ -176,7 +193,7 @@ pub(super) fn run(args: &[String], stdout: &mut dyn Write) -> CliResult<ExitCode
                     .read_session_settlement(&session, &budget)
                     .map_err(|error| map_error(&error, &socket))?,
             ),
-            "search-text-page" | "search-hybrid-file" => {
+            "search-text-page" | "search-text-path-page" | "search-hybrid-file" => {
                 let top_k = required(top_k, "--top-k")?;
                 if !(1..=MAX_NATIVE_TEXT_TOP_K).contains(&top_k)
                     || top_k > MAX_NATIVE_SEMANTIC_TOP_K
@@ -201,20 +218,33 @@ pub(super) fn run(args: &[String], stdout: &mut dyn Write) -> CliResult<ExitCode
                     cursor: None,
                 };
                 let instance = required(instance, "--instance")?;
-                if command == "search-text-page" {
+                if matches!(
+                    command.as_str(),
+                    "search-text-page" | "search-text-path-page"
+                ) {
                     if semantic_instance.is_some()
                         || semantic_text.is_some()
                         || file_top_k.is_some()
                     {
                         return Err(CliError::usage("text page rejects semantic flags".into()));
                     }
-                    serde_json::to_value(
-                        client
-                            .search_text_page_in_read_session(
-                                &session, instance, text, after, &budget,
-                            )
-                            .map_err(|error| map_error(&error, &socket))?,
-                    )
+                    if command == "search-text-path-page" {
+                        serde_json::to_value(
+                            client
+                                .search_text_path_page_in_read_session(
+                                    &session, instance, text, after_path, &budget,
+                                )
+                                .map_err(|error| map_error(&error, &socket))?,
+                        )
+                    } else {
+                        serde_json::to_value(
+                            client
+                                .search_text_page_in_read_session(
+                                    &session, instance, text, after, &budget,
+                                )
+                                .map_err(|error| map_error(&error, &socket))?,
+                        )
+                    }
                 } else {
                     if after.is_some() {
                         return Err(CliError::usage(

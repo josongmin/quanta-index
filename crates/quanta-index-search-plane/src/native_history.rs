@@ -3,9 +3,11 @@
 //! Historical paths are never represented as current SourceLocal file owners.
 
 mod build;
+mod borrowed_projection;
 mod generation_input;
 mod query;
 mod reader;
+mod row_budget;
 pub use build::{
     NativeHistoryBootSourceV1, NativeHistoryBuildV1, with_native_history_boot_source_v1,
     with_native_history_restore_member_v1, with_native_history_source_input_v1,
@@ -14,10 +16,10 @@ pub use reader::{NativeHistoryReaderV1, PlannedNativeHistoryReadV1, plan_native_
 
 use crate::readiness::serde_support::impl_struct_serde;
 use quanta_index_contract::{
-    AuxEpochV1, BatchPublishReceipt, HistoryIngestBatch, ManifestGeneration, RepoId, RevisionId,
+    AuxEpochV1, BatchPublishReceipt, HistoryDiffHunkUpsert, HistoryIngestBatch, ManifestGeneration, RepoId, RevisionId,
     index::{
         Digest, GroupActivation, IndexKind, InputBinding, InputDomain, MapRoot, MemberBinding,
-        ObjectRef, SchemaId, StorageFormatId, ViewRef,
+        ObjectRef, SchemaId, StorageFormatId, ViewRef, MAX_HISTORY_SOURCE_INPUT_BYTES_V1,
     },
 };
 use quanta_index_core::{
@@ -48,6 +50,11 @@ use crate::readiness::{HistoryAuthorityState, HistoryDiffKey, HistoryStateMeta};
 use crate::{HistoryReplayFenceV1, ReplayedHistorySourceV1};
 pub use query::{NativeHistoryPageV1, NativeHistoryQueryResultV1};
 
+struct SourceInputData<T> {
+    value: T,
+    _memory: Option<MemoryLease>,
+}
+
 pub const NATIVE_HISTORY_KIND_V1: IndexKind = IndexKind(*b"qidx.history.v1!");
 pub const NATIVE_HISTORY_FORMAT_V1: StorageFormatId = StorageFormatId(*b"qidx.hist.rows1!");
 pub const NATIVE_HISTORY_SCHEMA_V1: SchemaId = SchemaId(*b"qidx.hist.data1!");
@@ -56,6 +63,58 @@ const APPEND_HISTORY_MANIFEST: u32 = 2;
 const SNAPSHOT_HISTORY_MANIFEST: u32 = 3;
 const SUCCESSOR_HISTORY_MANIFEST: u32 = 4;
 const NATIVE_RESTORE_HISTORY_MANIFEST: u32 = 5;
+
+// A diff hunk has fixed fields and four boxed UTF-8 strings. CBOR stores the
+// string bytes once; JSON may unescape them into a growing String before the
+// final Box is installed. Include the temporary old and new allocations.
+const DIFF_HUNK_CBOR_DECODE_BACKING: u64 = 3;
+const DIFF_HUNK_JSON_DECODE_BACKING: u64 = 4;
+
+fn row_decode_backing_bytes(
+    family: AuxiliaryRowFamilyV1,
+    payload_bytes: usize,
+    key_bytes: usize,
+    ordinary_multiplier: u64,
+    diff_multiplier: u64,
+) -> Result<u64, CoreError> {
+    let multiplier = if family == AuxiliaryRowFamilyV1::DiffHunk {
+        diff_multiplier
+    } else {
+        ordinary_multiplier
+    };
+    u64::try_from(payload_bytes)
+        .ok()
+        .and_then(|bytes| bytes.checked_mul(multiplier))
+        .and_then(|bytes| bytes.checked_add(u64::try_from(key_bytes).ok()?.checked_mul(2)?))
+        .and_then(|bytes| bytes.checked_add(4096))
+        .ok_or_else(|| invalid("History row decoded backing bound overflow"))
+}
+
+fn row_decode_backing(
+    family: AuxiliaryRowFamilyV1,
+    payload_bytes: usize,
+    key_bytes: usize,
+    ordinary_multiplier: u64,
+    diff_multiplier: u64,
+) -> Result<row_budget::RowBacking, CoreError> {
+    let peak = row_decode_backing_bytes(
+        family,
+        payload_bytes,
+        key_bytes,
+        ordinary_multiplier,
+        diff_multiplier,
+    )?;
+    // CBOR retains at most one row value and a second copy of a text key in
+    // the persistent state. Growth of the decoder's strings and vectors is a
+    // decode-phase cost, not custody of the completed row.
+    let retained = u64::try_from(payload_bytes)
+        .ok()
+        .and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|bytes| bytes.checked_add(u64::try_from(key_bytes).ok()?.checked_mul(2)?))
+        .and_then(|bytes| bytes.checked_add(4096))
+        .ok_or_else(|| invalid("History row decoded backing bound overflow"))?;
+    row_budget::RowBacking::new(retained, peak)
+}
 
 #[must_use]
 pub fn native_history_policy_v1() -> Digest {
@@ -633,8 +692,8 @@ fn verify_manifest_source_step_v1(
             Ok(None)
         }
         NATIVE_RESTORE_HISTORY_MANIFEST => {
-            let input: build::SourceInputData<quanta_index_contract::index::NativeHistoryRestoreInputV1> =
-                build::decode_history_object_allow_children(manifest.source_input, &origin, budget)?;
+            let input: SourceInputData<quanta_index_contract::index::NativeHistoryRestoreInputV1> =
+                build::source_input::decode_history_object_allow_children(manifest.source_input, &origin, budget)?;
             input.value.verify_children_v1(&origin.registration.children).map_err(invalid)?;
             if input.value.cut != manifest.cut() {
                 return Err(invalid("Native History restore source cut differs from manifest"));
@@ -777,33 +836,38 @@ fn prepare(
         let old = maps
             .lookup_object(root, &key, budget)
             .map_err(|error| history_work_error(budget, error))?;
-        let _projection_memory = budget
-            .reserve_memory(
-                u64::try_from(row.value.len())
-                    .ok()
-                    .and_then(|bytes| bytes.checked_mul(32))
-                    .and_then(|bytes| bytes.checked_add(4096))
-                    .ok_or_else(|| invalid("History row projection bound overflow"))?,
-                MemoryLifetime::Temporary,
-            )
-            .map_err(|error| history_work_error(budget, error))?;
-        // Source rows were encoded from this process's complete typed fold.
-        // Persist typed JSON so untrusted CBOR length hints cannot allocate a
-        // sequence before the Native object's original byte grant admits it.
-        let data = if row.key.family == AuxiliaryRowFamilyV1::Epoch {
-            NativeRowData::Epoch(
-                decode_cbor_payload(&row.value).map_err(|error| invalid(&error.to_string()))?,
-            )
-        } else {
-            NativeRowData::Row(decode_history_row(row)?)
+        let encoded = {
+            // The producer fold already owns and funds these typed records.
+            // Keep the canonical CBOR row for snapshot accounting and V2 raw
+            // fallback, while borrowing the same state for the V1 JSON shape.
+            let native = borrowed_projection::from_source(
+                &source.state,
+                source.cut.durable_epoch,
+                row,
+            )?;
+            let length = json_len(&native, budget)?;
+            if length <= MAX_HISTORY_SOURCE_INPUT_BYTES_V1 as u64 {
+                Some(encode_json_sized(&native, length, budget)?)
+            } else {
+                None
+            }
         };
-        let encoded = encode_json(
-            &NativeRowRef {
-                key: &row.key.row_key,
-                data: &data,
-            },
+        let next = stage_native_history_row_v1(
+            row,
+            encoded,
             budget,
-        )?;
+            |payload, children, budget| {
+                let mut local = AttemptContext {
+                    attempt,
+                    objects,
+                    maps,
+                    custody,
+                    scratch,
+                    budget,
+                };
+                local.put(payload, children)
+            },
+        ).map_err(|error| history_work_error(budget, error))?;
         let mut local = AttemptContext {
             attempt,
             objects,
@@ -812,9 +876,6 @@ fn prepare(
             scratch,
             budget: &mut *budget,
         };
-        let next = local
-            .put(&encoded.bytes, &[])
-            .map_err(|error| history_work_error(local.budget, error))?;
         if old != Some(next) {
             root = local
                 .apply(root, &[MapEdit::objects(key, old, Some(next))])
@@ -909,6 +970,7 @@ fn prepare(
 
 // Fixed map keys avoid truncating a valid historical path at the map-key
 // boundary. The original key is carried by the authenticated immutable row.
+#[cfg(test)]
 struct NativeRowRef<'a> {
     key: &'a [u8],
     data: &'a NativeRowData,
@@ -917,11 +979,26 @@ struct NativeRow {
     key: Vec<u8>,
     data: NativeRowData,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeDiffHunkRow {
+    key: Vec<u8>,
+    data: NativeDiffHunkData,
+}
+#[derive(Deserialize)]
+enum NativeDiffHunkData {
+    Row(NativeDiffHunkValue),
+}
+#[derive(Deserialize)]
+enum NativeDiffHunkValue {
+    DiffHunk(HistoryDiffHunkUpsert),
+}
 enum NativeRowData {
     Epoch(AuxEpochV1),
     Row(HistoryReadbackRowV1),
 }
 
+#[cfg(test)]
 impl Serialize for NativeRowRef<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut row = serializer.serialize_struct("NativeRow", 2)?;
@@ -997,6 +1074,7 @@ impl HistoryRowRestorerV1 {
         cut: HistorySourceCutV1,
         sequence: u64,
         source_manifest: Option<String>,
+        custody: ReplayCustody,
     ) -> Result<Self, CoreError> {
         if cut.durable_epoch == AuxEpochV1::GENESIS
             || cut.snapshot_digest == Digest([0; 32])
@@ -1011,7 +1089,7 @@ impl HistoryRowRestorerV1 {
                 cut,
                 sequence,
                 manifest_digest: source_manifest,
-                _custody: ReplayCustody::default(),
+                _custody: custody,
             },
             count: 0,
             saw_epoch: false,
@@ -1080,19 +1158,7 @@ impl HistoryRowRestorerV1 {
             return Err(invalid("History complete inventory differs from committed cut"));
         }
         let output = self.output;
-        for record in output.state.commits().values() {
-            budget.checkpoint().map_err(|error| history_work_error(budget, error))?;
-            if record.parents.iter().any(|parent| !output.state.commits().contains_key(parent)) {
-                return Err(invalid("History parent absent from snapshot"));
-            }
-        }
-        if output.state.refs().values().chain(output.state.tags().values())
-            .any(|sha| !output.state.commits().contains_key(sha))
-            || output.state.diff_hunks().keys()
-                .any(|key| !output.state.commits().contains_key(&key.commit_sha()))
-        {
-            return Err(invalid("History target absent from snapshot"));
-        }
+        validate_history_references(&output.state, budget)?;
         // Native map keys are hash-ordered. Rehash the one canonical History
         // row encoder so readback and source export use the same logical cut.
         let mut hash = HistorySnapshotDigestV1::new(&output.cut.generation);
@@ -1115,6 +1181,43 @@ impl HistoryRowRestorerV1 {
     }
 }
 
+fn validate_history_references(
+    state: &HistoryAuthorityState,
+    budget: &mut WorkBudget,
+) -> Result<(), CoreError> {
+    let commits = state.commits();
+    let require_commit = |sha, message, budget: &mut WorkBudget| {
+        budget
+            .charge(WorkUsage {
+                reads: 1,
+                ..WorkUsage::default()
+            })
+            .map_err(|error| history_work_error(budget, error))?;
+        if !commits.contains_key(&sha) {
+            return Err(invalid(message));
+        }
+        Ok(())
+    };
+    for record in commits.values() {
+        budget
+            .checkpoint()
+            .map_err(|error| history_work_error(budget, error))?;
+        for parent in &record.parents {
+            require_commit(*parent, "History parent absent from snapshot", budget)?;
+        }
+    }
+    for target in state
+        .refs()
+        .values()
+        .chain(state.tags().values())
+        .copied()
+        .chain(state.diff_hunks().keys().map(HistoryDiffKey::commit_sha))
+    {
+        require_commit(target, "History target absent from snapshot", budget)?;
+    }
+    Ok(())
+}
+
 fn restore_source_snapshot_rows(
     expected: &HistorySourceCutV1,
     durable_sequence: u64,
@@ -1125,22 +1228,32 @@ fn restore_source_snapshot_rows(
     ) -> Result<(), CoreError>,
     budget: &mut WorkBudget,
 ) -> Result<ReplayedHistorySourceV1, CoreError> {
+    let custody = ReplayCustody::for_generation(
+        &expected.generation.repo_id,
+        &expected.generation.revision_id,
+        source_manifest.as_deref(),
+        budget,
+    )?;
     let mut restore = HistoryRowRestorerV1::new(
         expected.clone(),
         durable_sequence,
         source_manifest,
+        custody,
     )?;
     verify_source_snapshot_rows(expected, read_rows, budget, |row, budget| {
         let family = row.key.family;
-        let row_bytes = u64::try_from(row.value.len())
-            .ok()
-            .and_then(|bytes| bytes.checked_add(u64::try_from(row.key.row_key.len()).ok()?))
-            .and_then(|bytes| bytes.checked_mul(16))
-            .and_then(|bytes| bytes.checked_add(4096))
-            .ok_or_else(|| invalid("History source row allocation bound overflow"))?;
-        let memory = budget
-            .reserve_memory(row_bytes, MemoryLifetime::Retained)
-            .map_err(|error| history_work_error(budget, error))?;
+        let backing = if family == AuxiliaryRowFamilyV1::Commit {
+            row_budget::commit_cbor_backing(&row.value, row.key.row_key.len(), budget)?
+        } else {
+            row_decode_backing(
+                family,
+                row.value.len(),
+                row.key.row_key.len(),
+                16,
+                DIFF_HUNK_CBOR_DECODE_BACKING,
+            )?
+        };
+        let (memory, _decode_scratch) = backing.reserve_decode(budget)?;
         let data = if family == AuxiliaryRowFamilyV1::Epoch {
             NativeRowData::Epoch(
                 decode_cbor_payload(&row.value).map_err(|error| invalid(&error.to_string()))?,
@@ -1234,10 +1347,17 @@ fn load_rows_with_v1(
     budget: &mut WorkBudget,
 ) -> Result<ReplayedHistorySourceV1, CoreError> {
     // The struct owns state before its grants even when a late row fails.
+    let custody = ReplayCustody::for_generation(
+        &manifest.repo,
+        &manifest.revision,
+        manifest.source_manifest.as_deref(),
+        budget,
+    )?;
     let mut restore = HistoryRowRestorerV1::new(
         manifest.cut(),
         manifest.sequence,
         manifest.source_manifest.clone(),
+        custody,
     )?;
     let mut after: Option<MapPageEntry> = None;
     loop {
@@ -1264,21 +1384,81 @@ fn load_rows_with_v1(
             let family = split_key(key)?;
             let stored = get(*reference, budget)
                 .map_err(|error| history_work_error(budget, error))?;
-            if stored.registration.reference != *reference
-                || !stored.registration.children.is_empty()
-            {
+            if stored.registration.reference != *reference {
                 return Err(invalid("History row child graph differs"));
             }
-            let bound = u64::try_from(stored.payload.len())
-                .ok()
-                .and_then(|n| n.checked_mul(16))
-                .and_then(|n| n.checked_add(4096))
-                .ok_or_else(|| invalid("History row allocation overflow"))?;
-            let memory = budget
-                .reserve_memory(bound, MemoryLifetime::Retained)
-                .map_err(|error| history_work_error(budget, error))?;
-            let native: NativeRow = serde_json::from_slice(&stored.payload)
-                .map_err(|error| invalid(&error.to_string()))?;
+            if quanta_index_core::index::history_checkpoint::is_large_row_v2(&stored.payload) {
+                let (row, _raw_memory) =
+                    quanta_index_core::index::history_checkpoint::decode_large_row_v2(
+                        &restore.output.cut.generation,
+                        1,
+                        *reference,
+                        &stored,
+                        budget,
+                        &mut get,
+                    )
+                    .map_err(|error| history_work_error(budget, error))?;
+                if row.key.family != family || native_key(family, &row.key.row_key) != *key {
+                    return Err(invalid("History original key differs from immutable map"));
+                }
+                let backing = if family == AuxiliaryRowFamilyV1::Commit {
+                    row_budget::commit_cbor_backing(&row.value, row.key.row_key.len(), budget)?
+                } else {
+                    row_decode_backing(
+                        family,
+                        row.value.len(),
+                        row.key.row_key.len(),
+                        16,
+                        DIFF_HUNK_CBOR_DECODE_BACKING,
+                    )?
+                };
+                let (memory, _decode_scratch) = backing.reserve_decode(budget)?;
+                let data = if family == AuxiliaryRowFamilyV1::Epoch {
+                    NativeRowData::Epoch(
+                        decode_cbor_payload(&row.value)
+                            .map_err(|error| invalid(&error.to_string()))?,
+                    )
+                } else {
+                    NativeRowData::Row(decode_history_row(&row)?)
+                };
+                restore.accept(family, row.key.row_key, data, memory)?;
+                after = Some(entry);
+                advanced = true;
+                continue;
+            }
+            if !stored.registration.children.is_empty() {
+                return Err(invalid("History row child graph differs"));
+            }
+            let backing = if matches!(
+                family,
+                AuxiliaryRowFamilyV1::Commit
+                    | AuxiliaryRowFamilyV1::Ref
+                    | AuxiliaryRowFamilyV1::Tag
+                    | AuxiliaryRowFamilyV1::DiffHunk
+            ) {
+                row_budget::native_json_backing(family, &stored.payload, budget)?
+            } else {
+                row_decode_backing(
+                    family,
+                    stored.payload.len(),
+                    key.len(),
+                    16,
+                    DIFF_HUNK_JSON_DECODE_BACKING,
+                )?
+            };
+            let (memory, _decode_scratch) = backing.reserve_decode(budget)?;
+            let native = if family == AuxiliaryRowFamilyV1::DiffHunk {
+                let typed: NativeDiffHunkRow = serde_json::from_slice(&stored.payload)
+                    .map_err(|error| invalid(&error.to_string()))?;
+                let NativeDiffHunkData::Row(NativeDiffHunkValue::DiffHunk(hunk)) = typed.data;
+                NativeRow {
+                    key: typed.key,
+                    data: NativeRowData::Row(HistoryReadbackRowV1::DiffHunk(hunk)),
+                }
+            } else {
+                serde_json::from_slice(&stored.payload)
+                    .map_err(|error| invalid(&error.to_string()))?
+            };
             if native_key(family, &native.key) != *key {
                 return Err(invalid("History original key differs from immutable map"));
             }
@@ -1336,7 +1516,30 @@ struct FundedJson {
     bytes: Vec<u8>,
     _memory: Option<MemoryLease>,
 }
-fn encode_json<T: Serialize>(value: &T, budget: &mut WorkBudget) -> Result<FundedJson, CoreError> {
+
+fn stage_native_history_row_v1(
+    row: &AuxiliaryRowV1,
+    encoded: Option<FundedJson>,
+    budget: &mut WorkBudget,
+    mut put: impl FnMut(&[u8], &[ObjectRef], &mut WorkBudget) -> Result<ObjectRef, IndexError>,
+) -> Result<ObjectRef, IndexError> {
+    if let Some(encoded) = encoded {
+        return put(&encoded.bytes, &[], budget);
+    }
+    quanta_index_core::index::history_checkpoint::encode_auxiliary_row_v2(
+        row,
+        1,
+        budget,
+        |expected, payload, children, budget| {
+            if put(payload, children, budget)? != expected {
+                return Err(IndexError::DigestConflict);
+            }
+            Ok(())
+        },
+    )
+}
+
+fn json_len<T: Serialize>(value: &T, budget: &mut WorkBudget) -> Result<u64, CoreError> {
     struct Measure<'a> {
         length: u64,
         budget: &'a mut WorkBudget,
@@ -1353,9 +1556,7 @@ fn encode_json<T: Serialize>(value: &T, budget: &mut WorkBudget) -> Result<Funde
                 self.refusal = Some(error);
                 return Err(std::io::Error::other("History encoding work refused"));
             }
-            self.length = self
-                .length
-                .checked_add(length)
+            self.length = self.length.checked_add(length)
                 .ok_or_else(|| std::io::Error::other("History encoding length overflow"))?;
             Ok(bytes.len())
         }
@@ -1363,45 +1564,53 @@ fn encode_json<T: Serialize>(value: &T, budget: &mut WorkBudget) -> Result<Funde
             Ok(())
         }
     }
-    budget
-        .checkpoint()
-        .map_err(|error| history_work_error(budget, error))?;
-    let mut measure = Measure {
-        length: 0,
-        budget,
-        refusal: None,
-    };
+    budget.checkpoint().map_err(|error| history_work_error(budget, error))?;
+    let mut measure = Measure { length: 0, budget, refusal: None };
     let encoded = serde_json::to_writer(&mut measure, value);
     if let Some(error) = measure.refusal.take() {
         return Err(history_work_error(measure.budget, error));
     }
     encoded.map_err(|error| invalid(&error.to_string()))?;
-    let length = measure.length;
+    Ok(measure.length)
+}
+
+fn encode_json_sized<T: Serialize>(
+    value: &T,
+    length: u64,
+    budget: &mut WorkBudget,
+) -> Result<FundedJson, CoreError> {
+    let size = usize::try_from(length).map_err(|_| invalid("History encoding length exceeds usize"))?;
     let memory = budget
         .reserve_memory(
-            length
-                .checked_mul(2)
-                .ok_or_else(|| invalid("History encoding allocation bound overflow"))?,
+            length,
             MemoryLifetime::Temporary,
         )
         .map_err(|error| history_work_error(budget, error))?;
-    budget
-        .charge(WorkUsage {
-            bytes: length,
-            ..WorkUsage::default()
-        })
+    budget.charge(WorkUsage { bytes: length, ..WorkUsage::default() })
         .map_err(|error| history_work_error(budget, error))?;
-    let bytes = serde_json::to_vec(value).map_err(|error| invalid(&error.to_string()))?;
-    if u64::try_from(bytes.len()).ok() != Some(length) {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).map_err(|error| invalid(&error.to_string()))?;
+    if bytes.capacity() > size {
+        return Err(invalid("History encoding allocation exceeded grant"));
+    }
+    bytes.resize(size, 0);
+    let mut remaining = bytes.as_mut_slice();
+    serde_json::to_writer(&mut remaining, value)
+        .map_err(|error| invalid(&error.to_string()))?;
+    if !remaining.is_empty() {
         return Err(invalid("History encoding changed between admitted passes"));
     }
-    Ok(FundedJson {
-        bytes,
-        _memory: memory,
-    })
+    Ok(FundedJson { bytes, _memory: memory })
+}
+
+fn encode_json<T: Serialize>(value: &T, budget: &mut WorkBudget) -> Result<FundedJson, CoreError> {
+    let length = json_len(value, budget)?;
+    encode_json_sized(value, length, budget)
 }
 
 fn index_error(error: CoreError, budget: &WorkBudget) -> IndexError {
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+
     // Keep the original work/cancellation refusal instead of reclassifying it
     // as malformed input. The closed Native boundary maps domain rejections.
     match budget.first_denial() {
@@ -1419,6 +1628,18 @@ fn index_error(error: CoreError, budget: &WorkBudget) -> IndexError {
         CoreError::InvalidContract(message) | CoreError::NotImplemented(message) => {
             IndexError::InvalidInput(message)
         }
+        CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::ServerOverloaded,
+            ..
+        } => IndexError::ResourceLimited,
+        CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::RequestCancelled,
+            ..
+        } => IndexError::Cancelled,
+        CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::RequestDeadlineExceeded,
+            ..
+        } => IndexError::WorkLimitExceeded,
         CoreError::Typed { code, message } => {
             IndexError::InvalidInput(format!("{code}: {message}"))
         }
@@ -1427,4 +1648,422 @@ fn index_error(error: CoreError, budget: &WorkBudget) -> IndexError {
 
 fn invalid(message: &str) -> CoreError {
     CoreError::InvalidContract(message.into())
+}
+
+#[cfg(test)]
+mod large_row_tests {
+    use super::*;
+    use quanta_index_contract::{DiffHunkSide, lex::{CommitRecord, CommitSha, DiffHunkRecord}, index::native_immutable_object_ref_v1};
+    use quanta_index_core::{AuxiliaryDomainV1, AuxiliaryRowKeyV1, index::{MemoryLeaseOwner, MemoryScope, MemoryScopePort, WorkLimits}};
+    use std::{collections::BTreeMap, sync::{Arc, atomic::{AtomicU64, Ordering}}, time::{Duration, Instant}};
+
+    struct Ledger {
+        live: AtomicU64,
+        maximum: u64,
+    }
+    struct Scope(Arc<Ledger>);
+    impl MemoryLeaseOwner for Ledger {
+        fn release(&self, bytes: u64) {
+            let previous = self.live.fetch_sub(bytes, Ordering::AcqRel);
+            assert!(previous >= bytes, "History row ledger underflow");
+        }
+    }
+    impl MemoryScopePort for Scope {
+        fn reserve(&self, bytes: u64, _lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+            let _previous = self.0.live.fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
+                live.checked_add(bytes).filter(|next| *next <= self.0.maximum)
+            }).map_err(|_| IndexError::ResourceLimited)?;
+            Ok(MemoryLease::new(bytes, self.0.clone()))
+        }
+    }
+
+    #[test]
+    fn history_preserves_backend_refusal_and_original_work_denial() {
+        let limits = WorkLimits {
+            reads: 0,
+            writes: 0,
+            mutations: 0,
+            bytes: 0,
+        };
+        let mut budget = WorkBudget::new(limits, Instant::now() + Duration::from_secs(60));
+        let overloaded = history_work_error(&budget, IndexError::ResourceLimited);
+        assert!(matches!(
+            &overloaded,
+            CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+                ..
+            }
+        ));
+        assert!(budget.first_denial().is_none());
+        assert_eq!(index_error(overloaded, &budget), IndexError::ResourceLimited);
+
+        let cancelled = WorkBudget::new(limits, Instant::now() + Duration::from_secs(60));
+        cancelled.request().cancel_handle().cancel();
+        let interrupted = history_work_error(&cancelled, IndexError::ResourceLimited);
+        assert!(cancelled.first_denial().is_none());
+        assert_eq!(index_error(interrupted, &cancelled), IndexError::Cancelled);
+
+        let expired = WorkBudget::new(limits, Instant::now() - Duration::from_secs(1));
+        let interrupted = history_work_error(&expired, IndexError::ResourceLimited);
+        assert!(expired.first_denial().is_none());
+        assert_eq!(
+            index_error(interrupted, &expired),
+            IndexError::WorkLimitExceeded
+        );
+
+        let code = quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextQueryUnscorable;
+        let invalid = CoreError::Typed {
+            code,
+            message: "unsupported expression".into(),
+        };
+        assert_eq!(
+            index_error(invalid, &budget),
+            IndexError::InvalidInput(format!("{code}: unsupported expression"))
+        );
+
+        assert_eq!(
+            budget.charge(WorkUsage {
+                reads: 1,
+                ..WorkUsage::default()
+            }),
+            Err(IndexError::ResourceLimited)
+        );
+        assert_eq!(
+            budget.first_denial(),
+            Some(quanta_index_core::index::WorkBudgetDenial::Reads)
+        );
+        assert_eq!(
+            index_error(
+                CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+                    message: "object limit".into(),
+                },
+                &budget,
+            ),
+            IndexError::WorkLimitExceeded
+        );
+    }
+
+    #[test]
+    fn plain_native_v1_commit_restores_beside_prior_row_and_raw_wire() {
+        const MIB: u64 = 1024 * 1024;
+        let ledger = Arc::new(Ledger {
+            live: AtomicU64::new(0),
+            maximum: 64 * MIB,
+        });
+        let mut budget = WorkBudget::new(
+            WorkLimits {
+                reads: 1_000_000,
+                writes: 1_000_000,
+                mutations: 1_000_000,
+                bytes: 1_000_000_000,
+            },
+            Instant::now() + Duration::from_secs(60),
+        );
+        budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(Scope(ledger.clone())))));
+
+        let prior = budget
+            .reserve_memory(12 * MIB, MemoryLifetime::Retained)
+            .expect("prior decoded row custody");
+        let sha = CommitSha::from_bytes([7; 20]);
+        let data = NativeRowData::Row(HistoryReadbackRowV1::Commit(CommitRecord {
+            wire_version: 1,
+            sha,
+            parents: Vec::new(),
+            author_time_ms: 1,
+            committer_time_ms: 1,
+            applied_at_ms: 1,
+            author: "author".into(),
+            author_name: None,
+            author_email: None,
+            committer: "committer".into(),
+            committer_name: None,
+            committer_email: None,
+            message: "m".repeat((12 * MIB) as usize).into_boxed_str(),
+            is_merge: false,
+            tags: Vec::new(),
+        }));
+        let wire = serde_json::to_vec(&NativeRowRef {
+            key: sha.as_bytes(),
+            data: &data,
+        })
+        .expect("plain Native V1 Commit JSON");
+        drop(data);
+        assert!((12 * MIB..12 * MIB + 4096).contains(&(wire.len() as u64)));
+        let raw = budget
+            .reserve_memory(wire.len() as u64, MemoryLifetime::Temporary)
+            .expect("original Native V1 wire custody");
+        let held = 12 * MIB + wire.len() as u64;
+        assert_eq!(ledger.live.load(Ordering::Acquire), held);
+        assert!(held + 4 * 12 * MIB > ledger.maximum);
+
+        let backing = row_budget::native_json_backing(
+            AuxiliaryRowFamilyV1::Commit,
+            &wire,
+            &mut budget,
+        )
+        .expect("plain Native V1 shape under original custody");
+        assert_eq!(ledger.live.load(Ordering::Acquire), held);
+        let (decoded, scratch) = backing
+            .reserve_decode(&mut budget)
+            .expect("typed Native V1 decode under 64 MiB");
+        let restored: NativeRow = serde_json::from_slice(&wire).expect("typed Native V1 Commit");
+        assert!(matches!(
+            &restored.data,
+            NativeRowData::Row(HistoryReadbackRowV1::Commit(commit))
+                if commit.sha == sha && commit.message.len() == (12 * MIB) as usize
+        ));
+        drop(restored);
+        drop(scratch);
+        drop(decoded);
+        assert_eq!(ledger.live.load(Ordering::Acquire), held);
+        drop(raw);
+        assert_eq!(ledger.live.load(Ordering::Acquire), 12 * MIB);
+        drop(prior);
+        assert_eq!(ledger.live.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn snapshot_restore_admits_generation_identity_before_scanning_rows() {
+        let cut = HistorySourceCutV1 {
+            generation: quanta_index_core::AuxiliaryGenerationKeyV1 {
+                repo_id: RepoId::new("repo").expect("repo"),
+                revision_id: RevisionId::new("main").expect("revision"),
+                generation: ManifestGeneration::new(1),
+            },
+            durable_epoch: AuxEpochV1::new(1),
+            snapshot_digest: Digest([1; 32]),
+            replay_start: Digest([2; 32]),
+        };
+        let ledger = Arc::new(Ledger {
+            live: AtomicU64::new(0),
+            maximum: 7,
+        });
+        let mut budget = WorkBudget::new(
+            WorkLimits {
+                reads: 10,
+                writes: 10,
+                mutations: 10,
+                bytes: 1024,
+            },
+            Instant::now() + Duration::from_secs(60),
+        );
+        budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(Scope(ledger.clone())))));
+        let mut scanned = false;
+        let result = restore_source_snapshot_rows(
+            &cut,
+            1,
+            None,
+            |_, _| {
+                scanned = true;
+                Ok(())
+            },
+            &mut budget,
+        );
+        let Err(error) = result else {
+            panic!("snapshot restore admitted an unfunded generation identity");
+        };
+        assert_eq!(index_error(error, &budget), IndexError::WorkLimitExceeded);
+        assert_eq!(
+            budget.first_denial(),
+            Some(quanta_index_core::index::WorkBudgetDenial::Memory)
+        );
+        assert!(!scanned);
+        assert_eq!(ledger.live.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn snapshot_reference_checks_use_the_original_read_budget() -> Result<(), CoreError> {
+        let parent = CommitSha::from_bytes([1; 20]);
+        let child = CommitSha::from_bytes([2; 20]);
+        let first = CommitRecord {
+            wire_version: 1,
+            sha: parent,
+            parents: Vec::new(),
+            author_time_ms: 1,
+            committer_time_ms: 1,
+            applied_at_ms: 1,
+            author: "author".into(),
+            author_name: None,
+            author_email: None,
+            committer: "author".into(),
+            committer_name: None,
+            committer_email: None,
+            message: "first".into(),
+            is_merge: false,
+            tags: Vec::new(),
+        };
+        let mut state = HistoryAuthorityState::default();
+        state.restore_commit(
+            child,
+            CommitRecord {
+                sha: child,
+                parents: vec![parent],
+                ..first.clone()
+            },
+        );
+        state.restore_commit(parent, first);
+        state.restore_ref("heads/main", child);
+        state.restore_tag("v1", parent);
+        state.restore_diff_hunk(
+            HistoryDiffKey::new(child, "src/lib.rs"),
+            DiffHunkRecord {
+                wire_version: 1,
+                hunk_header: "@@".into(),
+                side: DiffHunkSide::After,
+                added_text: "line".into(),
+                removed_text: "".into(),
+                touched_text: "".into(),
+                byte_start: 0,
+                byte_end: 4,
+            },
+        );
+        let work = |reads| {
+            WorkBudget::new(
+                WorkLimits {
+                    reads,
+                    writes: 0,
+                    mutations: 0,
+                    bytes: 0,
+                },
+                Instant::now() + Duration::from_secs(60),
+            )
+        };
+        validate_history_references(&state, &mut work(4))?;
+        let mut short = work(3);
+        assert!(matches!(
+            validate_history_references(&state, &mut short),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+                ..
+            })
+        ));
+        assert_eq!(
+            short.first_denial(),
+            Some(quanta_index_core::index::WorkBudgetDenial::Reads)
+        );
+        state.restore_ref("heads/invalid", CommitSha::from_bytes([3; 20]));
+        assert_eq!(
+            validate_history_references(&state, &mut work(5)),
+            Err(invalid("History target absent from snapshot"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn escaped_five_mib_diff_hunk_uses_raw_immutable_row_and_recovers_typed_data() {
+        let ledger = Arc::new(Ledger { live: AtomicU64::new(0), maximum: 64 * 1024 * 1024 });
+        let mut budget = WorkBudget::new(
+            WorkLimits { reads: 1_000_000, writes: 1_000_000, mutations: 1_000_000, bytes: 1_000_000_000 },
+            Instant::now() + Duration::from_secs(60),
+        );
+        budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(Scope(ledger.clone())))));
+        let generation = quanta_index_core::AuxiliaryGenerationKeyV1 {
+            repo_id: RepoId::new("history-raw-row").expect("repo"),
+            revision_id: RevisionId::new("main").expect("revision"),
+            generation: ManifestGeneration::new(1),
+        };
+        let sha = CommitSha::from_bytes([7; 20]);
+        let mut row_key = sha.as_bytes().to_vec();
+        row_key.extend_from_slice(b"\x1fbig.rs");
+        let record = DiffHunkRecord {
+            wire_version: 1,
+            hunk_header: "@@".into(),
+            side: DiffHunkSide::After,
+            added_text: "\u{0001}".repeat(5 * 1024 * 1024).into_boxed_str(),
+            removed_text: "".into(),
+            touched_text: "".into(),
+            byte_start: 0,
+            byte_end: 5 * 1024 * 1024,
+        };
+        let row = AuxiliaryRowV1 {
+            key: AuxiliaryRowKeyV1 {
+                domain: AuxiliaryDomainV1::History,
+                generation: generation.clone(),
+                family: AuxiliaryRowFamilyV1::DiffHunk,
+                row_key,
+            },
+            value: quanta_index_ipc::encode_cbor_payload(&record).expect("producer row CBOR"),
+        };
+        drop(record);
+        assert!(row.value.len() < MAX_HISTORY_SOURCE_INPUT_BYTES_V1);
+        let state_loan = budget.reserve_memory(
+            row_decode_backing_bytes(AuxiliaryRowFamilyV1::DiffHunk, row.value.len(), row.key.row_key.len(), 16, DIFF_HUNK_CBOR_DECODE_BACKING)
+                .expect("restored source backing"),
+            MemoryLifetime::Retained,
+        ).expect("restored source memory");
+        let source_loan = budget.reserve_memory(
+            (row.value.len() * 2) as u64,
+            MemoryLifetime::Temporary,
+        ).expect("row emission memory");
+        let projection_loan = budget.reserve_memory(
+            row_decode_backing_bytes(AuxiliaryRowFamilyV1::DiffHunk, row.value.len(), row.key.row_key.len(), 32, DIFF_HUNK_CBOR_DECODE_BACKING)
+                .expect("source projection bound"),
+            MemoryLifetime::Temporary,
+        ).expect("source projection memory");
+        let data = NativeRowData::Row(decode_history_row(&row).expect("typed source row"));
+        let native = NativeRowRef { key: &row.key.row_key, data: &data };
+        let json_bytes = json_len(&native, &mut budget).expect("typed Native row width");
+        assert!(json_bytes > MAX_HISTORY_SOURCE_INPUT_BYTES_V1 as u64);
+        drop(data);
+        drop(projection_loan);
+        assert!(serde_json::from_slice::<NativeDiffHunkRow>(
+            br#"{"key":[],"data":{"Row":{"Commit":{}}}}"#
+        ).is_err());
+
+        let mut objects = BTreeMap::<ObjectRef, StoredObject>::new();
+        let reference = stage_native_history_row_v1(&row, None, &mut budget, |payload, children, budget| {
+            let reference = native_immutable_object_ref_v1(payload, children)
+                .ok_or(IndexError::DigestConflict)?;
+            let loan = budget.reserve_memory(
+                StoredObject::allocation_bytes(payload.len(), children.len())?,
+                MemoryLifetime::Retained,
+            )?;
+            let replaced = objects.insert(reference, StoredObject::new(
+                RegisteredObject::unscoped(reference, (quanta_index_contract::index::NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1 + payload.len() + children.len() * 32) as u64, children.to_vec()),
+                payload.to_vec(),
+                loan,
+            ));
+            assert!(replaced.is_none(), "immutable row part emitted twice");
+            Ok(reference)
+        }).expect("raw row projection");
+        assert!(objects.get(&reference).is_some_and(|object| {
+            quanta_index_core::index::history_checkpoint::is_large_row_v2(&object.payload)
+        }));
+        drop(source_loan);
+        drop(state_loan);
+        let directory = objects.get(&reference).expect("directory");
+        let (recovered, raw_loan) = quanta_index_core::index::history_checkpoint::decode_large_row_v2(
+            &generation,
+            1,
+            reference,
+            directory,
+            &mut budget,
+            &mut |child, budget| {
+                let stored = objects.get(&child).ok_or(IndexError::SnapshotUnavailable)?;
+                let loan = budget.reserve_memory(
+                    StoredObject::allocation_bytes(stored.payload.len(), stored.registration.children.len())?,
+                    MemoryLifetime::Temporary,
+                )?;
+                Ok(StoredObject::new(stored.registration.clone(), stored.payload.clone(), loan))
+            },
+        ).expect("raw row readback");
+        assert_eq!(recovered, row);
+        let decoded_loan = budget.reserve_memory(
+            row_decode_backing_bytes(AuxiliaryRowFamilyV1::DiffHunk, recovered.value.len(), recovered.key.row_key.len(), 16, DIFF_HUNK_CBOR_DECODE_BACKING)
+                .expect("typed row bound"),
+            MemoryLifetime::Temporary,
+        ).expect("typed row memory");
+        let decoded = decode_history_row(&recovered).expect("typed Native readback");
+        let HistoryReadbackRowV1::DiffHunk(hunk) = decoded else { panic!("wrong History family") };
+        assert_eq!(hunk.commit_sha, sha);
+        assert_eq!(hunk.file_path.as_ref(), "big.rs");
+        assert_eq!(hunk.record.added_text.len(), 5 * 1024 * 1024);
+        drop(hunk);
+        drop(decoded_loan);
+        drop(recovered);
+        drop(raw_loan);
+        drop(objects);
+        assert_eq!(ledger.live.load(Ordering::Acquire), 0);
+    }
 }

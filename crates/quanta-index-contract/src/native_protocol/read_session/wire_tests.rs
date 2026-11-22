@@ -225,8 +225,8 @@ fn history_session_wire_gold(order: &str) -> serde_json::Value {
 #[test]
 fn native_history_cut_read_keeps_new_session_wire_tag_and_exact_reply_identity()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
     use crate::native_protocol::NativeIndexResponse;
+    use crate::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
     let request_gold = serde_json::json!({"ReadSession":{"ReadHistoryCut":{
         "session":vec![7_u8;32], "instance":vec![8_u8;16]
     }}});
@@ -234,11 +234,13 @@ fn native_history_cut_read_keeps_new_session_wire_tag_and_exact_reply_identity()
     assert_eq!(serde_json::to_value(&request)?, request_gold);
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&request, &mut bytes)?;
-    assert_eq!(ciborium::de::from_reader::<NativeIndexRequest, _>(bytes.as_slice())?, request);
+    assert_eq!(
+        ciborium::de::from_reader::<NativeIndexRequest, _>(bytes.as_slice())?,
+        request
+    );
 
-    let view: CatalogView = serde_json::from_value(
-        profile_wire_gold()["ReadSessionProfile"]["view"].clone(),
-    )?;
+    let view: CatalogView =
+        serde_json::from_value(profile_wire_gold()["ReadSessionProfile"]["view"].clone())?;
     let reply = NativeIndexResponse::HistoryCut(NativeReadSessionHistoryCutV1 {
         session: NativeReadSessionId([7; 32]),
         view: view.identity,
@@ -258,7 +260,10 @@ fn native_history_cut_read_keeps_new_session_wire_tag_and_exact_reply_identity()
     assert!(serde_json::to_value(&reply)?.get("HistoryCut").is_some());
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&reply, &mut bytes)?;
-    assert_eq!(ciborium::de::from_reader::<NativeIndexResponse, _>(bytes.as_slice())?, reply);
+    assert_eq!(
+        ciborium::de::from_reader::<NativeIndexResponse, _>(bytes.as_slice())?,
+        reply
+    );
     Ok(())
 }
 

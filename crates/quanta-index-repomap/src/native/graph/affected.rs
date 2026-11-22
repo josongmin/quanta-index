@@ -12,7 +12,7 @@ use quanta_index_core::index::{
 
 use super::contribution::{
     GraphElement, GraphSupport, OwnerGraphRecord, load_output, load_owner, load_projection,
-    load_support,
+    load_support, validate_source_owned_facts,
 };
 use super::{GraphRoot, MAX_AFFECTED_GRAPH_ITEMS, encode_funded};
 
@@ -75,7 +75,40 @@ pub(super) fn apply(
         if mutation.expected == mutation.next {
             continue;
         }
-        if let Some(output) = old.as_ref().and_then(|previous| previous.output) {
+        let next = mutation
+            .next
+            .map(|reference| {
+                let contribution = load_projection(reference, context.objects, context.budget)?;
+                if contribution.owner != mutation.owner
+                    || contribution.projection != projection.projection
+                    || contribution.producer != projection.producer
+                {
+                    return Err(IndexError::InvalidInput(
+                        "graph contribution authority mismatch".into(),
+                    ));
+                }
+                Ok((reference, contribution))
+            })
+            .transpose()?;
+        let prior_output = old.as_ref().and_then(|record| record.output);
+        let next_output = next
+            .as_ref()
+            .and_then(|(_, contribution)| contribution.output);
+        let source_owned_rank = next.as_ref().is_some_and(|(_, contribution)| {
+            contribution.source_owner.is_some()
+                && projection.producer_policy
+                    == quanta_index_contract::native_protocol::native_repomap_rank_policy()
+        });
+        if source_owned_rank && next_output.is_none() {
+            return Err(IndexError::InvalidInput(
+                "source-owned RepoMap file has no typed graph output".into(),
+            ));
+        }
+        // Metadata may advance while the immutable Graph output and rank policy
+        // remain identical. Only the owner record follows the new contribution.
+        let refresh_supports = prior_output != next_output
+            || root.projection.producer_policy != projection.producer_policy;
+        if refresh_supports && let Some(output) = prior_output {
             let prior = load_output(output, context.objects, context.budget)?;
             for node in prior.output.nodes {
                 let rank_projection = match prior
@@ -139,18 +172,17 @@ pub(super) fn apply(
                 )?;
             }
         }
-        let next_record = if let Some(reference) = mutation.next {
-            let contribution = load_projection(reference, context.objects, context.budget)?;
-            if contribution.owner != mutation.owner
-                || contribution.projection != projection.projection
-                || contribution.producer != projection.producer
-            {
-                return Err(IndexError::InvalidInput(
-                    "graph contribution authority mismatch".into(),
-                ));
-            }
-            if let Some(output) = contribution.output {
+        let next_record = if let Some((reference, contribution)) = next {
+            if refresh_supports && let Some(output) = contribution.output {
                 let graph = load_output(output, context.objects, context.budget)?;
+                if source_owned_rank {
+                    validate_source_owned_facts(
+                        &graph,
+                        &contribution,
+                        context.objects,
+                        context.budget,
+                    )?;
+                }
                 super::contribution::validate_rank_coverage(
                     &graph.output,
                     projection.producer_policy,
@@ -257,6 +289,18 @@ pub(super) fn apply(
                         &mut leases,
                     )?;
                 }
+            }
+            if !refresh_supports && source_owned_rank {
+                let output = contribution.output.ok_or(IndexError::InvalidInput(
+                    "source-owned RepoMap file has no typed graph output".into(),
+                ))?;
+                let graph = load_output(output, context.objects, context.budget)?;
+                validate_source_owned_facts(
+                    &graph,
+                    &contribution,
+                    context.objects,
+                    context.budget,
+                )?;
             }
             let record = OwnerGraphRecord {
                 owner: mutation.owner,

@@ -2,6 +2,13 @@
 //! Profile bootstrap, view CAS and publication remain Kernel responsibilities.
 use super::*;
 use crate::HistorySourceReplayV1;
+mod batch_budget;
+mod page_decode;
+pub(super) mod source_input;
+use source_input::{
+    decode_history_object_allow_children, decode_history_source_object, is_compact_replay,
+    load_history_batch_object,
+};
 use quanta_index_contract::index::{
     HistoryAppendV1, HistoryGenerationAdvanceV1, HistorySnapshotCheckpointV1, HistorySnapshotPageV1, HistorySourceInputV1,
     HistoryTransition, InstanceSpec, NativeHistoryRestoreInputV1, MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1,
@@ -66,11 +73,6 @@ impl IndexHistoryBuildPort for NativeHistoryBuildV1 {
     }
 }
 
-pub(super) struct SourceInputData<T> {
-    pub(super) value: T,
-    _memory: Option<MemoryLease>,
-}
-
 /// A borrowed boot source. Snapshot DATA remains provisional until the
 /// independent Legacy Catalog and producer scope verify it before selection.
 pub enum NativeHistoryBootSourceV1<'a> {
@@ -102,6 +104,12 @@ fn decode_boot_source_v1(
             "History boot source identity or encoded length is invalid",
         ));
     }
+    if is_compact_replay(&stored.payload) {
+        let input = decode_history_source_object(reference, stored, budget)?;
+        input.value.validate_shape().map_err(invalid)?;
+        return Ok(LoadedBootSourceV1::Replay(input));
+    }
+    let (_, version_memory) = super::row_budget::json_token_scratch(&stored.payload, budget)?;
     budget
         .charge(WorkUsage {
             bytes: u64::try_from(stored.payload.len())
@@ -109,11 +117,14 @@ fn decode_boot_source_v1(
             ..WorkUsage::default()
         })
         .map_err(|error| history_work_error(budget, error))?;
-    let version: BootSourceVersionV1 =
-        serde_json::from_slice(&stored.payload).map_err(|error| invalid(&error.to_string()))?;
+    let version: BootSourceVersionV1 = super::row_budget::decode_json_shape(&stored.payload)?;
+    drop(version_memory);
+    budget
+        .checkpoint()
+        .map_err(|error| history_work_error(budget, error))?;
     match version.wire_version {
         1 => {
-            let input = decode_history_object::<HistorySourceInputV1>(reference, stored, budget)?;
+            let input = decode_history_source_object(reference, stored, budget)?;
             input.value.validate_shape().map_err(invalid)?;
             Ok(LoadedBootSourceV1::Replay(input))
         }
@@ -176,17 +187,35 @@ pub(super) fn visit_snapshot_checkpoint_rows_v1(
         budget.checkpoint().map_err(|error| history_work_error(budget, error))?;
         let stored = get(reference, budget).map_err(|error| history_work_error(budget, error))?;
         if stored.payload.len() > MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1 {
-            return Err(invalid("History snapshot page encoded length exceeds bound"));
+            return Err(invalid(
+                "History snapshot page encoded length exceeds bound",
+            ));
         }
-        let page: SourceInputData<HistorySnapshotPageV1> =
-            decode_history_object(reference, &stored, budget)?;
-        page.value.validate_shape().map_err(invalid)?;
-        if page.value.generation != checkpoint.cut.generation
-            || usize::try_from(page.value.ordinal).ok() != Some(index + 1)
+        if quanta_index_core::index::history_checkpoint::is_large_row_v2(&stored.payload) {
+            let (row, _memory) = quanta_index_core::index::history_checkpoint::decode_large_row_v2(
+                &checkpoint.cut.generation,
+                u32::try_from(index + 1)
+                    .map_err(|_| invalid("History snapshot page ordinal overflow"))?,
+                reference,
+                &stored,
+                budget,
+                &mut get,
+            )
+            .map_err(|error| history_work_error(budget, error))?;
+            drop(stored);
+            visit(row, budget)?;
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| invalid("History snapshot row count overflow"))?;
+            continue;
+        }
+        let (page, _page_memory) = page_decode::decode_v1(reference, &stored, budget)?;
+        page.validate_shape().map_err(invalid)?;
+        if page.generation != checkpoint.cut.generation
+            || usize::try_from(page.ordinal).ok() != Some(index + 1)
         {
             return Err(invalid("History snapshot page identity or ordinal differs"));
         }
-        let SourceInputData { value: page, _memory: _page_memory } = page;
         drop(stored);
         for row in page.rows {
             budget.checkpoint().map_err(|error| history_work_error(budget, error))?;
@@ -268,7 +297,11 @@ fn load_source(
     reference: ObjectRef,
     context: &mut AttemptContext<'_>,
 ) -> Result<SourceInputData<HistorySourceInputV1>, CoreError> {
-    let result = load_history_object::<HistorySourceInputV1>(reference, context)?;
+    let stored = context
+        .objects
+        .get(reference, context.budget)
+        .map_err(|error| history_work_error(context.budget, error))?;
+    let result = decode_history_source_object(reference, &stored, context.budget)?;
     result.value.validate_shape().map_err(invalid)?;
     Ok(result)
 }
@@ -281,7 +314,7 @@ pub fn with_native_history_source_input_v1<T>(
     budget: &mut WorkBudget,
     verify: impl FnOnce(&HistorySourceInputV1, &mut WorkBudget) -> Result<T, IndexError>,
 ) -> Result<T, IndexError> {
-    let input = decode_history_object::<HistorySourceInputV1>(reference, stored, budget)
+    let input = decode_history_source_object(reference, stored, budget)
         .map_err(|error| index_error(error, budget))?;
     input
         .value
@@ -290,100 +323,6 @@ pub fn with_native_history_source_input_v1<T>(
     verify(&input.value, budget)
 }
 
-pub(super) fn load_history_object<T: serde::de::DeserializeOwned>(
-    reference: ObjectRef,
-    context: &mut AttemptContext<'_>,
-) -> Result<SourceInputData<T>, CoreError> {
-    let stored = context
-        .objects
-        .get(reference, context.budget)
-        .map_err(|error| history_work_error(context.budget, error))?;
-    decode_history_object(reference, &stored, context.budget)
-}
-
-fn decode_history_object<T: serde::de::DeserializeOwned>(
-    reference: ObjectRef,
-    stored: &StoredObject,
-    budget: &mut WorkBudget,
-) -> Result<SourceInputData<T>, CoreError> {
-    decode_history_object_inner(reference, stored, budget, false)
-}
-
-pub(super) fn decode_history_object_allow_children<T: serde::de::DeserializeOwned>(
-    reference: ObjectRef,
-    stored: &StoredObject,
-    budget: &mut WorkBudget,
-) -> Result<SourceInputData<T>, CoreError> {
-    decode_history_object_inner(reference, stored, budget, true)
-}
-
-fn decode_history_object_inner<T: serde::de::DeserializeOwned>(
-    reference: ObjectRef,
-    stored: &StoredObject,
-    budget: &mut WorkBudget,
-    allow_children: bool,
-) -> Result<SourceInputData<T>, CoreError> {
-    if stored.registration.reference != reference
-        || (!allow_children && !stored.registration.children.is_empty())
-        || stored.payload.len() > MAX_HISTORY_SOURCE_INPUT_BYTES_V1
-    {
-        return Err(invalid(
-            "History source payload identity, child set or encoded length is invalid",
-        ));
-    }
-    let bytes = u64::try_from(stored.payload.len())
-        .ok()
-        .and_then(|bytes| bytes.checked_mul(16))
-        .and_then(|bytes| bytes.checked_add(4096))
-        .ok_or_else(|| invalid("History source decode bound overflow"))?;
-    let memory = budget
-        .reserve_memory(bytes, MemoryLifetime::Temporary)
-        .map_err(|error| history_work_error(budget, error))?;
-    // Keep decode work on the original attempt and observe refusal between
-    // bounded reads. The backing buffer is covered by the scratch grant above.
-    struct SourceReader<'a> {
-        bytes: &'a [u8],
-        budget: &'a mut WorkBudget,
-        refusal: Option<IndexError>,
-    }
-    impl std::io::Read for SourceReader<'_> {
-        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-            let count = output.len().min(self.bytes.len());
-            if let Err(error) = self.budget.charge(WorkUsage {
-                bytes: count as u64,
-                ..WorkUsage::default()
-            }) {
-                self.refusal = Some(error);
-                return Err(std::io::Error::other("History source decode work refused"));
-            }
-            output[..count].copy_from_slice(&self.bytes[..count]);
-            self.bytes = &self.bytes[count..];
-            Ok(count)
-        }
-    }
-    let mut reader = std::io::BufReader::with_capacity(
-        4096,
-        SourceReader {
-            bytes: &stored.payload,
-            budget,
-            refusal: None,
-        },
-    );
-    let decoded = serde_json::from_reader(&mut reader);
-    let refusal = reader.get_mut().refusal.take();
-    drop(reader);
-    if let Some(error) = refusal {
-        return Err(history_work_error(budget, error));
-    }
-    let value = decoded.map_err(|error| invalid(&error.to_string()))?;
-    budget
-        .checkpoint()
-        .map_err(|error| history_work_error(budget, error))?;
-    Ok(SourceInputData {
-        value,
-        _memory: memory,
-    })
-}
 fn verify(
     instance: &InstanceSpec,
     prior: Option<&MemberBinding>,
@@ -422,7 +361,7 @@ fn verify(
                             "History source fence differs from requested next cut",
                         ));
                     }
-                    let mut replay = HistorySourceReplayV1::new(input.value.fence.clone())?;
+                    let mut replay = HistorySourceReplayV1::new(input.value.fence)?;
                     for publication in &input.value.publications {
                         replay = replay.apply(
                             publication.ordinal,
@@ -441,12 +380,12 @@ fn verify(
                     }
                     prepare_native_history_full_v1(&source, transition.input, context)?
                 }
-                LoadedBootSourceV1::Snapshot(checkpoint) => {
+                LoadedBootSourceV1::Snapshot(mut checkpoint) => {
                     if checkpoint.value.cut != transition.next {
                         return Err(invalid("History snapshot cut differs from requested FULL"));
                     }
                     let objects = context.objects;
-                    let manifest = checkpoint.value.terminal_ack.manifest_digest.clone();
+                    let manifest = checkpoint.value.terminal_ack.manifest_digest.take();
                     prepare_native_history_snapshot_full_v1(
                         &checkpoint.value.cut,
                         checkpoint.value.terminal_ack.durable_sequence,
@@ -524,7 +463,7 @@ fn verify(
             let source = load_rows(&old.manifest, context.objects, context.maps, context.budget)?;
             let source = replay_delta_source(
                 source,
-                input.value.fence.clone(),
+                input.value.fence,
                 &publication.batch,
                 &publication.ack,
                 context.budget,
@@ -575,7 +514,7 @@ fn append_native(
             "Native History original does not continue the exact committed member",
         ));
     }
-    let input = load_history_object::<HistoryIngestBatch>(append.input, context)?;
+    let input = load_history_batch_object(append.input, context)?;
     let source = load_rows(&old.manifest, context.objects, context.maps, context.budget)?;
     let updated = source.append_native(
         context.attempt.operation,
@@ -790,7 +729,7 @@ mod snapshot_checkpoint_tests {
             Vec::new(),
             None,
         );
-        let mut restored = old.clone();
+        let mut restored = old;
         restored.format = NATIVE_RESTORE_HISTORY_MANIFEST;
         restored.source_input = restore_source;
         let verify = |restored: &Manifest| {
@@ -916,7 +855,12 @@ mod snapshot_checkpoint_tests {
             let page_ref = native_immutable_object_ref_v1(&page_payload, &[])
                 .expect("content-addressed fixture snapshot page");
             let page = StoredObject::new(
-                RegisteredObject::unscoped(page_ref, page_payload.len() as u64, Vec::new()),
+                RegisteredObject::unscoped(
+                    page_ref,
+                    (quanta_index_contract::index::NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1
+                        + page_payload.len()) as u64,
+                    Vec::new(),
+                ),
                 page_payload,
                 None,
             );
@@ -928,8 +872,10 @@ mod snapshot_checkpoint_tests {
             let source_payload = serde_json::to_vec(&original).expect("History checkpoint JSON");
             let source_input = native_immutable_object_ref_v1(&source_payload, &[page_ref])
                 .expect("content-addressed fixture source input");
-            let source = RegisteredObject::unscoped(
-                source_input, source_payload.len() as u64, vec![page_ref],
+            let source = StoredObject::new(
+                RegisteredObject::unscoped(source_input, source_payload.len() as u64, vec![page_ref]),
+                source_payload,
+                None,
             );
             manifest.source_input = source_input;
             let payload = serde_json::to_vec(manifest).expect("History manifest JSON");
@@ -953,17 +899,24 @@ mod snapshot_checkpoint_tests {
                 },
                 logical_commitment: snapshot,
             };
-            let prepared = verify_native_history_boot_member_v1(
-                &member,
-                &stored_manifest,
-                &cut,
+            let prepared = with_native_history_boot_source_v1(
+                source_input,
                 &source,
-                &NativeHistoryBootSourceV1::Snapshot(&original),
-                |reference, _| {
-                    assert_eq!(reference, page_ref);
-                    Ok(page.clone())
-                },
                 &mut work,
+                |input, budget| {
+                    verify_native_history_boot_member_v1(
+                        &member,
+                        &stored_manifest,
+                        &cut,
+                        &source.registration,
+                        &input,
+                        |reference, _| {
+                            assert_eq!(reference, page_ref);
+                            Ok(page.clone())
+                        },
+                        budget,
+                    )
+                },
             )?;
             prepared.verify_boot_rows_v1(
                 |reference, _| {
@@ -988,7 +941,7 @@ mod snapshot_checkpoint_tests {
         manifest.format = REPLAY_HISTORY_MANIFEST;
         assert!(matches!(
             verify(&mut manifest, &source_page, &entries, &objects),
-            Err(IndexError::InvalidInput(message)) if message.contains("History source input child graph differs")
+            Err(IndexError::DigestConflict)
         ));
         manifest.format = SNAPSHOT_HISTORY_MANIFEST;
         manifest.sequence += 1;

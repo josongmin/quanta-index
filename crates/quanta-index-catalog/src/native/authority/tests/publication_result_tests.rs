@@ -344,6 +344,36 @@ fn published_result_refuses_unfunded_read_and_refunds_temporary_memory() -> Test
         published
     );
     check_eq!(live.load(Ordering::Acquire), 0);
+    let mut replay_low_memory = result_read_budget(1 << 20, Arc::clone(&live), 2048);
+    check_eq!(
+        catalog.projection_replay(immutable.key, &mut replay_low_memory),
+        Err(IndexError::ResourceLimited)
+    );
+    check_eq!(live.load(Ordering::Acquire), 0);
+    let mut replay_funded = result_read_budget(1 << 20, Arc::clone(&live), 1 << 20);
+    check_eq!(
+        catalog.projection_replay(immutable.key, &mut replay_funded)?,
+        (OperationStatus::Published(published.identity), None)
+    );
+    check_eq!(live.load(Ordering::Acquire), 0);
+
+    let pending = operation(31_055, 206);
+    let attempt = admit_new(&catalog, pending)?;
+    // Allow the key and operation row, then refuse its registered request.
+    let (mut denied_custody, custody_scratch) = scratch_refusal_after(2);
+    check_eq!(
+        catalog.projection_replay(pending.key, &mut denied_custody),
+        Err(IndexError::ResourceLimited)
+    );
+    check!(custody_scratch.refused_while_live.load(Ordering::Acquire));
+    check_eq!(custody_scratch.live_bytes.load(Ordering::Acquire), 0);
+    let mut funded_custody = result_read_budget(1 << 20, Arc::clone(&live), 1 << 20);
+    check_eq!(
+        catalog.projection_replay(pending.key, &mut funded_custody)?,
+        (OperationStatus::Pending(attempt), None)
+    );
+    check_eq!(funded_custody.usage().reads, 5);
+    check_eq!(live.load(Ordering::Acquire), 0);
     Ok(())
 }
 
@@ -449,6 +479,7 @@ fn initial_full_single_event_operation_row_syntactic_upper_bound_fits_boot_cap()
         fence: u64::MAX,
         status: OperationStatus::Published(publication.identity),
         published_view: Some(publication),
+        projection_replay: None,
     };
     let payload = encode(&row)?;
     check!(

@@ -4,14 +4,28 @@
 mod ann_quality;
 #[path = "native_product_process/ann_regions.rs"]
 mod ann_regions;
-#[path = "../../quanta-index-searchd-harness/src/scale/source_fixture.rs"]
-pub mod scale_source_fixture;
 #[path = "native_product_process/large_restart.rs"]
 mod large_restart;
+#[path = "common/legacy_searchd_binary.rs"]
+mod legacy_searchd_binary;
 #[path = "native_product_process/native_boot.rs"]
 mod native_boot;
+#[path = "native_product_process/native_lifecycle.rs"]
+mod native_lifecycle;
 #[path = "common/native_physical_profile.rs"]
 mod native_physical_profile;
+#[path = "native_product_process/native_release.rs"]
+mod native_release;
+#[path = "native_product_process/native_snippet.rs"]
+mod native_snippet;
+#[path = "support/read_view_daemon_witness.rs"]
+mod read_view_daemon_witness;
+#[path = "native_product_process/read_view_lifetime.rs"]
+mod read_view_lifetime;
+#[path = "native_product_process/segmented_layered.rs"]
+mod segmented_layered;
+#[path = "native_product_process/text_shard_contract.rs"]
+mod text_shard_contract;
 #[path = "native_product_process/uds_query_trace.rs"]
 mod uds_query_trace;
 
@@ -20,17 +34,14 @@ use std::{
     fmt::Debug,
     fs,
     io::{Read as _, Write as _},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     os::unix::{
         fs::{MetadataExt as _, PermissionsExt},
         net::{UnixListener, UnixStream},
     },
     path::Path,
     process::{Child, Command, Stdio},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Condvar, Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -59,6 +70,7 @@ use quanta_index_lexical::native::TextRecipe;
 use quanta_index_sdk::native_uds::{
     NativeEffortStreamQuery, NativeEffortStreamStage, NativeUdsClient, NativeUdsError,
 };
+use quanta_index_searchd_harness::source_fixture as scale_source_fixture;
 use quanta_index_semantic::native::TextEmbeddingBridge;
 use quanta_index_storage::FileObjectStore;
 
@@ -66,6 +78,8 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 // A functional process watchdog includes platform executable assessment. The
 // config-preflight refusal deadline below measures only the entered phase.
 const NATIVE_STARTUP_LIMIT: Duration = Duration::from_secs(30);
+const NATIVE_SHUTDOWN_LIMIT: Duration = Duration::from_secs(5);
+const NATIVE_LIFECYCLE_POLL: Duration = Duration::from_millis(10);
 const NATIVE_CONFIG_PREFLIGHT_STAGE: &str = "searchd: native_boot_stage=config_preflight";
 const STDERR_OBSERVATION_BYTES: u64 = 16_384;
 
@@ -155,6 +169,43 @@ fn native_trace_output_limit_env_is_explicit_and_bounded() -> TestResult {
 
 struct Daemon(Child, Option<tempfile::NamedTempFile>);
 
+fn daemon_phase_deadline(limit: Duration, watchdog: Option<Instant>) -> TestResult<Instant> {
+    let deadline = Instant::now()
+        .checked_add(limit)
+        .ok_or("native daemon lifecycle deadline overflow")?;
+    Ok(watchdog.map_or(deadline, |watchdog| watchdog.min(deadline)))
+}
+
+fn daemon_socket_ready(address: &rustix::net::SocketAddrUnix) -> TestResult<bool> {
+    use rustix::{io, net};
+
+    #[cfg(target_os = "linux")]
+    let socket = net::socket_with(
+        net::AddressFamily::UNIX,
+        net::SocketType::STREAM,
+        net::SocketFlags::CLOEXEC | net::SocketFlags::NONBLOCK,
+        None,
+    )?;
+    #[cfg(not(target_os = "linux"))]
+    let socket = {
+        let socket = net::socket(net::AddressFamily::UNIX, net::SocketType::STREAM, None)?;
+        io::fcntl_setfd(&socket, io::FdFlags::CLOEXEC)?;
+        io::ioctl_fionbio(&socket, true)?;
+        socket
+    };
+    match net::connect(&socket, address) {
+        Ok(()) => Ok(true),
+        Err(
+            io::Errno::NOENT
+            | io::Errno::CONNREFUSED
+            | io::Errno::INPROGRESS
+            | io::Errno::WOULDBLOCK
+            | io::Errno::INTR,
+        ) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 impl Daemon {
     fn start(config: &Path, socket: &Path) -> TestResult<Self> {
         Self::start_with_api_key(config, socket, None)
@@ -170,12 +221,23 @@ impl Daemon {
         api_key: Option<&str>,
         trace: Option<&Path>,
     ) -> TestResult<Self> {
-        Self::start_binary(
+        Self::start_with_api_key_and_trace_before(config, socket, api_key, trace, None)
+    }
+
+    fn start_with_api_key_and_trace_before(
+        config: &Path,
+        socket: &Path,
+        api_key: Option<&str>,
+        trace: Option<&Path>,
+        watchdog: Option<Instant>,
+    ) -> TestResult<Self> {
+        Self::start_binary_before(
             Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")),
             config,
             socket,
             api_key,
             trace,
+            watchdog,
         )
     }
 
@@ -186,6 +248,25 @@ impl Daemon {
         api_key: Option<&str>,
         trace: Option<&Path>,
     ) -> TestResult<Self> {
+        Self::start_binary_before(binary, config, socket, api_key, trace, None)
+    }
+
+    fn start_binary_before(
+        binary: &Path,
+        config: &Path,
+        socket: &Path,
+        api_key: Option<&str>,
+        trace: Option<&Path>,
+        watchdog: Option<Instant>,
+    ) -> TestResult<Self> {
+        let deadline = daemon_phase_deadline(NATIVE_STARTUP_LIMIT, watchdog)?;
+        let startup_timeout = if watchdog == Some(deadline) {
+            "ANN quality watchdog expired during native daemon startup"
+        } else {
+            "native daemon did not bind UDS within thirty seconds"
+        };
+        require(Instant::now() < deadline, startup_timeout)?;
+        let address = rustix::net::SocketAddrUnix::new(socket)?;
         let trace_max_output_bytes = if trace.is_some() {
             parse_native_trace_max_output_bytes(
                 std::env::var_os("QIDX_NATIVE_TRACE_MAX_OUTPUT_BYTES").as_deref(),
@@ -205,6 +286,8 @@ impl Daemon {
             .arg(config)
             // Failure-only bounded diagnostics are identical in Off/Record.
             .env("QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1", "1")
+            .env_remove("QUANTA_PROOF_DAEMON_WITNESS_DIR")
+            .env_remove("QUANTA_PROOF_DAEMON_WITNESS_NONCE")
             .stdout(Stdio::null())
             .stderr(Stdio::from(stderr_log.reopen()?));
         if let Some(api_key) = api_key {
@@ -218,15 +301,11 @@ impl Daemon {
                     .arg(bytes.to_string());
             }
         }
+        require(Instant::now() < deadline, startup_timeout)?;
         let child = command.spawn()?;
         let mut daemon = Self(child, Some(stderr_log));
-        let deadline = Instant::now()
-            .checked_add(NATIVE_STARTUP_LIMIT)
-            .ok_or("native startup deadline overflow")?;
         loop {
-            if UnixStream::connect(socket).is_ok() {
-                return Ok(daemon);
-            }
+            require(Instant::now() < deadline, startup_timeout)?;
             if let Some(status) = daemon.0.try_wait()? {
                 let mut stderr = String::new();
                 let _stderr_bytes = daemon
@@ -235,10 +314,13 @@ impl Daemon {
                     .read_to_string(&mut stderr)?;
                 return Err(format!("native daemon exited {status}: {stderr}").into());
             }
-            if Instant::now() >= deadline {
-                return Err("native daemon did not bind UDS within thirty seconds".into());
+            if daemon_socket_ready(&address)? {
+                require(Instant::now() < deadline, startup_timeout)?;
+                return Ok(daemon);
             }
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(
+                NATIVE_LIFECYCLE_POLL.min(deadline.saturating_duration_since(Instant::now())),
+            );
         }
     }
 
@@ -255,37 +337,100 @@ impl Daemon {
     }
 
     fn stop_in_place(&mut self) -> TestResult {
+        self.stop_in_place_before(None)
+    }
+
+    fn stop_in_place_before(&mut self, watchdog: Option<Instant>) -> TestResult {
+        self.stop_after_signal(rustix::process::Signal::TERM, watchdog)
+    }
+
+    fn stop_after_signal(
+        &mut self,
+        signal: rustix::process::Signal,
+        watchdog: Option<Instant>,
+    ) -> TestResult {
+        let deadline = daemon_phase_deadline(NATIVE_SHUTDOWN_LIMIT, watchdog)?;
+        let shutdown_timeout = if watchdog == Some(deadline) {
+            "ANN quality watchdog expired during native daemon shutdown"
+        } else {
+            "native daemon did not drain after shutdown signal"
+        };
+        require(Instant::now() < deadline, shutdown_timeout)?;
         if let Some(status) = self.0.try_wait()? {
             return Err(format!("native daemon exited before shutdown: {status}").into());
         }
-        let status = Command::new("kill")
-            .arg("-TERM")
-            .arg(self.0.id().to_string())
-            .status()?;
-        if !status.success() {
-            return Err("failed to signal native daemon".into());
-        }
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(5))
-            .ok_or("native shutdown deadline overflow")?;
+        let pid = rustix::process::Pid::from_raw(i32::try_from(self.0.id())?)
+            .ok_or("native daemon has no process identifier")?;
+        require(Instant::now() < deadline, shutdown_timeout)?;
+        rustix::process::kill_process(pid, signal)
+            .map_err(|error| format!("failed to signal native daemon: {error}"))?;
         loop {
+            require(Instant::now() < deadline, shutdown_timeout)?;
             if let Some(status) = self.0.try_wait()? {
                 if !status.success() {
                     return Err(format!("native daemon did not drain cleanly: {status}").into());
                 }
+                require(Instant::now() < deadline, shutdown_timeout)?;
                 return Ok(());
             }
-            if Instant::now() >= deadline {
-                return Err("native daemon did not drain after SIGTERM".into());
-            }
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(
+                NATIVE_LIFECYCLE_POLL.min(deadline.saturating_duration_since(Instant::now())),
+            );
         }
     }
+}
+
+#[test]
+fn daemon_lifecycle_refuses_expired_watchdog_before_spawn_or_signal() -> TestResult {
+    let deadline = Instant::now();
+    let absent = Path::new("/native-product-deadline-test-no-daemon");
+    let startup = Daemon::start_binary_before(absent, absent, absent, None, None, Some(deadline));
+    let startup_error = startup.err().ok_or("expired watchdog started a daemon")?;
+    require_equal(
+        &startup_error.to_string().as_str(),
+        &"ANN quality watchdog expired during native daemon startup",
+        "expired startup watchdog",
+    )?;
+
+    let child = Command::new("/bin/cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()?;
+    let mut daemon = Daemon(child, None);
+    let shutdown_error = daemon
+        .stop_in_place_before(Some(deadline))
+        .err()
+        .ok_or("expired watchdog signalled a daemon")?;
+    require_equal(
+        &shutdown_error.to_string().as_str(),
+        &"ANN quality watchdog expired during native daemon shutdown",
+        "expired shutdown watchdog",
+    )?;
+    require(
+        daemon.0.try_wait()?.is_none(),
+        "expired daemon shutdown signalled its child",
+    )
+}
+
+#[test]
+fn daemon_lifecycle_caps_both_phase_deadlines_at_original_watchdog() -> TestResult {
+    let watchdog = Instant::now()
+        .checked_add(Duration::from_secs(1))
+        .ok_or("lifecycle fixture deadline overflow")?;
+    for limit in [NATIVE_STARTUP_LIMIT, NATIVE_SHUTDOWN_LIMIT] {
+        require_equal(
+            &daemon_phase_deadline(limit, Some(watchdog))?,
+            &watchdog,
+            "daemon lifecycle watchdog cap",
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
 enum EmbeddingFixture {
     Fixed8,
+    HoldCancelledQuery,
     AnnQuality,
     AnnFiltered,
 }
@@ -293,7 +438,7 @@ enum EmbeddingFixture {
 impl EmbeddingFixture {
     fn dimension(self) -> usize {
         match self {
-            Self::Fixed8 => 8,
+            Self::Fixed8 | Self::HoldCancelledQuery => 8,
             Self::AnnQuality | Self::AnnFiltered => {
                 quanta_index_searchd_harness::ann::AnnRailConfig::DEFAULT.width
             }
@@ -304,7 +449,9 @@ impl EmbeddingFixture {
         use quanta_index_searchd_harness::ann::{AnnRailConfig, query_direction, unit_direction};
 
         match self {
-            Self::Fixed8 => Ok(vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            Self::Fixed8 | Self::HoldCancelledQuery => {
+                Ok(vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            }
             Self::AnnQuality | Self::AnnFiltered => {
                 let filtered = matches!(self, Self::AnnFiltered);
                 let config = if filtered {
@@ -347,9 +494,16 @@ impl EmbeddingFixture {
     }
 }
 
+struct EmbeddingStubState {
+    // Acceptance and active-socket registration share the finish boundary.
+    quiescing: bool,
+    active: Option<TcpStream>,
+}
+
 struct EmbeddingStub {
     address: SocketAddr,
-    stop: Arc<AtomicBool>,
+    stop: Arc<OnceLock<Instant>>,
+    active: Arc<(Mutex<EmbeddingStubState>, Condvar)>,
     inputs: Arc<Mutex<Vec<String>>>,
     errors: Arc<Mutex<Vec<String>>>,
     join: Option<thread::JoinHandle<()>>,
@@ -372,26 +526,73 @@ impl EmbeddingStub {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(OnceLock::new());
+        let active = Arc::new((
+            Mutex::new(EmbeddingStubState {
+                quiescing: false,
+                active: None,
+            }),
+            Condvar::new(),
+        ));
         let inputs = Arc::new(Mutex::new(Vec::new()));
         let errors = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = Arc::clone(&stop);
+        let thread_active = Arc::clone(&active);
         let thread_inputs = Arc::clone(&inputs);
         let thread_errors = Arc::clone(&errors);
         let join = thread::Builder::new()
             .name("native-semantic-http-stub".into())
             .spawn(move || {
-                while !thread_stop.load(Ordering::Acquire) {
-                    match listener.accept() {
-                        Ok((stream, _)) => {
-                            if let Err(error) =
-                                serve_embedding_request(stream, &thread_inputs, fixture)
+                loop {
+                    let accepted = (|| -> TestResult<Option<(TcpStream, Instant)>> {
+                        let mut state = thread_active
+                            .0
+                            .lock()
+                            .map_err(|error| format!("stub active socket poisoned: {error}"))?;
+                        if state.quiescing {
+                            return Ok(None);
+                        }
+                        let (stream, _) = listener.accept()?;
+                        let deadline = Instant::now()
+                            .checked_add(Duration::from_secs(3))
+                            .ok_or("HTTP embedding exchange deadline overflow")?;
+                        state.active = Some(stream.try_clone()?);
+                        thread_active.1.notify_all();
+                        Ok(Some((stream, deadline)))
+                    })();
+                    match accepted {
+                        Ok(Some((stream, deadline))) => {
+                            let result = (|| -> TestResult {
+                                let result = serve_embedding_request(
+                                    stream,
+                                    &thread_inputs,
+                                    fixture,
+                                    deadline,
+                                    &thread_stop,
+                                );
+                                thread_active
+                                    .0
+                                    .lock()
+                                    .map_err(|error| {
+                                        format!("stub active socket poisoned: {error}")
+                                    })?
+                                    .active = None;
+                                thread_active.1.notify_all();
+                                result
+                            })();
+                            if let Err(error) = result
+                                && !embedding_exchange_cancelled(error.as_ref())
                                 && let Ok(mut errors) = thread_errors.lock()
                             {
                                 errors.push(error.to_string());
                             }
                         }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        Ok(None) => break,
+                        Err(error)
+                            if error
+                                .downcast_ref::<std::io::Error>()
+                                .is_some_and(|io| io.kind() == std::io::ErrorKind::WouldBlock) =>
+                        {
                             thread::sleep(Duration::from_millis(10));
                         }
                         Err(error) => {
@@ -406,6 +607,7 @@ impl EmbeddingStub {
         Ok(Self {
             address,
             stop,
+            active,
             inputs,
             errors,
             join: Some(join),
@@ -431,19 +633,77 @@ impl EmbeddingStub {
             .clone())
     }
 
-    fn finish(mut self) -> TestResult {
-        self.stop.store(true, Ordering::Release);
+    fn finish(self) -> TestResult {
+        self.finish_with_inputs().map(|_| ())
+    }
+
+    fn finish_with_inputs(mut self) -> TestResult<Vec<String>> {
+        {
+            let mut state = self
+                .active
+                .0
+                .lock()
+                .map_err(|error| format!("stub active socket poisoned: {error}"))?;
+            state.quiescing = true;
+            self.active.1.notify_all();
+        }
         if let Some(join) = self.join.take() {
             join.join().map_err(|_panic| "HTTP stub worker panicked")?;
         }
-        let _observed = self.observed_inputs()?;
-        Ok(())
+        self.observed_inputs()
+    }
+
+    fn wait_for_active(&self) -> TestResult {
+        let state = self
+            .active
+            .0
+            .lock()
+            .map_err(|error| format!("stub active socket poisoned: {error}"))?;
+        let (state, _wait) = self
+            .active
+            .1
+            .wait_timeout_while(state, Duration::from_secs(2), |state| {
+                state.active.is_none()
+            })
+            .map_err(|error| format!("stub active socket poisoned: {error}"))?;
+        require(state.active.is_some(), "HTTP stub did not accept request")
+    }
+
+    fn wait_until_idle(&self) -> TestResult {
+        let state = self
+            .active
+            .0
+            .lock()
+            .map_err(|error| format!("stub active socket poisoned: {error}"))?;
+        let (state, _wait) = self
+            .active
+            .1
+            .wait_timeout_while(state, Duration::from_secs(3), |state| {
+                state.active.is_some()
+            })
+            .map_err(|error| format!("stub active socket poisoned: {error}"))?;
+        require(
+            state.active.is_none(),
+            "cancelled provider connection stayed open",
+        )
+    }
+
+    fn stop_worker(&self) {
+        if let Ok(mut state) = self.active.0.lock() {
+            state.quiescing = true;
+            let _stopped_at = self.stop.get_or_init(Instant::now);
+            if let Some(socket) = state.active.as_ref() {
+                let _shutdown = socket.shutdown(Shutdown::Both);
+            }
+        } else {
+            let _stopped_at = self.stop.get_or_init(Instant::now);
+        }
     }
 }
 
 impl Drop for EmbeddingStub {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.stop_worker();
         if let Some(join) = self.join.take() {
             let joined = join.join();
             assert!(
@@ -454,16 +714,108 @@ impl Drop for EmbeddingStub {
     }
 }
 
+#[derive(Debug)]
+struct EmbeddingExchangeCancelled;
+
+impl std::fmt::Display for EmbeddingExchangeCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HTTP embedding exchange stopped by fixture shutdown")
+    }
+}
+
+impl Error for EmbeddingExchangeCancelled {}
+
+fn embedding_exchange_cancelled(error: &(dyn Error + 'static)) -> bool {
+    error.downcast_ref::<std::io::Error>().is_some_and(|io| {
+        io.get_ref()
+            .is_some_and(|cause| cause.is::<EmbeddingExchangeCancelled>())
+    })
+}
+
+struct EmbeddingExchange<'a> {
+    stream: TcpStream,
+    deadline: Instant,
+    stop: &'a OnceLock<Instant>,
+}
+
+impl<'a> EmbeddingExchange<'a> {
+    fn new(
+        stream: TcpStream,
+        deadline: Instant,
+        stop: &'a OnceLock<Instant>,
+    ) -> std::io::Result<Self> {
+        let exchange = Self {
+            stream,
+            deadline,
+            stop,
+        };
+        let blocking = exchange.stream.set_nonblocking(false);
+        let _remaining = exchange.remaining()?;
+        blocking?;
+        Ok(exchange)
+    }
+
+    fn remaining(&self) -> std::io::Result<Duration> {
+        // Decide by event order even when the worker observes both after I/O.
+        if self
+            .stop
+            .get()
+            .is_some_and(|stopped| *stopped < self.deadline)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                EmbeddingExchangeCancelled,
+            ));
+        }
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "HTTP embedding exchange deadline elapsed",
+                )
+            })
+    }
+}
+
+impl std::io::Read for EmbeddingExchange<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let timeout = self.stream.set_read_timeout(Some(self.remaining()?));
+        let _remaining = self.remaining()?;
+        timeout?;
+        let result = self.stream.read(buffer);
+        let _remaining = self.remaining()?;
+        result
+    }
+}
+
+impl std::io::Write for EmbeddingExchange<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let timeout = self.stream.set_write_timeout(Some(self.remaining()?));
+        let _remaining = self.remaining()?;
+        timeout?;
+        let result = self.stream.write(buffer);
+        let _remaining = self.remaining()?;
+        result
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _before = self.remaining()?;
+        let result = self.stream.flush();
+        let _after = self.remaining()?;
+        result
+    }
+}
+
 fn serve_embedding_request(
-    mut stream: TcpStream,
+    stream: TcpStream,
     inputs: &Arc<Mutex<Vec<String>>>,
     fixture: EmbeddingFixture,
+    deadline: Instant,
+    stop: &OnceLock<Instant>,
 ) -> TestResult {
-    // The listener polls without blocking; each accepted HTTP exchange uses
-    // blocking IO with the explicit timeouts below on every supported OS.
-    stream.set_nonblocking(false)?;
-    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+    let mut stream = EmbeddingExchange::new(stream, deadline, stop)?;
     let mut bytes = Vec::new();
     let header_end = loop {
         let mut next = [0_u8; 4096];
@@ -537,6 +889,16 @@ fn serve_embedding_request(
         .lock()
         .map_err(|error| format!("stub inputs poisoned: {error}"))?
         .push(input.to_owned());
+    if matches!(fixture, EmbeddingFixture::HoldCancelledQuery) && input == "cancelledneedle" {
+        return require(
+            match stream.read(&mut [0_u8; 1]) {
+                Ok(0) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => true,
+                _ => false,
+            },
+            "cancelled provider attempt must close its HTTP connection",
+        );
+    }
     let response = serde_json::to_vec(&serde_json::json!({
         "data": [{"embedding": fixture.vector(input)?, "index": 0}]
     }))?;
@@ -547,6 +909,190 @@ fn serve_embedding_request(
     )?;
     stream.write_all(&response)?;
     stream.flush()?;
+    Ok(())
+}
+
+#[test]
+fn embedding_exchange_uses_one_deadline_across_reads_and_writes() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let mut sender = TcpStream::connect(listener.local_addr()?)?;
+    let (receiver, _) = listener.accept()?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(3))
+        .ok_or("exchange fixture deadline overflow")?;
+    let stop = OnceLock::new();
+    let mut exchange = EmbeddingExchange::new(receiver, deadline, &stop)?;
+    let mut byte = [0_u8; 1];
+
+    sender.write_all(b"abc")?;
+    for expected in [b'a', b'b'] {
+        exchange.read_exact(&mut byte)?;
+        require_equal(&byte, &[expected], "fragmented exchange byte")?;
+        require_equal(&exchange.deadline, &deadline, "exchange read deadline")?;
+    }
+    exchange.write_all(b"partial response")?;
+    require_equal(&exchange.deadline, &deadline, "exchange write deadline")?;
+    exchange.deadline = Instant::now();
+    let error = exchange
+        .read(&mut byte)
+        .err()
+        .ok_or("exchange read delivered a buffered byte after deadline")?;
+    require_equal(&error.kind(), &std::io::ErrorKind::TimedOut, "expired read")?;
+    let error = exchange
+        .write(b"response")
+        .err()
+        .ok_or("exchange write accepted bytes after deadline")?;
+    require_equal(
+        &error.kind(),
+        &std::io::ErrorKind::TimedOut,
+        "exchange write after deadline",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn embedding_exchange_resolves_shutdown_and_timeout_in_event_order() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let _sender = TcpStream::connect(listener.local_addr()?)?;
+    let (receiver, _) = listener.accept()?;
+    let now = Instant::now();
+    let deadline = now
+        .checked_sub(Duration::from_secs(1))
+        .ok_or("expired exchange deadline overflow")?;
+    let before_deadline = deadline
+        .checked_sub(Duration::from_secs(1))
+        .ok_or("earlier exchange shutdown overflow")?;
+    for (stopped_at, kind, cancelled) in [
+        (before_deadline, std::io::ErrorKind::ConnectionAborted, true),
+        (deadline, std::io::ErrorKind::TimedOut, false),
+        (now, std::io::ErrorKind::TimedOut, false),
+    ] {
+        let stop = OnceLock::from(stopped_at);
+        let exchange = EmbeddingExchange::new(receiver.try_clone()?, deadline, &stop);
+        let error = exchange.err().ok_or("expired exchange admitted I/O")?;
+        require_equal(&error.kind(), &kind, "exchange first terminal event")?;
+        require_equal(
+            &embedding_exchange_cancelled(&error),
+            &cancelled,
+            "only shutdown before the deadline can suppress this error",
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn embedding_exchange_caps_the_socket_timeout_during_stalled_read() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let _sender = TcpStream::connect(listener.local_addr()?)?;
+    let (receiver, _) = listener.accept()?;
+    let budget = Duration::from_secs(1);
+    // Let the kernel account for timer rounding. The longer fallback keeps
+    // the regression bounded even if the exchange leaves this option alone.
+    receiver.set_read_timeout(Some(budget))?;
+    let timeout_ceiling = receiver
+        .read_timeout()?
+        .ok_or("platform did not install the reference socket timeout")?;
+    receiver.set_read_timeout(Some(Duration::from_secs(3)))?;
+    let deadline = Instant::now()
+        .checked_add(budget)
+        .ok_or("short exchange fixture deadline overflow")?;
+    let stop = OnceLock::new();
+    let mut exchange = EmbeddingExchange::new(receiver, deadline, &stop)?;
+    let error = exchange
+        .read(&mut [0_u8; 1])
+        .err()
+        .ok_or("stalled exchange returned bytes or EOF")?;
+    require(
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ),
+        format!("stalled exchange failed for another reason: {error}"),
+    )?;
+    let timeout = exchange
+        .stream
+        .read_timeout()?
+        .ok_or("stalled read had no socket timeout")?;
+    require(
+        timeout <= timeout_ceiling,
+        format!("socket timeout exceeded the exchange budget: {timeout:?}"),
+    )
+}
+
+#[test]
+fn embedding_stub_finish_reports_partial_http_request() -> TestResult {
+    let stub = EmbeddingStub::start_ann_quality()?;
+    let mut client = TcpStream::connect(stub.address)?;
+    client.write_all(b"POST /v1/embeddings HTTP/1.1\r\n")?;
+    stub.wait_for_active()?;
+    let error = stub
+        .finish()
+        .err()
+        .ok_or("healthy finish accepted an incomplete HTTP exchange")?;
+    require(
+        error.to_string().contains("HTTP stub failures"),
+        format!("healthy finish lost the exchange failure: {error}"),
+    )
+}
+
+#[test]
+fn embedding_stub_finish_drains_accepted_complete_http_request() -> TestResult {
+    let stub = EmbeddingStub::start()?;
+    let mut client = TcpStream::connect(stub.address)?;
+    client.write_all(b"POST /v1/embeddings HTTP/1.1\r\n")?;
+    stub.wait_for_active()?;
+    require(
+        stub.observed_inputs()?.is_empty(),
+        "partial request was recorded before healthy finish",
+    )?;
+    let active = Arc::clone(&stub.active);
+    let finisher =
+        thread::spawn(move || stub.finish_with_inputs().map_err(|error| error.to_string()));
+    let client_result = (|| -> TestResult {
+        let state = active
+            .0
+            .lock()
+            .map_err(|error| format!("stub active socket poisoned: {error}"))?;
+        let (state, _wait) = active
+            .1
+            .wait_timeout_while(state, Duration::from_secs(2), |state| !state.quiescing)
+            .map_err(|error| format!("stub active socket poisoned: {error}"))?;
+        require(state.quiescing, "HTTP stub did not enter healthy finish")?;
+        drop(state);
+        let body = br#"{"model":"test-model","dimensions":8,"input":["sample"]}"#;
+        write!(client, "Content-Length: {}\r\n\r\n", body.len())?;
+        client.write_all(body)?;
+        client.set_read_timeout(Some(Duration::from_secs(2)))?;
+        let mut response = String::new();
+        let _read_bytes = client.read_to_string(&mut response)?;
+        require(
+            response.starts_with("HTTP/1.1 200 OK"),
+            format!("accepted HTTP exchange did not complete: {response}"),
+        )
+    })();
+    let finish_result = finisher
+        .join()
+        .map_err(|_panic| "HTTP stub finisher panicked")?;
+    client_result?;
+    require_equal(
+        &finish_result?,
+        &vec!["sample".to_owned()],
+        "healthy finish inputs include the drained HTTP request",
+    )
+}
+
+#[test]
+fn embedding_stub_drop_interrupts_partial_http_request() -> TestResult {
+    let stub = EmbeddingStub::start_ann_quality()?;
+    let mut client = TcpStream::connect(stub.address)?;
+    client.write_all(b"POST /v1/embeddings HTTP/1.1\r\n")?;
+    stub.wait_for_active()?;
+    let shutdown_started = Instant::now();
+    drop(stub);
+    require(
+        shutdown_started.elapsed() < Duration::from_secs(1),
+        "HTTP stub Drop waited for the exchange timeout",
+    )?;
     Ok(())
 }
 
@@ -630,6 +1176,7 @@ fn config(root: &Path, socket: &Path) -> serde_json::Value {
         "work_limits": {"reads": 1_000_000, "writes": 1_000_000, "bytes": 536_870_912, "mutations": 1_000_000},
         "resources": {
             "catalog_writer_cache_kib": 8192,
+            "process_rss_ceiling_bytes": null,
             "physical": {
                 "inventory": {
                     "max_bytes": physical.inventory.max_bytes,
@@ -763,6 +1310,27 @@ fn configure_semantic_endpoint(value: &mut serde_json::Value, base_url: &str) ->
     )
 }
 
+fn configure_openai_fixture_budget(
+    value: &mut serde_json::Value,
+    total_cost_micros_ceiling: u64,
+) -> TestResult {
+    let provider = value
+        .pointer_mut("/semantic/provider")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or("native OpenAI provider fixture must be an object")?;
+    let _previous = provider.insert(
+        "work_budget".into(),
+        serde_json::json!({
+            "inflight_requests_cap": 1,
+            "inflight_bytes_cap": 65_536,
+            "total_cost_micros_ceiling": total_cost_micros_ceiling,
+            "retry_attempts_cap": 0,
+            "openai_max_request_cost_micros": 1,
+        }),
+    );
+    Ok(())
+}
+
 fn configure_owned_semantic(value: &mut serde_json::Value) -> TestResult {
     for (resource, capacity) in [
         ("cpu_units", 5_u64),
@@ -831,16 +1399,20 @@ fn openai_semantic_spec_dimension(base_url: &str, dimension: u32) -> TestResult<
     )?;
     let bridge = TextEmbeddingBridge::new(L2UnitEmbeddingProvider::new(provider)?)?;
     let recipe = bridge.recipe(4096)?;
-    Ok(InstanceSpec {
+    Ok(semantic_fixture_spec(recipe.fingerprint()))
+}
+
+fn semantic_fixture_spec(policy: Digest) -> InstanceSpec {
+    InstanceSpec {
         instance: IndexInstanceId([80; 16]),
         kind: IndexKind([81; 16]),
         group: PublicationGroupId([84; 16]),
         activation: GroupActivation::AsyncCoverage,
         input_domain: InputDomain::SourceLocal,
         schema: SchemaId([82; 16]),
-        policy: recipe.fingerprint(),
+        policy,
         format: StorageFormatId([83; 16]),
-    })
+    }
 }
 
 fn expect_native_config_refusal(
@@ -902,9 +1474,102 @@ fn native_object_file(root: &Path, reference: ObjectRef) -> TestResult<std::path
         .join(name))
 }
 
+fn nextest_test_event(module_path: &str, case: &str) -> String {
+    let package = env!("CARGO_PKG_NAME");
+    match module_path.split_once("::") {
+        Some((target, module)) => format!("{package}::{target}${module}::{case}"),
+        None => format!("{package}::{module_path}${case}"),
+    }
+}
+
 #[test]
 fn product_daemon_serves_native_publish_query_and_reopen() -> TestResult {
-    check_product_daemon_publish_query_and_reopen(false)
+    read_view_lifetime::check_product_daemon_publish_query_and_reopen(
+        false,
+        "p04-native-read-view.json",
+        &nextest_test_event(
+            module_path!(),
+            "product_daemon_serves_native_publish_query_and_reopen",
+        ),
+    )
+}
+
+#[test]
+fn product_daemon_applies_retention_config_preserves_current_query_and_reopens() -> TestResult {
+    read_view_lifetime::check_product_daemon_publish_query_and_reopen(
+        true,
+        "p04-native-read-view-retention.json",
+        &nextest_test_event(
+            module_path!(),
+            "product_daemon_applies_retention_config_preserves_current_query_and_reopens",
+        ),
+    )
+}
+
+#[test]
+fn product_native_process_rss_ceiling_refuses_before_input_creation() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let root = temp.path().join("state");
+    let socket = temp.path().join("native.sock");
+    let config_path = temp.path().join("native-rss-ceiling.json");
+    let mut configuration = config(&root, &socket);
+    set_fixture_json(
+        &mut configuration,
+        "/resources/process_rss_ceiling_bytes",
+        serde_json::json!(1),
+    )?;
+    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
+
+    let daemon = Daemon::start(&config_path, &socket)?;
+    let client = NativeUdsClient::new(&socket);
+    let created = client.request(
+        NativeIndexRequest::CreateWorkspace {
+            workspace: workspace(),
+            epoch: 1,
+        },
+        &budget(),
+    )?;
+    require(
+        matches!(created, NativeIndexResponse::Created(_)),
+        "product RSS fixture did not create its workspace",
+    )?;
+    let publication = operation(91);
+    let refused = client.begin_input(publication, &budget());
+    require(
+        matches!(&refused, Err(NativeUdsError::Refused(error))
+            if error.code == NativeIndexErrorCode::ProcessRssCeilingExceeded
+                && error.message.contains("PROCESS_RSS_CEILING_EXCEEDED")),
+        format!("product RSS ceiling did not return its typed refusal: {refused:?}"),
+    )?;
+    require_equal(
+        &client.status(publication, &budget())?,
+        &OperationStatus::Unknown,
+        "product RSS refusal must not create an input",
+    )?;
+    daemon.stop()
+}
+
+#[test]
+fn product_native_process_rss_ceiling_refuses_zero_before_state_creation() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let root = temp.path().join("state");
+    let socket = temp.path().join("native.sock");
+    let config_path = temp.path().join("native-zero-rss-ceiling.json");
+    let mut configuration = config(&root, &socket);
+    set_fixture_json(
+        &mut configuration,
+        "/resources/process_rss_ceiling_bytes",
+        serde_json::json!(0),
+    )?;
+    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
+    expect_native_config_refusal(
+        &root,
+        &socket,
+        &config_path,
+        "native process RSS ceiling must be positive when configured",
+    )
 }
 
 #[test]
@@ -1005,8 +1670,10 @@ fn product_daemon_refuses_ambiguous_commands_before_state_access() -> TestResult
 }
 
 #[test]
-fn product_daemon_applies_retention_config_preserves_current_query_and_reopens() -> TestResult {
-    check_product_daemon_publish_query_and_reopen(true)
+fn native_only_daemon_refuses_legacy_offline_commands_without_mutating_roots() -> TestResult {
+    native_boot::require_native_only_legacy_offline_refusal(Path::new(env!(
+        "CARGO_BIN_EXE_quanta-index-searchd"
+    )))
 }
 
 #[test]
@@ -1684,290 +2351,6 @@ fn product_daemon_owns_openai_semantic_materialization_query_scope_and_reopen() 
     Ok(())
 }
 
-fn check_product_daemon_publish_query_and_reopen(retention: bool) -> TestResult {
-    let temp = tempfile::tempdir()?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
-    let root = temp.path().join("state");
-    fs::create_dir(&root)?;
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
-    let socket = temp.path().join("native.sock");
-    let config_path = temp.path().join("native-config.json");
-    // Read sessions require funded automatic maintenance. This functional
-    // fixture uses its existing maintenance-capable resource profile for both
-    // retention modes; it does not qualify the minimal product defaults.
-    let mut configuration = config_with_reclaim(&root, &socket)?;
-    // One retained SDK reader is live at a time. Use the existing bounded
-    // product read-session configuration without changing work/resource caps.
-    let _previous_read_sessions = configuration
-        .as_object_mut()
-        .ok_or("invalid product config fixture")?
-        .insert(
-            "read_sessions".into(),
-            serde_json::json!({
-                "global_limit": 1,
-                "per_uid_limit": 1,
-                "terminal_ttl_millis": 300_000_u64,
-                "sweep_limit": 1
-            }),
-        );
-    if retention {
-        let object = configuration
-            .as_object_mut()
-            .ok_or("invalid product config fixture")?;
-        let _previous = object.insert("retention".into(), serde_json::json!({
-            "scopes": [{ "workspace": workspace(), "epoch": 1 }],
-            "sequence_window": 2, "page_limit": 1,
-            "interval_ms": 20, "round_timeout_ms": 2000, "head_probe_every": 2,
-            "work_limits": {"reads": 1_000_000, "writes": 1_000_000, "bytes": 536_870_912, "mutations": 1_000_000}
-        }));
-    }
-    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
-    let daemon = Daemon::start(&config_path, &socket)?;
-    let client = NativeUdsClient::new(socket.clone());
-    let NativeIndexResponse::Created(genesis) = client.request(
-        NativeIndexRequest::CreateWorkspace {
-            workspace: workspace(),
-            epoch: 1,
-        },
-        &budget(),
-    )?
-    else {
-        return Err("native workspace creation failed".into());
-    };
-    let ingress = client.begin_input(operation(1), &budget())?;
-    let profile = client.stage_profile(
-        ingress,
-        IndexProfile {
-            instances: vec![text_spec()],
-        },
-        &budget(),
-    )?;
-    let configured = published(&client.submit(
-        UpdateRequest {
-            operation: operation(1),
-            expected_view: genesis,
-            kind: UpdateKind::Reconfigure { profile },
-        },
-        &budget(),
-    )?)?;
-    let ingress = client.begin_input(operation(2), &budget())?;
-    let sources = client.stage_sources(
-        ingress,
-        vec![SourceInput {
-            path: "a.rs".into(),
-            bytes: b"needle needle".to_vec(),
-            text: SourceTextAdmission::Utf8 {
-                policy: Digest([31; 32]),
-            },
-            language: None,
-        }],
-        &budget(),
-    )?;
-    let [source] = sources.as_slice() else {
-        return Err("one source expected".into());
-    };
-    let before = client.read_view(ViewSelection::Exact(configured), &budget())?;
-    let owners = client.stage_mutations(
-        ingress,
-        [OwnerMutation {
-            owner: OwnerKey {
-                producer: operation(2).producer,
-                stable_id: StableOwnerId([1; 16]),
-            },
-            expected: None,
-            next: Some(*source),
-        }],
-        &budget(),
-    )?;
-    let mut transition = SourceTransition {
-        expected_source: before.source,
-        owners,
-        events: Vec::new(),
-    };
-    transition.events.push(SourceEvent {
-        producer: operation(2).producer,
-        stream: operation(2).stream,
-        stream_epoch: 1,
-        predecessor: 0,
-        sequence: 1,
-        payload: transition.owner_digest()?,
-    });
-    let view = published(&client.submit(
-        UpdateRequest {
-            operation: operation(2),
-            expected_view: configured,
-            kind: UpdateKind::SourceAdvance(transition),
-        },
-        &budget(),
-    )?)?;
-    let query = TextQueryRequest {
-        syntax: TextQuerySyntax::Native,
-        query_text: "needle".into(),
-        constraints: QueryConstraintSetV1::unconstrained(),
-        generation: None,
-        generation_selector: None,
-        top_k: 2,
-        cursor: None,
-    };
-    let ranked = client.search_text(
-        ViewSelection::Exact(view),
-        text_spec().instance,
-        query.clone(),
-        &budget(),
-    )?;
-    require_equal(&ranked.view, &view, "native query view")?;
-    require_equal(&ranked.matched, &1, "native query match count")?;
-    let [hit] = ranked.hits.as_slice() else {
-        return Err("native text query must return exactly one hit".into());
-    };
-    require_equal(&hit.path.as_str(), &"a.rs", "native query hit path")?;
-    require_equal(&hit.source, source, "native query hit source")?;
-    // The maintained ordinary SDK front door must reach this Native daemon,
-    // without a Legacy query/control/ingest listener or a generation mapping.
-    let sdk = quanta_index_sdk::QuantaIndex::connect_query_only(
-        quanta_index_sdk::ConnectOptions::from_native_socket(&socket, ViewSelection::Exact(view)),
-    )?;
-    require(
-        matches!(
-            sdk.producer().native(),
-            Err(quanta_index_sdk::SdkError::PlaneUnavailable {
-                plane: "native-write"
-            })
-        ),
-        "query-only SDK exposed the Native write sender",
-    )?;
-    let native_reader = sdk.reader().native()?;
-    let mut sdk_session = native_reader.open([81; 32], &budget())?;
-    let _sdk_profile = sdk_session.load_profile(&budget())?;
-    require_equal(
-        &sdk_session.text(&text_spec(), query.clone(), &budget())?,
-        &ranked,
-        "ordinary SDK Native Text DTO",
-    )?;
-    let sdk_page = sdk_session.text_page(&text_spec(), query.clone(), None, &budget())?;
-    require_equal(
-        &sdk_page.hits,
-        &ranked.hits,
-        "ordinary SDK Native file page",
-    )?;
-    require_equal(&sdk_page.view, &view, "ordinary SDK captured view")?;
-    let workspace_id = format!(
-        "{}{}{}{}",
-        "01".repeat(16),
-        "02".repeat(16),
-        "03".repeat(16),
-        "04".repeat(16)
-    );
-    let cli_view = native_cli(vec![
-        "read-view".into(),
-        "--socket".into(),
-        socket.to_string_lossy().into_owned(),
-        "--workspace".into(),
-        workspace_id.clone(),
-        "--epoch".into(),
-        "1".into(),
-        "--output".into(),
-        "json".into(),
-    ])?;
-    let cli_view: quanta_index_contract::index::CatalogView = serde_json::from_slice(&cli_view)?;
-    require_equal(&cli_view.identity, &view, "CLI read-view identity")?;
-    let cli_ranked = native_cli(vec![
-        "search-text".into(),
-        "--socket".into(),
-        socket.to_string_lossy().into_owned(),
-        "--workspace".into(),
-        workspace_id,
-        "--epoch".into(),
-        "1".into(),
-        "--instance".into(),
-        "47".repeat(16),
-        "--query-text".into(),
-        "needle".into(),
-        "--top-k".into(),
-        "2".into(),
-        "--output".into(),
-        "json".into(),
-    ])?;
-    let cli_ranked: NativeTextResult = serde_json::from_slice(&cli_ranked)?;
-    require_equal(&cli_ranked, &ranked, "CLI native search result")?;
-    if retention {
-        // Observe the live daemon without opening a second Catalog writer or
-        // running constructor recovery/maintenance against its owned root.
-        let observer = rusqlite::Connection::open_with_flags(
-            quanta_index_catalog::catalog_dir(&root).join(quanta_index_catalog::CATALOG_FILE_NAME),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        observer.busy_timeout(Duration::from_secs(2))?;
-        let workspace_key = serde_json::to_vec(&workspace())?;
-        let expected_floor = i64::try_from(view.sequence.saturating_sub(1))?;
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .ok_or("product retention deadline overflow")?;
-        loop {
-            let snapshot = observer.unchecked_transaction()?;
-            let floor: i64 = snapshot.query_row(
-                "SELECT COALESCE((SELECT retain_from_sequence FROM native_exact_history_floor_v1 WHERE workspace=?1 AND epoch=1),0)",
-                rusqlite::params![&workspace_key], |row| row.get(0),
-            )?;
-            let pending: i64 = snapshot.query_row(
-                "SELECT count(*) FROM native_terminal_custody_v1 WHERE workspace=?1 AND epoch=1",
-                rusqlite::params![&workspace_key],
-                |row| row.get(0),
-            )?;
-            snapshot.commit()?;
-            if floor == expected_floor && pending == 0 {
-                break;
-            }
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "product retention did not settle: floor={floor}, expected={expected_floor}, pending_custody={pending}"
-                ).into());
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        observer.close().map_err(|(_connection, error)| error)?;
-        require(
-            matches!(
-                client.read_view(ViewSelection::Exact(genesis), &budget()),
-                Err(NativeUdsError::Refused(error))
-                    if error.code == NativeIndexErrorCode::SnapshotUnavailable
-            ),
-            "product retained new Exact admission below its automatic floor",
-        )?;
-    }
-    daemon.stop()?;
-
-    let reopened = Daemon::start(&config_path, &socket)?;
-    let restored = NativeUdsClient::new(socket);
-    let reopened_view = restored.read_view(ViewSelection::Exact(view), &budget())?;
-    require_equal(&reopened_view.identity, &view, "reopened view identity")?;
-    require(
-        matches!(
-            sdk_session.text(&text_spec(), query.clone(), &budget()),
-            Err(quanta_index_sdk::NativeQueryError::Transport(NativeUdsError::Refused(error)))
-                if error.code == NativeIndexErrorCode::SnapshotUnavailable
-        ),
-        "ordinary SDK reused a pre-restart session",
-    )?;
-    let mut reopened_session = native_reader.open([82; 32], &budget())?;
-    let _reopened_sdk_profile = reopened_session.load_profile(&budget())?;
-    require_equal(
-        &reopened_session.text(&text_spec(), query.clone(), &budget())?,
-        &ranked,
-        "ordinary SDK after real daemon restart",
-    )?;
-    let _has_remaining_target_pins = reopened_session.release(&budget())?;
-    let after = restored.search_text(
-        ViewSelection::Exact(view),
-        text_spec().instance,
-        query,
-        &budget(),
-    )?;
-    require_equal(&after, &ranked, "reopened native search result")?;
-    reopened.stop()?;
-    Ok(())
-}
-
 #[test]
 fn product_daemon_automatically_reclaims_discarded_input_and_recovers_retained_ingress()
 -> TestResult {
@@ -2314,6 +2697,8 @@ fn native_semantic_provider_contract_refuses_before_state_creation() -> TestResu
         "unfunded_maximum_input",
         "missing_retained_headroom",
         "invalid_api_key_variable",
+        "missing_https_budget",
+        "cost_ceiling_cannot_fund_attempt",
         "missing_api_key_variable",
         "unadmitted_local_model",
         "empty_authorized_scopes",
@@ -2327,6 +2712,9 @@ fn native_semantic_provider_contract_refuses_before_state_creation() -> TestResu
         let root = temp.path().join("state");
         let socket = temp.path().join("native.sock");
         let mut value = config_with_openai_semantic(&root, &socket)?;
+        if case != "missing_https_budget" {
+            configure_openai_fixture_budget(&mut value, 8)?;
+        }
         let expected = match case {
             "source_consent_missing" => {
                 set_fixture_json(
@@ -2395,6 +2783,17 @@ fn native_semantic_provider_contract_refuses_before_state_creation() -> TestResu
                     serde_json::json!("bad-key-env"),
                 )?;
                 "invalid native OpenAI provider configuration"
+            }
+            "missing_https_budget" => {
+                "native OpenAI HTTPS egress requires an explicit provider work budget"
+            }
+            "cost_ceiling_cannot_fund_attempt" => {
+                set_fixture_json(
+                    &mut value,
+                    "/semantic/provider/work_budget/openai_max_request_cost_micros",
+                    serde_json::json!(9),
+                )?;
+                "native OpenAI cost ceiling must fund one HTTP attempt"
             }
             "missing_api_key_variable" => {
                 set_fixture_json(

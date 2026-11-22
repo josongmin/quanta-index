@@ -29,7 +29,6 @@ if str(ROOT) not in sys.path:
 from tools.ci.proof_json import parse_proof_json  # noqa: E402
 
 SCHEMA_PATH = ROOT / "tools/ci/lane-handoff.schema.json"
-PROOF_SCHEMA_PATH = ROOT / "tools/ci/proof-manifest.schema.json"
 PROOF_REGISTRY_PATH = ROOT / "tools/ci/proof-authority.toml"
 
 
@@ -235,7 +234,9 @@ def _sha256_repo_regular_file(root: Path, value: str, *, label: str) -> str:
     return _consume_repo_regular_file(root, value, label=label, consume=digest_file)
 
 
-def _open_repo_output_parent(root: Path, relative: str, *, create: bool = True) -> int:
+def _open_repo_output_parent(
+    root: Path, relative: str, *, create: bool = True, sync_ancestors: bool = False
+) -> int:
     """Create/open a repo output parent with each ancestor pinned and no-follow."""
 
     _repo_path(root, relative, label="output")
@@ -247,6 +248,8 @@ def _open_repo_output_parent(root: Path, relative: str, *, create: bool = True) 
                     os.mkdir(part, mode=0o700, dir_fd=directory_fd)
                 except FileExistsError:
                     pass
+            if sync_ancestors:
+                os.fsync(directory_fd)
             next_fd = os.open(
                 part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd
             )
@@ -470,11 +473,6 @@ def validate_handoff(
     if not isinstance(payload, dict) or errors:
         return errors
 
-    proof_schema = parse_proof_json(
-        _read_repo_regular_bytes(
-            root, PROOF_SCHEMA_PATH.relative_to(ROOT).as_posix(), label="proof schema"
-        )
-    )
     registry = tomllib.loads(
         _read_repo_regular_bytes(
             root, PROOF_REGISTRY_PATH.relative_to(ROOT).as_posix(), label="proof registry"
@@ -483,12 +481,6 @@ def validate_handoff(
     registry_findings = proof_checker.check_registry(registry, root=root, path=proof_registry_path)
     if registry_findings:
         return [f"proof registry is invalid: {finding.message}" for finding in registry_findings]
-    proof_by_id = {
-        proof["id"]: proof
-        for proof in registry.get("proofs", [])
-        if isinstance(proof, dict) and isinstance(proof.get("id"), str)
-    }
-
     base_sha = payload["base_sha"]
     result_sha = payload["result_sha"]
     for label, sha in (("base_sha", base_sha), ("result_sha", result_sha)):
@@ -539,9 +531,14 @@ def validate_handoff(
     )
 
     exact_pair_manifests: list[dict[str, Any]] = []
-    for item in payload["proofs"]:
-        if item["status"] != "RECORDED":
-            continue
+    recorded = [item for item in payload["proofs"] if item["status"] == "RECORDED"]
+    proof_by_id: dict[str, dict[str, Any]] = {}
+    if recorded:
+        try:
+            proof_by_id = proof_checker.committed_proof_authorities(root, result_sha)
+        except (OSError, ValueError) as error:
+            return [*errors, f"cannot read proof registry of the handoff result: {error}"]
+    for item in recorded:
         if not (item["selected"] == item["executed"] == item["passed"]):
             errors.append(f"proof {item['id']} must satisfy selected == executed == passed")
         authority = proof_by_id.get(item["id"])
@@ -612,11 +609,11 @@ def validate_handoff(
                 manifest,
                 manifest_path=manifest_path,
                 proof=authority,
-                schema=proof_schema,
                 root=root,
                 bind_source=require_result_head,
                 paired_checkouts=paired_checkouts or None,
                 proof_by_id=proof_by_id,
+                replay_authority=True,
             )
         )
 

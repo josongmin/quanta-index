@@ -468,10 +468,15 @@ mod tests {
     };
     use quanta_index_core::{
         DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1, GenerationQuarantineReasonV1,
-        IntegrityScrubBudgetV1, IntegrityScrubCandidateV1, IntegrityScrubReportV1,
-        QuarantinedGenerationV1, RequestBudgetV1, SemanticSearchHitV1, SemanticSearcher,
+        GenerationStorageKeyV1, IntegrityScrubBudgetV1, IntegrityScrubCandidateV1,
+        IntegrityScrubReportV1, QuarantinedGenerationV1, RequestBudgetV1, SemanticSearchHitV1,
+        SemanticSearcher,
     };
     use quanta_index_search_plane::{OpenedSnapshot, SnapshotRegistryPolicy};
+    use quanta_index_semantic::{
+        SemanticAdapter, build_resident_batch_v1, legacy_chunk_embedding_record_v1,
+        sealed_replace_batch_v1,
+    };
 
     use super::*;
 
@@ -585,6 +590,255 @@ mod tests {
             manifest_generation: ManifestGeneration::new(generation),
             manifest_digest: format!("manifest:{generation}"),
         }
+    }
+
+    fn seal_real_semantic_generation(
+        adapter: &SemanticAdapter,
+        repo: &RepoId,
+        revision: &RevisionId,
+        generation: u64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let batch = sealed_replace_batch_v1(
+            repo.clone(),
+            revision.clone(),
+            ManifestGeneration::new(generation),
+            "src/lib.rs",
+            vec![
+                legacy_chunk_embedding_record_v1("emb-a", "src/lib.rs", vec![1.0, 0.0, 0.0])?,
+                legacy_chunk_embedding_record_v1("emb-b", "src/lib.rs", vec![0.0, 1.0, 0.0])?,
+            ],
+            3,
+        );
+        build_resident_batch_v1(adapter, &batch)?;
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions compare the real scheduler with fixed receipt and sibling outcomes"
+    )]
+    fn malformed_semantic_receipt_is_rescrubbed_before_a_healthy_sibling()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let adapter = Arc::new(SemanticAdapter::with_state_root(root.path().to_path_buf())?);
+        let repo = RepoId::new("repo")?;
+        let revision = RevisionId::new("rev")?;
+        for generation in [81_u64, 82] {
+            seal_real_semantic_generation(&adapter, &repo, &revision, generation)?;
+        }
+        let damaged = identity(81);
+        let healthy = identity(82);
+        let budget = IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        };
+        assert_eq!(
+            adapter.scrub(&healthy, None, budget)?.outcome,
+            IntegrityScrubOutcomeV1::Completed
+        );
+
+        let generation_dir = |generation| {
+            GenerationStorageKeyV1::for_repo_revision(&repo, &revision)
+                .generation_dir(root.path(), ManifestGeneration::new(generation))
+        };
+        let damaged_receipt = generation_dir(81).join("semantic-scrub-receipt.cbor");
+        let healthy_receipt = generation_dir(82).join("semantic-scrub-receipt.cbor");
+        assert!(!std::fs::read(&healthy_receipt)?.is_empty());
+        std::fs::write(&damaged_receipt, b"malformed")?;
+        let candidates = adapter.scrub_candidates()?;
+        assert!(candidates.iter().any(|candidate| {
+            candidate.identity == damaged && candidate.last_completed_unix.is_none()
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate.identity == healthy && candidate.last_completed_unix.is_some()
+        }));
+
+        let mut scheduler = ScrubSchedulerV1::new(
+            vec![adapter.clone()],
+            IntegrityScrubPolicyV1 {
+                interval_millis: 1,
+                max_bytes_per_step: u64::MAX,
+            },
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+            Arc::new(ScrubTalliesV1::default()),
+        );
+        assert!(matches!(
+            scheduler.tick(),
+            ScrubTickV1::Stepped {
+                generation,
+                outcome: IntegrityScrubOutcomeV1::Completed,
+            } if generation == damaged
+        ));
+        assert_ne!(std::fs::read(&damaged_receipt)?, b"malformed");
+        assert!(matches!(
+            scheduler.tick(),
+            ScrubTickV1::Stepped {
+                generation,
+                outcome: IntegrityScrubOutcomeV1::Completed,
+            } if generation == healthy
+        ));
+        assert!(!std::fs::read(&healthy_receipt)?.is_empty());
+        let completed = adapter.scrub_candidates()?;
+        assert_eq!(completed.len(), 2);
+        for generation in [damaged, healthy] {
+            assert!(completed.iter().any(|candidate| {
+                candidate.identity == generation && candidate.last_completed_unix.is_some()
+            }));
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions compare the real scheduler's bounded steps with physical file totals"
+    )]
+    fn intact_semantic_generation_resumes_without_recounting_file_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let adapter = Arc::new(SemanticAdapter::with_state_root(root.path().to_path_buf())?);
+        let repo = RepoId::new("repo")?;
+        let revision = RevisionId::new("rev")?;
+        let generation = 83_u64;
+        seal_real_semantic_generation(&adapter, &repo, &revision, generation)?;
+        let selected = identity(generation);
+        let generation_dir = GenerationStorageKeyV1::for_repo_revision(&repo, &revision)
+            .generation_dir(root.path(), ManifestGeneration::new(generation));
+        let receipt = generation_dir.join("semantic-scrub-receipt.cbor");
+        assert!(!receipt.exists());
+
+        let mut pending = vec![generation_dir.join("dataset")];
+        let mut expected_files = 0_u64;
+        let mut expected_bytes = 0_u64;
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(directory)? {
+                let entry = entry?;
+                let kind = entry.file_type()?;
+                if kind.is_dir() {
+                    pending.push(entry.path());
+                } else {
+                    assert!(kind.is_file());
+                    expected_files += 1;
+                    expected_bytes += entry.metadata()?.len();
+                }
+            }
+        }
+        assert!(expected_files > 1 && expected_bytes > 0);
+        let candidates = adapter.scrub_candidates()?;
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].identity, selected);
+        assert!(candidates[0].last_completed_unix.is_none());
+
+        let tallies = Arc::new(ScrubTalliesV1::default());
+        let mut scheduler = ScrubSchedulerV1::new(
+            vec![adapter.clone()],
+            IntegrityScrubPolicyV1 {
+                interval_millis: 1,
+                max_bytes_per_step: 1,
+            },
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+            Arc::clone(&tallies),
+        );
+        let mut prior_bytes = 0_u64;
+        let mut completed = false;
+        for step in 1..=expected_files {
+            let ScrubTickV1::Stepped {
+                generation: observed,
+                outcome,
+            } = scheduler.tick()
+            else {
+                return Err(format!("intact Semantic scrub did not advance at step {step}").into());
+            };
+            assert_eq!(observed, selected);
+            let runs = tallies.runs.load(Ordering::Relaxed);
+            let files = tallies.files.load(Ordering::Relaxed);
+            let bytes = tallies.bytes.load(Ordering::Relaxed);
+            assert_eq!(runs, step);
+            assert_eq!(files, step, "each step must count one new committed file");
+            assert!(bytes >= prior_bytes && bytes <= expected_bytes);
+            prior_bytes = bytes;
+            match outcome {
+                IntegrityScrubOutcomeV1::Paused { cursor } => {
+                    assert_eq!(cursor.next_artifact, step);
+                    assert!(!receipt.exists(), "a paused scrub cannot claim completion");
+                }
+                IntegrityScrubOutcomeV1::Completed => {
+                    assert_eq!(step, expected_files);
+                    assert_eq!(bytes, expected_bytes);
+                    assert!(receipt.is_file());
+                    completed = true;
+                    break;
+                }
+                IntegrityScrubOutcomeV1::Corrupt { quarantined } => {
+                    return Err(format!(
+                        "intact Semantic generation was quarantined: {quarantined:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+        assert!(completed, "scrub did not finish after every committed file");
+        let candidates = adapter.scrub_candidates()?;
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].identity, selected);
+        assert!(candidates[0].last_completed_unix.is_some());
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions compare a real reclaim with the scheduler and whole inventory"
+    )]
+    fn semantic_reclaim_refuses_a_parked_scrub_without_quarantine()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_core::{SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort};
+        use quanta_index_semantic::inventory_persisted_generations;
+
+        let root = tempfile::tempdir()?;
+        let adapter = Arc::new(SemanticAdapter::with_state_root(root.path().to_path_buf())?);
+        let selected = identity(84);
+        seal_real_semantic_generation(
+            &adapter,
+            &selected.repo_id,
+            &selected.revision_id,
+            selected.manifest_generation.get(),
+        )?;
+        let directory =
+            GenerationStorageKeyV1::for_repo_revision(&selected.repo_id, &selected.revision_id)
+                .generation_dir(root.path(), selected.manifest_generation);
+        let mut scheduler = ScrubSchedulerV1::new(
+            vec![adapter.clone()],
+            IntegrityScrubPolicyV1 {
+                interval_millis: 1,
+                max_bytes_per_step: 1,
+            },
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+            Arc::new(ScrubTalliesV1::default()),
+        );
+        assert!(matches!(
+            scheduler.tick(),
+            ScrubTickV1::Stepped {
+                generation,
+                outcome: IntegrityScrubOutcomeV1::Paused { cursor },
+            } if generation == selected && cursor.next_artifact == 1
+        ));
+        assert!(matches!(
+            adapter.reclaim_sealed_generation(&selected, None)?,
+            SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+        ));
+        assert!(matches!(
+            scheduler.tick(),
+            ScrubTickV1::Failed { generation, error }
+                if generation == selected && error.starts_with("not ready: ")
+        ));
+        assert!(!directory.exists());
+        let inventory = inventory_persisted_generations(root.path())?;
+        assert!(inventory.sealed.is_empty());
+        assert!(inventory.quarantined.is_empty());
+        assert!(adapter.scrub_candidates()?.is_empty());
+        assert!(matches!(scheduler.tick(), ScrubTickV1::Idle));
+        Ok(())
     }
 
     /// A port whose candidates and per-step outcomes are scripted; it

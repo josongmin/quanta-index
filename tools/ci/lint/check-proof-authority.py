@@ -15,13 +15,12 @@ import stat
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Any
-
-import jsonschema
 
 try:
     import tomllib
@@ -32,7 +31,20 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from tools.ci.daemon_execution_evidence import (  # noqa: E402
+    NATIVE_RELEASE_SCOPES,
+    NATIVE_STATE_FORMAT_SOURCE,
+    P04_PROOF,
+    P07_PROOF,
+    P10_PROOF,
+    R5_PROOF,
+    daemon_witness_specs,
+    native_state_root_format,
+    p07_provider_approval_digest,
+    r5_cases,
+)
 from tools.ci.proof_json import parse_proof_json  # noqa: E402
+from tools.ci.proof_run_source import BOUND_RUN_PROOFS, ProofRunSource  # noqa: E402
 
 REGISTRY_PATH = ROOT / "tools/ci/proof-authority.toml"
 SCHEMA_PATH = ROOT / "tools/ci/proof-manifest.schema.json"
@@ -133,9 +145,11 @@ EXPECTED_P12A_TEST_TARGETS = [
     "proof-execution-result-python-owner",
     "proof-operational-result-python-owner",
     "proof-paired-cargo-resolution-python-owner",
+    "proof-paired-r5-result-python-owner",
     "proof-local-scope-runner-python-owner",
 ]
 OPERATIONAL_HOST_PROOFS = frozenset(("p11-deployment", "p11-activation", "p11-rollback"))
+P11_RELEASE_PROOFS = OPERATIONAL_HOST_PROOFS | {"p11-cross-repo-cutover"}
 STREAM_CHUNK_SIZE = 1024 * 1024
 
 
@@ -168,6 +182,45 @@ def _python_target_has_passed_case(path: str, passed_cases: set[tuple[str, str]]
     return any(
         runner == "pytest-junit" and name.startswith(f"{module}.") for runner, name in passed_cases
     )
+
+
+def _nextest_case_groups(proof: dict[str, Any], field: str) -> dict[str, list[str]]:
+    groups = proof.get(field, {})
+    if not isinstance(groups, dict):
+        raise ValueError(f"{field} must be a table")
+    for target, cases in groups.items():
+        if not isinstance(target, str) or not target:
+            raise ValueError(f"{field} requires non-empty target names")
+        if (
+            not isinstance(cases, list)
+            or not cases
+            or any(
+                not isinstance(case, str)
+                or not all(part.isidentifier() for part in case.split("::"))
+                for case in cases
+            )
+            or len(set(cases)) != len(cases)
+        ):
+            raise ValueError(f"{field}.{target} must list unique Rust case names")
+    return groups
+
+
+def _require_passing_nextest_target(
+    target_id: str,
+    prefix: str,
+    required_cases: Iterable[str],
+    passed_cases: set[tuple[str, str]],
+) -> None:
+    passed_names = {
+        name.removeprefix(prefix)
+        for runner, name in passed_cases
+        if runner == "nextest-jsonl" and name.startswith(prefix)
+    }
+    if not passed_names:
+        raise ValueError(f"registered test target has no passing runner case: {target_id}")
+    missing = sorted(set(required_cases) - passed_names)
+    if missing:
+        raise ValueError(f"registered nextest cases did not pass for {target_id}: {missing}")
 
 
 def _just_recipe_body(root: Path, recipe: str) -> str | None:
@@ -256,10 +309,12 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             if isinstance(target, dict) and isinstance(target.get("id"), str)
         }
         known_test_targets = known_rust_targets | set(python_target_paths)
-        target_owners = {
-            target["id"]: target.get("owner")
+        target_binaries = {
+            target["id"]: (target.get("owner"), target.get("target", Path(target["path"]).stem))
             for target in test_authority.get("integration_targets", [])
-            if isinstance(target, dict) and isinstance(target.get("id"), str)
+            if isinstance(target, dict)
+            and isinstance(target.get("id"), str)
+            and isinstance(target.get("path"), str)
         }
         local_scopes = test_authority.get("local_scopes", {})
         if not isinstance(local_scopes, dict):
@@ -271,7 +326,7 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
         findings.append(Finding(test_authority_path, f"cannot load test authority: {error}"))
         known_test_targets = set()
         python_target_paths = {}
-        target_owners = {}
+        target_binaries = {}
         local_scopes = {}
         python_scopes = {}
 
@@ -285,7 +340,13 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             return set()
         expanded = {target for target in scope.get("targets", []) if isinstance(target, str)}
         owners = {owner for owner in scope.get("owners", []) if isinstance(owner, str)}
-        expanded.update(target_id for target_id, owner in target_owners.items() if owner in owners)
+        full_binaries = {target_binaries[t] for t in expanded if t in target_binaries}
+        expanded.update(
+            t
+            for t, binary in target_binaries.items()
+            if binary[0] in owners or binary in full_binaries
+        )
+        expanded.update(t for t in scope.get("module_targets", []) if isinstance(t, str))
         for included in scope.get("includes", []):
             if isinstance(included, str):
                 expanded.update(expand_scope(included, active))
@@ -332,12 +393,33 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             seen_ids.add(proof_id)
         authority_state = proof.get("authority_state")
         execution_mode = proof.get("execution_mode")
+        if proof_id in BOUND_RUN_PROOFS and proof.get("execution_source_binding") is not True:
+            findings.append(Finding(path, f"{where} requires captured execution source binding"))
+        if "execution_source_binding" in proof and (
+            proof.get("execution_source_binding") is not True
+            or execution_mode != "test-authority"
+            or proof.get("source_binding") != "exact"
+        ):
+            findings.append(Finding(path, f"{where} has invalid execution_source_binding"))
+        if proof_id == P07_PROOF and (
+            authority_state == "executable" or "provider_approval_sha256" in proof
+        ):
+            try:
+                p07_provider_approval_digest(proof)
+            except ValueError as error:
+                findings.append(Finding(path, str(error)))
+        elif proof_id != P07_PROOF and "provider_approval_sha256" in proof:
+            findings.append(Finding(path, "provider_approval_sha256 is reserved for P07"))
         if authority_state not in AUTHORITY_STATES:
             findings.append(Finding(path, f"{where}.authority_state is not registered"))
         if execution_mode not in EXECUTION_MODES:
             findings.append(Finding(path, f"{where}.execution_mode is not registered"))
         if proof_id in OPERATIONAL_HOST_PROOFS and execution_mode != "operational-action":
             findings.append(Finding(path, f"{where} P11 actions require operational-action mode"))
+        if proof_id == "p11-cross-repo-cutover" and execution_mode != "test-authority":
+            findings.append(
+                Finding(path, f"{where} P11 paired runner requires test-authority mode")
+            )
         if execution_mode == "operational-action":
             from tools.ci.proof_operational_result import ACTIONS, validate_contract
 
@@ -419,6 +501,15 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
         binary_binding = proof.get("binary_binding")
         if isinstance(binary_binding, str) and binary_binding not in {"none", "release-daemon"}:
             findings.append(Finding(path, f"{where}.binary_binding {binary_binding!r} is invalid"))
+        if proof_id in P11_RELEASE_PROOFS and (
+            source_binding != "exact-pair"
+            or binary_binding != "release-daemon"
+            or proof.get("required_host") != "linux-production-like"
+            or gate != "release"
+        ):
+            findings.append(
+                Finding(path, f"{where} P11 requires exact-pair Linux release-daemon authority")
+            )
         if family in {"P", "Q", "X"} and proof.get("required_host") != "linux-production-like":
             findings.append(
                 Finding(path, f"{where} family {family} requires linux-production-like host")
@@ -452,12 +543,19 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                 findings.append(Finding(path, f"duplicate artifact path {artifact!r}"))
             seen_artifacts.add(artifact)
         test_targets = proof.get("test_authority_targets")
-        if proof_id == "p12a-proof-infrastructure" and test_targets != EXPECTED_P12A_TEST_TARGETS:
-            findings.append(
-                Finding(
-                    path, "P12A test authority targets differ from the fixed infrastructure set"
+        if proof_id == "p12a-proof-infrastructure":
+            infrastructure_scope = python_scopes.get(proof_id)
+            if (
+                test_targets != EXPECTED_P12A_TEST_TARGETS
+                or proof.get("test_authority_scopes") != [proof_id]
+                or not isinstance(infrastructure_scope, dict)
+                or infrastructure_scope.get("targets") != test_targets
+            ):
+                findings.append(
+                    Finding(
+                        path, "P12A test authority targets differ from the fixed infrastructure set"
+                    )
                 )
-            )
         if not isinstance(test_targets, list) or any(
             not isinstance(item, str) for item in test_targets
         ):
@@ -473,9 +571,83 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                             f"{where} names unknown test-authority target {target_id!r}",
                         )
                     )
+            required_lib_cases: dict[str, list[str]] = {}
+            try:
+                case_groups = _nextest_case_groups(proof, "required_nextest_cases")
+                required_lib_cases = _nextest_case_groups(proof, "required_nextest_lib_cases")
+                if proof_id == "p10-state-migration-owner" and set(case_groups) != set(test_targets):
+                    findings.append(
+                        Finding(path, f"{where} requires nextest cases for every registered target")
+                    )
+                for target_id in case_groups:
+                    if (
+                        execution_mode != "test-authority"
+                        or target_id not in test_targets
+                        or target_id not in target_binaries
+                    ):
+                        findings.append(
+                            Finding(
+                                path,
+                                f"{where} names cases for unregistered Rust target {target_id!r}",
+                            )
+                        )
+            except ValueError as error:
+                findings.append(Finding(path, f"{where}.{error}"))
+            paired_runner = proof_id == R5_PROOF
+            try:
+                for event in daemon_witness_specs(proof):
+                    if not any(
+                        event.startswith(f"{owner}::{binary}$")
+                        for target_id in test_targets
+                        for owner, binary in [target_binaries.get(target_id, (None, None))]
+                    ):
+                        raise ValueError(f"{proof_id} observation is outside a registered test target: {event}")
+                for scope, scope_proof in NATIVE_RELEASE_SCOPES.items():
+                    if proof_id != scope_proof:
+                        continue
+                    if (
+                        execution_mode != "test-authority"
+                        or proof.get("command") != f"just proof-{proof_id}"
+                        or proof.get("test_authority_scopes") != [scope]
+                        or test_targets != ["searchd-runtime-native-product-process"]
+                        or source_binding != "exact"
+                        or binary_binding != "release-daemon"
+                        or proof.get("required_host") != "linux-production-like"
+                        or gate != "release"
+                        or expand_scope(scope) != set(test_targets)
+                    ):
+                        label = str(proof_id).partition("-")[0].upper()
+                        subject = {
+                            P04_PROOF: "read-view",
+                            P10_PROOF: "rebuild",
+                        }.get(proof_id, scope.removesuffix("-release"))
+                        raise ValueError(f"{label} release proof must use its exact Native {subject} scope")
+                if paired_runner:
+                    r5_cases(proof)
+            except ValueError as error:
+                findings.append(Finding(path, str(error)))
+            if paired_runner and authority_state == "executable":
+                from tools.ci.p11_attestation import public_key
+
+                try:
+                    public_key(proof.get("attestation_public_key"))
+                    recipe = _just_recipe_body(root, "rust-verify-hellgate-cross-repo") or ""
+                    if (
+                        proof.get("command") != "just rust-verify-hellgate-cross-repo"
+                        or recipe.strip()
+                        != './scripts/verify-repomap-cross-repo.sh "{{semantica_root}}"'
+                        or test_targets
+                        or proof.get("test_authority_scopes")
+                    ):
+                        raise ValueError(
+                            "P11 paired runner must use its registered cross-repo recipe and external witnesses"
+                        )
+                except (OSError, ValueError) as error:
+                    findings.append(Finding(path, str(error)))
             if (
                 authority_state == "executable"
                 and execution_mode == "test-authority"
+                and not paired_runner
                 and not test_targets
             ):
                 findings.append(
@@ -484,7 +656,11 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                         f"{where} executable test-authority proof requires at least one target",
                     )
                 )
-            if authority_state == "executable" and execution_mode == "test-authority":
+            if (
+                authority_state == "executable"
+                and execution_mode == "test-authority"
+                and not paired_runner
+            ):
                 scopes = proof.get("test_authority_scopes")
                 python_only = bool(test_targets) and all(
                     target_id in python_target_paths for target_id in test_targets
@@ -518,6 +694,7 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                             )
                         )
                     expanded_targets: set[str] = set()
+                    lib_packages: set[str] = set()
                     for scope in scopes:
                         if python_only:
                             selected = python_scopes.get(scope)
@@ -529,6 +706,13 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                                 )
                         else:
                             expanded_targets.update(expand_scope(scope))
+                            selected = local_scopes.get(scope)
+                            if isinstance(selected, dict) and selected.get("lib") is True:
+                                packages = selected.get("packages")
+                                if isinstance(packages, list):
+                                    lib_packages.update(
+                                        package for package in packages if isinstance(package, str)
+                                    )
                     uncovered = set(test_targets) - expanded_targets
                     if uncovered:
                         findings.append(
@@ -537,6 +721,14 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                                 f"{where} targets are not selected by declared scopes: {sorted(uncovered)}",
                             )
                         )
+                    if required_lib_cases or proof_id == "p10-state-migration-owner":
+                        if not lib_packages or set(required_lib_cases) != lib_packages:
+                            findings.append(
+                                Finding(
+                                    path,
+                                    f"{where} requires nextest lib cases for every declared library package",
+                                )
+                            )
                 command = proof.get("command")
                 profile = proof.get("profile")
                 profile_match = (
@@ -825,6 +1017,133 @@ def proof_archive_relative_path(payload: dict[str, Any], manifest_sha256: str) -
     ).as_posix()
 
 
+def archive_index_digests(index: dict, proof_id: str, source_binding: str) -> list[str]:
+    if not isinstance(index, dict) or set(index) != {
+        "schema_version",
+        "proof_id",
+        "source_binding_digest",
+        "manifest_digests",
+    }:
+        raise ValueError("immutable proof archive index authority is invalid")
+    digests = index["manifest_digests"]
+    if (
+        type(index["schema_version"]) is not int
+        or index["schema_version"] != 1
+        or index["proof_id"] != proof_id
+        or index["source_binding_digest"] != source_binding
+        or not isinstance(digests, list)
+        or any(not isinstance(d, str) or DIGEST_RE.fullmatch(d) is None for d in digests)
+        or len(set(digests)) != len(digests)
+    ):
+        raise ValueError("immutable proof archive index authority is invalid")
+    return digests
+
+
+@dataclass(frozen=True)
+class IndexedRelease:
+    digest: str
+    payload: dict[str, Any]
+    ended_at: datetime
+
+
+def latest_indexed_release(root: Path, proof_id: str) -> IndexedRelease | None:
+    """Select one committed receipt across all provenance directories for this proof.
+
+    The store has one current slot per proof. Branch and upstream metadata keep
+    historical archive paths stable but cannot divide the publication order.
+    """
+    if proof_id not in P11_RELEASE_PROOFS:
+        raise ValueError(f"unknown release receipt slot: {proof_id}")
+    proof_dir = PROOF_ARCHIVE_ROOT / proof_id
+    try:
+        proof_fd = HANDOFF_VALIDATION._open_repo_output_parent(
+            root, (proof_dir / "index.json").as_posix(), create=False
+        )
+    except FileNotFoundError:
+        return None
+    latest = None
+    ambiguous = False
+    try:
+        for binding in sorted(os.listdir(proof_fd)):
+            if not DIGEST_RE.fullmatch(binding):
+                continue
+            bucket_fd = os.open(
+                binding, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=proof_fd
+            )
+            try:
+                index = HANDOFF_VALIDATION._read_output_regular_bytes(bucket_fd, "index.json")
+                if index is None:
+                    continue  # An immutable leaf can be staged without committing a receipt.
+                digests = archive_index_digests(parse_proof_json(index), proof_id, binding)
+                if not digests:
+                    raise ValueError(f"indexed release history for {proof_id} is empty")
+                digest = digests[-1]
+                name = f"{digest}.json"
+                raw = HANDOFF_VALIDATION._read_output_regular_bytes(bucket_fd, name)
+                if raw is None or hashlib.sha256(raw).hexdigest() != digest:
+                    raise ValueError(f"indexed release receipt is missing or changed: {name}")
+                payload = parse_proof_json(raw)
+                if (
+                    not isinstance(payload, dict)
+                    or payload.get("proof_id") != proof_id
+                    or proof_archive_relative_path(payload, digest)
+                    != (proof_dir / binding / name).as_posix()
+                ):
+                    raise ValueError(f"indexed release receipt has the wrong archive identity: {name}")
+                end = payload.get("ended_at")
+                if not isinstance(end, str):
+                    raise ValueError(f"indexed release receipt has no end time: {name}")
+                ended_at = _parse_time(end)
+                if ended_at.utcoffset() is None:
+                    raise ValueError(f"indexed release receipt has no end time zone: {name}")
+                if latest is None or ended_at > latest.ended_at:
+                    latest = IndexedRelease(digest, payload, ended_at)
+                    ambiguous = False
+                elif ended_at == latest.ended_at:
+                    ambiguous = True
+            finally:
+                os.close(bucket_fd)
+    finally:
+        os.close(proof_fd)
+    if ambiguous:
+        raise ValueError(f"{proof_id} has multiple indexed release receipts for the latest end time")
+    return latest
+
+
+def require_current_release(root: Path, payload: dict, digest: str) -> None:
+    proof_id = payload["proof_id"]
+    if proof_id not in P11_RELEASE_PROOFS:
+        return
+    latest = latest_indexed_release(root, proof_id)
+    if latest is None or latest.digest != digest:
+        raise ValueError(f"{proof_id} is not the latest indexed release receipt")
+    if json.dumps(latest.payload, sort_keys=True) != json.dumps(payload, sort_keys=True):
+        raise ValueError(
+            f"{proof_id} indexed release receipt differs from current alias"
+        )
+    # Rename makes the index visible before its directory entry is durable.
+    # A reader can finish an interrupted publication only by syncing that bucket.
+    relative = proof_archive_relative_path(payload, digest)
+    parent = HANDOFF_VALIDATION._open_repo_output_parent(root, relative, create=False)
+    try:
+        index = HANDOFF_VALIDATION._read_output_regular_bytes(parent, "index.json")
+        raw = HANDOFF_VALIDATION._read_output_regular_bytes(parent, Path(relative).name)
+        binding = source_binding_digest(payload)
+        if (
+            index is None
+            or archive_index_digests(parse_proof_json(index), proof_id, binding)[-1:] != [digest]
+            or raw is None
+            or hashlib.sha256(raw).hexdigest() != digest
+        ):
+            raise ValueError(f"{proof_id} selected release bucket changed before durability check")
+        os.fsync(parent)
+        if HANDOFF_VALIDATION._read_output_regular_bytes(parent, "index.json") != index:
+            raise ValueError(f"{proof_id} selected release index changed during durability check")
+        HANDOFF_VALIDATION._require_output_parent_identity(root, relative, parent)
+    finally:
+        os.close(parent)
+
+
 def content_archive_relative_path(kind: str, digest: str) -> str:
     """Return the canonical immutable path for evidence or a release binary."""
 
@@ -887,6 +1206,8 @@ def _payload_json(root: Path, value: str, *, label: str) -> Any:
 def _check_p00_current_inventory(root: Path, artifacts: list[dict[str, Any]]) -> None:
     """Recompute the P00 discovery inventory when its source is bound."""
 
+    import jsonschema
+
     matches = [item for item in artifacts if item["source_path"] == ERROR_INVENTORY_PATH]
     if len(matches) != 1:
         raise ValueError("P00 requires exactly one error-authority inventory artifact")
@@ -944,6 +1265,55 @@ def _git_bytes(root: Path, *args: str) -> bytes:
         message = os.fsdecode(completed.stderr).strip()
         raise RuntimeError(message or f"git {' '.join(args)} failed")
     return completed.stdout
+
+
+def committed_source_files(root: Path, head: str, names: Iterable[str]) -> dict[str, bytes]:
+    """Read only regular blobs at the stated commit, including during portable archive replay."""
+    names = tuple(names)
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise ValueError("invalid committed source HEAD")
+    try:
+        tree = _git_bytes(
+            root,
+            "--no-replace-objects",
+            "ls-tree",
+            "--full-tree",
+            "-z",
+            f"{head}^{{commit}}",
+            "--",
+            *(f":(literal){name}" for name in names),
+        )
+        files = {}
+        for entry in tree.split(b"\0"):
+            if entry:
+                meta, name = entry.split(b"\t", 1)
+                mode, kind, oid = meta.split()
+                if mode in {b"100644", b"100755"} and kind == b"blob":
+                    files[os.fsdecode(name)] = _git_bytes(
+                        root, "--no-replace-objects", "cat-file", "blob", oid.decode("ascii")
+                    )
+    except RuntimeError as error:
+        raise ValueError(f"cannot read committed source {head}") from error
+    if files.keys() != set(names):
+        raise ValueError(
+            "missing regular committed source: " + ", ".join(sorted(set(names) - files.keys()))
+        )
+    return files
+
+
+def committed_proof_authorities(root: Path, head: str) -> dict[str, dict[str, Any]]:
+    path = REGISTRY_PATH.relative_to(ROOT).as_posix()
+    registry = tomllib.loads(committed_source_files(root, head, (path,))[path].decode("utf-8"))
+    rows = registry.get("proofs")
+    if not isinstance(rows, list):
+        raise ValueError(f"recorded proof registry has no proof list at {head}")
+    proofs = {}
+    for row in rows:
+        proof_id = row.get("id") if isinstance(row, dict) else None
+        if not isinstance(proof_id, str) or not PROOF_ID_RE.fullmatch(proof_id) or proof_id in proofs:
+            raise ValueError(f"recorded proof registry has an invalid or duplicate ID at {head}")
+        proofs[proof_id] = row
+    return proofs
 
 
 def _optional_git(root: Path, *args: str) -> str | None:
@@ -1076,18 +1446,17 @@ def _index_entries(
     entries_by_path: dict[bytes, list[tuple[bytes, bytes]]] = {
         raw_path: [] for raw_path in requested
     }
-    if not requested:
-        return entries_by_path
-
-    # Read the index once. Passing every path as an argument would still risk
-    # ARG_MAX on large staged changes, while one ls-files scan stays constant
-    # in subprocess count and preserves arbitrary path bytes with -z.
-    output = _git_bytes(root, "ls-files", "--stage", "-z")
+    # One binary-safe index scan checks visibility for the entire worktree and
+    # reads the staged entries without a path-sized argv or another Git process.
+    output = _git_bytes(root, "--no-replace-objects", "ls-files", "--stage", "-v", "-z")
     for raw_entry in (entry for entry in output.split(b"\0") if entry):
         header, _, entry_path = raw_entry.partition(b"\t")
+        flag = header[:1]
+        if flag == b"S" or flag.islower():
+            raise RuntimeError(f"Git index hides proof source: {os.fsdecode(entry_path)}")
         if entry_path not in requested:
             continue
-        parts = header.split()
+        parts = header[2:].split()
         if len(parts) != 3:
             raise RuntimeError(f"unexpected git index entry for {os.fsdecode(entry_path)!r}")
         mode, object_id, stage = parts
@@ -1109,7 +1478,7 @@ def _digest_index_entries(
 
     with tempfile.TemporaryFile() as error_stream:
         process = subprocess.Popen(
-            ["git", "-C", str(root), "cat-file", "--batch"],
+            ["git", "-C", str(root), "--no-replace-objects", "cat-file", "--batch"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=error_stream,
@@ -1187,6 +1556,7 @@ def _digest_index_entries(
 def _git_status_snapshot(root: Path) -> bytes:
     return _git_bytes(
         root,
+        "--no-replace-objects",
         "status",
         "--porcelain=v2",
         "--branch",
@@ -1257,13 +1627,10 @@ def dirty_digest(
     staged, unstaged, untracked = _dirty_paths_from_status(
         _status_snapshot if _status_snapshot is not None else _git_status_snapshot(root)
     )
-    included_staged = [raw_path for raw_path in staged if not _is_excluded(raw_path, exclusions)]
-    staged_entries = _index_entries(root, included_staged)
-    _digest_index_entries(digest, root, included_staged, staged_entries)
+    staged_entries = _index_entries(root, staged)
+    _digest_index_entries(digest, root, staged, staged_entries)
 
     for raw_path in unstaged:
-        if _is_excluded(raw_path, exclusions):
-            continue
         _digest_working_tree_entry(digest, b"worktree", root, raw_path)
 
     for raw_path in untracked:
@@ -1295,6 +1662,10 @@ def _source_identity(output: bytes) -> tuple[str, str | None, str | None]:
 def source_snapshot(root: Path, *, excluded_paths: Iterable[Path] = ()) -> dict[str, Any]:
     """Return the exact Git identity used by source-bound proof manifests."""
 
+    if _git_bytes(
+        root, "--no-replace-objects", "for-each-ref", "--count=1", "--format=%(refname)", "refs/replace/",
+    ).strip():
+        raise RuntimeError("Git replacement refs alter proof source identity")
     status_snapshot = _git_status_snapshot(root)
     head, branch, upstream = _source_identity(status_snapshot)
     merge_base = _merge_base(root, head, upstream) if upstream is not None else None
@@ -1468,17 +1839,24 @@ def paired_content_identity(pair: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def release_source_identity(binding: dict[str, Any]) -> tuple[Any, ...]:
+    return source_content_identity(binding["source"]), paired_content_identity(binding["source_pair"])
+
+
 def _check_manifest_local(
     payload: Any,
     *,
     manifest_path: Path,
     proof: dict[str, Any],
-    schema: dict[str, Any],
     root: Path,
     bind_source: bool,
     _pending: list,
     _decoded: dict[str, Any],
     _validator: Any,
+    _test_catalog: Callable[[str], dict],
+    _recorded_authorities: Callable[[str], dict],
+    _read_source: Callable[[str, str], bytes],
+    _resolve_mount_paths: Callable[[str], Callable[[Path], Path | None]],
     allow_non_passed: bool = False,
     paired_checkouts: dict[str, Path] | None = None,
     proof_by_id: dict[str, dict[str, Any]] | None = None,
@@ -1707,18 +2085,77 @@ def _check_manifest_local(
                     derive_test_result,
                 )
 
+                head = payload["source"]["head"]
+                recorded = _recorded_authorities(head)[proof["id"]]
+                target_ids = recorded["test_authority_targets"]
+                required_cases = _nextest_case_groups(recorded, "required_nextest_cases")
+                required_lib_cases = _nextest_case_groups(recorded, "required_nextest_lib_cases")
+                if bind_source and target_ids != proof.get("test_authority_targets", []):
+                    raise ExecutionResultError(
+                        "test targets differ from the registered source commit"
+                    )
+                if bind_source and (
+                    required_cases != _nextest_case_groups(proof, "required_nextest_cases")
+                    or required_lib_cases != _nextest_case_groups(proof, "required_nextest_lib_cases")
+                ):
+                    raise ExecutionResultError(
+                        "required nextest cases differ from the registered source commit"
+                    )
+                witnesses = daemon_witness_specs(recorded, allow_legacy=True)
+                if bind_source and witnesses != daemon_witness_specs(proof):
+                    raise ExecutionResultError("daemon observations differ from the registered source commit")
+
+                source_binding = recorded.get("execution_source_binding")
+                if bind_source and proof.get("execution_source_binding") != source_binding:
+                    raise ExecutionResultError(
+                        "execution source binding differs from the registered source commit"
+                    )
+                run_source = None
+                provider_approval_sha256 = None
+                if source_binding is True:
+                    run_source = ProofRunSource(
+                        proof["id"], head, payload["source"]["dirty_digest"],
+                        hashlib.sha256(_read_source(head, "Cargo.lock")).hexdigest()
+                        if recorded["binary_binding"] == "release-daemon"
+                        else None,
+                    )
+                    if proof["id"] == P07_PROOF:
+                        provider_approval_sha256 = p07_provider_approval_digest(recorded)
+                        if (
+                            payload["inputs"]["provider"] != f"sha256:{provider_approval_sha256}"
+                            or (bind_source and p07_provider_approval_digest(proof) != provider_approval_sha256)
+                        ):
+                            raise ExecutionResultError(
+                                "P07 provider input differs from the approved config of the issuing source"
+                            )
+                observations = {} if witnesses else None
                 derived_counts, passed_cases = derive_test_result(
-                    root, execution_result, payload["artifacts"]
+                    root, execution_result, payload["artifacts"],
+                    daemon_observations=observations,
+                    daemon_tests={name: launches for name, (_, launches) in witnesses.items()},
+                    required_lib_cases=required_lib_cases,
+                    run_source=run_source,
+                    daemon_sha256=(payload.get("daemon_binary") or {}).get("sha256"),
+                    provider_approval_sha256=provider_approval_sha256,
                 )
                 if derived_counts != payload["counts"]:
                     raise ExecutionResultError("manifest counts differ from raw execution")
-                authority = _read_toml(root / "tools/ci/test-authority.toml")
+                if proof["id"] == R5_PROOF:
+                    from tools.ci.paired_r5_release import verify_release
+                    from tools.ci.paired_r5_result import validate_release_witnesses
+
+                    cases = r5_cases(recorded, allow_legacy=True)
+                    if bind_source and cases != r5_cases(proof):
+                        raise ExecutionResultError("R5 selections differ from the registered source commit")
+                    validate_release_witnesses(passed_cases, cases=cases)
+                    verify_release(root, proof, payload, cases=cases)
+                authority = _test_catalog(head) if target_ids else {}
                 targets = {
                     item["id"]: (category, item)
                     for category in ("integration_targets", "python_targets")
                     for item in authority.get(category, [])
                 }
-                for target_id in proof.get("test_authority_targets", []):
+                for target_id in target_ids:
                     target_entry = targets.get(target_id)
                     if target_entry is None:
                         raise ExecutionResultError(f"unknown test authority target {target_id}")
@@ -1726,16 +2163,52 @@ def _check_manifest_local(
                     binary = target.get("target", Path(target["path"]).stem)
                     owner = target.get("owner")
                     if category == "integration_targets":
-                        covered = any(
-                            runner == "nextest-jsonl" and name.startswith(f"{owner}::{binary}$")
-                            for runner, name in passed_cases
+                        prefix = f"{owner}::{binary}$"
+                        source_path = Path(target["path"])
+                        if source_path.suffix == ".rs" and source_path.stem != binary:
+                            from tools.ci.rust_test_mount import mounted_test_module
+
+                            module = mounted_test_module(
+                                root,
+                                root / source_path,
+                                owner,
+                                binary,
+                                authority["integration_targets"],
+                                read_source=lambda path: _read_source(head, path),
+                                resolve_path=_resolve_mount_paths(head),
+                            )
+                            prefix += module + "::"
+                        _require_passing_nextest_target(
+                            target_id, prefix, required_cases.get(target_id, ()), passed_cases
                         )
-                    else:
-                        covered = _python_target_has_passed_case(target["path"], passed_cases)
-                    if not covered:
+                    elif not _python_target_has_passed_case(target["path"], passed_cases):
                         raise ExecutionResultError(
                             f"registered test target has no passing runner case: {target_id}"
                         )
+                if observations is not None:
+                    label = proof["id"].partition("-")[0].upper()
+                    if proof["id"] == P10_PROOF and passed_cases != {
+                        ("nextest-jsonl", name) for name in witnesses
+                    }:
+                        raise ExecutionResultError("P10 requires only the registered Native rebuild test")
+                    if set(observations) != set(witnesses):
+                        raise ExecutionResultError(f"{label} lacks a daemon observation for a selected test body")
+                    if set(observations.values()) != {payload["daemon_binary"]["sha256"]}:
+                        raise ExecutionResultError(f"{label} executed daemon differs from the release binary")
+                    if (
+                        "daemon_observation_tests" in recorded
+                        and passed_cases != {("nextest-jsonl", name) for name in witnesses}
+                    ):
+                        raise ExecutionResultError(f"{label} requires only the registered daemon witness tests")
+                    if proof["id"] == P10_PROOF:
+                        expected_format = native_state_root_format(
+                            _read_source(head, NATIVE_STATE_FORMAT_SOURCE)
+                        )
+                        if payload["state_root_format"] != expected_format:
+                            raise ExecutionResultError(
+                                "P10 state-root format differs from its issuing source: "
+                                f"expected {expected_format!r}"
+                            )
             except (OSError, ValueError, KeyError, TypeError) as error:
                 findings.append(
                     Finding(manifest_path, f"execution result is not authoritative: {error}")
@@ -1831,13 +2304,26 @@ def _check_manifest_local(
                     Finding(manifest_path, "dependency receipt proof_id does not match its edge")
                 )
                 continue
-            if proof.get("execution_mode") == "operational-action":
-                from tools.ci.proof_operational_result import validate_prerequisite_target
+            if payload["status"] == "passed" and proof["id"] in P11_RELEASE_PROOFS:
+                from tools.ci.proof_operational_result import (
+                    manifest_binding,
+                    validate_release_prerequisite,
+                )
 
                 try:
-                    validate_prerequisite_target(execution_result["target"], dependency_payload)
+                    target = (
+                        execution_result["target"]
+                        if proof.get("execution_mode") == "operational-action"
+                        else None
+                    )
+                    validate_release_prerequisite(
+                        manifest_binding(payload),
+                        target,
+                        dependency_payload,
+                        started_at=payload["started_at"],
+                    )
                 except (KeyError, TypeError, ValueError) as error:
-                    findings.append(Finding(manifest_path, f"operational dependency: {error}"))
+                    findings.append(Finding(manifest_path, f"P11 dependency: {error}"))
             try:
                 expected_archive = proof_archive_relative_path(
                     dependency_payload,
@@ -1925,7 +2411,7 @@ def check_manifest(
     *,
     manifest_path: Path,
     proof: dict[str, Any],
-    schema: dict[str, Any],
+    schema: dict[str, Any] | None = None,
     root: Path,
     bind_source: bool,
     allow_non_passed: bool = False,
@@ -1933,6 +2419,8 @@ def check_manifest(
     proof_by_id: dict[str, dict[str, Any]] | None = None,
     bound_source: dict[str, Any] | None = None,
     bound_source_pair: dict[str, Any] | None = None,
+    require_current_dependencies: bool = False,
+    replay_authority: bool = False,
 ) -> list[Finding]:
     """Validate each content/config-bound node once, rather than each DAG path.
 
@@ -1941,18 +2429,84 @@ def check_manifest(
     rehashes every referenced artifact, binary and dependency, including nodes
     reached through a cache hit. No proof-ID-only or cross-call cache exists.
     """
+    import jsonschema
+
     findings: list[Finding] = []
     pending = [(payload, manifest_path, proof, frozenset(), True)]
-    checked: dict[tuple[str, str], tuple[dict[str, Any], Path]] = {}
+    checked: dict[tuple[str, str, str | None, str], tuple[dict[str, Any], Path]] = {}
     decoded: dict[str, Any] = {}
-    validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
+    release_binding = None
+    release = proof["id"] in P11_RELEASE_PROOFS
+    current_release = release and Path(os.path.abspath(manifest_path)) == root / proof["artifact"]
+    replay_graph = replay_authority or (release and not bind_source and not current_release)
+
+    @cache
+    def read_source(head: str, path: str) -> bytes:
+        return committed_source_files(root, head, (path,))[path]
+
+    @cache
+    def manifest_validator(head: str | None, path: str) -> jsonschema.Draft202012Validator:
+        if head is not None:
+            node_schema = parse_proof_json(read_source(head, path))
+        elif schema is not None:
+            node_schema = schema
+        else:
+            node_schema = _payload_json(root, path, label="registered manifest schema")
+        jsonschema.Draft202012Validator.check_schema(node_schema)
+        return jsonschema.Draft202012Validator(
+            node_schema, format_checker=jsonschema.FormatChecker()
+        )
+
+    @cache
+    def resolve_mount_paths(head: str) -> Callable[[Path], Path | None]:
+        from tools.ci.rust_test_mount import committed_path_resolver
+
+        return committed_path_resolver(_git_bytes, root, head)
+
+    @cache
+    def recorded_authorities(head: str) -> dict[str, dict[str, Any]]:
+        return committed_proof_authorities(root, head)
+
+    @cache
+    def test_catalog(head: str) -> dict:
+        return tomllib.loads(read_source(head, "tools/ci/test-authority.toml").decode("utf-8"))
+
     while pending:
         current, path, authority, ancestry, top = pending.pop()
-        # Root and schema are fixed for this invocation; the key binds every
-        # byte interpreted and the complete local authority, not just its ID.
+        if not top and release_binding is not None:
+            from tools.ci.proof_operational_result import validate_release_binding
+
+            try:
+                validate_release_binding(
+                    release_binding,
+                    current,
+                    release_daemon=authority["binary_binding"] == "release-daemon",
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                findings.append(Finding(path, f"P11 release ancestry: {error}"))
+                continue
+
+        node_authorities = proof_by_id
+        schema_head = None
+        if (replay_graph or (release and not top)) and not (top and current_release):
+            try:
+                schema_head = current["source"]["head"]
+                node_authorities = recorded_authorities(schema_head)
+                authority = node_authorities[authority["id"]]
+            except (OSError, KeyError, TypeError, ValueError) as error:
+                findings.append(Finding(path, f"cannot read recorded proof authority: {error}"))
+                continue
+        schema_path = authority["artifact_schema"]
+        try:
+            validator = manifest_validator(schema_head, schema_path)
+        except (OSError, KeyError, TypeError, ValueError, jsonschema.SchemaError) as error:
+            findings.append(Finding(path, f"cannot read registered manifest schema: {error}"))
+            continue
         key = (
             json.dumps(current, sort_keys=True, separators=(",", ":")),
             json.dumps(authority, sort_keys=True, separators=(",", ":")),
+            schema_head,
+            schema_path,
         )
         if key in checked:
             findings.extend(_rehash_manifest_bindings(current, root, path))
@@ -1961,26 +2515,72 @@ def check_manifest(
             current,
             manifest_path=path,
             proof=authority,
-            schema=schema,
             root=root,
             bind_source=bind_source if top else False,
             allow_non_passed=allow_non_passed if top else False,
             paired_checkouts=paired_checkouts if top else None,
-            proof_by_id=proof_by_id,
+            proof_by_id=node_authorities,
             bound_source=bound_source if top else None,
             bound_source_pair=bound_source_pair if top else None,
             _pending=pending,
             _decoded=decoded,
             _validator=validator,
+            _test_catalog=test_catalog,
+            _recorded_authorities=recorded_authorities,
+            _read_source=read_source,
+            _resolve_mount_paths=resolve_mount_paths,
             _archive_stack=ancestry,
         )
         findings.extend(local)
-        if isinstance(current, dict) and not any(
+        if not isinstance(current, dict) or any(
             item.message.startswith("schema ") for item in local
         ):
-            checked[key] = (current, path)
+            continue
+        if top and not local and release and current["status"] == "passed":
+            from tools.ci.proof_operational_result import manifest_binding
+
+            if node_authorities is None:
+                findings.append(Finding(path, "P11 release proof requires its registry graph"))
+            else:
+                try:
+                    release_binding = manifest_binding(current)
+                except (KeyError, TypeError, ValueError) as error:
+                    findings.append(Finding(path, f"P11 release ancestry: {error}"))
+        checked[key] = (current, path)
+    if current_release and not findings:
+        try:
+            require_current_release(
+                root, payload, _payload_sha256(root, proof["artifact"], label="current release")
+            )
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            findings.append(Finding(manifest_path, str(error)))
+        require_current_dependencies |= payload["status"] == "passed"
+    current_digests: dict[str, str] = {}
     for current, path in checked.values():
         findings.extend(_rehash_manifest_bindings(current, root, path))
+        if require_current_dependencies:
+            for receipt in current["dependency_receipts"]:
+                dependency = receipt["proof_id"]
+                try:
+                    if dependency not in current_digests:
+                        if proof_by_id is None or dependency not in proof_by_id:
+                            raise ValueError(f"unknown current dependency {dependency}")
+                        raw = _payload_bytes(
+                            root, proof_by_id[dependency]["artifact"], label="current prerequisite"
+                        )
+                        digest = hashlib.sha256(raw).hexdigest()
+                        if dependency in P11_RELEASE_PROOFS:
+                            selected = parse_proof_json(raw)
+                            if not isinstance(selected, dict) or selected.get("proof_id") != dependency:
+                                raise ValueError(f"current receipt has the wrong proof ID for {dependency}")
+                            require_current_release(root, selected, digest)
+                        current_digests[dependency] = digest
+                    if current_digests[dependency] != receipt["sha256"]:
+                        raise ValueError(
+                            f"{current['proof_id']} does not reference the selected receipt for {dependency}"
+                        )
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    findings.append(Finding(path, str(error)))
     return findings
 
 
@@ -2081,19 +2681,28 @@ def operational_host_identities(
     }
 
 
+def verdict_proof_ids(
+    required_proofs: list[str], proof_by_id: dict[str, dict[str, Any]]
+) -> set[str]:
+    result = set(required_proofs)
+    for proof_id in required_proofs:
+        result.update(dependency_closure(proof_by_id, proof_id))
+    return result
+
+
 def verdict_consistency_findings(
     required_proofs: list[str],
     *,
     payload_by_id: dict[str, dict[str, Any]],
+    selected_digests: dict[str, str],
     proof_by_id: dict[str, dict[str, Any]],
     path: Path,
 ) -> list[Finding]:
     """Check only a verdict's proofs and their transitive prerequisites."""
-    selected = set(required_proofs)
-    for proof_id in required_proofs:
-        selected.update(dependency_closure(proof_by_id, proof_id))
+    selected = verdict_proof_ids(required_proofs, proof_by_id)
     return check_aggregate(
         {proof_id: payload for proof_id, payload in payload_by_id.items() if proof_id in selected},
+        selected_digests=selected_digests,
         proof_by_id=proof_by_id,
         path=path,
     )
@@ -2102,10 +2711,20 @@ def verdict_consistency_findings(
 def check_aggregate(
     payload_by_id: dict[str, dict[str, Any]],
     *,
+    selected_digests: dict[str, str],
     proof_by_id: dict[str, dict[str, Any]],
     path: Path,
 ) -> list[Finding]:
     findings: list[Finding] = []
+    for proof_id, payload in payload_by_id.items():
+        for receipt in payload["dependency_receipts"]:
+            dependency = receipt["proof_id"]
+            if selected_digests.get(dependency) != receipt["sha256"]:
+                findings.append(
+                    Finding(
+                        path, f"{proof_id} does not reference the selected receipt for {dependency}"
+                    )
+                )
     primary_sources = {
         source_content_identity(payload["source"]) for payload in payload_by_id.values()
     }
@@ -2178,6 +2797,8 @@ def check_aggregate_receipt(
     require_ready: bool = False,
 ) -> list[Finding]:
     """Validate a truthful diagnostic or release-ready P12 aggregate receipt."""
+
+    import jsonschema
 
     findings: list[Finding] = []
     validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
@@ -2270,6 +2891,7 @@ def check_aggregate_receipt(
                     )
 
     payload_by_id: dict[str, dict[str, Any]] = {}
+    selected_digests: dict[str, str] = {}
     dependency_statuses: dict[str, str] = {}
     for proof_id in dependency_ids:
         proof = proof_by_id[proof_id]
@@ -2376,6 +2998,7 @@ def check_aggregate_receipt(
                 }[manifest["status"]]
                 if expected_status == "PASSED":
                     payload_by_id[proof_id] = manifest
+                    selected_digests[proof_id] = expected_sha256
 
         dependency_statuses[proof_id] = expected_status
         if receipt.get("sha256") != expected_sha256:
@@ -2396,7 +3019,7 @@ def check_aggregate_receipt(
             )
 
     consistency_findings = check_aggregate(
-        payload_by_id, proof_by_id=proof_by_id, path=receipt_path
+        payload_by_id, selected_digests=selected_digests, proof_by_id=proof_by_id, path=receipt_path
     )
     if require_ready:
         findings.extend(consistency_findings)
@@ -2450,11 +3073,13 @@ def check_aggregate_receipt(
                     Finding(receipt_path, f"aggregate verdict proof set differs for {verdict}")
                 )
             required_statuses = [
-                dependency_statuses.get(proof_id, "FAILED") for proof_id in expected_proofs
+                dependency_statuses.get(proof_id, "FAILED")
+                for proof_id in verdict_proof_ids(expected_proofs, proof_by_id)
             ]
             verdict_findings = verdict_consistency_findings(
                 expected_proofs,
                 payload_by_id=payload_by_id,
+                selected_digests=selected_digests,
                 proof_by_id=proof_by_id,
                 path=receipt_path,
             )
@@ -2483,6 +3108,19 @@ def check_aggregate_receipt(
     )
     if payload.get("production_ready") is not expected_ready:
         findings.append(Finding(receipt_path, "aggregate production_ready is not derived verdict"))
+    for proof_id, selected_sha in selected_digests.items():
+        try:
+            digest = _payload_sha256(
+                root, proof_by_id[proof_id]["artifact"], label="selected aggregate receipt"
+            )
+            if digest != selected_sha:
+                raise ValueError(
+                    f"selected aggregate receipt changed during validation: {proof_id}"
+                )
+            if proof_id in P11_RELEASE_PROOFS:
+                require_current_release(root, payload_by_id[proof_id], digest)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            findings.append(Finding(receipt_path, str(error)))
     if require_ready and not expected_ready:
         findings.append(Finding(receipt_path, "aggregate is not production ready"))
     if bind_source:
@@ -2547,14 +3185,14 @@ def _main_locked(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = args.root.resolve()
     registry_path = args.registry or root / "tools/ci/proof-authority.toml"
-    schema_path = args.schema or root / "tools/ci/proof-manifest.schema.json"
+    schema_path = args.schema
     registry_path = registry_path if registry_path.is_absolute() else Path.cwd() / registry_path
-    schema_path = schema_path if schema_path.is_absolute() else Path.cwd() / schema_path
+    if schema_path is not None and not schema_path.is_absolute():
+        schema_path = Path.cwd() / schema_path
     try:
         registry = tomllib.loads(
             _explicit_file_bytes(registry_path, label="proof registry").decode("utf-8")
         )
-        schema = parse_proof_json(_explicit_file_bytes(schema_path, label="proof manifest schema"))
     except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
@@ -2562,6 +3200,8 @@ def _main_locked(argv: list[str] | None = None) -> int:
     findings = check_registry(registry, root=root, path=registry_path)
     if args.require_all or args.require_code_qualified or args.dependencies_of is not None:
         for label, path in (("registry", registry_path), ("schema", schema_path)):
+            if path is None:
+                continue
             try:
                 path.relative_to(root)
             except ValueError:
@@ -2586,7 +3226,11 @@ def _main_locked(argv: list[str] | None = None) -> int:
             Finding(registry_path, f"--paired-checkout names unknown repository {repository!r}")
         )
     manifest_paths = [path if path.is_absolute() else root / path for path in args.manifest]
-    expected_proof_by_path: dict[Path, str] = {}
+    expected_proof_by_path = {
+        root / proof["artifact"]: proof_id
+        for proof_id, proof in proof_by_id.items()
+        if isinstance(proof.get("artifact"), str)
+    }
 
     def require_registered_manifest(proof_id: str) -> None:
         proof = proof_by_id[proof_id]
@@ -2643,6 +3287,7 @@ def _main_locked(argv: list[str] | None = None) -> int:
     seen_paths: set[Path] = set()
     seen_proofs: set[str] = set()
     payload_by_id: dict[str, dict[str, Any]] = {}
+    selected_digests: dict[str, str] = {}
     for manifest_path in manifest_paths:
         if manifest_path in seen_paths:
             continue
@@ -2651,12 +3296,13 @@ def _main_locked(argv: list[str] | None = None) -> int:
             findings.append(Finding(manifest_path, "required proof manifest is missing"))
             continue
         try:
-            payload = parse_proof_json(_explicit_file_bytes(manifest_path, label="proof manifest"))
+            manifest_bytes = _explicit_file_bytes(manifest_path, label="proof manifest")
+            payload = parse_proof_json(manifest_bytes)
         except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
             findings.append(Finding(manifest_path, f"unreadable proof manifest: {error}"))
             continue
         proof_id = payload.get("proof_id") if isinstance(payload, dict) else None
-        expected_proof_id = expected_proof_by_path.get(manifest_path)
+        expected_proof_id = expected_proof_by_path.get(Path(os.path.abspath(manifest_path)))
         if expected_proof_id is not None and proof_id != expected_proof_id:
             findings.append(
                 Finding(
@@ -2673,6 +3319,16 @@ def _main_locked(argv: list[str] | None = None) -> int:
             findings.append(Finding(manifest_path, f"duplicate manifest for proof_id {proof_id!r}"))
             continue
         seen_proofs.add(proof_id)
+        replay = manifest_path.is_relative_to(root / PROOF_ARCHIVE_ROOT)
+        schema = None
+        if schema_path is not None and not replay:
+            try:
+                schema = parse_proof_json(
+                    _explicit_file_bytes(schema_path, label="proof manifest schema")
+                )
+            except (OSError, ValueError) as error:
+                findings.append(Finding(manifest_path, str(error)))
+                continue
         manifest_findings = check_manifest(
             payload,
             manifest_path=manifest_path,
@@ -2682,15 +3338,18 @@ def _main_locked(argv: list[str] | None = None) -> int:
             bind_source=args.bind_source,
             paired_checkouts=paired_checkouts,
             proof_by_id=proof_by_id,
+            replay_authority=replay,
         )
         findings.extend(manifest_findings)
         if not manifest_findings:
             payload_by_id[proof_id] = payload
+            selected_digests[proof_id] = hashlib.sha256(manifest_bytes).hexdigest()
 
     if args.require_all or args.require_code_qualified or args.dependencies_of is not None:
         findings.extend(
             check_aggregate(
                 payload_by_id,
+                selected_digests=selected_digests,
                 proof_by_id=proof_by_id,
                 path=registry_path,
             )

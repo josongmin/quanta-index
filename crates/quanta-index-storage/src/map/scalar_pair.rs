@@ -2,9 +2,9 @@
 //! stream and both original-base CAS checks precede any immutable installation.
 
 use super::{
-    FileObjectStore, IndexError, MapEdit, MapEditCursor, MapRoot, MapValue, ObjectWriteSink, OrdinalMapEdit,
-    ResidentStage, StagedMapRoots, WorkBudget, WorkUsage, charge_key_allocation, key_nibbles,
-    resident,
+    FileObjectStore, IndexError, MapEdit, MapEditCursor, MapRoot, MapValue, ObjectWriteSink,
+    OrdinalMapEdit, ResidentStage, StagedMapRoots, WorkBudget, WorkUsage, charge_key_allocation,
+    key_nibbles, resident,
 };
 use quanta_index_core::index::MapRootBuilder;
 use quanta_index_core::index::ports::RootPackingPlan;
@@ -16,15 +16,27 @@ pub(super) trait ResidentEditRef {
 }
 
 impl ResidentEditRef for MapEdit {
-    fn key(&self) -> &[u8] { &self.key }
-    fn expected_value(&self) -> Result<Option<MapValue>, IndexError> { Ok(self.expected) }
-    fn next_value(&self) -> Result<Option<MapValue>, IndexError> { Ok(self.next) }
+    fn key(&self) -> &[u8] {
+        &self.key
+    }
+    fn expected_value(&self) -> Result<Option<MapValue>, IndexError> {
+        Ok(self.expected)
+    }
+    fn next_value(&self) -> Result<Option<MapValue>, IndexError> {
+        Ok(self.next)
+    }
 }
 
 impl ResidentEditRef for OrdinalMapEdit {
-    fn key(&self) -> &[u8] { OrdinalMapEdit::key(self) }
-    fn expected_value(&self) -> Result<Option<MapValue>, IndexError> { self.expected() }
-    fn next_value(&self) -> Result<Option<MapValue>, IndexError> { self.next() }
+    fn key(&self) -> &[u8] {
+        OrdinalMapEdit::key(self)
+    }
+    fn expected_value(&self) -> Result<Option<MapValue>, IndexError> {
+        self.expected()
+    }
+    fn next_value(&self) -> Result<Option<MapValue>, IndexError> {
+        self.next()
+    }
 }
 
 pub(super) struct Input<'a> {
@@ -147,9 +159,11 @@ impl FileObjectStore {
         let mut built = [MapRoot(None); 2];
         let shared = if staged.shares_pair_layout() && bases.first() == bases.get(1) {
             match (edits.first(), edits.get(1)) {
-                (Some(first), Some(second)) => first.key() == second.key()
-                    && first.expected_value()? == second.expected_value()?
-                    && first.next_value()? == second.next_value()?,
+                (Some(first), Some(second)) => {
+                    first.key() == second.key()
+                        && first.expected_value()? == second.expected_value()?
+                        && first.next_value()? == second.next_value()?
+                }
                 _ => false,
             }
         } else {
@@ -174,7 +188,14 @@ impl FileObjectStore {
                 let key = keys.get(slot).and_then(Option::as_ref).ok_or_else(|| {
                     IndexError::BackendViolation("scalar pair lost a checked key".into())
                 })?;
-                self.update_one_checked(*base, key, edit.expected_value()?, edit.next_value()?, staged, budget)?
+                self.update_one_checked(
+                    *base,
+                    key,
+                    edit.expected_value()?,
+                    edit.next_value()?,
+                    staged,
+                    budget,
+                )?
             };
             *built.get_mut(slot).ok_or(IndexError::ResourceLimited)? = root;
             roots.push(root)?;

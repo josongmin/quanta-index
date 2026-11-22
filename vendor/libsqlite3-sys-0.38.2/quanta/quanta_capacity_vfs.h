@@ -97,6 +97,9 @@ int qiv_close_owned_fd(int descriptor);
  * and page into one actual xWrite. Admission still gates that complete write. */
 int qiv_can_pack_wal_frame(sqlite3_file *file);
 
+/* True only for the authenticated main FD opened in a verification scope. */
+int qiv_is_verification_file(sqlite3_file *file);
+
 /* Checkpoint batching requires both original live controlled handles in the
  * current scope. Every resulting xWrite still runs the normal admission. */
 int qiv_can_batch_checkpoint_pages(sqlite3_file *database, sqlite3_file *wal);
@@ -123,6 +126,10 @@ int qiv_native_close_fd(int descriptor, int (*close_fn)(int));
  * operation, including open and close. Scope zero is refused by this VFS. */
 uint64_t qiv_enter_scope(uint64_t scope_id);
 int qiv_enter_verification(int enabled);
+/* Per-thread verification FD length ceilings. Each setter returns the prior
+ * value so a non-Send Rust ScopeGuard can restore nested scopes exactly. */
+uint64_t qiv_enter_verification_main_ceiling(uint64_t bytes);
+uint64_t qiv_enter_verification_wal_ceiling(uint64_t bytes);
 
 /* Implemented inside the pinned SQLite amalgamation, where unixFile and
  * unixShmNode are defined. Native FD fstat avoids a pathname TOCTOU witness.

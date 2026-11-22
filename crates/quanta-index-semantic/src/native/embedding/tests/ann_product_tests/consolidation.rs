@@ -372,7 +372,6 @@ fn native_ann_small_runs_carry_and_retain_independent_nearest_neighbor()
         &SearchQuery {
             source_files: false,
             lexical_eligibility: None,
-            lexical_owners: None,
             exact_path: None,
             coverage: &coverage,
             projection: None,

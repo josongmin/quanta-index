@@ -1,8 +1,8 @@
 //! Source-derived global BM25 oracle; no index/ranker/tokenizer is consulted.
 
 use super::*;
-use quanta_index_contract::index::ViewRef;
 use crate::scale_source_fixture::ScopedFile;
+use quanta_index_contract::index::ViewRef;
 
 const QUERY: &str = "scale_needle_token";
 const PAGE: u32 = 256;
