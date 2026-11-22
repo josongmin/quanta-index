@@ -274,10 +274,7 @@ version = "=7.0.0"
 
 [dependencies.lance-index]
 version = "=7.0.0"
-features = [
-    "tokenizer-jieba",
-    "tokenizer-lindera",
-]
+features = ["tokenizer-jieba"]
 
 [dependencies.lance-io]
 version = "=7.0.0"

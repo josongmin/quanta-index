@@ -342,6 +342,28 @@ def test_native_quality_resolves_manifest_location_before_relative_release_input
     assert result["execution_binding_verified"] is False
 
 
+def test_native_quality_rejects_cohort_manifest_retargeted_during_replay(
+    tmp_path, monkeypatch, synthetic_replay_sources,
+):
+    manifest, policy, binaries, families = _case(tmp_path)
+    alias = tmp_path / "cohort-alias.json"
+    alias.symlink_to(manifest)
+    replacement = tmp_path / "replacement-cohort.json"
+    replacement.write_bytes(manifest.read_bytes())
+    by_family = {item["suite"]["suite_id"]: item for item in families}
+
+    def replay(*args, **_options):
+        if alias.readlink() == manifest:
+            alias.unlink()
+            alias.symlink_to(replacement)
+        return copy.deepcopy(by_family[args[-1][-1]])
+
+    monkeypatch.setattr(ev, "load_native_file_replay", replay)
+    with pytest.raises(decision.NativeDecisionError, match="inputs changed during replay"):
+        decision.build_native_file_decision(alias, policy, *binaries)
+    assert alias.readlink() == replacement
+
+
 def test_native_quality_keeps_each_family_capture_path_pinned(tmp_path, monkeypatch):
     manifest, policy, binaries, families = _case(tmp_path)
     entries = json.loads(manifest.read_bytes())["families"]
@@ -748,8 +770,9 @@ def test_native_quality_refuses_fifo_binary_or_config_before_replay(tmp_path, mo
         decision.build_native_file_decision(manifest, policy, *binaries)
 
 
+@pytest.mark.parametrize("changed_input", ["receipt_bytes", "receipt_path", "review_manifest_path"])
 def test_native_quality_replays_exact_review_roster_and_checks_receipt_freshness(
-    tmp_path, monkeypatch, synthetic_replay_sources
+    tmp_path, monkeypatch, synthetic_replay_sources, changed_input,
 ):
     manifest, policy, binaries, families = _case(tmp_path)
     by_family = {item["suite"]["suite_id"]: item for item in families}
@@ -758,6 +781,20 @@ def test_native_quality_replays_exact_review_roster_and_checks_receipt_freshness
     reviewed.write_text(json.dumps(rows), encoding="utf-8")
     for name in rows.values():
         (tmp_path / name).write_bytes(b"{}")
+    first_receipt = tmp_path / next(iter(rows.values()))
+    declared = {
+        "receipt_path": first_receipt,
+        "review_manifest_path": reviewed,
+    }.get(changed_input)
+    pinned_paths = {family: tmp_path / receipt for family, receipt in rows.items()}
+    if declared is not None:
+        pinned = declared.with_suffix(".original.json")
+        declared.rename(pinned)
+        declared.symlink_to(pinned)
+        replacement = declared.with_suffix(".replacement.json")
+        replacement.write_bytes(pinned.read_bytes())
+        if changed_input == "receipt_path":
+            pinned_paths[next(iter(by_family))] = pinned
     original_manifest = manifest.read_bytes()
     observed = {}
 
@@ -769,11 +806,15 @@ def test_native_quality_replays_exact_review_roster_and_checks_receipt_freshness
     monkeypatch.setattr(ev, "load_native_file_replay", replay)
     result = decision.build_native_file_decision(manifest, policy, *binaries, reviewed_labels_path=reviewed)
     assert result["reviewed_labels_manifest_sha256"] == _sha(reviewed)
-    assert observed == {family: tmp_path / receipt for family, receipt in rows.items()}
+    assert observed == pinned_paths
     assert manifest.read_bytes() == original_manifest
 
     def changed(*args, reviewed_labels, **options):
-        reviewed_labels.write_bytes(b"{ } ")
+        if declared is None:
+            reviewed_labels.write_bytes(b"{ } ")
+        elif declared.readlink() != replacement:
+            declared.unlink()
+            declared.symlink_to(replacement)
         return replay(*args, reviewed_labels=reviewed_labels, **options)
 
     monkeypatch.setattr(ev, "load_native_file_replay", changed)

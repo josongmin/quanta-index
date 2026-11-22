@@ -512,6 +512,7 @@ def build_native_file_decision(
         daemon_binary: daemon_sha,
         runner_binary: runner_sha,
     }
+    tracked_path_targets = [(declared_manifest, manifest_path)]
     tracked_selections: dict[Path, str] = {}
     runtime = {}
     roots, sockets = set(), set()
@@ -555,7 +556,9 @@ def build_native_file_decision(
     reviewed_bytes: dict[Path, tuple[str, int]] = {}
     reviewed_sha = None
     if reviewed_labels_path is not None:
+        declared_review_manifest = reviewed_labels_path
         reviewed_labels_path = resolve_path(reviewed_labels_path)
+        tracked_path_targets.append((declared_review_manifest, reviewed_labels_path))
         raw_reviewed = read_control(reviewed_labels_path)
         rows = evaluator._parse_json_text(raw_reviewed.decode("utf-8"))
         _require(
@@ -571,6 +574,9 @@ def build_native_file_decision(
             output.protect(("reviewed label receipt", path) for path in declared_reviews.values())
         reviewed = {family: resolve_path(path) for family, path in declared_reviews.items()}
         _require(len(set(reviewed.values())) == len(reviewed), "Native reviewed label file is repeated")
+        tracked_path_targets.extend(
+            (declared, reviewed[family]) for family, declared in declared_reviews.items()
+        )
         reviewed_sha = hashlib.sha256(raw_reviewed).hexdigest()
         tracked_files[reviewed_labels_path] = reviewed_sha
         for receipt in reviewed.values():
@@ -855,6 +861,7 @@ def build_native_file_decision(
     _require(
         all(_sha(path) == sha for path, sha in tracked_files.items())
         and all(_release_tree_sha(path) == sha for path, sha in tracked_releases.items())
+        and all(resolve_path(declared) == target for declared, target in tracked_path_targets)
         and all(
             path(entry, key) == frozen
             for entry in manifest["families"]

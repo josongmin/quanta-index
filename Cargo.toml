@@ -245,8 +245,6 @@ codegen-units = 16
 [patch.crates-io]
 # One controlled CBOR parser for standalone Quanta and sibling consumers.
 ciborium = { path = "vendor/ciborium-0.2.2" }
-# The pinned 0.22.1 merger counts surviving posting frequencies exactly after
-# deletes; upstream approximates token totals from quantized fieldnorms.
 # Native identity admission shares the pinned canonical NFC producer.
 unicode-normalization = { path = "vendor/unicode-normalization-0.1.25" }
 
@@ -260,4 +258,5 @@ lance = { path = "vendor/lance-7.0.0" }
 # Admitted local writers and readers keep the existing file URI.
 lance-io = { path = "vendor/lance-io-7.0.0" }
 object_store = { path = "vendor/object_store-0.13.2" }
+# The Native lexical engine owns text search. Skip LanceDB's unused Lindera tokenizer.
 lancedb = { path = "vendor/lancedb-0.30.0" }
