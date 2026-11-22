@@ -1155,12 +1155,20 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
 
 
 @pytest.mark.parametrize(
+    ("package", "target"),
+    [
+        ("quanta-index-lexical", "sealed_commitment_cost"),
+        ("quanta-index-searchd-runtime", "process_readiness_owner_v1"),
+        ("quanta-index-searchd-runtime", "runtime_fast_suite"),
+    ],
+)
+@pytest.mark.parametrize(
     ("provide_binary", "error"),
     [(False, "retained old-Q executable is absent"),
      (True, "does not match the committed approved Linux old-Q SHA-256")],
 )
 def test_retained_old_q_capture_rejects_a_missing_or_self_pinned_binary_before_build(
-    tmp_path, monkeypatch, provide_binary, error,
+    tmp_path, monkeypatch, package, target, provide_binary, error,
 ):
     checkout = tmp_path / "checkout"
     circleci = checkout / ".circleci/config.yml"
@@ -1190,8 +1198,8 @@ def test_retained_old_q_capture_rejects_a_missing_or_self_pinned_binary_before_b
     monkeypatch.setattr(retirement_nextest, "_capture_frozen_checkout", lambda *_: pytest.fail("entered capture"))
     with pytest.raises(ValueError, match=error):
         retirement_nextest.capture_release_execution(
-            checkout, revision, evidence, lane="test-integration-lane", package="quanta-index-lexical",
-            include_lib=False, test_targets=["sealed_commitment_cost"], filterset="all()", features=[],
+            checkout, revision, evidence, lane="test-integration-lane", package=package,
+            include_lib=False, test_targets=[target], filterset="all()", features=[],
         )
     assert not list(evidence.iterdir())
 
@@ -1216,10 +1224,37 @@ def test_boot_inventory_platform_preserves_linux_inotify_coverage(tmp_path, host
     artifact = retirement_nextest.RawFile.capture(path)
     selection = {"package": "quanta-index-lexical", "test_targets": ["boot_inventory_data"]}
     if expected_error is None:
-        retirement_nextest._require_lexical_platforms(artifact, artifact, selection)
+        retirement_nextest._require_retirement_platforms(artifact, artifact, selection)
     else:
         with pytest.raises(ValueError, match=expected_error):
-            retirement_nextest._require_lexical_platforms(artifact, artifact, selection)
+            retirement_nextest._require_retirement_platforms(artifact, artifact, selection)
+
+
+@pytest.mark.parametrize("target", ["process_readiness_owner_v1", "runtime_fast_suite"])
+@pytest.mark.parametrize(
+    ("host", "build_target", "expected_error"),
+    [
+        ("x86_64-unknown-linux-gnu", None, None),
+        ("aarch64-apple-darwin", None, "requires x86-64 Linux host and target"),
+        ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "requires x86-64 Linux host and target"),
+    ],
+)
+def test_runtime_old_q_platform_matches_the_approved_binary(tmp_path, target, host, build_target, expected_error):
+    meta = {
+        "platforms": {
+            "host": {"platform": {"triple": host}},
+            "targets": [] if build_target is None else [{"platform": {"triple": build_target}}],
+        },
+    }
+    path = tmp_path / "nextest.json"
+    path.write_text(json.dumps({"rust-build-meta": meta}), encoding="utf-8")
+    artifact = retirement_nextest.RawFile.capture(path)
+    selection = {"package": "quanta-index-searchd-runtime", "test_targets": [target]}
+    if expected_error is None:
+        retirement_nextest._require_retirement_platforms(artifact, artifact, selection)
+    else:
+        with pytest.raises(ValueError, match=expected_error):
+            retirement_nextest._require_retirement_platforms(artifact, artifact, selection)
 
 
 def test_boot_inventory_capture_refuses_darwin_before_build(tmp_path, monkeypatch):
