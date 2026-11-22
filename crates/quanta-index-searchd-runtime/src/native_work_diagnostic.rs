@@ -24,6 +24,22 @@ use quanta_index_core::{
 use quanta_index_kernel::QueryExecutionTimings;
 use serde::Serialize;
 
+// Diagnostic JSON follows the field names and order of the record.
+macro_rules! serialize_diagnostic_fields {
+    ($name:ident $(<$wire:lifetime>)?, $($field:ident),+ $(,)?) => {
+        impl $(<$wire>)? Serialize for $name $(<$wire>)? {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeStruct as _;
+
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                let mut record = serializer.serialize_struct(stringify!($name), FIELDS.len())?;
+                $(record.serialize_field(stringify!($field), &self.$field)?;)+
+                record.end()
+            }
+        }
+    };
+}
+
 const ENV: &str = "QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1";
 const EVENT: &str = "native_work_refusal";
 const OWNED_EVENT: &str = "native_owned_work_refusal";
@@ -47,8 +63,7 @@ static READ_VIEW_FAILURES_SAMPLED: AtomicUsize = AtomicUsize::new(0);
 static SETTLEMENT_BLOCKERS_SAMPLED: AtomicU16 = AtomicU16::new(0);
 static TERMINAL_CUSTODY_POLLS: AtomicU16 = AtomicU16::new(0);
 
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy)]
 pub(super) enum ReadFailureRoute {
     OrdinarySearch,
     RetainedSearch,
@@ -56,8 +71,19 @@ pub(super) enum ReadFailureRoute {
     ReadView,
 }
 
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
+impl Serialize for ReadFailureRoute {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (ordinal, name) = match self {
+            Self::OrdinarySearch => (0, "ordinary_search"),
+            Self::RetainedSearch => (1, "retained_search"),
+            Self::RetainedControl => (2, "retained_control"),
+            Self::ReadView => (3, "read_view"),
+        };
+        serializer.serialize_unit_variant("ReadFailureRoute", ordinal, name)
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(super) enum ReadFailureStage {
     Checkpoint,
     ReplyReservation,
@@ -68,6 +94,23 @@ pub(super) enum ReadFailureStage {
     QueryExecution,
     ResultConversion,
     ViewCustody,
+}
+
+impl Serialize for ReadFailureStage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (ordinal, name) = match self {
+            Self::Checkpoint => (0, "checkpoint"),
+            Self::ReplyReservation => (1, "reply_reservation"),
+            Self::ControlAdmission => (2, "control_admission"),
+            Self::InteractiveAdmission => (3, "interactive_admission"),
+            Self::SessionCustody => (4, "session_custody"),
+            Self::QueryPreparation => (5, "query_preparation"),
+            Self::QueryExecution => (6, "query_execution"),
+            Self::ResultConversion => (7, "result_conversion"),
+            Self::ViewCustody => (8, "view_custody"),
+        };
+        serializer.serialize_unit_variant("ReadFailureStage", ordinal, name)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -525,7 +568,7 @@ pub(super) struct RetentionProgress {
     counts: RetentionProgressCounts,
 }
 
-#[derive(Default, Serialize)]
+#[derive(Default)]
 struct RetentionProgressCounts {
     admission_refusals: u64,
     floor_rounds: u64,
@@ -539,6 +582,21 @@ struct RetentionProgressCounts {
     oldest_released_rows: u64,
     oldest_has_more: Option<bool>,
 }
+
+serialize_diagnostic_fields!(
+    RetentionProgressCounts,
+    admission_refusals,
+    floor_rounds,
+    floor_refusals,
+    custody_probe_refusals,
+    custody_release_refusals,
+    custody_pages,
+    custody_rows,
+    oldest_ready_sequence,
+    oldest_operation_sequence,
+    oldest_released_rows,
+    oldest_has_more,
+);
 
 impl RetentionProgress {
     const INTERVAL: Duration = Duration::from_secs(45);
@@ -632,13 +690,20 @@ pub(super) fn capture_id_hex(capture_id: DiagnosticCaptureIdV1) -> String {
     value
 }
 
-#[derive(Serialize)]
 struct WorkRefusal<'a> {
     event: &'static str,
     operation_key: OperationKey,
     budget_diagnostic: &'a str,
     outcome: &'static str,
 }
+
+serialize_diagnostic_fields!(
+    WorkRefusal<'a>,
+    event,
+    operation_key,
+    budget_diagnostic,
+    outcome,
+);
 
 fn error_outcome(error: &IndexError) -> &'static str {
     match error {
@@ -810,7 +875,6 @@ fn first_retained_result_sample_slot(
     owned_failure_sample_slot(if is_error { errors } else { successes })
 }
 
-#[derive(Serialize)]
 struct QueryFailure<'a> {
     event: &'static str,
     request_id: u64,
@@ -825,6 +889,20 @@ struct QueryFailure<'a> {
     sample_ordinal: usize,
     sample_limit: usize,
 }
+
+serialize_diagnostic_fields!(
+    QueryFailure<'a>,
+    event,
+    request_id,
+    connection_id,
+    fast_delivered,
+    deep_delivered,
+    terminal_emitted,
+    outcome,
+    first_local_denial,
+    sample_ordinal,
+    sample_limit,
+);
 
 #[derive(Clone, Copy)]
 pub(super) struct QueryDelivery {
@@ -945,13 +1023,13 @@ pub(super) enum OwnedWorkObservation<'a> {
     },
 }
 
-#[derive(Serialize)]
 struct OwnedTraceLocation {
     capture_id: String,
     span_id: u64,
 }
 
-#[derive(Serialize)]
+serialize_diagnostic_fields!(OwnedTraceLocation, capture_id, span_id,);
+
 struct OwnedExecutionRecord<'a> {
     dispatch_ordinal: u32,
     assignment_dispatches: u32,
@@ -960,7 +1038,15 @@ struct OwnedExecutionRecord<'a> {
     trace: Option<OwnedTraceLocation>,
 }
 
-#[derive(Serialize)]
+serialize_diagnostic_fields!(
+    OwnedExecutionRecord<'a>,
+    dispatch_ordinal,
+    assignment_dispatches,
+    assignment_deadline_ms,
+    claim,
+    trace,
+);
+
 struct OwnedWorkRefusal<'a> {
     event: &'static str,
     operation_key: OperationKey,
@@ -971,6 +1057,18 @@ struct OwnedWorkRefusal<'a> {
     sample_ordinal: usize,
     sample_limit: usize,
 }
+
+serialize_diagnostic_fields!(
+    OwnedWorkRefusal<'a>,
+    event,
+    operation_key,
+    budget_diagnostic,
+    execution,
+    phase,
+    outcome,
+    sample_ordinal,
+    sample_limit,
+);
 
 fn encode_owned(
     observation: OwnedWorkObservation<'_>,
@@ -1066,7 +1164,6 @@ fn record_owned_outcome_if_enabled(observation: OwnedWorkObservation<'_>, outcom
     let _written = std::io::stderr().lock().write_all(&line);
 }
 
-#[derive(Serialize)]
 struct OwnedRenewal {
     event: &'static str,
     operation_key: OperationKey,
@@ -1083,6 +1180,23 @@ struct OwnedRenewal {
     sample_limit: usize,
 }
 
+serialize_diagnostic_fields!(
+    OwnedRenewal,
+    event,
+    operation_key,
+    dispatch_ordinal,
+    claim_fence,
+    intent,
+    lease_ms,
+    interval_ms,
+    elapsed_ms,
+    phase,
+    outcome,
+    renewed_until_ms,
+    sample_ordinal,
+    sample_limit,
+);
+
 /// The sampled event borrows the original grant through the whole pump run.
 /// The fixed followup array stores only a pointer and this sample ordinal.
 #[derive(Clone, Copy)]
@@ -1091,7 +1205,6 @@ pub(super) struct OwnedRenewalToken<'a> {
     sample_ordinal: usize,
 }
 
-#[derive(Serialize)]
 struct OwnedRenewalFollowup {
     event: &'static str,
     operation_key: OperationKey,
@@ -1107,6 +1220,23 @@ struct OwnedRenewalFollowup {
     worker_quiesced: bool,
     finish_outcome: &'static str,
 }
+
+serialize_diagnostic_fields!(
+    OwnedRenewalFollowup,
+    event,
+    operation_key,
+    dispatch_ordinal,
+    claim_fence,
+    intent,
+    sample_ordinal,
+    sample_limit,
+    submit_outcome,
+    interrupted,
+    completion_error,
+    report,
+    worker_quiesced,
+    finish_outcome,
+);
 
 fn submit_outcome(result: &Result<SubmitOutcome, IndexError>) -> &'static str {
     match result {
@@ -1280,13 +1410,14 @@ impl DiscardFailureStage {
     }
 }
 
-#[derive(Serialize)]
 struct DiscardRefusal<'a> {
     event: &'static str,
     stage: &'static str,
     budget_diagnostic: &'a str,
     outcome: &'static str,
 }
+
+serialize_diagnostic_fields!(DiscardRefusal<'a>, event, stage, budget_diagnostic, outcome,);
 
 fn encode_discard(
     stage: DiscardFailureStage,
