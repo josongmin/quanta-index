@@ -459,6 +459,49 @@ fn assess(scenario: &LexicalScenario, result: &QueryResult) -> RowReport {
     }
 }
 
+fn assess_indexed_language_union(
+    client: &QuantaIndex,
+    pin: &GenerationPin,
+) -> AnyResult<[RowReport; 2]> {
+    let query = |languages: &[&str]| {
+        run_query_with_languages(
+            client,
+            pin,
+            TextQuerySyntax::Native,
+            "ALPHA_CONTENT_NEEDLE",
+            10,
+            languages,
+        )
+    };
+    let unique = query(&["rust", "python"])?;
+    let duplicate = query(&["rust", "python", "rust"])?;
+
+    // The language clause can affect ranking. Check exact membership for the
+    // union and require a duplicate input to preserve the observed rank order.
+    let has_expected_members = observed_corpus_ids(&unique).is_ok_and(|mut ids| {
+        ids.sort_unstable();
+        ids == ["alpha_content", "gamma_py_same"]
+    });
+    let unique_ids = candidate_ids(&unique);
+    let duplicate_ids = candidate_ids(&duplicate);
+    Ok([
+        RowReport {
+            id: "indexed_language_unique_or_set",
+            failure: (unique.typed_error.is_some() || !has_expected_members).then(|| {
+                format!("expected exactly alpha_content and gamma_py_same; got {unique:?}")
+            }),
+        },
+        RowReport {
+            id: "indexed_language_duplicate_or_set_preserves_membership",
+            failure: (duplicate.typed_error.is_some() || duplicate_ids != unique_ids).then(|| {
+                format!(
+                    "expected the same candidate IDs in order {unique_ids:?}; got {duplicate:?}"
+                )
+            }),
+        },
+    ])
+}
+
 #[test]
 fn lexical_full_fidelity_matrix() -> AnyResult<()> {
     let pin = pin()?;
@@ -510,18 +553,6 @@ fn lexical_full_fidelity_matrix() -> AnyResult<()> {
                 1,
                 &["gamma_py_same"][..],
             ),
-            (
-                "indexed_language_unique_or_set",
-                &["rust", "python"][..],
-                10,
-                &["alpha_content", "gamma_py_same"][..],
-            ),
-            (
-                "indexed_language_duplicate_or_set_preserves_membership",
-                &["rust", "python", "rust"][..],
-                10,
-                &["alpha_content", "gamma_py_same"][..],
-            ),
         ] {
             let scenario = LexicalScenario {
                 id,
@@ -538,6 +569,13 @@ fn lexical_full_fidelity_matrix() -> AnyResult<()> {
                 languages,
             )?;
             let report = assess(&scenario, &result);
+            if report.failure.is_some() {
+                failures.push(report);
+            } else {
+                green_count = green_count.saturating_add(1);
+            }
+        }
+        for report in assess_indexed_language_union(client, pin)? {
             if report.failure.is_some() {
                 failures.push(report);
             } else {
