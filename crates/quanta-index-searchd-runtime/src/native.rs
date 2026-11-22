@@ -1592,8 +1592,7 @@ pub(super) fn validate_automatic_reclaim(
 ///
 /// These are not allocated-block/free-space reserves, whole-process FD/RSS
 /// limits or measured directory/allocator envelopes. No defaults are inferred.
-#[derive(Clone, Copy, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy)]
 pub struct NativePhysicalProfile {
     pub inventory: PublicationBootInventoryLimits,
     pub max_reader_handles: u32,
@@ -1602,6 +1601,154 @@ pub struct NativePhysicalProfile {
     pub global_max_sqlite_handles: u32,
     pub maintenance_reserved_bytes: u64,
     pub maintenance_reserved_files: u32,
+}
+
+impl<'de> serde::Deserialize<'de> for NativePhysicalProfile {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
+
+        const FIELDS: &[&str] = &[
+            "inventory",
+            "max_reader_handles",
+            "max_tracked_entries",
+            "max_process_roots",
+            "global_max_sqlite_handles",
+            "maintenance_reserved_bytes",
+            "maintenance_reserved_files",
+        ];
+
+        struct Field;
+        impl<'de> DeserializeSeed<'de> for Field {
+            type Value = &'static str;
+
+            fn deserialize<D: serde::Deserializer<'de>>(
+                self,
+                decoder: D,
+            ) -> Result<Self::Value, D::Error> {
+                decoder.deserialize_identifier(self)
+            }
+        }
+
+        impl Visitor<'_> for Field {
+            type Value = &'static str;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("field identifier")
+            }
+
+            fn visit_str<E: de::Error>(self, field: &str) -> Result<Self::Value, E> {
+                FIELDS
+                    .iter()
+                    .copied()
+                    .find(|name| *name == field)
+                    .ok_or_else(|| E::unknown_field(field, FIELDS))
+            }
+
+            fn visit_bytes<E: de::Error>(self, field: &[u8]) -> Result<Self::Value, E> {
+                self.visit_str(&String::from_utf8_lossy(field))
+            }
+
+            fn visit_u64<E: de::Error>(self, index: u64) -> Result<Self::Value, E> {
+                usize::try_from(index)
+                    .ok()
+                    .and_then(|index| FIELDS.get(index).copied())
+                    .ok_or_else(|| {
+                        E::invalid_value(de::Unexpected::Unsigned(index), &"field index 0 <= i < 7")
+                    })
+            }
+        }
+
+        fn read_field<'de, M: MapAccess<'de>, T: serde::Deserialize<'de>>(
+            map: &mut M,
+            slot: &mut Option<T>,
+            field: &'static str,
+        ) -> Result<(), M::Error> {
+            if slot.is_some() {
+                return Err(de::Error::duplicate_field(field));
+            }
+            *slot = Some(map.next_value()?);
+            Ok(())
+        }
+
+        fn read_element<'de, S: SeqAccess<'de>, T: serde::Deserialize<'de>>(
+            sequence: &mut S,
+            index: usize,
+        ) -> Result<T, S::Error> {
+            sequence.next_element()?.ok_or_else(|| {
+                de::Error::invalid_length(index, &"struct NativePhysicalProfile with 7 elements")
+            })
+        }
+
+        struct Profile;
+        impl<'de> Visitor<'de> for Profile {
+            type Value = NativePhysicalProfile;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("struct NativePhysicalProfile")
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let (mut inventory, mut max_reader_handles, mut max_tracked_entries) =
+                    (None, None, None);
+                let (mut max_process_roots, mut global_max_sqlite_handles) = (None, None);
+                let (mut maintenance_reserved_bytes, mut maintenance_reserved_files) = (None, None);
+                while let Some(field) = map.next_key_seed(Field)? {
+                    match field {
+                        "inventory" => read_field(&mut map, &mut inventory, field)?,
+                        "max_reader_handles" => {
+                            read_field(&mut map, &mut max_reader_handles, field)?
+                        }
+                        "max_tracked_entries" => {
+                            read_field(&mut map, &mut max_tracked_entries, field)?
+                        }
+                        "max_process_roots" => read_field(&mut map, &mut max_process_roots, field)?,
+                        "global_max_sqlite_handles" => {
+                            read_field(&mut map, &mut global_max_sqlite_handles, field)?
+                        }
+                        "maintenance_reserved_bytes" => {
+                            read_field(&mut map, &mut maintenance_reserved_bytes, field)?
+                        }
+                        "maintenance_reserved_files" => {
+                            read_field(&mut map, &mut maintenance_reserved_files, field)?
+                        }
+                        _ => return Err(de::Error::unknown_field(field, FIELDS)),
+                    }
+                }
+                Ok(NativePhysicalProfile {
+                    inventory: inventory.ok_or_else(|| de::Error::missing_field("inventory"))?,
+                    max_reader_handles: max_reader_handles
+                        .ok_or_else(|| de::Error::missing_field("max_reader_handles"))?,
+                    max_tracked_entries: max_tracked_entries
+                        .ok_or_else(|| de::Error::missing_field("max_tracked_entries"))?,
+                    max_process_roots: max_process_roots
+                        .ok_or_else(|| de::Error::missing_field("max_process_roots"))?,
+                    global_max_sqlite_handles: global_max_sqlite_handles
+                        .ok_or_else(|| de::Error::missing_field("global_max_sqlite_handles"))?,
+                    maintenance_reserved_bytes: maintenance_reserved_bytes
+                        .ok_or_else(|| de::Error::missing_field("maintenance_reserved_bytes"))?,
+                    maintenance_reserved_files: maintenance_reserved_files
+                        .ok_or_else(|| de::Error::missing_field("maintenance_reserved_files"))?,
+                })
+            }
+
+            fn visit_seq<S: SeqAccess<'de>>(
+                self,
+                mut sequence: S,
+            ) -> Result<Self::Value, S::Error> {
+                Ok(NativePhysicalProfile {
+                    inventory: read_element(&mut sequence, 0)?,
+                    max_reader_handles: read_element(&mut sequence, 1)?,
+                    max_tracked_entries: read_element(&mut sequence, 2)?,
+                    max_process_roots: read_element(&mut sequence, 3)?,
+                    global_max_sqlite_handles: read_element(&mut sequence, 4)?,
+                    maintenance_reserved_bytes: read_element(&mut sequence, 5)?,
+                    maintenance_reserved_files: read_element(&mut sequence, 6)?,
+                })
+            }
+        }
+
+        decoder.deserialize_struct("NativePhysicalProfile", FIELDS, Profile)
+    }
 }
 
 impl NativePhysicalProfile {
@@ -1629,6 +1776,46 @@ impl NativePhysicalProfile {
     }
 }
 
+#[cfg(test)]
+mod native_physical_profile_tests {
+    use super::NativePhysicalProfile;
+
+    #[test]
+    fn physical_profile_decoder_requires_the_exact_limits() -> anyhow::Result<()> {
+        const INVENTORY: &str = r#"{"max_bytes":4096,"max_files":16,"max_pending":2,"max_entries":32,"max_depth":4,"max_pending_frames":8}"#;
+        let named = format!(
+            r#"{{"inventory":{INVENTORY},"max_reader_handles":2,"max_tracked_entries":40,"max_process_roots":3,"global_max_sqlite_handles":4,"maintenance_reserved_bytes":1024,"maintenance_reserved_files":5}}"#
+        );
+        let positional = format!("[{INVENTORY},2,40,3,4,1024,5]");
+        for input in [&named, &positional] {
+            let profile: NativePhysicalProfile = serde_json::from_str(input)?;
+            profile.validate()?;
+            assert_eq!(profile.inventory.max_bytes, 4096);
+            assert_eq!(profile.max_reader_handles, 2);
+            assert_eq!(profile.max_tracked_entries, 40);
+            assert_eq!(profile.max_process_roots, 3);
+            assert_eq!(profile.global_max_sqlite_handles, 4);
+            assert_eq!(profile.maintenance_reserved_bytes, 1024);
+            assert_eq!(profile.maintenance_reserved_files, 5);
+        }
+        for input in [
+            named.replace(",\"maintenance_reserved_files\":5", ""),
+            named.replace(
+                "\"max_reader_handles\":2",
+                "\"max_reader_handles\":2,\"max_reader_handles\":2",
+            ),
+            named.replace("\"max_process_roots\":3", "\"unknown\":3"),
+            format!("[{INVENTORY},2,40,3,4,1024]"),
+            format!("[{INVENTORY},2,40,3,4,1024,5,6]"),
+        ] {
+            assert!(
+                serde_json::from_str::<NativePhysicalProfile>(&input).is_err(),
+                "{input}"
+            );
+        }
+        Ok(())
+    }
+}
 /// Explicit per-service physical, scratch, read-ticket, and execution limits.
 #[derive(Clone, Copy)]
 pub struct NativeServiceResources {
