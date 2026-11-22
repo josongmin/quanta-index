@@ -182,8 +182,8 @@ disk refresh의 두 구간 계측을 readiness의 실제 사용처로 옮겼다.
 
 ## Lexical
 
-- [ ] **04.3** 엔진 독립 DATA Boot 4/4와 F15의 실제 통과 범위는 아래 원 결과에 귀속한다. 남은 F15 Native symlink 유지 본문은 원 selector로 수용한다. 퇴역한 직접 adapter의 scrub oracle는 Native PASS로 계산하지 않는다. [DATA Boot](../../../../crates/quanta-index-lexical/tests/boot_inventory_data.rs) · [F15](../../../../crates/quanta-index-lexical/tests/f15_file_authority.rs)
-- [ ] **04.4** 삭제 원 ID 91개 중 adapter 전용 1개는 퇴역했다. 공개·DATA 유지 이관 90개의 현행 실행을 인수한다. 이전 동결본의 실제 본문과 연결된 10개는 소스 변경 이후 재확인한다. [이관 원장](../../../../tools/ci/inventory/lexical-test-disposition.toml)
+- [ ] **04.3** DATA Boot, 고정 old-Q F15, Native FileBody·G1의 구현과 독립 단언을 반영했다. 동결 Q `c41c48bdb072`에서 **5/5, 3/3, 8/8 PASS**를 각각 확인했다. 최종 후보에서 필요한 회귀와 Linux 전용 분기의 수집은 **NOT_RUN**이다. [DATA Boot](../../../../crates/quanta-index-lexical/tests/boot_inventory_data.rs) · [Native FileBody](../../../../crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/file_body_quarantine.rs)
+- [ ] **04.4** 삭제 원 ID 91개 중 adapter 전용 1개를 퇴역하고, 공개·DATA 유지 이관 90개를 연결했다. 별도로 원본 유지 `sealed_commitment_cost` 두 실명을 고정 old-Q와 함께 수집한다. 최종 128개 로스터의 적격 실행 증거를 기존 Root 큐에서 인수한다. [이관 원장](../../../../tools/ci/inventory/lexical-test-disposition.toml) · [최종 후보 수집](#최종-후보-수집-순서)
 
 이하 11월 21일의 직접 adapter 실패·수리 기록은 **퇴역 전 이력**이다. 현행 DATA/Native 결과와 별도 수용 조건은 각 후속 절에 기록한다.
 
@@ -255,13 +255,27 @@ NoFeatures의 현행 객체 I/O는 `ENOENT`·`ENOTDIR`·`ELOOP`와 native pin/pa
 
 과거 catalog capture-format 선택 Nextest `cf8f1f5f-83c9-4c8b-a2a6-0b3981a747db`의 **FAILED · 13 PASS, 1 FAIL · exit 100**도 당시 소스에만 귀속한다. 현행 정책은 현재 포맷의 완료 stamp를 body incident와 함께 pending으로 선커밋하고, fan-out 완료 트랜잭션에서 완료 stamp로 되돌린다. boot는 listener 개설 전에 pending incident를 검증하고 모든 sibling receipt를 완성한다. 이 정책과 이전 namespace의 typed 거절은 별도 계약이며, 현행 Catalog 8개 집중 회귀를 새로 실행하기 전에는 PASS로 판정하지 않는다.
 
-따라서 Native 04.3의 정적 구현 누락은 해소했다. 변조·누락·symlink 각각에 공개 조회→scrub→재시작 본문이 있고, 공유 객체의 첫 receipt 실패 전에 body incident를 선커밋한 뒤 무재시도 재시작 복구하는 본문도 고정했다. 검증 상태는 현행 Rust **NOT_RUN**이며, 위 Legacy 3-fault 본문과 NoFeatures 변조·누락 3/3은 독립 회귀로 유지한다.
+Native 04.3은 변조·누락·symlink의 공개 조회→scrub→재시작과 첫 receipt 실패 뒤 무재시도 boot 복구를 검증한다. 이 본문을 포함한 Native FileBody 7건과 G1 1건은 `c41c48bdb072`에서 **8/8 PASS**했다. 최종 Linux 출하 수집과 고정 old-Q F15는 각각의 입력으로 판정한다. [Native 원로그](</Volumes/Extreme SSD 1/build-cache/qidx-main-f15-verify.4EKoLeVM/native-nextest.log:105>)
+
+Q `6f4744e51`의 04.4 출하 로스터에는 FileBody 변조·symlink 및 DATA Boot 2건이 등록돼 있다. FileBody 누락(`selected_file_body_missing_is_quarantined_across_restart`)과 보유 G1(`excluded_binary_and_utf8_source_stay_path_only_through_update_noop_delete_and_reopen`), 고정 old-Q `f15_file_authority`는 04.3의 기존 exact 실행 결과에 귀속한다. 04.4 수집의 성공만으로 이 선택들의 최종 후보 검증을 닫을 수 없다. [파일 격리 본문](../../../../crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/file_body_quarantine.rs#L94) · [G1 본문](../../../../crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/excluded_text.rs#L218)
 
 현행 F15 source를 다시 빌드한 NoFeatures test executable은 세 정확한 ID만 포함한다. 환경 핀 없는 정식 recipe는 Nextest `9b3c7301-df9d-40de-ba43-23997e249ab5`에서 `QUANTA_INDEX_LEGACY_SEARCHD_BIN` 부재로 **FAILED · 0/3 · exit 100**이었다. 고정 실물의 SHA-256 `c013632a9770a5b1966b7d25896866946993476d7f7797957347b1554c4ebcd7`을 재확인해 핀을 명시한 재접수는 admission 300초 초과로 **BLOCKED · 본문 0**이었다. 같은 현행 executable의 첫 직접 실행은 내부 볼륨의 약 100 MiB 잔여에서 세 fixture 모두 첫 생성 중 `ENOSPC`로 **FAILED · 0/3 · exit 101**이었다. 다른 오너 데이터를 삭제하지 않고 target GC 뒤 약 18 GiB가 회복된 상태에서 같은 executable과 같은 old-Q SHA로 재실행해 **VERIFIED · 3/3 PASS · exit 0 · 24.78초**를 확인했다. 이 최종 결과가 현행 F15 바이트의 freshness 판정이다.
 
 공용 잠금 확보 후 `just rust-test-f15-no-default test-integration-lane`으로 현행 Cargo 소스를 새로 빌드했다. 고정 macOS old-Q `c013632a…4ebcd7`를 사용한 Nextest `b7796350-6dbf-4191-b3d4-bf325788eb27`에서 혼합 DELTA, 비텍스트 Source, FileBody 변조·누락 재시작 본문이 **3/3 PASS · exit 0**이었다. 레시피의 정확한 세 test ID 검증도 통과했다. [레시피](../../../../Justfile#L323)
 
 ### 04.4 ID별 유지·퇴역 판정
+
+#### 최종 후보 수집 순서
+
+**유지 행의 로컬 증거 검사.** 작업 트리 원장에서 `retain/VERIFIED`를 검사할 때도 커밋된 Q 소스·CircleCI 승인 old-Q·x86-64 Linux·보존 실행 파일을 확인한다. 로컬 원장의 관측은 출하 합류 전에 검사할 수 있다. 이관 원장 두 파일을 제외한 동결 소스 트리가 현행 HEAD와 다르거나 유지 테스트 파일이 미커밋 변경됐으면 거절한다. old-Q 없는 PASS와 Darwin PASS가 수정 전 로컬 검사에서 각각 exit 0을 반환했고, 수정 후 두 입력을 거절한다. 기존 커밋 기준 출하 검사는 두 입력을 거절했다. [유지 증거 검사](../../../../tools/ci/lint/check-lexical-test-disposition.py#L287) · [로컬·커밋 회귀](../../../../tools/ci/tests/test_lexical_test_disposition.py#L930)
+
+**로컬 소스 대조와 관측 해시.** 유지 증거는 하나의 HEAD에 고정하며, 대조를 통과한 테스트 바이트로 원장 관측의 소스 SHA를 확인한다. 대조 직후 파일을 치환하고 치환본 해시를 원장에 넣거나, 검사 중 제품 입력을 커밋해 HEAD를 전진시키면 수정 전에는 로컬 검사 exit 0이 재현됐다. 수정 후에는 각각 `observation source changed`와 `HEAD changed during retained proof verification`으로 거절한다. 명시적 `--revision`은 지정한 커밋에 귀속한다. [검사 경로](../../../../tools/ci/lint/check-lexical-test-disposition.py#L292) · [회귀](../../../../tools/ci/tests/test_lexical_test_disposition.py#L1117)
+
+**검사 종료 시 로컬 소스 재대조.** 소스 대조 직후 테스트 파일을 바꾸고 관측값에 원본 SHA를 유지한 경우에도 로컬 검사가 exit 0을 반환했다. Q `b1560f156`의 검사기는 성공을 반환하기 전에 유지 테스트 파일의 바이트를 다시 읽고 처음 대조한 내용과 다르면 `retained test source changed during proof verification`으로 거절한다. `--revision` 경로는 고정된 커밋을 검사한다. Lexical·Runtime 이관 및 퇴역 Python **263/263 · exit 0**, `just rust-test-authority`는 **exit 0**이다. [종료 검사](../../../../tools/ci/lint/check-lexical-test-disposition.py#L388) · [치환 회귀](../../../../tools/ci/tests/test_lexical_test_disposition.py#L1134)
+
+**11월 22일 수집 사전 확인.** Q `b1560f156`의 `retirement_nextest --list-roster`에서 **128개·17타깃·9패키지**와 `sealed_commitment_cost` 두 실명을 확인했다. 기존 Docker 볼륨 `qidx-published-linux-20261114`를 읽기 전용으로 연결해 x86-64 Linux old-Q ELF의 승인 SHA-256 `ce64d9f6ae5698edbb79e6c97d619a0fdd6e2c278163d2a07f152bd51c2da8ec`를 다시 대조했다. 남은 입장 조건은 오너 변경을 합류한 최종 clean Q와 기존 Root x86-64 Linux 실행권이다. 정식 본문은 **NOT_RUN**이다. [수집 입장](../../../../tools/ci/retirement_nextest.py#L273) · [old-Q 승인 핀](../../../../.circleci/config.yml#L148)
+
+고정 old-Q 유지 실명은 `file_admission_counts_verified_changed_sources_separately`와 `a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files`다. 기존 Root 큐에서 최종 clean Q와 그 커밋의 CircleCI 승인 old-Q를 고정하고, `quanta-index-lexical --test sealed_commitment_cost`의 두 exact event를 x86-64 Linux에서 수집한다. 두 PASS와 동일 수집 ID의 source manifest·inventory·events SHA, 테스트 소스 SHA를 유지 행의 `observations`에 넣는다. 수집기는 테스트 및 보조 실행 파일과 실제 실행한 old-Q 사본의 해시를 함께 보존한다. 최종 후보 결과는 **0/2 NOT_RUN**이다. [유지 원장](../../../../tools/ci/inventory/lexical-test-disposition.toml#L15) · [승인 SHA](../../../../.circleci/config.yml#L148) · [증거 검사](../../../../tools/ci/retirement_nextest.py#L195)
 
 **봉인 유지 계약 재감사.** `just rust-test-authority`와 Native 3개·Semantic 기존 5개의 exact Nextest 타깃·모듈 대조를 통과했다. 이 8개의 동일 동결 후보에서 Rust 본문은 **NOT_RUN**이다.
 
