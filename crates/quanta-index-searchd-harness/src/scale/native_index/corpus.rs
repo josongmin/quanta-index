@@ -35,7 +35,6 @@ use quanta_index_semantic::native::{
     EmbeddingInputPolicy, EmbeddingRecipe, Utf8ChunkPolicy, VectorNormalization,
     validate_semantic_recipe_instance,
 };
-use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
@@ -420,19 +419,24 @@ pub struct NativeCorpusInput<'a> {
     pub text_layout: NativeCorpusTextLayout,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Manifest {
     repository_commit: String,
     files: Vec<ManifestFile>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ManifestFile {
     path: String,
     file_sha256: String,
 }
+
+quanta_index_contract::native_serde_struct!(Manifest {
+    repository_commit: String,
+    files: Vec<ManifestFile>,
+});
+quanta_index_contract::native_serde_struct!(ManifestFile {
+    path: String,
+    file_sha256: String,
+});
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -1442,6 +1446,25 @@ fn measure_native_corpus_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corpus_manifest_preserves_closed_fields() -> Result<()> {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"repository_commit":"rev","files":[{"path":"a.rs","file_sha256":"digest"}]}"#,
+        )?;
+        assert_eq!(manifest.repository_commit, "rev");
+        assert_eq!(manifest.files[0].path, "a.rs");
+        assert_eq!(manifest.files[0].file_sha256, "digest");
+        for input in [
+            r#"{"repository_commit":"rev","files":[],"unknown":true}"#,
+            r#"{"repository_commit":"rev","files":[],"files":[]}"#,
+            r#"{"repository_commit":"rev","files":[{"path":"a.rs","file_sha256":"d","extra":0}]}"#,
+            r#"{"repository_commit":"rev","files":[{"path":"a.rs"}]}"#,
+        ] {
+            assert!(serde_json::from_str::<Manifest>(input).is_err(), "{input}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn text_layout_selectors_bind_distinct_policy_and_format() {

@@ -19,7 +19,7 @@ use quanta_index_ipc::{
 };
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
 use quanta_index_searchd::{SearchdCommand, cli::NativeCommandModeV1};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de};
 use serde_json::{Value, json};
 
 use super::{Args, required, runner_binary_digest};
@@ -163,10 +163,70 @@ fn bound_command(raw: &[u8], config: &Path, digest: &str) -> BenchResult<(String
     Ok((mode.to_owned(), boot_identity))
 }
 
-#[derive(Deserialize)]
 struct SocketConfig {
     socket_path: PathBuf,
     state_root: PathBuf,
+}
+
+impl<'de> Deserialize<'de> for SocketConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &["socket_path", "state_root"];
+
+        struct SocketConfigVisitor;
+
+        impl<'de> de::Visitor<'de> for SocketConfigVisitor {
+            type Value = SocketConfig;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct SocketConfig")
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<SocketConfig, A::Error> {
+                let mut socket_path = None;
+                let mut state_root = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    let (field, slot) = match key.as_str() {
+                        "socket_path" => ("socket_path", &mut socket_path),
+                        "state_root" => ("state_root", &mut state_root),
+                        _ => {
+                            let _ignored = map.next_value::<de::IgnoredAny>()?;
+                            continue;
+                        }
+                    };
+                    if slot.is_some() {
+                        return Err(de::Error::duplicate_field(field));
+                    }
+                    *slot = Some(map.next_value()?);
+                }
+                Ok(SocketConfig {
+                    socket_path: socket_path
+                        .ok_or_else(|| de::Error::missing_field("socket_path"))?,
+                    state_root: state_root.ok_or_else(|| de::Error::missing_field("state_root"))?,
+                })
+            }
+
+            fn visit_seq<A: de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<SocketConfig, A::Error> {
+                let socket_path = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let state_root = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                Ok(SocketConfig {
+                    socket_path,
+                    state_root,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct("SocketConfig", FIELDS, SocketConfigVisitor)
+    }
 }
 
 pub(super) struct RuntimeCapture {
@@ -310,6 +370,29 @@ impl RuntimeCapture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn socket_config_allows_settings_but_rejects_duplicate_bindings() {
+        for input in [
+            r#"{"state_root":"/state","socket_path":"/sock","semantic":{"scopes":[]}}"#,
+            r#"["/sock","/state"]"#,
+        ] {
+            let config: SocketConfig = serde_json::from_str(input).expect("socket bindings");
+            assert_eq!(config.socket_path, Path::new("/sock"));
+            assert_eq!(config.state_root, Path::new("/state"));
+        }
+        for input in [
+            r#"{"socket_path":"/sock","socket_path":"/foreign","state_root":"/state"}"#,
+            r#"{"state_root":"/state"}"#,
+            r#"{"socket_path":null,"state_root":"/state"}"#,
+            r#"["/sock","/state","/extra"]"#,
+        ] {
+            assert!(
+                serde_json::from_str::<SocketConfig>(input).is_err(),
+                "{input}"
+            );
+        }
+    }
 
     #[test]
     fn execution_inputs_reject_special_files_and_enforce_byte_bounds() {
