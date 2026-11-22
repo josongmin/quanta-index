@@ -5,6 +5,60 @@
 /// `String` for every known field. Unknown keys retain Serde's field error.
 pub struct ClosedFieldKeySeedV1(pub &'static [&'static str]);
 
+struct KeyVisitor {
+    fields: &'static [&'static str],
+    allow_identifier_bytes: bool,
+}
+
+impl serde::de::Visitor<'_> for KeyVisitor {
+    type Value = &'static str;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a known record field")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        self.fields
+            .iter()
+            .copied()
+            .find(|field| *field == value)
+            .ok_or_else(|| E::unknown_field(value, self.fields))
+    }
+
+    fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+        if self.allow_identifier_bytes {
+            let name = std::str::from_utf8(value)
+                .map_err(|_| E::invalid_value(serde::de::Unexpected::Bytes(value), &self))?;
+            self.visit_str(name)
+        } else {
+            Err(E::invalid_type(serde::de::Unexpected::Bytes(value), &self))
+        }
+    }
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for KeyVisitor {
+    type Value = &'static str;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_identifier(self)
+    }
+}
+
+impl ClosedFieldKeySeedV1 {
+    /// Preserve matching UTF-8 byte identifiers accepted by Serde-derived DTOs.
+    pub fn serde_identifier(
+        self,
+    ) -> impl for<'de> serde::de::DeserializeSeed<'de, Value = &'static str> {
+        KeyVisitor {
+            fields: self.0,
+            allow_identifier_bytes: true,
+        }
+    }
+}
+
 impl<'de> serde::de::DeserializeSeed<'de> for ClosedFieldKeySeedV1 {
     type Value = &'static str;
 
@@ -12,44 +66,20 @@ impl<'de> serde::de::DeserializeSeed<'de> for ClosedFieldKeySeedV1 {
         self,
         deserializer: D,
     ) -> Result<Self::Value, D::Error> {
-        struct KeyVisitor(&'static [&'static str]);
-
-        impl serde::de::Visitor<'_> for KeyVisitor {
-            type Value = &'static str;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a known record field")
-            }
-
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                self.0
-                    .iter()
-                    .copied()
-                    .find(|field| *field == value)
-                    .ok_or_else(|| E::unknown_field(value, self.0))
-            }
-
-            fn visit_borrowed_str<E: serde::de::Error>(
-                self,
-                value: &'_ str,
-            ) -> Result<Self::Value, E> {
-                self.visit_str(value)
-            }
-
-            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
-                self.visit_str(&value)
-            }
-        }
-
-        deserializer.deserialize_identifier(KeyVisitor(self.0))
+        deserializer.deserialize_identifier(KeyVisitor {
+            fields: self.0,
+            allow_identifier_bytes: false,
+        })
     }
 }
 
-/// Implement a closed record codec. All fields, including nullable fields,
-/// must be present; duplicate, unknown and excess sequence fields are refused.
+/// Implement a closed record codec. Fields are required by default, including
+/// nullable fields. An explicit `= default` allows omission in a named map.
+/// Positional records always require every field in declaration order.
+/// `[serde_identifier]` preserves byte-string keys accepted by Serde derives.
 #[macro_export]
 macro_rules! native_serde_struct {
-    ($name:ident { $($field:ident : $ty:ty),+ $(,)? }) => {
+    ($( [$identifier:ident] )? $name:ident { $($field:ident : $ty:ty $(= $map_default:ident)?),+ $(,)? }) => {
         impl serde::Serialize for $name {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 const FIELDS: &[&str] = &[$(stringify!($field)),+];
@@ -69,7 +99,7 @@ macro_rules! native_serde_struct {
                     }
                     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
                         $(let mut $field: Option<$ty> = None;)+
-                        while let Some(key) = map.next_key_seed($crate::ClosedFieldKeySeedV1(FIELDS))? {
+                        while let Some(key) = map.next_key_seed($crate::native_serde_struct!(@key_seed FIELDS $(, $identifier)?))? {
                             match key {
                                 $(stringify!($field) => {
                                     if $field.is_some() {
@@ -80,7 +110,7 @@ macro_rules! native_serde_struct {
                                 _ => unreachable!("closed field seed only returns schema keys"),
                             }
                         }
-                        Ok($name { $($field: $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?,)+ })
+                        Ok($name { $($field: $crate::native_serde_struct!(@map_value $field $(= $map_default)?),)+ })
                     }
                     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
                         $(let $field = seq.next_element::<$ty>()?
@@ -94,6 +124,18 @@ macro_rules! native_serde_struct {
                 deserializer.deserialize_struct(stringify!($name), FIELDS, WireVisitor)
             }
         }
+    };
+    (@map_value $field:ident) => {
+        $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
+    (@map_value $field:ident = default) => {
+        $field.unwrap_or_default()
+    };
+    (@key_seed $fields:ident) => {
+        $crate::ClosedFieldKeySeedV1($fields)
+    };
+    (@key_seed $fields:ident, serde_identifier) => {
+        $crate::ClosedFieldKeySeedV1($fields).serde_identifier()
     };
 }
 
@@ -195,9 +237,10 @@ macro_rules! native_serde_newtype {
 
 /// Closed externally tagged enum. Explicit indices preserve the original
 /// declaration order independently of the three variant-shape groups.
+/// `[serde_identifier]` preserves byte-string variant and record names.
 #[macro_export]
 macro_rules! native_serde_enum {
-    ($name:ident {
+    ($( [$identifier:ident] )? $name:ident {
         units { $($unit:ident = $unit_index:literal),* $(,)? }
         newtypes { $($newtype:ident = $newtype_index:literal => $inner:ty),* $(,)? }
         records { $($record:ident = $record_index:literal { $($field:ident : $ty:ty),+ $(,)? }),* $(,)? }
@@ -219,6 +262,9 @@ macro_rules! native_serde_enum {
         impl<'de> serde::Deserialize<'de> for $name {
             fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
                 const VARIANTS: &[&str] = &[$(stringify!($unit),)* $(stringify!($newtype),)* $(stringify!($record),)*];
+                fn key_seed(fields: &'static [&'static str]) -> impl for<'wire> serde::de::DeserializeSeed<'wire, Value = &'static str> {
+                    $crate::native_serde_struct!(@key_seed fields $(, $identifier)?)
+                }
                 struct WireVisitor;
                 impl<'de> serde::de::Visitor<'de> for WireVisitor {
                     type Value = $name;
@@ -226,7 +272,7 @@ macro_rules! native_serde_enum {
                         formatter.write_str(concat!("a closed ", stringify!($name), " variant"))
                     }
                     fn visit_enum<A: serde::de::EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
-                        let (name, variant) = serde::de::EnumAccess::variant_seed(data, $crate::ClosedFieldKeySeedV1(VARIANTS))?;
+                        let (name, variant) = serde::de::EnumAccess::variant_seed(data, key_seed(VARIANTS))?;
                         match name {
                             $(stringify!($unit) => {
                                 serde::de::VariantAccess::unit_variant(variant)?;
@@ -243,7 +289,7 @@ macro_rules! native_serde_enum {
                                     }
                                     fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
                                         $(let mut $field: Option<$ty> = None;)+
-                                        while let Some(key) = map.next_key_seed($crate::ClosedFieldKeySeedV1(FIELDS))? {
+                                        while let Some(key) = map.next_key_seed(key_seed(FIELDS))? {
                                             match key {
                                                 $(stringify!($field) => {
                                                     if $field.is_some() {
@@ -287,6 +333,16 @@ mod tests {
     native_serde_struct!(ClosedRecord { count: u64, optional: Option<u64> });
 
     #[derive(Debug, Eq, PartialEq)]
+    struct MapDefaultRecord {
+        count: u64,
+        optional: Option<u64>,
+    }
+    native_serde_struct!([serde_identifier] MapDefaultRecord {
+        count: u64,
+        optional: Option<u64> = default,
+    });
+
+    #[derive(Debug, Eq, PartialEq)]
     struct Bytes([u8; 2]);
     native_serde_newtype!(Bytes, [u8; 2]);
 
@@ -300,6 +356,16 @@ mod tests {
         units { Unit = 0 }
         newtypes { Payload = 1 => Bytes }
         records { Record = 2 { count: u64, optional: Option<u64> } }
+    });
+
+    #[derive(Debug, Eq, PartialEq)]
+    enum CompatibleChoice {
+        Record { count: u64 },
+    }
+    native_serde_enum!([serde_identifier] CompatibleChoice {
+        units {}
+        newtypes {}
+        records { Record = 0 { count: u64 } }
     });
 
     #[test]
@@ -337,6 +403,62 @@ mod tests {
         for bad in ["[7]", "[7,null,0]"] {
             assert!(serde_json::from_str::<ClosedRecord>(bad).is_err());
         }
+    }
+
+    #[test]
+    fn map_default_preserves_omission_without_accepting_incomplete_sequences() {
+        let expected = MapDefaultRecord {
+            count: 7,
+            optional: None,
+        };
+        for input in [
+            r#"{"count":7}"#,
+            r#"{"count":7,"optional":null}"#,
+            "[7,null]",
+        ] {
+            assert_eq!(
+                serde_json::from_str::<MapDefaultRecord>(input).expect("decode"),
+                expected
+            );
+        }
+        assert_eq!(
+            serde_json::to_string(&expected).expect("encode"),
+            r#"{"count":7,"optional":null}"#,
+        );
+        for input in [
+            "{}",
+            "[7]",
+            "[7,null,0]",
+            r#"{"count":7,"optional":null,"optional":null}"#,
+            r#"{"count":7,"extra":null}"#,
+        ] {
+            assert!(serde_json::from_str::<MapDefaultRecord>(input).is_err());
+        }
+        let cbor = b"\xa1\x65count\x07";
+        assert_eq!(
+            ciborium::from_reader::<MapDefaultRecord, _>(&cbor[..]).expect("decode named CBOR"),
+            expected
+        );
+    }
+
+    #[test]
+    fn serde_identifiers_accept_known_byte_names_without_loosening_strict_records() {
+        let record = b"\xa2\x45count\x07\x48optional\xf6";
+        assert_eq!(
+            ciborium::from_reader::<MapDefaultRecord, _>(&record[..]).expect("decode byte keys"),
+            MapDefaultRecord {
+                count: 7,
+                optional: None
+            },
+        );
+        assert!(ciborium::from_reader::<ClosedRecord, _>(&record[..]).is_err());
+        let duplicate = b"\xa2\x45count\x07\x65count\x08";
+        assert!(ciborium::from_reader::<MapDefaultRecord, _>(&duplicate[..]).is_err());
+        let variant = b"\xa1\x46Record\xa1\x45count\x07";
+        assert_eq!(
+            ciborium::from_reader::<CompatibleChoice, _>(&variant[..]).expect("decode byte names"),
+            CompatibleChoice::Record { count: 7 },
+        );
     }
 
     #[test]

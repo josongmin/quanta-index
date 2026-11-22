@@ -19,12 +19,15 @@ pub const NATIVE_DSL_PRODUCER_V1: ProducerId = ProducerId(*b"native-dsl-v1\0\0\0
 pub const NATIVE_DSL_SCHEMA_V1: SchemaId = SchemaId(*b"native-dsl-v1\0\0\0");
 pub const NATIVE_DSL_POLICY_V1: Digest = Digest(*b"native-dsl-projection-policy-v1\0");
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDslScopeV1 {
     pub repository: RepoId,
     pub revision: RevisionId,
 }
+crate::native_serde_struct!([serde_identifier] NativeDslScopeV1 {
+    repository: RepoId,
+    revision: RevisionId,
+});
 
 impl NativeDslScopeV1 {
     pub fn for_pin(pin: &GenerationPin) -> Self {
@@ -75,11 +78,16 @@ impl NativeDslScopeV1 {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeDslKindV1 {
     Structural,
     RuntimeMetadata,
 }
+crate::native_serde_enum!([serde_identifier] NativeDslKindV1 {
+    units { Structural = 0, RuntimeMetadata = 1 }
+    newtypes {}
+    records {}
+});
 
 impl NativeDslKindV1 {
     fn tag(self) -> [u8; 1] {
@@ -128,8 +136,7 @@ pub fn native_dsl_sequence_v1(context: Digest) -> u64 {
 
 /// Match a replay against the request's exact input base, or against the
 /// authenticated Source on which an installed producer froze its facts.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeDslReplayBasisV1 {
     Exact {
         view: ViewRef,
@@ -143,15 +150,28 @@ pub enum NativeDslReplayBasisV1 {
         serving_event_sequence: u64,
     },
 }
+crate::native_serde_enum!([serde_identifier] NativeDslReplayBasisV1 {
+    units {}
+    newtypes { Source = 1 => SourceCut }
+    records {
+        Exact = 0 { view: ViewRef, event_predecessor: u64 },
+        SourceWithServingSequence = 2 { source: SourceCut, serving_event_sequence: u64 },
+    }
+});
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeDslReplayV1 {
     pub operation: OperationKey,
     pub projection: ProjectionId,
     pub basis: NativeDslReplayBasisV1,
     pub authority: Digest,
 }
+crate::native_serde_struct!([serde_identifier] NativeDslReplayV1 {
+    operation: OperationKey,
+    projection: ProjectionId,
+    basis: NativeDslReplayBasisV1,
+    authority: Digest,
+});
 
 fn truncated_digest(hash: Sha256) -> [u8; 16] {
     let digest = hash.finalize();
@@ -162,24 +182,30 @@ fn truncated_digest(hash: Sha256) -> [u8; 16] {
 
 /// One complete file contribution. Trees name chunks in this same file.
 /// The projection envelope owns the corresponding Source record reference.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDslFileV1 {
     pub chunks: Vec<ChunkRecord>,
     pub trees: Vec<StructuralTreeRecord>,
 }
+crate::native_serde_struct!([serde_identifier] NativeDslFileV1 {
+    chunks: Vec<ChunkRecord>,
+    trees: Vec<StructuralTreeRecord>,
+});
 
 /// The complete chunk projection's independent Structural readiness.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDslCorpusV1 {
     pub pin: GenerationPin,
     pub source_producer: ProducerId,
     pub structural_ready: bool,
 }
+crate::native_serde_struct!([serde_identifier] NativeDslCorpusV1 {
+    pin: GenerationPin,
+    source_producer: ProducerId,
+    structural_ready: bool,
+});
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDslRuntimeCatalogV1 {
     /// Exact chunk universe that owns every document named by this catalog.
     pub corpus_certificate: ObjectRef,
@@ -187,24 +213,39 @@ pub struct NativeDslRuntimeCatalogV1 {
     pub dirty: Vec<DirtyRecord>,
     pub catalog: RuntimeCatalogIngestBatch,
 }
+crate::native_serde_struct!([serde_identifier] NativeDslRuntimeCatalogV1 {
+    corpus_certificate: ObjectRef,
+    dirty: Vec<DirtyRecord>,
+    catalog: RuntimeCatalogIngestBatch,
+});
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDslCursorV1 {
     pub view: ViewRef,
     pub projection: ObjectRef,
     pub query: Digest,
     pub candidate_id: String,
 }
+crate::native_serde_struct!([serde_identifier] NativeDslCursorV1 {
+    view: ViewRef,
+    projection: ObjectRef,
+    query: Digest,
+    candidate_id: String,
+});
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDslQueryV1 {
     pub scope: NativeDslScopeV1,
     pub kind: NativeDslKindV1,
     pub text: TextQueryRequest,
     pub after: Option<NativeDslCursorV1>,
 }
+crate::native_serde_struct!([serde_identifier] NativeDslQueryV1 {
+    scope: NativeDslScopeV1,
+    kind: NativeDslKindV1,
+    text: TextQueryRequest,
+    after: Option<NativeDslCursorV1> = default,
+});
 
 impl NativeDslQueryV1 {
     pub fn digest(&self) -> Result<Digest, &'static str> {
@@ -238,8 +279,7 @@ impl NativeDslQueryV1 {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDslRuntimeHitV1 {
     pub candidate_id: String,
     pub source_repo_id: RepoId,
@@ -248,9 +288,16 @@ pub struct NativeDslRuntimeHitV1 {
     pub end_line: u32,
     pub snippet: String,
 }
+crate::native_serde_struct!([serde_identifier] NativeDslRuntimeHitV1 {
+    candidate_id: String,
+    source_repo_id: RepoId,
+    path: RepoRelativePath,
+    start_line: u32,
+    end_line: u32,
+    snippet: String,
+});
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDslStructuralHitV1 {
     pub candidate: StructuralCandidate,
     pub match_range: NativeDslMatchRangeV1,
@@ -259,22 +306,43 @@ pub struct NativeDslStructuralHitV1 {
     pub pattern_kind: Option<String>,
     pub matched_node: Option<String>,
 }
+crate::native_serde_struct!([serde_identifier] NativeDslStructuralHitV1 {
+    candidate: StructuralCandidate,
+    match_range: NativeDslMatchRangeV1,
+    source_repo_id: RepoId,
+    path: RepoRelativePath,
+    pattern_kind: Option<String> = default,
+    matched_node: Option<String> = default,
+});
 
 /// Byte offsets are file-relative and end-exclusive. Lines are one-based.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeDslMatchRangeV1 {
     pub byte_start: u32,
     pub byte_end: u32,
     pub line_start: u32,
     pub line_end: u32,
 }
+crate::native_serde_struct!([serde_identifier] NativeDslMatchRangeV1 {
+    byte_start: u32,
+    byte_end: u32,
+    line_start: u32,
+    line_end: u32,
+});
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeDslRowsV1 {
     Structural(Vec<NativeDslStructuralHitV1>),
     RuntimeMetadata(Vec<NativeDslRuntimeHitV1>),
 }
+crate::native_serde_enum!([serde_identifier] NativeDslRowsV1 {
+    units {}
+    newtypes {
+        Structural = 0 => Vec<NativeDslStructuralHitV1>,
+        RuntimeMetadata = 1 => Vec<NativeDslRuntimeHitV1>,
+    }
+    records {}
+});
 
 impl NativeDslRowsV1 {
     pub fn kind(&self) -> NativeDslKindV1 {
@@ -296,8 +364,7 @@ impl NativeDslRowsV1 {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDslPageV1 {
     pub session: NativeReadSessionId,
     pub view: ViewRef,
@@ -307,3 +374,12 @@ pub struct NativeDslPageV1 {
     pub window: QueryResultWindowV1,
     pub after: Option<NativeDslCursorV1>,
 }
+crate::native_serde_struct!([serde_identifier] NativeDslPageV1 {
+    session: NativeReadSessionId,
+    view: ViewRef,
+    projection: ObjectRef,
+    query: Digest,
+    rows: NativeDslRowsV1,
+    window: QueryResultWindowV1,
+    after: Option<NativeDslCursorV1> = default,
+});

@@ -12,12 +12,54 @@ use crate::{
 use super::SearchExplanation;
 
 /// Whether raw failure text contains zero, one, or multiple parsed source-frame hints.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GoTestTraceFrameClassV1 {
     Unresolved,
     Exact,
     Ambiguous,
+}
+
+impl Serialize for GoTestTraceFrameClassV1 {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (index, name) = match self {
+            Self::Unresolved => (0, "unresolved"),
+            Self::Exact => (1, "exact"),
+            Self::Ambiguous => (2, "ambiguous"),
+        };
+        serializer.serialize_unit_variant("GoTestTraceFrameClassV1", index, name)
+    }
+}
+
+impl<'de> Deserialize<'de> for GoTestTraceFrameClassV1 {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct FrameVisitor;
+
+        impl<'de> de::Visitor<'de> for FrameVisitor {
+            type Value = GoTestTraceFrameClassV1;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a Go trace frame class")
+            }
+
+            fn visit_enum<A: de::EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
+                let (name, variant) = de::EnumAccess::variant_seed(
+                    data,
+                    quanta_index_contract_base::ClosedFieldKeySeedV1(&VARIANTS).serde_identifier(),
+                )?;
+                let value = match name {
+                    "unresolved" => GoTestTraceFrameClassV1::Unresolved,
+                    "exact" => GoTestTraceFrameClassV1::Exact,
+                    "ambiguous" => GoTestTraceFrameClassV1::Ambiguous,
+                    _ => unreachable!("closed variant seed only returns schema names"),
+                };
+                de::VariantAccess::unit_variant(variant)?;
+                Ok(value)
+            }
+        }
+
+        const VARIANTS: [&str; 3] = ["unresolved", "exact", "ambiguous"];
+        deserializer.deserialize_enum("GoTestTraceFrameClassV1", &VARIANTS, FrameVisitor)
+    }
 }
 
 impl GoTestTraceFrameClassV1 {
@@ -43,30 +85,44 @@ impl GoTestTraceSourceFramesV1 {
 }
 
 /// First returned chunk of a file in one lane; ranks are one-based.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GoTestTraceFileLaneWitnessV1 {
     pub file_rank: u32,
     pub chunk_rank: u32,
     pub candidate: LexicalCandidate,
 }
 
+quanta_index_contract_base::native_serde_struct!([serde_identifier] GoTestTraceFileLaneWitnessV1 {
+    file_rank: u32,
+    chunk_rank: u32,
+    candidate: LexicalCandidate,
+});
+
 /// Minimal ordered chunk evidence from one bounded file-ranking lane.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GoTestTraceFilePoolRowV1 {
     pub file: SourceFileKey,
     pub candidate_id: String,
     pub score_bits: u32,
 }
 
+quanta_index_contract_base::native_serde_struct!([serde_identifier] GoTestTraceFilePoolRowV1 {
+    file: SourceFileKey,
+    candidate_id: String,
+    score_bits: u32,
+});
+
 /// The exact two chunk prefixes consumed by the Go trace file ranker.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GoTestTraceFileRankPoolsV1 {
     pub lexical: Vec<GoTestTraceFilePoolRowV1>,
     pub dense: Vec<GoTestTraceFilePoolRowV1>,
 }
+
+quanta_index_contract_base::native_serde_struct!([serde_identifier] GoTestTraceFileRankPoolsV1 {
+    lexical: Vec<GoTestTraceFilePoolRowV1>,
+    dense: Vec<GoTestTraceFilePoolRowV1>,
+});
 
 fn first_pool_witnesses(
     rows: &[GoTestTraceFilePoolRowV1],
@@ -123,13 +179,10 @@ pub(super) fn validate_file_witness_positions(
 }
 
 /// Distinct file with a file-RRF score and the original lane evidence.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GoTestTraceFileHitV1 {
     pub file: SourceFileKey,
-    #[serde(deserialize_with = "required_option")]
     pub lexical: Option<GoTestTraceFileLaneWitnessV1>,
-    #[serde(deserialize_with = "required_option")]
     pub dense: Option<GoTestTraceFileLaneWitnessV1>,
     pub file_rrf_score: f64,
     pub production_source: bool,
@@ -137,13 +190,14 @@ pub struct GoTestTraceFileHitV1 {
     pub source_frame: bool,
 }
 
-/// Serde treats absent `Option<T>` as `None`; this adapter requires an actual
-/// field while retaining an explicit JSON/CBOR null as a valid value.
-fn required_option<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
-    decoder: D,
-) -> Result<Option<T>, D::Error> {
-    Option::<T>::deserialize(decoder)
-}
+quanta_index_contract_base::native_serde_struct!([serde_identifier] GoTestTraceFileHitV1 {
+    file: SourceFileKey,
+    lexical: Option<GoTestTraceFileLaneWitnessV1>,
+    dense: Option<GoTestTraceFileLaneWitnessV1>,
+    file_rrf_score: f64,
+    production_source: bool,
+    source_frame: bool,
+});
 
 impl GoTestTraceFileHitV1 {
     /// The lexical lane owns the display span when both lanes saw this file.
@@ -170,20 +224,27 @@ pub struct GoTestTraceFileQueryResponseV1 {
     pub explanation: SearchExplanation,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct WireResponse {
     generation: GenerationPin,
-    #[serde(deserialize_with = "required_option")]
     selected_active_head: Option<SearchCorpusActiveHeadV1>,
     results: Vec<GoTestTraceFileHitV1>,
     lexical_window: QueryResultWindowV2,
     dense_window: QueryResultWindowV2,
-    #[serde(default)]
     rank_pools: Option<GoTestTraceFileRankPoolsV1>,
     frame_class: GoTestTraceFrameClassV1,
     explanation: SearchExplanation,
 }
+
+quanta_index_contract_base::native_serde_struct!([serde_identifier] WireResponse {
+    generation: GenerationPin,
+    selected_active_head: Option<SearchCorpusActiveHeadV1>,
+    results: Vec<GoTestTraceFileHitV1>,
+    lexical_window: QueryResultWindowV2,
+    dense_window: QueryResultWindowV2,
+    rank_pools: Option<GoTestTraceFileRankPoolsV1> = default,
+    frame_class: GoTestTraceFrameClassV1,
+    explanation: SearchExplanation,
+});
 
 impl From<WireResponse> for GoTestTraceFileQueryResponseV1 {
     fn from(response: WireResponse) -> Self {
@@ -545,6 +606,134 @@ mod tests {
         );
         assert!(expected.results[0].representative().is_some());
         assert_eq!(expected.frame_class.as_str(), "exact");
+    }
+
+    #[test]
+    fn trace_wire_keeps_required_nulls_optional_pools_and_cbor_field_order() {
+        let expected = response();
+        let mut json = serde_json::to_value(&expected).expect("response JSON");
+        let object = json.as_object_mut().expect("response object");
+        assert_eq!(
+            object.get("selected_active_head"),
+            Some(&serde_json::Value::Null)
+        );
+        assert!(!object.contains_key("rank_pools"));
+
+        object.insert("rank_pools".into(), serde_json::Value::Null);
+        assert_eq!(
+            serde_json::from_value::<GoTestTraceFileQueryResponseV1>(json.clone())
+                .expect("explicit null pools"),
+            expected
+        );
+        json.as_object_mut()
+            .expect("response object")
+            .remove("selected_active_head");
+        assert!(serde_json::from_value::<GoTestTraceFileQueryResponseV1>(json).is_err());
+
+        let mut hit = serde_json::to_value(&expected.results[0]).expect("hit JSON");
+        hit.as_object_mut()
+            .expect("hit object")
+            .insert("lexical".into(), serde_json::Value::Null);
+        assert!(
+            serde_json::from_value::<GoTestTraceFileHitV1>(hit.clone())
+                .expect("explicit null lane")
+                .lexical
+                .is_none()
+        );
+        hit.as_object_mut().expect("hit object").remove("lexical");
+        assert!(serde_json::from_value::<GoTestTraceFileHitV1>(hit).is_err());
+
+        let cbor_value = ciborium::value::Value::serialized(&expected).expect("response CBOR");
+        let ciborium::value::Value::Map(fields) = cbor_value else {
+            panic!("response must be a CBOR map");
+        };
+        let names = fields
+            .iter()
+            .map(|(key, _)| match key {
+                ciborium::value::Value::Text(name) => name.as_str(),
+                _ => panic!("response field key must be text"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "generation",
+                "selected_active_head",
+                "results",
+                "lexical_window",
+                "dense_window",
+                "frame_class",
+                "explanation",
+            ]
+        );
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&expected, &mut cbor).expect("response CBOR encode");
+        assert_eq!(
+            ciborium::de::from_reader::<GoTestTraceFileQueryResponseV1, _>(cbor.as_slice())
+                .expect("response CBOR decode"),
+            expected
+        );
+    }
+
+    #[test]
+    fn frame_class_keeps_snake_case_unit_variants() {
+        for (frame, wire) in [
+            (GoTestTraceFrameClassV1::Unresolved, "\"unresolved\""),
+            (GoTestTraceFrameClassV1::Exact, "\"exact\""),
+            (GoTestTraceFrameClassV1::Ambiguous, "\"ambiguous\""),
+        ] {
+            assert_eq!(serde_json::to_string(&frame).expect("frame JSON"), wire);
+            assert_eq!(
+                serde_json::from_str::<GoTestTraceFrameClassV1>(wire).expect("frame JSON decode"),
+                frame
+            );
+            let mut cbor = Vec::new();
+            ciborium::ser::into_writer(&frame, &mut cbor).expect("frame CBOR");
+            assert_eq!(
+                ciborium::de::from_reader::<GoTestTraceFrameClassV1, _>(cbor.as_slice())
+                    .expect("frame CBOR decode"),
+                frame
+            );
+        }
+        assert!(serde_json::from_str::<GoTestTraceFrameClassV1>("\"Exact\"").is_err());
+    }
+
+    #[test]
+    fn trace_cbor_accepts_legacy_known_byte_keys_and_frame_variants() {
+        let expected = response();
+        let mut value = ciborium::value::Value::serialized(&expected).expect("response CBOR");
+        let ciborium::value::Value::Map(fields) = &mut value else {
+            panic!("response must be a CBOR map");
+        };
+        let (key, _) = fields
+            .iter_mut()
+            .find(|(key, _)| {
+                matches!(key, ciborium::value::Value::Text(name) if name == "selected_active_head")
+            })
+            .expect("nullable response key");
+        *key = ciborium::value::Value::Bytes(b"selected_active_head".to_vec());
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&value, &mut bytes).expect("byte-key CBOR");
+        assert_eq!(
+            ciborium::de::from_reader::<GoTestTraceFileQueryResponseV1, _>(bytes.as_slice())
+                .expect("known byte key"),
+            expected
+        );
+
+        bytes.clear();
+        ciborium::ser::into_writer(
+            &ciborium::value::Value::Map(vec![(
+                ciborium::value::Value::Bytes(b"exact".to_vec()),
+                ciborium::value::Value::Null,
+            )]),
+            &mut bytes,
+        )
+        .expect("byte-variant CBOR");
+        assert_eq!(
+            ciborium::de::from_reader::<GoTestTraceFrameClassV1, _>(bytes.as_slice())
+                .expect("known byte variant"),
+            GoTestTraceFrameClassV1::Exact
+        );
     }
 
     #[test]
