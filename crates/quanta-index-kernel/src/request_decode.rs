@@ -3,10 +3,11 @@
 use std::{fmt, ops::Deref};
 
 use quanta_index_core::index::{
-    HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryTransition, IndexError, MemoryLease, MemoryLifetime, OperationKey, OwnerMutationSet,
-    ProducerCompleteness, ProducerId, ProjectionBinding, ProjectionId, ProjectionTransition,
-    SchemaId, SourceCut, SourceEvent, SourceHistoryTransitionV1, SourceTransition, UpdateKind, UpdateRequest, ViewRef,
-    WorkBudget, WorkClaim,
+    HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryTransition, IndexError, MemoryLease,
+    MemoryLifetime, OperationKey, OwnerMutationSet, ProducerCompleteness, ProducerId,
+    ProjectionBinding, ProjectionId, ProjectionTransition, SchemaId, SourceCut, SourceEvent,
+    SourceHistoryTransitionV1, SourceTransition, UpdateKind, UpdateRequest, ViewRef, WorkBudget,
+    WorkClaim,
 };
 use quanta_index_core::index::{IndexInstanceId, ObjectRef, OwnerKey};
 use serde::{
@@ -14,6 +15,107 @@ use serde::{
     de::{DeserializeSeed, EnumAccess, IgnoredAny, SeqAccess, VariantAccess, Visitor},
 };
 use serde_json::value::RawValue;
+
+struct RequestFieldSeed {
+    fields: &'static [&'static str],
+    open: bool,
+}
+
+impl<'de> DeserializeSeed<'de> for RequestFieldSeed {
+    type Value = Option<&'static str>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        struct FieldVisitor(RequestFieldSeed);
+
+        impl Visitor<'_> for FieldVisitor {
+            type Value = Option<&'static str>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a request field name")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                if let Some(field) = self.0.fields.iter().copied().find(|field| *field == value) {
+                    Ok(Some(field))
+                } else if self.0.open {
+                    Ok(None)
+                } else {
+                    Err(E::unknown_field(value, self.0.fields))
+                }
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                let name = std::str::from_utf8(value).map_err(|_error| {
+                    E::invalid_value(serde::de::Unexpected::Bytes(value), &self)
+                })?;
+                self.visit_str(name)
+            }
+        }
+
+        decoder.deserialize_identifier(FieldVisitor(self))
+    }
+}
+
+// Decode only declared fields. Open census records still discard unrelated
+// fields; strict request records reject them. RawValue fields borrow the input.
+macro_rules! request_record_codec {
+    ([$($generics:tt)*] $record:ty, $name:ident, $mode:ident { $($field:ident : $ty:ty $(= $default:ident)?),+ $(,)? }) => {
+        impl<$($generics)*> serde::Deserialize<'de> for $record {
+            fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                struct RecordVisitor<R>(std::marker::PhantomData<R>);
+                impl<$($generics)*> Visitor<'de> for RecordVisitor<$record> {
+                    type Value = $record;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        formatter.write_str(concat!("a ", stringify!($name), " record"))
+                    }
+
+                    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                        $(let mut $field: Option<$ty> = None;)+
+                        while let Some(key) = map.next_key_seed(RequestFieldSeed {
+                            fields: FIELDS,
+                            open: request_record_codec!(@is_open $mode),
+                        })? {
+                            match key {
+                                $(Some(stringify!($field)) => {
+                                    if $field.is_some() {
+                                        return Err(serde::de::Error::duplicate_field(stringify!($field)));
+                                    }
+                                    $field = Some(map.next_value::<$ty>()?);
+                                },)+
+                                None => { let _: IgnoredAny = map.next_value()?; },
+                                Some(_) => unreachable!("field seed only returns known names"),
+                            }
+                        }
+                        Ok($name { $($field: request_record_codec!(@value $field $(= $default)?),)+ })
+                    }
+
+                    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
+                        $(let $field = request_record_codec!(@sequence sequence $field : $ty $(= $default)?);)+
+                        if sequence.next_element::<IgnoredAny>()?.is_some() {
+                            return Err(serde::de::Error::invalid_length(FIELDS.len().saturating_add(1), &self));
+                        }
+                        Ok($name { $($field,)+ })
+                    }
+                }
+                decoder.deserialize_struct(stringify!($name), FIELDS, RecordVisitor::<$record>(std::marker::PhantomData))
+            }
+        }
+    };
+    (@is_open closed) => { false };
+    (@is_open open) => { true };
+    (@value $field:ident) => {
+        $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
+    (@value $field:ident = default) => { $field.unwrap_or_default() };
+    (@sequence $sequence:ident $field:ident : $ty:ty) => {
+        $sequence.next_element::<$ty>()?.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
+    (@sequence $sequence:ident $field:ident : $ty:ty = default) => {
+        $sequence.next_element::<$ty>()?.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
+}
 
 pub(crate) struct LoadedRequest {
     request: UpdateRequest,
@@ -29,16 +131,17 @@ impl Deref for LoadedRequest {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Header<'a> {
     operation: OperationKey,
     expected_view: ViewRef,
-    #[serde(borrow)]
     kind: RawKind<'a>,
 }
+request_record_codec!(['de: 'a, 'a] Header<'a>, Header, closed {
+    operation: OperationKey,
+    expected_view: ViewRef,
+    kind: RawKind<'a>,
+});
 
-#[derive(Deserialize)]
 enum KindTag {
     SourceAdvance,
     SourceHistoryAdvance,
@@ -50,6 +153,15 @@ enum KindTag {
     CompactSourceLocal,
     Materialize,
 }
+quanta_index_contract::native_serde_enum!(KindTag {
+    units {
+        SourceAdvance = 0, SourceHistoryAdvance = 1, SourceResync = 2,
+        ProjectionAdvance = 3, HistoryAdvance = 4, HistoryAppend = 5,
+        Reconfigure = 6, CompactSourceLocal = 7, Materialize = 8,
+    }
+    newtypes { }
+    records { }
+});
 
 struct RawKind<'a> {
     tag: KindTag,
@@ -94,65 +206,66 @@ impl<'de: 'a, 'a> Deserialize<'de> for RawKind<'a> {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct SourceParts<'a> {
     expected_source: SourceCut,
     owners: OwnerMutationSet,
-    #[serde(borrow)]
     events: &'a RawValue,
 }
+request_record_codec!(['de: 'a, 'a] SourceParts<'a>, SourceParts, closed {
+    expected_source: SourceCut,
+    owners: OwnerMutationSet,
+    events: &'a RawValue,
+});
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct SourceHistoryParts<'a> {
-    #[serde(borrow)]
     source: SourceParts<'a>,
-    #[serde(borrow)]
     history: &'a RawValue,
 }
+request_record_codec!(['de: 'a, 'a] SourceHistoryParts<'a>, SourceHistoryParts, closed {
+    source: SourceParts<'a>,
+    history: &'a RawValue,
+});
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ResyncParts<'a> {
     prior_epoch: u64,
-    #[serde(borrow)]
     transition: SourceParts<'a>,
 }
+request_record_codec!(['de: 'a, 'a] ResyncParts<'a>, ResyncParts, closed {
+    prior_epoch: u64,
+    transition: SourceParts<'a>,
+});
 
 // Copy is a compile-time constraint on these heap-free variant payloads.
-#[derive(Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy)]
 struct ReconfigureParts {
     profile: quanta_index_core::index::ObjectRef,
 }
+request_record_codec!(['de] ReconfigureParts, ReconfigureParts, closed {
+    profile: ObjectRef,
+});
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct CompactSourceLocalParts {
     instance: IndexInstanceId,
     expected_artifact: ObjectRef,
     owner: OwnerKey,
 }
+request_record_codec!(['de] CompactSourceLocalParts, CompactSourceLocalParts, closed {
+    instance: IndexInstanceId,
+    expected_artifact: ObjectRef,
+    owner: OwnerKey,
+});
 
-#[derive(Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy)]
 struct MaterializeParts {
     claim: WorkClaim,
 }
+request_record_codec!(['de] MaterializeParts, MaterializeParts, closed {
+    claim: WorkClaim,
+});
 
-fn required_optional<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
-    decoder: D,
-) -> Result<Option<T>, D::Error> {
-    Option::<T>::deserialize(decoder)
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ProjectionParts<'a> {
     projection: ProjectionId,
     producer: ProducerId,
-    #[serde(deserialize_with = "required_optional")]
     expected: Option<ProjectionBinding>,
     target_source: SourceCut,
     schema: SchemaId,
@@ -160,33 +273,54 @@ struct ProjectionParts<'a> {
     dependency_context: quanta_index_core::index::Digest,
     completeness: ProducerCompleteness,
     owners: OwnerMutationSet,
-    #[serde(borrow)]
     events: &'a RawValue,
 }
+request_record_codec!(['de: 'a, 'a] ProjectionParts<'a>, ProjectionParts, closed {
+    projection: ProjectionId,
+    producer: ProducerId,
+    expected: Option<ProjectionBinding>,
+    target_source: SourceCut,
+    schema: SchemaId,
+    producer_policy: quanta_index_core::index::Digest,
+    dependency_context: quanta_index_core::index::Digest,
+    completeness: ProducerCompleteness,
+    owners: OwnerMutationSet,
+    events: &'a RawValue,
+});
 
 /// Allocation census only. The canonical HistoryTransition decoder below
 /// still owns required/closed fields, identifiers and digest validation.
-#[derive(Deserialize)]
 struct HistoryNameLayout {
     expected: Option<HistoryCutNames>,
     next: HistoryCutNames,
 }
+request_record_codec!(['de] HistoryNameLayout, HistoryNameLayout, open {
+    expected: Option<HistoryCutNames> = default,
+    next: HistoryCutNames,
+});
 
-#[derive(Deserialize)]
 struct HistoryAppendNameLayout {
     expected: HistoryCutNames,
 }
+request_record_codec!(['de] HistoryAppendNameLayout, HistoryAppendNameLayout, open {
+    expected: HistoryCutNames,
+});
 
-#[derive(Deserialize)]
 struct HistoryCutNames {
     generation: HistoryGenerationNames,
 }
+request_record_codec!(['de] HistoryCutNames, HistoryCutNames, open {
+    generation: HistoryGenerationNames,
+});
 
-#[derive(Deserialize)]
 struct HistoryGenerationNames {
     repo_id: StringBytes,
     revision_id: StringBytes,
 }
+request_record_codec!(['de] HistoryGenerationNames, HistoryGenerationNames, open {
+    repo_id: StringBytes,
+    revision_id: StringBytes,
+});
 
 struct StringBytes(usize);
 
@@ -442,7 +576,11 @@ pub(crate) fn decode(bytes: &[u8], budget: &WorkBudget) -> Result<LoadedRequest,
         }
         KindTag::HistoryAppend => {
             let layout: HistoryAppendNameLayout = read(raw, budget)?;
-            let retained_bytes = layout.expected.generation.repo_id.0
+            let retained_bytes = layout
+                .expected
+                .generation
+                .repo_id
+                .0
                 .checked_add(layout.expected.generation.revision_id.0)
                 .ok_or(IndexError::ResourceLimited)?;
             let memory = budget.reserve_memory(
@@ -604,7 +742,12 @@ pub(crate) mod tests {
                         })
                         .ok_or(IndexError::ResourceLimited)
                 })?,
-            UpdateKind::HistoryAppend(append) => append.expected.generation.repo_id.as_str().len()
+            UpdateKind::HistoryAppend(append) => append
+                .expected
+                .generation
+                .repo_id
+                .as_str()
+                .len()
                 .checked_add(append.expected.generation.revision_id.as_str().len())
                 .ok_or(IndexError::ResourceLimited)?,
             UpdateKind::Reconfigure { .. }

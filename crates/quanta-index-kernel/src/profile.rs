@@ -42,33 +42,32 @@ pub(crate) fn load(
     decode_payload(&stored.payload, budget)
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProfileLayout {
-    #[serde(deserialize_with = "count_instances")]
-    instances: usize,
+struct CountInstances;
+
+impl<'de> DeserializeSeed<'de> for CountInstances {
+    type Value = usize;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<usize, D::Error> {
+        decoder.deserialize_seq(self)
+    }
 }
 
-fn count_instances<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<usize, D::Error> {
-    struct Count;
-    impl<'de> Visitor<'de> for Count {
-        type Value = usize;
+impl<'de> Visitor<'de> for CountInstances {
+    type Value = usize;
 
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("an index instance array")
-        }
-
-        fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<usize, A::Error> {
-            let mut count = 0_usize;
-            while sequence.next_element::<IgnoredAny>()?.is_some() {
-                count = count
-                    .checked_add(1)
-                    .ok_or_else(|| serde::de::Error::custom("index instance count overflow"))?;
-            }
-            Ok(count)
-        }
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an index instance array")
     }
-    decoder.deserialize_seq(Count)
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<usize, A::Error> {
+        let mut count = 0_usize;
+        while sequence.next_element::<IgnoredAny>()?.is_some() {
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| serde::de::Error::custom("index instance count overflow"))?;
+        }
+        Ok(count)
+    }
 }
 
 struct InstancesSeed {
@@ -105,49 +104,72 @@ impl<'de> Visitor<'de> for InstancesSeed {
     }
 }
 
-struct ProfileSeed(InstancesSeed);
+const PROFILE_FIELDS: &[&str] = &["instances"];
 
-impl<'de> DeserializeSeed<'de> for ProfileSeed {
-    type Value = IndexProfile;
+struct InstancesField;
 
-    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
-        decoder.deserialize_struct("IndexProfile", &["instances"], self)
+impl<'de> Deserialize<'de> for InstancesField {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        decoder.deserialize_identifier(Self)
     }
 }
 
-impl<'de> Visitor<'de> for ProfileSeed {
-    type Value = IndexProfile;
+impl Visitor<'_> for InstancesField {
+    type Value = Self;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a complete IndexProfile record")
+        formatter.write_str("field identifier")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, key: &str) -> Result<Self, E> {
+        if key == "instances" {
+            Ok(self)
+        } else {
+            Err(E::unknown_field(key, PROFILE_FIELDS))
+        }
+    }
+}
+
+struct ProfileSeed<S>(S);
+
+impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for ProfileSeed<S> {
+    type Value = S::Value;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("struct ProfileLayout")
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let mut seed = Some(self.0);
-        let mut instances = None;
-        while let Some(key) = map.next_key::<String>()? {
-            if key != "instances" {
-                return Err(serde::de::Error::unknown_field(&key, &["instances"]));
-            }
-            let selected = seed
-                .take()
-                .ok_or_else(|| serde::de::Error::duplicate_field("instances"))?;
-            instances = Some(map.next_value_seed(selected)?);
+        if map.next_key::<InstancesField>()?.is_none() {
+            return Err(serde::de::Error::missing_field("instances"));
         }
-        Ok(IndexProfile {
-            instances: instances.ok_or_else(|| serde::de::Error::missing_field("instances"))?,
-        })
+        let instances = map.next_value_seed(self.0)?;
+        if map.next_key::<InstancesField>()?.is_some() {
+            return Err(serde::de::Error::duplicate_field("instances"));
+        }
+        Ok(instances)
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
-        let instances = sequence
-            .next_element_seed(self.0)?
-            .ok_or_else(|| serde::de::Error::missing_field("instances"))?;
-        if sequence.next_element::<IgnoredAny>()?.is_some() {
-            return Err(serde::de::Error::custom("profile record has extra fields"));
-        }
-        Ok(IndexProfile { instances })
+        sequence.next_element_seed(self.0)?.ok_or_else(|| {
+            serde::de::Error::invalid_length(0, &"struct ProfileLayout with 1 element")
+        })
     }
+}
+
+fn decode_instances<'de, S: DeserializeSeed<'de>>(
+    bytes: &'de [u8],
+    seed: S,
+) -> Result<S::Value, serde_json::Error> {
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let instances = serde::Deserializer::deserialize_struct(
+        &mut decoder,
+        "ProfileLayout",
+        PROFILE_FIELDS,
+        ProfileSeed(seed),
+    )?;
+    decoder.end()?;
+    Ok(instances)
 }
 
 pub(crate) fn decode_payload(
@@ -155,7 +177,7 @@ pub(crate) fn decode_payload(
     budget: &mut WorkBudget,
 ) -> Result<LoadedProfile, IndexError> {
     budget.checkpoint()?;
-    // Serde's escaped-string scratch and copied keys coexist during parsing.
+    // Preserve the existing parser allowance, including escaped-string scratch.
     // This is a declared data allowance, not an allocator or process RSS cap.
     let parse_bytes = u64::try_from(bytes.len())
         .map_err(|_error| IndexError::ResourceLimited)?
@@ -166,19 +188,17 @@ pub(crate) fn decode_payload(
     } else {
         budget.reserve_memory(parse_bytes, MemoryLifetime::Temporary)?
     };
-    let layout =
-        serde_json::from_slice::<ProfileLayout>(bytes).map_err(|error| decode_error(&error));
+    let count = decode_instances(bytes, CountInstances).map_err(|error| decode_error(&error));
     budget.checkpoint()?;
-    let layout = layout?;
-    if layout.instances > MAX_PROFILE_INSTANCES {
+    let count = count?;
+    if count > MAX_PROFILE_INSTANCES {
         return Err(IndexError::ResourceLimited);
     }
     budget.charge(WorkUsage {
-        mutations: u64::try_from(layout.instances).map_err(|_error| IndexError::ResourceLimited)?,
+        mutations: u64::try_from(count).map_err(|_error| IndexError::ResourceLimited)?,
         ..WorkUsage::default()
     })?;
-    let data_bytes = layout
-        .instances
+    let data_bytes = count
         .checked_mul(std::mem::size_of::<InstanceSpec>())
         .and_then(|len| len.checked_add(std::mem::size_of::<ProfileData>()))
         .and_then(|len| len.checked_add(std::mem::size_of::<[usize; 2]>()))
@@ -189,19 +209,14 @@ pub(crate) fn decode_payload(
     )?;
     let mut instances = Vec::new();
     instances
-        .try_reserve_exact(layout.instances)
+        .try_reserve_exact(count)
         .map_err(|_error| IndexError::ResourceLimited)?;
-    let mut decoder = serde_json::Deserializer::from_slice(bytes);
-    let profile = ProfileSeed(InstancesSeed {
-        instances,
-        count: layout.instances,
-    })
-    .deserialize(&mut decoder)
-    .map_err(|error| decode_error(&error));
+    let instances = decode_instances(bytes, InstancesSeed { instances, count })
+        .map_err(|error| decode_error(&error));
     budget.checkpoint()?;
-    let profile = profile?;
-    decoder.end().map_err(|error| decode_error(&error))?;
-    budget.checkpoint()?;
+    let profile = IndexProfile {
+        instances: instances?,
+    };
     validate_instances(&profile.instances, budget)?;
     Ok(LoadedProfile(Arc::new(ProfileData {
         profile,
