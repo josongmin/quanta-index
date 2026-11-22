@@ -145,11 +145,119 @@ impl<'de> Deserialize<'de> for ByteCount {
     }
 }
 
-#[derive(Deserialize)]
+// The page preflight accepts forward fields, unlike the closed row shapes.
+// Resolve known field names without allocating a String for every JSON key.
+struct OpenFieldSeed(&'static [&'static str]);
+
+impl<'de> DeserializeSeed<'de> for OpenFieldSeed {
+    type Value = Option<&'static str>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        struct Field(&'static [&'static str]);
+
+        impl Visitor<'_> for Field {
+            type Value = Option<&'static str>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a History page field")
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(self.0.iter().copied().find(|field| *field == value))
+            }
+
+            fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                Ok(self
+                    .0
+                    .iter()
+                    .copied()
+                    .find(|field| field.as_bytes() == value))
+            }
+        }
+
+        deserializer.deserialize_identifier(Field(self.0))
+    }
+}
+
 struct RowPreflight {
     family: String,
     row_key: ByteCount,
     value: ByteCount,
+}
+
+impl<'de> Deserialize<'de> for RowPreflight {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &["family", "row_key", "value"];
+        struct Row;
+
+        impl<'de> Visitor<'de> for Row {
+            type Value = RowPreflight;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct RowPreflight")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let (mut family, mut row_key, mut value) = (None, None, None);
+                while let Some(field) = map.next_key_seed(OpenFieldSeed(FIELDS))? {
+                    match field {
+                        Some("family") => {
+                            if family.is_some() {
+                                return Err(de::Error::duplicate_field("family"));
+                            }
+                            family = Some(map.next_value()?);
+                        }
+                        Some("row_key") => {
+                            if row_key.is_some() {
+                                return Err(de::Error::duplicate_field("row_key"));
+                            }
+                            row_key = Some(map.next_value()?);
+                        }
+                        Some("value") => {
+                            if value.is_some() {
+                                return Err(de::Error::duplicate_field("value"));
+                            }
+                            value = Some(map.next_value()?);
+                        }
+                        None => {
+                            let _: IgnoredAny = map.next_value()?;
+                        }
+                        _ => unreachable!("field seed returns only declared fields"),
+                    }
+                }
+                Ok(RowPreflight {
+                    family: family.ok_or_else(|| de::Error::missing_field("family"))?,
+                    row_key: row_key.ok_or_else(|| de::Error::missing_field("row_key"))?,
+                    value: value.ok_or_else(|| de::Error::missing_field("value"))?,
+                })
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let family = sequence.next_element()?.ok_or_else(|| {
+                    de::Error::invalid_length(0, &"struct RowPreflight with 3 elements")
+                })?;
+                let row_key = sequence.next_element()?.ok_or_else(|| {
+                    de::Error::invalid_length(1, &"struct RowPreflight with 3 elements")
+                })?;
+                let value = sequence.next_element()?.ok_or_else(|| {
+                    de::Error::invalid_length(2, &"struct RowPreflight with 3 elements")
+                })?;
+                Ok(RowPreflight {
+                    family,
+                    row_key,
+                    value,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct("RowPreflight", FIELDS, Row)
+    }
 }
 
 impl<'de> Deserialize<'de> for RowSizes {
@@ -199,13 +307,97 @@ impl<'de> Deserialize<'de> for RowSizes {
     }
 }
 
-#[derive(Deserialize)]
 struct PagePreflight {
     wire_version: u32,
-    #[serde(rename = "generation")]
     _generation: IgnoredAny,
     ordinal: u32,
     rows: RowSizes,
+}
+
+impl<'de> Deserialize<'de> for PagePreflight {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &["wire_version", "generation", "ordinal", "rows"];
+        struct Page;
+
+        impl<'de> Visitor<'de> for Page {
+            type Value = PagePreflight;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct PagePreflight")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let (mut wire_version, mut generation, mut ordinal, mut rows) =
+                    (None, None, None, None);
+                while let Some(field) = map.next_key_seed(OpenFieldSeed(FIELDS))? {
+                    match field {
+                        Some("wire_version") => {
+                            if wire_version.is_some() {
+                                return Err(de::Error::duplicate_field("wire_version"));
+                            }
+                            wire_version = Some(map.next_value()?);
+                        }
+                        Some("generation") => {
+                            if generation.is_some() {
+                                return Err(de::Error::duplicate_field("generation"));
+                            }
+                            generation = Some(map.next_value::<IgnoredAny>()?);
+                        }
+                        Some("ordinal") => {
+                            if ordinal.is_some() {
+                                return Err(de::Error::duplicate_field("ordinal"));
+                            }
+                            ordinal = Some(map.next_value()?);
+                        }
+                        Some("rows") => {
+                            if rows.is_some() {
+                                return Err(de::Error::duplicate_field("rows"));
+                            }
+                            rows = Some(map.next_value()?);
+                        }
+                        None => {
+                            let _: IgnoredAny = map.next_value()?;
+                        }
+                        _ => unreachable!("field seed returns only declared fields"),
+                    }
+                }
+                Ok(PagePreflight {
+                    wire_version: wire_version
+                        .ok_or_else(|| de::Error::missing_field("wire_version"))?,
+                    _generation: generation
+                        .ok_or_else(|| de::Error::missing_field("generation"))?,
+                    ordinal: ordinal.ok_or_else(|| de::Error::missing_field("ordinal"))?,
+                    rows: rows.ok_or_else(|| de::Error::missing_field("rows"))?,
+                })
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let wire_version = sequence.next_element()?.ok_or_else(|| {
+                    de::Error::invalid_length(0, &"struct PagePreflight with 4 elements")
+                })?;
+                let generation = sequence.next_element()?.ok_or_else(|| {
+                    de::Error::invalid_length(1, &"struct PagePreflight with 4 elements")
+                })?;
+                let ordinal = sequence.next_element()?.ok_or_else(|| {
+                    de::Error::invalid_length(2, &"struct PagePreflight with 4 elements")
+                })?;
+                let rows = sequence.next_element()?.ok_or_else(|| {
+                    de::Error::invalid_length(3, &"struct PagePreflight with 4 elements")
+                })?;
+                Ok(PagePreflight {
+                    wire_version,
+                    _generation: generation,
+                    ordinal,
+                    rows,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct("PagePreflight", FIELDS, Page)
+    }
 }
 
 struct ExactBytes(usize);
@@ -538,6 +730,30 @@ mod tests {
         );
         budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(Scope(ledger.clone())))));
         budget
+    }
+
+    #[test]
+    fn preflight_preserves_serde_map_and_positional_shapes() {
+        let mapped: PagePreflight = serde_json::from_str(
+            r#"{"wire_version":1,"generation":null,"ordinal":1,"rows":[{"family":"epoch","row_key":[1],"value":[2],"future":{"nested":true}}],"future":null}"#,
+        )
+        .expect("unknown map fields and nullable ignored generation");
+        assert_eq!(mapped.rows.count, 1);
+        assert_eq!(mapped.rows.byte_count, 2);
+
+        let positional: PagePreflight = serde_json::from_str(r#"[1,null,1,[["epoch",[1],[2]]]]"#)
+            .expect("page and row positional forms");
+        assert_eq!(positional.rows.count, mapped.rows.count);
+        assert_eq!(positional.rows.byte_count, mapped.rows.byte_count);
+
+        assert!(
+            serde_json::from_str::<PagePreflight>(
+                r#"{"wire_version":1,"generation":null,"generation":null,"ordinal":1,"rows":[]}"#
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_str::<RowPreflight>(r#"["epoch",[1],[2],null]"#).is_err());
+        assert!(serde_json::from_str::<RowPreflight>(r#"{"family":"epoch","value":[]}"#).is_err());
     }
 
     #[test]
