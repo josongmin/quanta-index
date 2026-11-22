@@ -5,6 +5,8 @@
 use super::{AuxiliaryGenerationKeyV1, HistorySourceCutV1};
 use crate::{BatchPublishReceipt, RepoId, index::ObjectRef};
 
+mod export_decode;
+
 /// Page framing shares the retained immutable input bound. The exporter may
 /// choose smaller pages, while the original request can refuse earlier.
 pub const MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1: usize = super::MAX_HISTORY_SOURCE_INPUT_BYTES_V1;
@@ -58,8 +60,7 @@ impl HistorySnapshotPageV1 {
 /// Private child stdout stream. Checkpoint pages are provisional until Complete;
 /// inventory keys are provisional until InventoryComplete. Native BOOT later
 /// independently verifies the saved Legacy source.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
-#[serde(tag = "kind", content = "body", rename_all = "snake_case")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HistorySnapshotExportFrameV1 {
     NativeProtectedComplete {
         source_root_nonce: crate::index::Digest,
@@ -245,6 +246,36 @@ impl HistorySnapshotCheckpointV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_frame_body_first_preserves_named_and_binary_fields() {
+        let expected = HistorySnapshotExportFrameV1::NativeObjectChunk {
+            offset: 3,
+            bytes: vec![255],
+        };
+        let json = br#"{"body":{"offset":3,"bytes":[255],"ignored":null},"kind":{"native_object_chunk":null}}"#;
+        assert_eq!(
+            serde_json::from_slice::<HistorySnapshotExportFrameV1>(json).expect("JSON"),
+            expected
+        );
+        let duplicate =
+            br#"{"body":{"offset":3,"offset":4,"bytes":[255]},"kind":"native_object_chunk"}"#;
+        assert!(serde_json::from_slice::<HistorySnapshotExportFrameV1>(duplicate).is_err());
+
+        // The previous decoder accepts byte-string keys for the envelope
+        // and the variant body, including unknown non-UTF-8 field names.
+        let cbor = b"\xa2\x44body\xa3\x46offset\x03\x45bytes\x81\x18\xff\x41\xff\xf6\x44kind\x73native_object_chunk";
+        assert_eq!(
+            ciborium::from_reader::<HistorySnapshotExportFrameV1, _>(cbor.as_slice())
+                .expect("CBOR"),
+            expected
+        );
+        // A body-first CBOR bignum must not be normalized to an ordinary offset.
+        let bignum = b"\xa2\x44body\xa2\x46offset\xc2\x41\x05\x45bytes\x81\x18\xff\x44kind\x73native_object_chunk";
+        assert!(
+            ciborium::from_reader::<HistorySnapshotExportFrameV1, _>(bignum.as_slice()).is_err()
+        );
+    }
 
     #[test]
     fn export_frames_preserve_derived_json_and_cbor_bytes() {
