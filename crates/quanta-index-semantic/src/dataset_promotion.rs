@@ -34,20 +34,163 @@ const INTENT_VERSION: u8 = 1;
 const MAX_INTENT_BYTES: usize = 512;
 const MAX_STAGING_DEPTH: usize = 64;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+// Keep derive's durable CBOR map and sequence shape without proc-macro expansion.
+// Known names borrow their static declaration; unknown byte keys are discarded.
+struct PromotionFieldKeySeed<'a>(&'a [&'static str]);
+
+impl<'de> serde::de::DeserializeSeed<'de> for PromotionFieldKeySeed<'_> {
+    type Value = Option<&'static str>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct FieldVisitor<'a>(&'a [&'static str]);
+
+        impl serde::de::Visitor<'_> for FieldVisitor<'_> {
+            type Value = Option<&'static str>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("field identifier")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(self.0.iter().copied().find(|field| *field == value))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                self.visit_str(&value)
+            }
+
+            fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(self
+                    .0
+                    .iter()
+                    .copied()
+                    .find(|field| field.as_bytes() == value))
+            }
+
+            fn visit_byte_buf<E>(self, value: Vec<u8>) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                self.visit_bytes(&value)
+            }
+        }
+
+        deserializer.deserialize_identifier(FieldVisitor(self.0))
+    }
+}
+
+macro_rules! promotion_map_field {
+    ($field:ident) => {
+        $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
+    ($field:ident, $default:expr) => {
+        $field.unwrap_or($default)
+    };
+}
+
+macro_rules! impl_promotion_record_serde {
+    ($type:ident { $($field:ident: $field_type:ty => $index:expr $(; $default:expr)?),+ $(,)? }) => {
+        impl Serialize for $type {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                use serde::ser::SerializeStruct as _;
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                let mut record = serializer.serialize_struct(stringify!($type), FIELDS.len())?;
+                $(record.serialize_field(stringify!($field), &self.$field)?;)+
+                record.end()
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $type {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                struct RecordVisitor;
+
+                impl<'de> serde::de::Visitor<'de> for RecordVisitor {
+                    type Value = $type;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(formatter, "struct {} with {} elements", stringify!($type), [$(stringify!($field)),+].len())
+                    }
+
+                    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: serde::de::SeqAccess<'de>,
+                    {
+                        $(let $field: $field_type = sequence.next_element()?.ok_or_else(|| {
+                            serde::de::Error::invalid_length($index, &self)
+                        })?;)+
+                        Ok($type { $($field),+ })
+                    }
+
+                    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: serde::de::MapAccess<'de>,
+                    {
+                        const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                        $(let mut $field: Option<$field_type> = None;)+
+                        while let Some(key) = map.next_key_seed(PromotionFieldKeySeed(FIELDS))? {
+                            match key {
+                                $(Some(key) if key == stringify!($field) => {
+                                    if $field.is_some() {
+                                        return Err(serde::de::Error::duplicate_field(stringify!($field)));
+                                    }
+                                    $field = Some(map.next_value()?);
+                                },)+
+                                _ => {
+                                    let _: serde::de::IgnoredAny = map.next_value()?;
+                                }
+                            }
+                        }
+                        Ok($type {
+                            $($field: promotion_map_field!($field $(, $default)?),)+
+                        })
+                    }
+                }
+
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                deserializer.deserialize_struct(stringify!($type), FIELDS, RecordVisitor)
+            }
+        }
+    };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Inode {
     device: u64,
     inode: u64,
 }
+impl_promotion_record_serde!(Inode { device: u64 => 0, inode: u64 => 1 });
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Contract {
     inode: Inode,
     bytes: u64,
     sha256: [u8; 32],
 }
+impl_promotion_record_serde!(Contract {
+    inode: Inode => 0,
+    bytes: u64 => 1,
+    sha256: [u8; 32] => 2,
+});
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Intent {
     version: u8,
     old_dataset: Option<Inode>,
@@ -55,6 +198,13 @@ struct Intent {
     old_contract: Option<Contract>,
     new_contract: Contract,
 }
+impl_promotion_record_serde!(Intent {
+    version: u8 => 0,
+    old_dataset: Option<Inode> => 1; None,
+    new_dataset: Inode => 2,
+    old_contract: Option<Contract> => 3; None,
+    new_contract: Contract => 4,
+});
 
 struct Paths {
     dataset: PathBuf,
