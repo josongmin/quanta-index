@@ -1376,8 +1376,8 @@ fn tenant_id_hex(tenant: TenantId) -> Result<String> {
     Ok(encoded)
 }
 
-/// Explicit operator policy; omission disables automatic queue draining.
 native_json_record!(
+    /// Explicit operator policy; omission disables automatic queue draining.
     struct MaintenanceConfig {
         interval_ms: u64 => required,
         wal_reclaim: WalReclaimConfig => required,

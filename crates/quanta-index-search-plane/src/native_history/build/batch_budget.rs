@@ -400,7 +400,7 @@ closed_shape!(
     struct ContributorBatchShape {
         repo_id: TextBytes,
         revision_id: TextBytes,
-        generation: u64,
+        _generation as generation: u64,
         batch_digest: TextBytes,
         entries: SequenceSize<ContributorEntryShape>,
     }
