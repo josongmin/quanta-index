@@ -127,19 +127,252 @@ pub enum SourceTextAdmission {
     Utf8 { policy: Digest },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceRecord {
     pub path: String,
     pub bytes: ObjectRef,
     pub byte_len: u64,
     pub text: SourceTextAdmission,
     /// Absent on records from the original path-only publication protocol.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_repo_id: Option<crate::RepoId>,
     /// Absent on records staged before authenticated language publication.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<crate::lex::LanguageCode>,
+}
+
+impl serde::Serialize for SourceRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let fields = 4_usize
+            .saturating_add(usize::from(self.source_repo_id.is_some()))
+            .saturating_add(usize::from(self.language.is_some()));
+        let mut state = serializer.serialize_struct("SourceRecord", fields)?;
+        serde::ser::SerializeStruct::serialize_field(&mut state, "path", &self.path)?;
+        serde::ser::SerializeStruct::serialize_field(&mut state, "bytes", &self.bytes)?;
+        serde::ser::SerializeStruct::serialize_field(&mut state, "byte_len", &self.byte_len)?;
+        serde::ser::SerializeStruct::serialize_field(&mut state, "text", &self.text)?;
+        if self.source_repo_id.is_some() {
+            serde::ser::SerializeStruct::serialize_field(
+                &mut state,
+                "source_repo_id",
+                &self.source_repo_id,
+            )?;
+        }
+        if self.language.is_some() {
+            serde::ser::SerializeStruct::serialize_field(&mut state, "language", &self.language)?;
+        }
+        serde::ser::SerializeStruct::end(state)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SourceRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &[
+            "path",
+            "bytes",
+            "byte_len",
+            "text",
+            "source_repo_id",
+            "language",
+        ];
+        struct SourceRecordVisitor;
+        impl<'de> serde::de::Visitor<'de> for SourceRecordVisitor {
+            type Value = SourceRecord;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a closed source record with optional source identity")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let (mut path, mut bytes, mut byte_len, mut text) = (None, None, None, None);
+                let (mut source_repo_id, mut language) = (None, None);
+                while let Some(key) = map.next_key_seed(
+                    quanta_index_contract_base::ClosedFieldKeySeedV1(FIELDS).serde_identifier(),
+                )? {
+                    match key {
+                        "path" => {
+                            if path.is_some() {
+                                return Err(serde::de::Error::duplicate_field("path"));
+                            }
+                            path = Some(map.next_value::<String>()?);
+                        }
+                        "bytes" => {
+                            if bytes.is_some() {
+                                return Err(serde::de::Error::duplicate_field("bytes"));
+                            }
+                            bytes = Some(map.next_value::<ObjectRef>()?);
+                        }
+                        "byte_len" => {
+                            if byte_len.is_some() {
+                                return Err(serde::de::Error::duplicate_field("byte_len"));
+                            }
+                            byte_len = Some(map.next_value::<u64>()?);
+                        }
+                        "text" => {
+                            if text.is_some() {
+                                return Err(serde::de::Error::duplicate_field("text"));
+                            }
+                            text = Some(map.next_value::<SourceTextAdmission>()?);
+                        }
+                        "source_repo_id" => {
+                            if source_repo_id.is_some() {
+                                return Err(serde::de::Error::duplicate_field("source_repo_id"));
+                            }
+                            source_repo_id = Some(map.next_value::<Option<crate::RepoId>>()?);
+                        }
+                        "language" => {
+                            if language.is_some() {
+                                return Err(serde::de::Error::duplicate_field("language"));
+                            }
+                            language = Some(map.next_value::<Option<crate::lex::LanguageCode>>()?);
+                        }
+                        _ => unreachable!("closed field seed only returns schema keys"),
+                    }
+                }
+                Ok(SourceRecord {
+                    path: path.ok_or_else(|| serde::de::Error::missing_field("path"))?,
+                    bytes: bytes.ok_or_else(|| serde::de::Error::missing_field("bytes"))?,
+                    byte_len: byte_len
+                        .ok_or_else(|| serde::de::Error::missing_field("byte_len"))?,
+                    text: text.ok_or_else(|| serde::de::Error::missing_field("text"))?,
+                    source_repo_id: source_repo_id.flatten(),
+                    language: language.flatten(),
+                })
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let path = seq
+                    .next_element::<String>()?
+                    .ok_or_else(|| serde::de::Error::missing_field("path"))?;
+                let bytes = seq
+                    .next_element::<ObjectRef>()?
+                    .ok_or_else(|| serde::de::Error::missing_field("bytes"))?;
+                let byte_len = seq
+                    .next_element::<u64>()?
+                    .ok_or_else(|| serde::de::Error::missing_field("byte_len"))?;
+                let text = seq
+                    .next_element::<SourceTextAdmission>()?
+                    .ok_or_else(|| serde::de::Error::missing_field("text"))?;
+                let source_repo_id = seq.next_element::<Option<crate::RepoId>>()?.flatten();
+                let language = seq
+                    .next_element::<Option<crate::lex::LanguageCode>>()?
+                    .flatten();
+                if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    return Err(serde::de::Error::invalid_length(7, &self));
+                }
+                Ok(SourceRecord {
+                    path,
+                    bytes,
+                    byte_len,
+                    text,
+                    source_repo_id,
+                    language,
+                })
+            }
+        }
+        deserializer.deserialize_struct("SourceRecord", FIELDS, SourceRecordVisitor)
+    }
+}
+
+#[cfg(test)]
+mod source_record_codec_tests {
+    use super::{Digest, ObjectRef, SourceRecord, SourceTextAdmission};
+
+    fn legacy_record() -> SourceRecord {
+        SourceRecord {
+            path: "a.rs".into(),
+            bytes: ObjectRef(Digest([8; 32])),
+            byte_len: 6,
+            text: SourceTextAdmission::Excluded,
+            source_repo_id: None,
+            language: None,
+        }
+    }
+
+    #[test]
+    fn legacy_optional_source_fields_keep_named_and_positional_wire() {
+        let record = legacy_record();
+        let json = serde_json::to_string(&record).expect("source record JSON");
+        assert!(!json.contains("source_repo_id"));
+        assert!(!json.contains("language"));
+        assert_eq!(
+            serde_json::from_str::<SourceRecord>(&json).expect("map"),
+            record
+        );
+
+        let positional = serde_json::json!(["a.rs", record.bytes, 6, record.text]);
+        assert_eq!(
+            serde_json::from_value::<SourceRecord>(positional.clone()).expect("short sequence"),
+            record
+        );
+        let mut with_null = positional.as_array().expect("sequence").clone();
+        with_null.push(serde_json::Value::Null);
+        assert_eq!(
+            serde_json::from_value::<SourceRecord>(serde_json::Value::Array(with_null.clone()))
+                .expect("explicit nullable source identity"),
+            record
+        );
+        with_null.push(serde_json::Value::Null);
+        assert_eq!(
+            serde_json::from_value::<SourceRecord>(serde_json::Value::Array(with_null.clone()))
+                .expect("explicit nullable language"),
+            record
+        );
+        with_null.push(serde_json::Value::Null);
+        assert!(
+            serde_json::from_value::<SourceRecord>(serde_json::Value::Array(with_null)).is_err()
+        );
+
+        let mut scoped = record.clone();
+        scoped.source_repo_id = Some(crate::RepoId::new("corp-a").expect("repo"));
+        scoped.language = Some(crate::lex::LanguageCode::new("rust").expect("language"));
+        let scoped_json = serde_json::to_string(&scoped).expect("scoped JSON");
+        assert!(
+            scoped_json.find("source_repo_id").expect("source identity")
+                < scoped_json.find("language").expect("language")
+        );
+        assert_eq!(
+            serde_json::from_str::<SourceRecord>(&scoped_json).expect("scoped map"),
+            scoped
+        );
+
+        let unknown = json.replacen("\"byte_len\":", "\"unknown\":0,\"byte_len\":", 1);
+        let duplicate = json.replacen("\"byte_len\":", "\"byte_len\":6,\"byte_len\":", 1);
+        assert!(serde_json::from_str::<SourceRecord>(&unknown).is_err());
+        assert!(serde_json::from_str::<SourceRecord>(&duplicate).is_err());
+    }
+
+    #[test]
+    fn source_record_cbor_retains_order_and_known_byte_key_compatibility() {
+        let record = legacy_record();
+        let mut value = ciborium::value::Value::serialized(&record).expect("source record CBOR");
+        let ciborium::value::Value::Map(fields) = &mut value else {
+            panic!("source record must be a CBOR map");
+        };
+        let names = fields
+            .iter()
+            .map(|(key, _)| match key {
+                ciborium::value::Value::Text(name) => name.as_str(),
+                _ => panic!("source record field key must be text"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["path", "bytes", "byte_len", "text"]);
+        let (key, _) = fields
+            .iter_mut()
+            .find(|(key, _)| matches!(key, ciborium::value::Value::Text(name) if name == "path"))
+            .expect("path key");
+        *key = ciborium::value::Value::Bytes(b"path".to_vec());
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&value, &mut cbor).expect("byte-key CBOR");
+        assert_eq!(
+            ciborium::de::from_reader::<SourceRecord, _>(cbor.as_slice()).expect("known byte key"),
+            record
+        );
+    }
 }
 
 /// One bounded native source intake item. A batch preserves this order in its
