@@ -256,7 +256,7 @@ def test_verified_migration_requires_current_named_nextest_observation(
         ("release_wrong_workspace", "Nextest build metadata differs from the workspace or its Cargo target"),
         ("release_unbound_legacy_path", "old-Q execution path differs from the retained executable"),
         ("release_changed_legacy_binary", "old-Q executable SHA-256 differs"),
-        ("release_valid", None),
+        ("release_valid", "retained old-Q tests require VERIFIED execution"),
     ],
 )
 def test_retirement_requires_complete_nextest_evidence(checker, capsys, evidence, expected_error):
@@ -461,8 +461,11 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, evidence
     if expected_error is not None:
         errors = capsys.readouterr().err
         assert expected_error in errors
-        assert "sealed_manifest.rs: source was removed with 43 test IDs still lacking VERIFIED" in errors
-        assert "sealed_manifest.rs [BLOCKED]" in errors
+        if evidence == "release_valid":
+            assert "sealed_manifest.rs" not in errors
+        else:
+            assert "sealed_manifest.rs: source was removed with 43 test IDs still lacking VERIFIED" in errors
+            assert "sealed_manifest.rs [BLOCKED]" in errors
 
 
 @pytest.mark.parametrize(
@@ -763,7 +766,158 @@ def test_shipment_checks_committed_roster_not_working_tree(checker, capsys):
     approved_revision = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=checker.ROOT, text=True
     ).strip()
-    assert checker.main(revision=approved_revision) == 0
+    assert checker.main(revision=approved_revision) == 1
+    assert "sealed_commitment_cost.rs: retained old-Q tests require VERIFIED execution" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected_error"),
+    [
+        ("complete", None),
+        ("partial", "terminal observations differ from retained tests"),
+        ("foreign", "Nextest event"),
+        ("without_old_q", "retained old-Q executable is absent"),
+        ("changed_old_q", "old-Q executable SHA-256 differs"),
+    ],
+)
+def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
+    checker, tmp_path, capsys, evidence, expected_error,
+):
+    source = "crates/quanta-index-lexical/tests/sealed_commitment_cost.rs"
+    cases = [
+        "file_admission_counts_verified_changed_sources_separately",
+        "a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files",
+    ]
+    body = (checker.ROOT / source).read_bytes()
+    package, target = "quanta-index-lexical", "sealed_commitment_cost"
+    binary_id = f"{package}::{target}"
+    run_id = "3739620b-a0ff-451d-897f-e5a32fc146eb"
+    evidence_dir = tmp_path.with_name(f"{tmp_path.name}-retained-evidence")
+    evidence_dir.mkdir()
+    target_dir = evidence_dir / f"{run_id}-target"
+    target_dir.mkdir()
+    binary = target_dir / target
+    binary.write_bytes(b"retained test executable")
+    old_q = target_dir / "legacy-searchd"
+    old_q.write_bytes(b"changed old daemon" if evidence == "changed_old_q" else b"old daemon")
+    legacy_digest = hashlib.sha256(b"old daemon").hexdigest()
+    row = {
+        "binary-id": binary_id, "binary-path": str(binary),
+        "binary-name": target, "kind": "test",
+    }
+    binaries_bytes = json.dumps({
+        "rust-build-meta": {"target-directory": str(target_dir)},
+        "rust-binaries": {binary_id: row},
+    }).encode()
+    cargo_bytes = json.dumps({
+        "target_directory": str(target_dir), "workspace_root": str(checker.ROOT),
+    }).encode()
+    inventory_bytes = json.dumps({
+        "test-count": len(cases),
+        "rust-suites": {binary_id: {
+            **row, "package-name": package, "status": "listed",
+            "testcases": {
+                case: {"ignored": False, "filter-match": {"status": "matches"}}
+                for case in cases
+            },
+        }},
+    }).encode()
+    meta = {"crate": package, "test_binary": target, "kind": "test"}
+    events = [{"type": "suite", "event": "started", "test_count": len(cases), "nextest": meta}]
+    for case in cases:
+        event = f"{binary_id}${case}"
+        events.extend((
+            {"type": "test", "event": "started", "name": event},
+            {"type": "test", "event": "ok", "name": event},
+        ))
+    events.append({
+        "type": "suite", "event": "ok", "passed": len(cases),
+        "failed": 0, "ignored": 0, "nextest": meta,
+    })
+    events_bytes = "".join(json.dumps(event) + "\n" for event in events).encode()
+    for suffix, payload in (
+        ("binaries.json", binaries_bytes), ("cargo.json", cargo_bytes),
+        ("inventory.json", inventory_bytes), ("nextest.jsonl", events_bytes),
+    ):
+        (evidence_dir / f"{run_id}-{suffix}").write_bytes(payload)
+    catalog = checker.ROOT / "tools/ci/test-authority.toml"
+    catalog.write_text(
+        f'[[integration_targets]]\npath = "{source}"\nowner = "{package}"\n',
+        encoding="utf-8",
+    )
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", *args],
+            cwd=checker.ROOT, text=True,
+        ).strip()
+
+    git("init", "-q")
+    git("add", ".")
+    git("commit", "-qm", "executed source")
+    run_revision = git("rev-parse", "HEAD")
+    selection = {
+        "lane": "test-integration-lane", "package": package,
+        "include_lib": False, "test_targets": [target],
+        "filterset": "test(sealed_commitment_cost)", "features": [],
+    }
+    commands = retirement_nextest._execution_commands(
+        selection,
+        evidence_dir / f"{run_id}-binaries.json",
+        evidence_dir / f"{run_id}-cargo.json",
+    )
+    manifest = {
+        "head": run_revision,
+        "source_tree_sha256": retirement_nextest.release_tree_sha256(checker.ROOT, run_revision),
+        "inventory_sha256": hashlib.sha256(inventory_bytes).hexdigest(),
+        "events_sha256": hashlib.sha256(events_bytes).hexdigest(),
+        "execution": {
+            "workspace_root": str(checker.ROOT),
+            "binaries_sha256": "sha256:" + hashlib.sha256(binaries_bytes).hexdigest(),
+            "cargo_sha256": "sha256:" + hashlib.sha256(cargo_bytes).hexdigest(),
+            "executables": {binary_id: hashlib.sha256(binary.read_bytes()).hexdigest()},
+            "selection": selection, "commands": commands,
+            "legacy_searchd": None if evidence == "without_old_q" else {
+                "path": str(old_q), "sha256": legacy_digest,
+            },
+        },
+    }
+    manifest_bytes = json.dumps(manifest).encode()
+    (evidence_dir / f"{run_id}-source-manifest.json").write_bytes(manifest_bytes)
+    observations = []
+    for index, case in enumerate(cases):
+        if evidence == "partial" and index == 1:
+            continue
+        observed_event = f"{binary_id}${case}"
+        if evidence == "foreign" and index == 1:
+            observed_event = f"{package}::other_target${case}"
+        observations.append({
+            "source": source, "case": case, "source_sha256": hashlib.sha256(body).hexdigest(),
+            "run_id": run_id, "event": observed_event,
+            "events_sha256": manifest["events_sha256"],
+            "inventory_sha256": manifest["inventory_sha256"],
+            "source_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        })
+    roster = checker.MANIFEST.read_text(encoding="utf-8")
+    toml_observations = "[" + ", ".join(
+        "{" + ", ".join(f"{key} = {json.dumps(value)}" for key, value in observation.items()) + "}"
+        for observation in observations
+    ) + "]"
+    roster = roster.replace(
+        'disposition = "retain"\nproof = "NOT_RUN"',
+        'disposition = "retain"\nproof = "VERIFIED"\n'
+        f'candidates = [{{path = "{source}", tests = {json.dumps(cases)}}}]\n'
+        f'observations = {toml_observations}',
+        1,
+    )
+    checker.MANIFEST.write_text(roster, encoding="utf-8")
+    git("add", str(checker.MANIFEST.relative_to(checker.ROOT)))
+    git("commit", "-qm", "candidate roster")
+    revision = git("rev-parse", "HEAD")
+
+    assert checker.main(revision=revision, evidence_dir=evidence_dir) == (0 if expected_error is None else 1)
+    if expected_error is not None:
+        assert expected_error in capsys.readouterr().err
 
 
 def test_retirement_without_body_proof_requires_the_feature_to_be_gone(checker, capsys):

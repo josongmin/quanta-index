@@ -21,6 +21,8 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from tools.benchmark.evidence import RawFile  # noqa: E402
+from tools.ci.proof_json import parse_proof_json  # noqa: E402
 from tools.ci.retirement_nextest import (  # noqa: E402
     RUST_PROOF_SOURCE,
     check_migration_observations,
@@ -247,6 +249,9 @@ def main(
                 errors.append(
                     f"{relative}: retirement requires VERIFIED proof or a removed frozen engine target"
                 )
+            retained_release = disposition == "retain" and revision is not None
+            if retained_release and proof != "VERIFIED":
+                errors.append(f"{relative}: retained old-Q tests require VERIFIED execution")
             if not isinstance(tests, list) or not tests:
                 errors.append(f"{relative}: disposition has no test IDs")
                 continue
@@ -260,9 +265,17 @@ def main(
             elif remaining and proof == "VERIFIED":
                 errors.append(f"{relative}: verified disposition still has missing assertions")
                 proof = "BLOCKED"
-            if disposition in ("migrate", "retire") and ("candidates" in group or proof == "VERIFIED"):
+            if (disposition in ("migrate", "retire") or retained_release) and (
+                "candidates" in group or proof == "VERIFIED"
+            ):
                 try:
                     expected = replacement_test_ids(group.get("candidates"))
+                    if retained_release:
+                        retained = {
+                            (relative, test) for test in tests if isinstance(test, str)
+                        }
+                        if expected != retained:
+                            raise ValueError("retained candidates differ from the original old-Q tests")
                     for candidate_path, case in sorted(expected):
                         if case not in candidate_test_names(ROOT / candidate_path):
                             raise ValueError(f"replacement test {case!r} is absent from {candidate_path}")
@@ -275,9 +288,22 @@ def main(
                             event_matches=event_matches,
                             executable_digest=executable_digest,
                         )
+                        if retained_release:
+                            if evidence_dir is None:
+                                raise ValueError("retained old-Q execution requires Nextest evidence")
+                            for observation in group["observations"]:
+                                manifest = RawFile.capture(
+                                    evidence_dir / f"{observation['run_id']}-source-manifest.json"
+                                )
+                                if manifest.sha256 != f"sha256:{observation['source_manifest_sha256']}":
+                                    raise ValueError("retained old-Q source manifest SHA-256 differs")
+                                execution = parse_proof_json(manifest.read_control())["execution"]
+                                if execution["legacy_searchd"] is None:
+                                    raise ValueError("retained old-Q executable is absent")
                         if observed != expected:
+                            subject = "retained tests" if retained_release else "declared replacement tests"
                             raise ValueError(
-                                "terminal observations differ from declared replacement tests: "
+                                f"terminal observations differ from {subject}: "
                                 f"missing={sorted(expected - observed)} extra={sorted(observed - expected)}"
                             )
                 except (OSError, ValueError, subprocess.CalledProcessError) as error:

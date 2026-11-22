@@ -8,6 +8,8 @@ version = 1
 # selector 1/1 (6cde7095-11ad-4ecf-86be-45c257e41ae1). BLOCKED records the remaining
 # release evidence requirement for DATA/BOOT-only groups. The macOS run does not
 # exercise the Linux-only non-UTF-8 ranked-key branch. See cutover ticket 04.
+# The two retained seal-cost tests remain NOT_RUN until their exact old-Q
+# Nextest bodies are bound to the committed release candidate.
 
 [[targets]]
 path = "crates/quanta-index-lexical/tests/sealed_commitment_cost.rs"
