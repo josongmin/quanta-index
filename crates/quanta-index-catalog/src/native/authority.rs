@@ -1625,17 +1625,183 @@ fn current_view_by_key(
     Ok(Some(view))
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+// This field order and omission policy are part of the durable row checksum.
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct OperationRow {
     immutable: ImmutableOperation,
     events: Vec<SourceEvent>,
     fence: u64,
     status: OperationStatus,
-    #[serde(deserialize_with = "serde::Deserialize::deserialize")]
     published_view: Option<CatalogView>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     projection_replay: Option<ProjectionReplayStamp>,
+}
+
+impl Serialize for OperationRow {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+
+        let has_replay = self.projection_replay.is_some();
+        let mut row =
+            serializer.serialize_struct("OperationRow", if has_replay { 6 } else { 5 })?;
+        row.serialize_field("immutable", &self.immutable)?;
+        row.serialize_field("events", &self.events)?;
+        row.serialize_field("fence", &self.fence)?;
+        row.serialize_field("status", &self.status)?;
+        row.serialize_field("published_view", &self.published_view)?;
+        if has_replay {
+            row.serialize_field("projection_replay", &self.projection_replay)?;
+        }
+        row.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for OperationRow {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        use serde::de::{Error as _, MapAccess, SeqAccess, Unexpected, Visitor};
+
+        const FIELDS: &[&str] = &[
+            "immutable",
+            "events",
+            "fence",
+            "status",
+            "published_view",
+            "projection_replay",
+        ];
+
+        enum Field {
+            Immutable,
+            Events,
+            Fence,
+            Status,
+            PublishedView,
+            ProjectionReplay,
+        }
+
+        impl<'de> Deserialize<'de> for Field {
+            fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+                struct Key;
+
+                impl Visitor<'_> for Key {
+                    type Value = Field;
+
+                    fn expecting(
+                        &self,
+                        formatter: &mut std::fmt::Formatter<'_>,
+                    ) -> std::fmt::Result {
+                        formatter.write_str("field identifier")
+                    }
+
+                    fn visit_str<E: serde::de::Error>(self, key: &str) -> Result<Field, E> {
+                        match key {
+                            "immutable" => Ok(Field::Immutable),
+                            "events" => Ok(Field::Events),
+                            "fence" => Ok(Field::Fence),
+                            "status" => Ok(Field::Status),
+                            "published_view" => Ok(Field::PublishedView),
+                            "projection_replay" => Ok(Field::ProjectionReplay),
+                            _ => Err(E::unknown_field(key, FIELDS)),
+                        }
+                    }
+
+                    fn visit_bytes<E: serde::de::Error>(self, key: &[u8]) -> Result<Field, E> {
+                        self.visit_str(&String::from_utf8_lossy(key))
+                    }
+
+                    fn visit_u64<E: serde::de::Error>(self, key: u64) -> Result<Field, E> {
+                        let name = usize::try_from(key)
+                            .ok()
+                            .and_then(|index| FIELDS.get(index))
+                            .ok_or_else(|| {
+                                E::invalid_value(
+                                    Unexpected::Unsigned(key),
+                                    &"field index 0 <= i < 6",
+                                )
+                            })?;
+                        self.visit_str(name)
+                    }
+                }
+
+                decoder.deserialize_identifier(Key)
+            }
+        }
+
+        fn read_field<'de, A: MapAccess<'de>, T: Deserialize<'de>>(
+            map: &mut A,
+            slot: &mut Option<T>,
+            name: &'static str,
+        ) -> Result<(), A::Error> {
+            if slot.is_some() {
+                return Err(A::Error::duplicate_field(name));
+            }
+            *slot = Some(map.next_value()?);
+            Ok(())
+        }
+
+        fn required_element<'de, A: SeqAccess<'de>, T: Deserialize<'de>>(
+            seq: &mut A,
+            index: usize,
+        ) -> Result<T, A::Error> {
+            seq.next_element()?.ok_or_else(|| {
+                A::Error::invalid_length(index, &"struct OperationRow with 6 elements")
+            })
+        }
+
+        struct Row;
+        impl<'de> Visitor<'de> for Row {
+            type Value = OperationRow;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct OperationRow")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut immutable = None;
+                let mut events = None;
+                let mut fence = None;
+                let mut status = None;
+                let mut published_view = None;
+                let mut projection_replay = None;
+
+                while let Some(field) = map.next_key()? {
+                    match field {
+                        Field::Immutable => read_field(&mut map, &mut immutable, "immutable")?,
+                        Field::Events => read_field(&mut map, &mut events, "events")?,
+                        Field::Fence => read_field(&mut map, &mut fence, "fence")?,
+                        Field::Status => read_field(&mut map, &mut status, "status")?,
+                        Field::PublishedView => {
+                            read_field(&mut map, &mut published_view, "published_view")?;
+                        }
+                        Field::ProjectionReplay => {
+                            read_field(&mut map, &mut projection_replay, "projection_replay")?;
+                        }
+                    }
+                }
+
+                Ok(OperationRow {
+                    immutable: immutable.ok_or_else(|| A::Error::missing_field("immutable"))?,
+                    events: events.ok_or_else(|| A::Error::missing_field("events"))?,
+                    fence: fence.ok_or_else(|| A::Error::missing_field("fence"))?,
+                    status: status.ok_or_else(|| A::Error::missing_field("status"))?,
+                    published_view: published_view
+                        .ok_or_else(|| A::Error::missing_field("published_view"))?,
+                    projection_replay: projection_replay.unwrap_or_default(),
+                })
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                Ok(OperationRow {
+                    immutable: required_element(&mut seq, 0)?,
+                    events: required_element(&mut seq, 1)?,
+                    fence: required_element(&mut seq, 2)?,
+                    status: required_element(&mut seq, 3)?,
+                    published_view: required_element(&mut seq, 4)?,
+                    projection_replay: seq.next_element()?.unwrap_or_default(),
+                })
+            }
+        }
+
+        decoder.deserialize_struct("OperationRow", FIELDS, Row)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -5137,6 +5303,61 @@ mod tests {
             source_mode: SourceOperationMode::Unchanged,
         }
     }
+    #[test]
+    fn operation_row_wire_preserves_required_null_and_sparse_replay() -> TestResult {
+        let mut row = OperationRow {
+            immutable: operation(19, 2),
+            events: Vec::new(),
+            fence: 31,
+            status: OperationStatus::Unknown,
+            published_view: None,
+            projection_replay: None,
+        };
+        let immutable = serde_json::to_string(&row.immutable)?;
+        let status = serde_json::to_string(&row.status)?;
+        let prefix =
+            format!(r#"{{"immutable":{immutable},"events":[],"fence":31,"status":{status}"#);
+        let omitted = format!(r#"{prefix},"published_view":null}}"#);
+        check_eq!(encode(&row)?, omitted.as_bytes());
+        check_eq!(decode::<OperationRow>(omitted.as_bytes())?, row);
+        let positional = format!("[{immutable},[],31,{status},null]");
+        check_eq!(decode::<OperationRow>(positional.as_bytes())?, row);
+
+        let explicit_null = format!("[{immutable},[],31,{status},null,null]");
+        check_eq!(decode::<OperationRow>(explicit_null.as_bytes())?, row);
+
+        for invalid in [
+            format!("{prefix}}}"),
+            format!(r#"{prefix},"published_view":null,"published_view":null}}"#),
+            format!(
+                r#"{prefix},"published_view":null,"projection_replay":null,"projection_replay":null}}"#
+            ),
+            format!(r#"{prefix},"published_view":null,"unknown":true}}"#),
+            format!("[{immutable},[],31,{status}]"),
+            format!("[{immutable},[],31,{status},null,null,0]"),
+        ] {
+            check!(decode::<OperationRow>(invalid.as_bytes()).is_err());
+        }
+
+        let published = view(26, ObjectRef(digest_id(42)), None);
+        row.projection_replay = Some(ProjectionReplayStamp {
+            expected_view: published.identity,
+            projection: ProjectionId(id(41)),
+            source: published.source,
+            context: digest_id(46),
+        });
+        row.published_view = Some(published);
+        let published = serde_json::to_string(&row.published_view)?;
+        let replay = serde_json::to_string(&row.projection_replay)?;
+        let stored =
+            format!(r#"{prefix},"published_view":{published},"projection_replay":{replay}}}"#);
+        check_eq!(encode(&row)?, stored.as_bytes());
+        check_eq!(decode::<OperationRow>(stored.as_bytes())?, row);
+        let positional = format!("[{immutable},[],31,{status},{published},{replay}]");
+        check_eq!(decode::<OperationRow>(positional.as_bytes())?, row);
+        Ok(())
+    }
+
     fn owner_work(owner_id: u8) -> WorkIntent {
         WorkIntent {
             workspace: workspace(),
