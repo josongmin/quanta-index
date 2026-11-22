@@ -2004,9 +2004,19 @@ impl RequestEnvelope<u64> for TestRequestEnvelope {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(transparent)]
 struct StreamingTestRequestEnvelope(TestRequestEnvelope);
+
+impl Serialize for StreamingTestRequestEnvelope {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for StreamingTestRequestEnvelope {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        TestRequestEnvelope::deserialize(deserializer).map(Self)
+    }
+}
 
 impl RequestEnvelope<u64> for StreamingTestRequestEnvelope {
     fn into_parts(self) -> (u64, u64, quanta_index_contract::DiagnosticAttemptFieldV1) {
@@ -3406,6 +3416,11 @@ fn closed_queued_one_shot_peer_never_enters_dispatcher() {
 
 #[test]
 fn closed_queued_stream_peer_never_enters_dispatcher() {
+    assert_eq!(
+        encode_request(&StreamingTestRequestEnvelope(test_request(72, 3)))
+            .expect("streaming envelope frame"),
+        encode_request(&test_request(72, 3)).expect("inner envelope frame"),
+    );
     let result = encode_request(&StreamingTestRequestEnvelope(test_request(72, 3)))
         .map_err(|error| error.to_string())
         .and_then(|frame| {

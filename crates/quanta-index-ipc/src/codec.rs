@@ -1454,10 +1454,19 @@ mod tests {
 
     #[test]
     fn original_work_comparison_preserves_ipc_struct_wire_and_refuses_sorted_map() {
-        #[derive(serde::Serialize)]
         struct Fields {
             z: u8,
             a: u8,
+        }
+        impl serde::Serialize for Fields {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeStruct as _;
+
+                let mut state = serializer.serialize_struct("Fields", 2)?;
+                state.serialize_field("z", &self.z)?;
+                state.serialize_field("a", &self.a)?;
+                state.end()
+            }
         }
         let value = Fields { z: 1, a: 2 };
         let wire = [0xa2, 0x61, b'z', 1, 0x61, b'a', 2];
@@ -1908,12 +1917,23 @@ mod tests {
         };
 
         // A peer can send malformed wire without using the canonical serializer.
-        #[derive(serde::Serialize)]
         struct RawQuery<'a> {
             query_text: &'a str,
             focus_subjects: &'a [quanta_index_contract::RepoMapFocusSubjectDto],
             top_k: u32,
             token_budget: u32,
+        }
+        impl serde::Serialize for RawQuery<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeStruct as _;
+
+                let mut state = serializer.serialize_struct("RawQuery", 4)?;
+                state.serialize_field("query_text", self.query_text)?;
+                state.serialize_field("focus_subjects", self.focus_subjects)?;
+                state.serialize_field("top_k", &self.top_k)?;
+                state.serialize_field("token_budget", &self.token_budget)?;
+                state.end()
+            }
         }
 
         let workspace = WorkspaceKey {

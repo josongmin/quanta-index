@@ -397,9 +397,16 @@ mod tests {
         shape: ProbeShape,
     }
 
-    #[derive(Serialize)]
     struct NestedDigest {
         batch_digest: &'static str,
+    }
+
+    impl Serialize for NestedDigest {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let mut state = serializer.serialize_struct("NestedDigest", 1)?;
+            state.serialize_field("batch_digest", self.batch_digest)?;
+            state.end()
+        }
     }
 
     impl Serialize for ProbeBatch {
