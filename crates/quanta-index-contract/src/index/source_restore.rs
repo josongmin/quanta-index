@@ -16,6 +16,103 @@ use quanta_index_contract_base::NativeCutoverDigest64V1;
 use sha2::{Digest as _, Sha256};
 use std::io::{self, Write};
 
+/// Legacy restore records accept unknown named fields for forward compatibility.
+/// Known names may arrive as CBOR text or byte strings.
+struct RestoreFieldKeyV1(&'static [&'static str]);
+
+impl<'de> serde::de::DeserializeSeed<'de> for RestoreFieldKeyV1 {
+    type Value = Option<&'static str>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        struct KeyVisitor(&'static [&'static str]);
+
+        impl serde::de::Visitor<'_> for KeyVisitor {
+            type Value = Option<&'static str>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a restore record field name")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(self.0.iter().copied().find(|field| *field == value))
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                Ok(self
+                    .0
+                    .iter()
+                    .copied()
+                    .find(|field| field.as_bytes() == value))
+            }
+        }
+
+        deserializer.deserialize_identifier(KeyVisitor(self.0))
+    }
+}
+
+macro_rules! restore_open_record {
+    ($name:ident { $($field:ident : $ty:ty $(= $map_default:ident)?),+ $(,)? }) => {
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                let mut state = serializer.serialize_struct(stringify!($name), FIELDS.len())?;
+                $(serde::ser::SerializeStruct::serialize_field(&mut state, stringify!($field), &self.$field)?;)+
+                serde::ser::SerializeStruct::end(state)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                struct RecordVisitor;
+                impl<'de> serde::de::Visitor<'de> for RecordVisitor {
+                    type Value = $name;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        formatter.write_str(concat!("a ", stringify!($name), " record"))
+                    }
+
+                    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                        $(let mut $field: Option<$ty> = None;)+
+                        while let Some(key) = map.next_key_seed(RestoreFieldKeyV1(FIELDS))? {
+                            match key {
+                                $(Some(stringify!($field)) => {
+                                    if $field.is_some() {
+                                        return Err(serde::de::Error::duplicate_field(stringify!($field)));
+                                    }
+                                    $field = Some(map.next_value::<$ty>()?);
+                                },)+
+                                None => { let _: serde::de::IgnoredAny = map.next_value()?; }
+                                _ => unreachable!("restore field seed only returns schema names"),
+                            }
+                        }
+                        Ok($name { $($field: restore_open_record!(@map_value $field $(= $map_default)?),)+ })
+                    }
+
+                    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                        $(let $field = seq.next_element::<$ty>()?
+                            .ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?;)+
+                        if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                            return Err(serde::de::Error::invalid_length(FIELDS.len().saturating_add(1), &self));
+                        }
+                        Ok($name { $($field,)+ })
+                    }
+                }
+                deserializer.deserialize_struct(stringify!($name), FIELDS, RecordVisitor)
+            }
+        }
+    };
+    (@map_value $field:ident) => {
+        $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
+    (@map_value $field:ident = default) => {
+        $field.unwrap_or_default()
+    };
+}
+
 const SOURCE_MANIFEST_DOMAIN_V1: &[u8] = b"qidx.imported-legacy-source-files.v1\0";
 const IMPORT_MANIFEST_DOMAIN_V1: &[u8] = b"qidx.imported-legacy-source-manifest.v1\0";
 const COMPLETED_DOMAIN_V1: &[u8] = b"historical-import/completed\0";
@@ -169,11 +266,16 @@ fn digest64_lower_v1(digest: Digest) -> NativeCutoverDigest64V1 {
 /// Exact source-head map root decoded from the committed lexical file authority.
 /// The committed file-authority artifact and generation seal authenticate this
 /// descriptor; its hash is never derived from a streamed file list.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LexicalSourceHeadsCommitmentV1 {
     pub root_sha256: Option<[u8; 32]>,
     pub entries: u64,
 }
+
+restore_open_record!(LexicalSourceHeadsCommitmentV1 {
+    root_sha256: Option<[u8; 32]> = default,
+    entries: u64,
+});
 
 impl LexicalSourceHeadsCommitmentV1 {
     #[must_use]
@@ -242,7 +344,7 @@ pub const MAX_SOURCE_SNAPSHOT_CHUNK_BYTES_V1: usize = 64 * 1024;
 /// Source identity issued only after a producer Original has completed the
 /// entire physically exported Legacy inventory. This DTO is not an issuer or
 /// a substitute for the FD6 retained Source fact that carries it.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LegacySourceOriginV1 {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
@@ -251,6 +353,15 @@ pub struct LegacySourceOriginV1 {
     pub source_publication_event: SourcePublicationEvent,
     pub source_heads: LexicalSourceHeadsCommitmentV1,
 }
+
+restore_open_record!(LegacySourceOriginV1 {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    active: SearchCorpusActiveHeadV1,
+    applied_ack: BatchPublishReceipt,
+    source_publication_event: SourcePublicationEvent,
+    source_heads: LexicalSourceHeadsCommitmentV1,
+});
 
 impl LegacySourceOriginV1 {
     #[must_use]
@@ -272,7 +383,7 @@ impl LegacySourceOriginV1 {
 /// Exact old physical Source origin joined to one published Native Source
 /// operation in a separate sibling workspace. The production issuer must
 /// retain the completed Original snapshot and the same-operation receipt.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeImportedSourceHeadV1 {
     pub origin: LegacySourceOriginV1,
     pub candidate_root_nonce: Digest,
@@ -285,6 +396,18 @@ pub struct NativeImportedSourceHeadV1 {
     pub source_manifest_sha256: Digest,
     pub completed_journal_digest: Digest,
 }
+
+restore_open_record!(NativeImportedSourceHeadV1 {
+    origin: LegacySourceOriginV1,
+    candidate_root_nonce: Digest,
+    source_operation: ImmutableOperation,
+    source_publication: CatalogView,
+    source_binding: NativeCutoverEvidenceSourcePublicationBindingV1,
+    original_snapshot_id: u64,
+    accepted_transcript_sha256: Digest,
+    source_manifest_sha256: Digest,
+    completed_journal_digest: Digest,
+});
 
 impl NativeImportedSourceHeadV1 {
     #[must_use]
@@ -355,6 +478,64 @@ mod tests {
     };
     use crate::{RepoId, RepoRelativePath, RevisionId, SourceFileKey, SourceFileRevision};
     use sha2::{Digest as _, Sha256};
+
+    #[test]
+    fn source_heads_wire_preserves_open_map_and_nullable_root() {
+        let expected = LexicalSourceHeadsCommitmentV1 {
+            root_sha256: None,
+            entries: 0,
+        };
+        assert_eq!(
+            serde_json::to_string(&expected).expect("source heads JSON"),
+            r#"{"root_sha256":null,"entries":0}"#
+        );
+        for wire in [
+            r#"{"entries":0}"#,
+            r#"{"root_sha256":null,"entries":0,"future":{"value":1}}"#,
+        ] {
+            assert_eq!(
+                serde_json::from_str::<LexicalSourceHeadsCommitmentV1>(wire)
+                    .expect("legacy open map"),
+                expected
+            );
+        }
+        assert!(
+            serde_json::from_str::<LexicalSourceHeadsCommitmentV1>(
+                r#"{"root_sha256":null,"root_sha256":null,"entries":0}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<LexicalSourceHeadsCommitmentV1>(r#"{"root_sha256":null}"#)
+                .is_err()
+        );
+
+        let mut cbor = Vec::new();
+        let value = ciborium::value::Value::Map(vec![
+            (
+                ciborium::value::Value::Bytes(b"root_sha256".to_vec()),
+                ciborium::value::Value::Null,
+            ),
+            (
+                ciborium::value::Value::Text("entries".into()),
+                ciborium::value::Value::Integer(0.into()),
+            ),
+            (
+                ciborium::value::Value::Bytes(b"future".to_vec()),
+                ciborium::value::Value::Null,
+            ),
+            (
+                ciborium::value::Value::Bytes(vec![0xff]),
+                ciborium::value::Value::Null,
+            ),
+        ]);
+        ciborium::ser::into_writer(&value, &mut cbor).expect("CBOR open map");
+        assert_eq!(
+            ciborium::de::from_reader::<LexicalSourceHeadsCommitmentV1, _>(cbor.as_slice())
+                .expect("legacy byte keys"),
+            expected
+        );
+    }
 
     #[test]
     fn imported_source_operation_sequence_is_independent_of_view_sequence() {
