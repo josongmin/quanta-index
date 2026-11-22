@@ -263,23 +263,26 @@ def capture_native_review_pools(
     query_pack_path: Path,
     record_path: Path,
     *,
-    pool_ids: tuple[str, str],
+    pool_ids: tuple[str, str, str],
     source_inputs: tuple[Path, Path, Path, Path, str] | None = None,
 ) -> tuple[dict, list[dict], dict]:
-    """Project a checked same-view Native capture into two unjudged file pools.
+    """Project a checked same-view Native capture into three unjudged file pools.
 
-    The pool IDs are owner-selected opaque names in lexical, Hybrid order. The
+    The pool IDs are owner-selected opaque names in lexical, Hybrid, ANN order. The
     review forms receive only file identity; route membership remains in custody.
     """
     require = evaluator.require
     require(
-        isinstance(pool_ids, (tuple, list)) and len(pool_ids) == 2,
-        "Native review requires two pool IDs",
+        isinstance(pool_ids, (tuple, list)) and len(pool_ids) == 3,
+        "Native review requires three pool IDs",
     )
     names = [evaluator.string(value, "Native review pool ID") for value in pool_ids]
-    require(len(set(names)) == 2, "Native review pool IDs must differ")
+    require(len(set(names)) == 3, "Native review pool IDs must differ")
     require(
-        all(not any(route in name.casefold() for route in ("lexical", "hybrid")) for name in names),
+        all(
+            not any(route in name.casefold() for route in ("lexical", "hybrid", "dense", "ann", "rrf"))
+            for name in names
+        ),
         "Native review pool IDs must hide route names",
     )
     paths = (suite_path, query_pack_path, record_path)
@@ -296,7 +299,7 @@ def capture_native_review_pools(
     candidates = native_file_evidence.prepare_review_candidates(
         suite, pack, capture, source, composite_source_inputs=source_inputs
     )
-    route_ids = dict(zip(("lexical", "hybrid"), names, strict=True))
+    route_ids = dict(zip(("lexical", "hybrid", "dense"), names, strict=True))
     pools = [
         {"pool_id": pool_id, "kind": "retrieval", "tasks": candidates[route]}
         for route, pool_id in route_ids.items()
@@ -594,6 +597,25 @@ def write_native_review_forms(
     source_inputs: tuple[Path, Path, Path, Path, str] | None = None,
 ) -> dict:
     """Issue blinded forms with the verified Native capture bound in owner custody."""
+    pack, pools, capture_custody = _native_review_inputs(
+        checkout, suite, query_pack, capture, control_pools, source_inputs=source_inputs,
+    )
+    return _write_review_forms(
+        checkout, pack, contexts, pools, output,
+        seed=seed, native_capture=capture_custody,
+    )
+
+
+def _native_review_inputs(
+    checkout: Path,
+    suite: Path,
+    query_pack: Path,
+    capture: Path,
+    control_pools: list[dict],
+    *,
+    source_inputs: tuple[Path, Path, Path, Path, str] | None,
+) -> tuple[dict, list[dict], dict]:
+    """Use the same captured candidates and controls for issue and replay."""
     evaluator.require(
         isinstance(control_pools, list) and all(
             isinstance(pool, dict) and pool.get("kind") in ("source_alternative", "random_control")
@@ -603,11 +625,42 @@ def write_native_review_forms(
     )
     pack, retrieval_pools, capture_custody = capture_native_review_pools(
         checkout, suite, query_pack, capture,
-        pool_ids=("route-a", "route-b"), source_inputs=source_inputs,
+        pool_ids=("route-a", "route-b", "route-c"), source_inputs=source_inputs,
     )
-    return _write_review_forms(
-        checkout, pack, contexts, retrieval_pools + control_pools, output,
-        seed=seed, native_capture=capture_custody,
+    return pack, retrieval_pools + control_pools, capture_custody
+
+
+def replay_native_review_labels(
+    checkout: Path,
+    suite_path: Path,
+    query_pack_path: Path,
+    capture_path: Path,
+    *,
+    source_inputs: tuple[Path, Path, Path, Path, str],
+    contexts: dict,
+    control_pools: list[dict],
+    completed_forms: list[dict],
+    adjudicated_form: dict,
+    task_contracts: dict,
+    seed: int,
+    expected_capture_sha256: str,
+) -> dict:
+    """Rebuild adjudicated labels from the captured candidate pool and forms."""
+    evaluator.require(
+        isinstance(source_inputs, tuple) and len(source_inputs) == 5,
+        "Native reviewed labels require complete composite source inputs",
+    )
+    pack, pools, capture_custody = _native_review_inputs(
+        checkout, suite_path, query_pack_path, capture_path, control_pools,
+        source_inputs=source_inputs,
+    )
+    evaluator.require(
+        capture_custody["record_bytes_sha256"] == expected_capture_sha256,
+        "Native reviewed labels raw capture digest differs",
+    )
+    return finalize_file_review_labels(
+        checkout, pack, contexts, pools, completed_forms, adjudicated_form,
+        task_contracts, seed=seed, native_capture=capture_custody,
     )
 
 

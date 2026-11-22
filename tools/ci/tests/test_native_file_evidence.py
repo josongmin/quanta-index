@@ -320,7 +320,9 @@ def test_indexed_inventory_rejects_frozen_source_change_even_with_same_paths():
 
 
 def test_native_independent_rrf_preserves_dense_only_and_file_metric_gold():
-    pools = native.replay_pools(paired(), 4, 4, {f"src/{number}.rs" for number in (1, 2, 3, 4)})
+    universe = {f"src/{number}.rs" for number in (1, 2, 3, 4)}
+    row = paired()
+    pools = native.replay_pools(row, 4, 4, universe)
     assert [row["path"] for row in pools["hybrid"]] == [
         "src/2.rs",
         "src/1.rs",
@@ -331,6 +333,12 @@ def test_native_independent_rrf_preserves_dense_only_and_file_metric_gold():
     assert ev.file_mrr_at_k_judged(pools["lexical"], qrels, 10) == 0
     assert ev.file_mrr_at_k_judged(pools["hybrid"], qrels, 10) == pytest.approx(1 / 3)
     assert ev.file_recall_at_k_judged(pools["hybrid"], qrels, 10) == 1
+    row["hybrid"]["file_top_k"] = 2
+    row["hybrid"]["hits"] = row["hybrid"]["hits"][:2]
+    pools = native.replay_pools(row, 4, 2, universe)
+    assert [hit["path"] for hit in pools["dense"]] == ["src/2.rs", "src/4.rs"]
+    assert [hit["path"] for hit in pools["lexical"]] == ["src/1.rs", "src/2.rs"]
+    assert [hit["path"] for hit in pools["hybrid"]] == ["src/2.rs", "src/1.rs"]
 
 
 @pytest.mark.parametrize("mutation", ["missing", "partial", "stale_binding", "wrong_instance", "false_exhaustive", "bad_scan"])
@@ -913,6 +921,7 @@ def test_native_review_preparation_retains_pool_membership_without_grading():
     assert pools == {
         "lexical": {"positive": files[:3], "negative": []},
         "hybrid": {"positive": files, "negative": [files[i] for i in (0, 1, 3)]},
+        "dense": {"positive": [files[i] for i in (0, 1, 3)], "negative": [files[i] for i in (0, 1, 3)]},
     }
     with pytest.raises(ev.EvidenceError, match="Native file qrels are incomplete"):
         native.evaluate(suite, pack, capture, source)
@@ -1007,7 +1016,7 @@ def test_native_review_cli_replays_frozen_unlabelled_inputs(tmp_path, large_capt
     source_paths = tuple((tmp_path / (name + ".json")).read_bytes() for name in ("suite", "query-pack", "capture"))
     replay_pack, retrieval_pools, capture_custody = holdout_review.capture_native_review_pools(
         checkout, tmp_path / "suite.json", tmp_path / "query-pack.json", tmp_path / "capture.json",
-        pool_ids=("route-a", "route-b"),
+        pool_ids=("route-a", "route-b", "route-c"),
     )
     all_pools = retrieval_pools + controls
     completed = []

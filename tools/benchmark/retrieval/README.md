@@ -394,7 +394,25 @@ review execution or human provenance:
 | `capture_review_pool(checkout, suite_path, record_path, pool_id=...)` | Validated single-route file capture; preserves abstentions, paths/hashes and source/pack binding; no chunk collapse |
 | `prepare` / `write` | Frozen diverse pools and context; both outputs remain unjudged |
 | `finalize_file_review_labels` | Two completed forms, slot-1 adjudication with third identity, `natural_language_file_search`; validates full frozen labels/threshold and emits file witnesses, not declaration/context spans |
+| `replay_native_review_labels` | Rebuilds the same lexical, Hybrid and ANN pools from the pinned Native capture, validates the original forms and recomputes the adjudicated file labels |
 | `bind_supplemental_review_tasks(checkout, suite_bytes, tasks)` | Bind before actual request/schema preflight; refuses judged/duplicate pairs, source/threshold drift and supplied decisions; subset cannot issue overall answerability |
+
+For a Native quality decision with `--require-signed-install`, pass
+`--native-reviewed-labels` as a JSON map from family IDs to review source
+manifests. Each manifest uses `schema_version: "native-file-review-source/v1"`,
+the integer `seed` used to issue the forms, and an `inputs` object with these
+keys.
+
+- `contexts` and `control_pools` contain the inputs to `prepare-native`.
+- `review_1` and `review_2` contain the two completed forms.
+- `adjudication` contains the third reviewer's completed slot-1 form.
+- `task_contracts` maps task IDs to their file-evaluation contracts.
+
+Every input is an object with a `path` and a hexadecimal `sha256` of its original
+JSON bytes. Relative paths resolve from the family manifest. The signed decision records the
+family manifest hashes and scores the labels it recomputes from those inputs.
+For 07.6 acceptance, retain the independent reviewer custody evidence alongside
+the result.
 
 Changed labels require a new suite validated by `evaluator.validate_suite`,
 new blind commitment and capture. Never rebind an old record to new qrels.

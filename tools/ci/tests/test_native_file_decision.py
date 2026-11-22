@@ -1058,7 +1058,10 @@ def test_signed_native_quality_requires_controlled_v2_before_scoring(
         )
 
 
-@pytest.mark.parametrize("drift", [None, "generation", "other_selection", "missing_reviewed_labels"])
+@pytest.mark.parametrize("drift", [
+    None, "generation", "other_selection", "missing_reviewed_labels", "standalone_receipt",
+    "review_digest", "review_changed_after_replay",
+])
 def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact_scope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, synthetic_replay_sources,
     drift: str | None,
@@ -1066,6 +1069,7 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
     import importlib
 
     from tools.benchmark.evidence import EvidenceError
+    from tools.benchmark.retrieval import holdout_review
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "tools/benchmark"))
     capture = importlib.import_module("native_file_capture")
@@ -1113,8 +1117,21 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
     review_paths = {}
     for index, family in enumerate(by_family):
         path = tmp_path / f"signed-review-{index}.json"
-        path.write_bytes(br'{"fixture":"reviewed"}')
         review_paths[family] = path
+        inputs = {}
+        for role in (
+            "contexts", "control_pools", "review_1", "review_2", "adjudication", "task_contracts",
+        ):
+            source = tmp_path / f"signed-review-{index}-{role}.json"
+            source.write_bytes(ev.canonical({"family": family, "role": role}))
+            inputs[role] = {"path": source.name, "sha256": _sha(source)}
+        if index == 0 and drift == "review_digest":
+            inputs["review_1"]["sha256"] = "0" * 64
+        path.write_bytes(ev.canonical(
+            {"status": "adjudicated_file_labels_unqualified", "qualified": False}
+            if index == 0 and drift == "standalone_receipt" else
+            {"schema_version": "native-file-review-source/v1", "seed": index, "inputs": inputs}
+        ))
     reviewed.write_bytes(ev.canonical({
         family: path.name for family, path in review_paths.items()
     }))
@@ -1132,6 +1149,7 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
     }
     drifted = False
     checked = []
+    labels_replayed = []
 
     def verify(
         *_args, require_signed_install, signed_install_identity,
@@ -1149,16 +1167,28 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
             for family, replay in by_family.items()
         }
 
-    def replay(*args, reviewed_labels=None, expected_reviewed_labels=None, **_options):
+    def replay_labels(_repo, _suite, _pack, capture_path, **options):
+        assert verified, "signed installation must be verified before replaying reviews"
+        family = options["source_inputs"][-1]
+        assert options["expected_capture_sha256"] == _sha(capture_path)
+        assert options["completed_forms"] == [
+            {"family": family, "role": "review_1"},
+            {"family": family, "role": "review_2"},
+        ]
+        assert options["adjudicated_form"] == {"family": family, "role": "adjudication"}
+        labels_replayed.append(family)
+        return {"family": family, "fixture": "replayed"}
+
+    def replay(*args, reviewed_labels=None, **_options):
         nonlocal drifted
         assert verified, "signed installation must be verified before scoring"
         family = args[-1][-1]
-        if drift != "missing_reviewed_labels":
-            receipt = review_paths[family]
-            assert reviewed_labels == receipt
-            assert expected_reviewed_labels == (f"sha256:{_sha(receipt)}", receipt.stat().st_size)
+        assert reviewed_labels == ev.canonical({"family": family, "fixture": "replayed"})
         if drift == "generation":
             drifted = True
+        if drift == "review_changed_after_replay":
+            original = tmp_path / f"{review_paths[family].stem}-review_1.json"
+            original.write_bytes(br'{"changed":true}')
         return copy.deepcopy(by_family[family])
 
     def check_install(actual_plan, actual_selected, policy_sha):
@@ -1175,22 +1205,30 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
     monkeypatch.setattr(decision, "verify_controlled_capture_runs", verify)
     monkeypatch.setattr(ev, "load_native_file_replay", replay)
     monkeypatch.setattr(capture, "_verify_signed_install", check_install)
+    monkeypatch.setattr(holdout_review, "replay_native_review_labels", replay_labels)
     options = {
         "execution_evidence_root": tmp_path,
         "execution_run_ids": ["fixture"],
         "require_signed_install": True,
     }
-    if drift == "missing_reviewed_labels":
-        with pytest.raises(decision.NativeDecisionError, match="independently reviewed labels"):
+    if drift != "missing_reviewed_labels":
+        options["reviewed_labels_path"] = reviewed
+    entry_errors = {
+        "missing_reviewed_labels": "independently reviewed labels",
+        "standalone_receipt": "requires original review source inputs",
+        "review_digest": "original review source differs from its manifest",
+    }
+    if drift in entry_errors:
+        with pytest.raises(decision.NativeDecisionError, match=entry_errors[drift]):
             decision.build_native_file_decision(
                 manifest, policy, selected.binary, None, binaries[2], **options,
             )
         assert not verified
         return
-    options["reviewed_labels_path"] = reviewed
     expected_errors = {
         "generation": (EvidenceError, "active generation changed"),
         "other_selection": (decision.NativeDecisionError, "selection digest changed"),
+        "review_changed_after_replay": (decision.NativeDecisionError, "inputs changed during replay"),
     }
     if drift is not None:
         error, message = expected_errors[drift]
@@ -1204,10 +1242,14 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
         manifest, policy, selected.binary, None, binaries[2], **options,
     )
     assert checked == [True]
+    assert labels_replayed == list(by_family)
     assert result["status"] == "quality_admit"
     assert result["signed_install_verified"] is True
     assert result["signed_install"] == identity
     assert result["reviewed_labels_manifest_sha256"] == _sha(reviewed)
+    assert result["review_source_manifest_sha256"] == {
+        family: _sha(path) for family, path in review_paths.items()
+    }
     assert result["product_default_decision"] is False
     assert result["runtime_qualified"] is False
 

@@ -4526,7 +4526,7 @@ def load_native_file_replay(
     expected_source_binding: tuple[str, int] | None = None,
     expected_reviewed_labels: tuple[str, int] | None = None,
     release_validator: Callable[[Path], dict] | None = None,
-    reviewed_labels: Path | None = None,
+    reviewed_labels: Path | bytes | None = None,
 ) -> dict[str, dict]:
     """Authenticate frozen inputs, then replay one Native file capture."""
     from tools.benchmark.retrieval import native_file_evidence

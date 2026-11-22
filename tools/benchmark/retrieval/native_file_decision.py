@@ -16,6 +16,7 @@ from functools import cache
 from pathlib import Path
 
 from tools.benchmark.evidence import (
+    CONTROL_DOCUMENT_BYTES,
     EvidenceError,
     RawFile,
     _read_control_file,
@@ -311,6 +312,52 @@ class _ScoredFamilyInputs:
     digests: dict[str, str]
 
 
+_REVIEW_SOURCE_ROLES = (
+    "contexts", "control_pools", "review_1", "review_2", "adjudication", "task_contracts",
+)
+
+
+def _signed_review_sources(source: RawFile) -> tuple[int, dict[str, tuple[Path, str]]]:
+    document = parse_json(read_control(source).decode("utf-8"))
+    _require(
+        isinstance(document, dict)
+        and set(document) == {"schema_version", "seed", "inputs"}
+        and document["schema_version"] == "native-file-review-source/v1"
+        and type(document["seed"]) is int
+        and isinstance(document["inputs"], dict)
+        and set(document["inputs"]) == set(_REVIEW_SOURCE_ROLES),
+        "Native signed quality requires original review source inputs",
+    )
+    inputs = {}
+    for role in _REVIEW_SOURCE_ROLES:
+        value = document["inputs"][role]
+        _require(
+            isinstance(value, dict) and set(value) == {"path", "sha256"}
+            and isinstance(value["path"], str) and bool(value["path"])
+            and isinstance(value["sha256"], str) and len(value["sha256"]) == 64
+            and all(char in "0123456789abcdef" for char in value["sha256"]),
+            "Native original review source reference differs",
+        )
+        inputs[role] = source.path.parent / value["path"], value["sha256"]
+    return document["seed"], inputs
+
+
+def _read_signed_review_input(source: RawFile, *, form: bool):
+    if not form:
+        return parse_json(read_control(source).decode("utf-8"))
+    from tools.benchmark.retrieval.holdout_review import MAX_REVIEW_BYTES
+
+    # The export budget covers both templates' source text. A submitted form
+    # adds JSON escaping and bounded control metadata to one copy.
+    limit = 6 * (MAX_REVIEW_BYTES // 2) + CONTROL_DOCUMENT_BYTES
+    raw = _read_control_file(source.path, max_bytes=limit)
+    _require(
+        (f"sha256:{hashlib.sha256(raw).hexdigest()}", len(raw)) == (source.sha256, source.size),
+        "Native original review form bytes differ from the frozen commitment",
+    )
+    return parse_json(raw.decode("utf-8"))
+
+
 def verify_controlled_capture_runs(
     manifest_path: Path,
     policy_path: Path,
@@ -464,8 +511,8 @@ def build_native_file_decision(
     """Replay all raw Native families and apply fixed quality thresholds.
 
     Capture fields are compared with pinned files. A signed quality decision
-    requires controlled runs and an independent review receipt for each
-    family. The 960-second production profile remains separate.
+    requires controlled runs and the original review forms for each family.
+    The 960-second production profile remains separate.
     """
     _require(
         (execution_evidence_root is None) == (execution_run_ids is None),
@@ -574,6 +621,7 @@ def build_native_file_decision(
         runtime[family["family_id"]] = config_path, config_sha, socket, selected
     reviewed: dict[str, Path] = {}
     reviewed_bytes: dict[Path, tuple[str, int]] = {}
+    signed_reviews: dict[str, tuple[int, dict[str, RawFile]]] = {}
     reviewed_sha = None
     if reviewed_labels_path is not None:
         declared_review_manifest = reviewed_labels_path
@@ -603,6 +651,27 @@ def build_native_file_decision(
             receipt_digest = file_digest(receipt)
             bind_digest(tracked_files, receipt, receipt_digest[0].removeprefix("sha256:"))
             reviewed_bytes[receipt] = receipt_digest
+        if require_signed_install:
+            for family, receipt in reviewed.items():
+                seed, paths = _signed_review_sources(RawFile(receipt, *reviewed_bytes[receipt]))
+                inputs = {}
+                if output is not None:
+                    output.protect(("original review source", path) for path, _ in paths.values())
+                for role, (declared, expected) in paths.items():
+                    current = resolve_path(declared)
+                    source = RawFile.capture(current)
+                    _require(
+                        source.sha256 == f"sha256:{expected}",
+                        "Native original review source differs from its manifest",
+                    )
+                    _require(
+                        tracked_selections.get(current, expected) == expected,
+                        "Native decision input path is reused with different bytes",
+                    )
+                    bind_digest(tracked_files, current, expected)
+                    tracked_path_targets.append((declared, current))
+                    inputs[role] = source
+                signed_reviews[family] = seed, inputs
 
     def path(entry: dict, key: str) -> Path:
         return resolve_path(manifest_path.parent / entry[key])
@@ -708,14 +777,37 @@ def build_native_file_decision(
                 tracked_files[source] == _sha(source),
                 "Native decision input changed before family replay",
             )
-        receipt = reviewed.get(family_id)
-        options = (
-            {
+        if require_signed_install:
+            from tools.benchmark.retrieval.holdout_review import replay_native_review_labels
+
+            seed, sources = signed_reviews[family_id]
+            documents = {
+                role: _read_signed_review_input(
+                    source, form=role in {"review_1", "review_2", "adjudication"},
+                )
+                for role, source in sources.items()
+            }
+            issued = replay_native_review_labels(
+                paths["repo"], paths["suite"], paths["query_pack"], paths["capture"],
+                source_inputs=(
+                    paths["source_universe"], paths["source_binding"],
+                    release_path(entry, "base_release"), release_path(entry, "target_releases"),
+                    family_id,
+                ),
+                contexts=documents["contexts"], control_pools=documents["control_pools"],
+                completed_forms=[documents["review_1"], documents["review_2"]],
+                adjudicated_form=documents["adjudication"], task_contracts=documents["task_contracts"],
+                seed=seed,
+                expected_capture_sha256=tracked_input_bytes[paths["capture"]][0].removeprefix("sha256:"),
+            )
+            options = {"reviewed_labels": evaluator.canonical(issued)}
+        elif (receipt := reviewed.get(family_id)) is not None:
+            options = {
                 "reviewed_labels": receipt,
                 "expected_reviewed_labels": reviewed_bytes[receipt],
             }
-            if receipt is not None else {}
-        )
+        else:
+            options = {}
         replay = evaluator.load_native_file_replay(
             paths["repo"],
             paths["suite"],
@@ -923,6 +1015,10 @@ def build_native_file_decision(
             "signed_install_verified": True,
             "signed_install_scope": "verified_installed_approval_for_selected_native_cohort",
             "signed_install": signed_install_identity,
+            "review_source_manifest_sha256": {
+                family: reviewed_bytes[path][0].removeprefix("sha256:")
+                for family, path in sorted(reviewed.items())
+            },
         } if require_signed_install else {}),
         "capture_binding_consistent": True,
         "capture_consistency_scope": "replayed_capture_commitments_and_current_input_files",

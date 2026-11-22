@@ -503,6 +503,7 @@ def replay_pools(
     return {
         "lexical": [{"path": hit["path"]} for hit in pools["lexical"][:file_top_k]],
         "hybrid": [{"path": identities[owner][0]} for owner in expected],
+        "dense": [{"path": hit["path"]} for hit in pools["dense"][:file_top_k]],
         "union": [{"path": identities[owner][0]} for owner in sorted(identities)],
     }
 
@@ -992,7 +993,7 @@ def prepare_review_candidates(
         suite, pack, capture, source, composite_source_inputs
     )
     universe = {file["path"]: file["file_sha256"] for file in pack["file_universe"]}
-    prepared: dict[str, dict[str, list[dict]]] = {"lexical": {}, "hybrid": {}}
+    prepared: dict[str, dict[str, list[dict]]] = {"lexical": {}, "hybrid": {}, "dense": {}}
     for task, _row, pools in rows:
         ev.require(
             task["answerable"] is False and task["gold"] == []

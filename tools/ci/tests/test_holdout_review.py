@@ -133,6 +133,7 @@ def test_native_capture_projects_opaque_unjudged_pools_and_binds_raw_files(tmp_p
         return {
             "lexical": {"toy.001": [by_path["alternative.py"], by_path["answer.py"]]},
             "hybrid": {"toy.001": [by_path["answer.py"]]},
+            "dense": {"toy.001": [by_path["control.py"]]},
         }
 
     monkeypatch.setattr(evaluator, "_bind_native_file_inputs", load)
@@ -141,7 +142,7 @@ def test_native_capture_projects_opaque_unjudged_pools_and_binds_raw_files(tmp_p
     )
     projected_pack, pools, custody = holdout_review.capture_native_review_pools(
         checkout, suite_path, query_pack_path, capture_path,
-        pool_ids=("opaque-a", "opaque-b"), source_inputs=source_inputs,
+        pool_ids=("opaque-a", "opaque-b", "opaque-c"), source_inputs=source_inputs,
     )
     assert projected_pack == pack and observed == [source_inputs]
     assert pools == [
@@ -153,8 +154,12 @@ def test_native_capture_projects_opaque_unjudged_pools_and_binds_raw_files(tmp_p
             "pool_id": "opaque-b", "kind": "retrieval",
             "tasks": {"toy.001": [by_path["answer.py"]]},
         },
+        {
+            "pool_id": "opaque-c", "kind": "retrieval",
+            "tasks": {"toy.001": [by_path["control.py"]]},
+        },
     ]
-    assert custody["route_pool_ids"] == {"lexical": "opaque-a", "hybrid": "opaque-b"}
+    assert custody["route_pool_ids"] == {"lexical": "opaque-a", "hybrid": "opaque-b", "dense": "opaque-c"}
     assert custody["suite_bytes_sha256"] == evaluator.digest(suite_path.read_bytes())
     assert custody["query_pack_bytes_sha256"] == evaluator.digest(query_pack_path.read_bytes())
     assert custody["record_bytes_sha256"] == evaluator.digest(capture_path.read_bytes())
@@ -162,7 +167,9 @@ def test_native_capture_projects_opaque_unjudged_pools_and_binds_raw_files(tmp_p
     assert custody["qualified"] is custody["pool_execution_attested"] is custody["human_provenance_attested"] is False
     forms, _ = holdout_review.prepare(checkout, pack, contexts, pools + controls[2:], seed=42)
     reviewer_bytes = evaluator.canonical(forms)
-    assert all(marker not in reviewer_bytes for marker in (b"lexical", b"hybrid", b"opaque-a", b"opaque-b", b"secret_score"))
+    assert all(marker not in reviewer_bytes for marker in (
+        b"lexical", b"hybrid", b"dense", b"opaque-a", b"opaque-b", b"opaque-c", b"secret_score",
+    ))
 
     contexts_path = tmp_path / "contexts.json"
     controls_path = tmp_path / "controls.json"
@@ -177,26 +184,64 @@ def test_native_capture_projects_opaque_unjudged_pools_and_binds_raw_files(tmp_p
     ]) == 0
     for slot in (1, 2):
         raw = (output / f"reviewer-{slot}.json").read_bytes()
-        assert all(marker not in raw for marker in (b"lexical", b"hybrid", b"route-a", b"route-b"))
+        assert all(marker not in raw for marker in (
+            b"lexical", b"hybrid", b"dense", b"route-a", b"route-b", b"route-c",
+        ))
         assert all(file["grade"] is None for file in json.loads(raw)["reviews"][0]["files"])
     written = json.loads((output / "owner" / "custody.json").read_bytes())
     assert written["qualified"] is written["native_capture"]["qualified"] is False
     assert written["native_capture"]["record_bytes_sha256"] == custody["record_bytes_sha256"]
-    assert written["native_capture"]["route_pool_ids"] == {"lexical": "route-a", "hybrid": "route-b"}
+    assert written["native_capture"]["route_pool_ids"] == {
+        "lexical": "route-a", "hybrid": "route-b", "dense": "route-c",
+    }
     issued_forms = [json.loads((output / f"reviewer-{slot}.json").read_bytes()) for slot in (1, 2)]
     assert all(form["review_inputs_sha256"] == written["review_inputs_sha256"] for form in issued_forms)
     completed = _completed_forms(issued_forms)
     _, original_pools, original_capture = holdout_review.capture_native_review_pools(
-        checkout, suite_path, query_pack_path, capture_path, pool_ids=("route-a", "route-b"),
+        checkout, suite_path, query_pack_path, capture_path, pool_ids=("route-a", "route-b", "route-c"),
     )
     checked = holdout_review.validate_completed_forms(
         checkout, pack, contexts, original_pools + controls[2:], completed,
         seed=42, native_capture=original_capture,
     )
     assert checked["review_inputs_sha256"] == written["review_inputs_sha256"]
+    adjudicated = copy.deepcopy(completed[0])
+    adjudicated["reviewer_id"] = "person-3"
+    contracts = {"toy.001": {
+        "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+        "gold_unit": "distinct_file", "result_unit": "distinct_file",
+    }}
+    replay_options = {
+        "source_inputs": source_inputs,
+        "contexts": contexts,
+        "control_pools": controls[2:],
+        "completed_forms": completed,
+        "adjudicated_form": adjudicated,
+        "task_contracts": contracts,
+        "seed": 42,
+    }
+    replayed = holdout_review.replay_native_review_labels(
+        checkout, suite_path, query_pack_path, capture_path,
+        expected_capture_sha256=custody["record_bytes_sha256"], **replay_options,
+    )
+    assert replayed["native_capture_sha256"] == custody["record_bytes_sha256"]
+    assert replayed["review_inputs_sha256"] == checked["review_inputs_sha256"]
+    changed_forms = copy.deepcopy(completed)
+    changed_forms[0]["reviews"][0]["files"][0]["source_text"] += "\n"
+    with pytest.raises(evaluator.EvidenceError, match="review source/candidate changed"):
+        holdout_review.replay_native_review_labels(
+            checkout, suite_path, query_pack_path, capture_path,
+            expected_capture_sha256=custody["record_bytes_sha256"],
+            **(replay_options | {"completed_forms": changed_forms}),
+        )
+    with pytest.raises(evaluator.EvidenceError, match="raw capture digest differs"):
+        holdout_review.replay_native_review_labels(
+            checkout, suite_path, query_pack_path, capture_path,
+            expected_capture_sha256="0" * 64, **replay_options,
+        )
     capture_path.write_bytes(capture_path.read_bytes() + b"\n")
     _, same_pools, replaced_capture = holdout_review.capture_native_review_pools(
-        checkout, suite_path, query_pack_path, capture_path, pool_ids=("route-a", "route-b"),
+        checkout, suite_path, query_pack_path, capture_path, pool_ids=("route-a", "route-b", "route-c"),
     )
     assert same_pools == original_pools
     with pytest.raises(evaluator.EvidenceError, match="review_inputs_sha256"):
@@ -217,18 +262,22 @@ def test_native_review_capture_refuses_changed_raw_input(tmp_path, monkeypatch):
 
     def mutate(*_args, **_kwargs):
         paths[2].write_bytes(b'{"changed":true}\n')
-        return {"lexical": {"toy.001": []}, "hybrid": {"toy.001": []}}
+        return {"lexical": {"toy.001": []}, "hybrid": {"toy.001": []}, "dense": {"toy.001": []}}
 
     monkeypatch.setattr(
         native_file_evidence, "prepare_review_candidates", mutate, raising=False
     )
     with pytest.raises(evaluator.EvidenceError, match="input changed"):
         holdout_review.capture_native_review_pools(
-            checkout, *paths, pool_ids=("opaque-a", "opaque-b")
+            checkout, *paths, pool_ids=("opaque-a", "opaque-b", "opaque-c")
         )
 
 
-@pytest.mark.parametrize("pool_ids", [("same", "same"), ("lexical", "opaque-b"), ("opaque-a", "hybrid-pool")])
+@pytest.mark.parametrize("pool_ids", [
+    ("opaque-a", "opaque-b"), ("same", "same", "opaque-c"),
+    ("lexical", "opaque-b", "opaque-c"), ("opaque-a", "hybrid-pool", "opaque-c"),
+    ("opaque-a", "opaque-b", "ann-pool"),
+])
 def test_native_review_pool_ids_cannot_disclose_route_or_repeat(tmp_path, pool_ids):
     checkout, _pack, _contexts, _controls = _fixture(tmp_path)
     with pytest.raises(evaluator.EvidenceError, match="pool IDs"):
