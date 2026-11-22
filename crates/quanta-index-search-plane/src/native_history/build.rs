@@ -15,7 +15,10 @@ use quanta_index_contract::index::{
     MAX_HISTORY_SOURCE_INPUT_BYTES_V1,
 };
 use quanta_index_core::index::{StoredObject, effort::ResourceNeed, ports::IndexHistoryBuildPort};
-use serde::Deserialize;
+use serde::{
+    Deserialize,
+    de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor},
+};
 
 pub struct NativeHistoryBuildV1 {
     demand: ResourceNeed,
@@ -87,9 +90,94 @@ enum LoadedBootSourceV1 {
     NativeRestore(SourceInputData<NativeHistoryRestoreInputV1>),
 }
 
-#[derive(Deserialize)]
 struct BootSourceVersionV1 {
     wire_version: u32,
+}
+
+impl<'de> Deserialize<'de> for BootSourceVersionV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &["wire_version"];
+
+        enum Field {
+            Version,
+            Other,
+        }
+
+        impl<'de> Deserialize<'de> for Field {
+            fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+                struct Key;
+                impl Visitor<'_> for Key {
+                    type Value = Field;
+
+                    fn expecting(
+                        &self,
+                        formatter: &mut std::fmt::Formatter<'_>,
+                    ) -> std::fmt::Result {
+                        formatter.write_str("field identifier")
+                    }
+
+                    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                        Ok(if value == "wire_version" {
+                            Field::Version
+                        } else {
+                            Field::Other
+                        })
+                    }
+
+                    fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                        Ok(if value == b"wire_version" {
+                            Field::Version
+                        } else {
+                            Field::Other
+                        })
+                    }
+                }
+                decoder.deserialize_identifier(Key)
+            }
+        }
+
+        struct Version;
+        impl<'de> Visitor<'de> for Version {
+            type Value = BootSourceVersionV1;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct BootSourceVersionV1")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut wire_version = None;
+                while let Some(field) = map.next_key::<Field>()? {
+                    match field {
+                        Field::Version => {
+                            if wire_version.is_some() {
+                                return Err(de::Error::duplicate_field("wire_version"));
+                            }
+                            wire_version = Some(map.next_value()?);
+                        }
+                        Field::Other => {
+                            let _: IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                Ok(BootSourceVersionV1 {
+                    wire_version: wire_version
+                        .ok_or_else(|| de::Error::missing_field("wire_version"))?,
+                })
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let wire_version = sequence.next_element()?.ok_or_else(|| {
+                    de::Error::invalid_length(0, &"struct BootSourceVersionV1 with 1 element")
+                })?;
+                Ok(BootSourceVersionV1 { wire_version })
+            }
+        }
+
+        decoder.deserialize_struct("BootSourceVersionV1", FIELDS, Version)
+    }
 }
 
 fn decode_boot_source_v1(
@@ -636,6 +724,30 @@ mod snapshot_checkpoint_tests {
             payload,
             None,
         )
+    }
+
+    #[test]
+    fn boot_source_version_preserves_map_and_positional_shapes() {
+        let mapped: BootSourceVersionV1 = super::super::row_budget::decode_json_shape(
+            br#"{"wire_version":2,"future":{"nested":null}}"#,
+        )
+        .expect("forward map field");
+        assert_eq!(mapped.wire_version, 2);
+        let positional: BootSourceVersionV1 =
+            super::super::row_budget::decode_json_shape(br#"[3]"#).expect("positional version");
+        assert_eq!(positional.wire_version, 3);
+
+        for malformed in [
+            br#"{"wire_version":1,"wire_version":2}"#.as_slice(),
+            br#"{}"#,
+            br#"[1,2]"#,
+            br#"{"wire_version":null}"#,
+        ] {
+            assert!(
+                super::super::row_budget::decode_json_shape::<BootSourceVersionV1>(malformed)
+                    .is_err()
+            );
+        }
     }
 
     #[test]

@@ -271,37 +271,39 @@ impl<'de, A: VariantAccess<'de>> VariantAccess<'de> for BoundedVariant<A> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::shape_codec::{closed_shape, newtype_shape};
     use super::*;
-    use serde::Deserialize;
 
-    #[derive(Debug, Deserialize, Eq, PartialEq)]
-    #[serde(deny_unknown_fields)]
-    struct Probe {
-        entries: Vec<Entry>,
-    }
+    closed_shape!(
+        struct Probe {
+            entries: Vec<Entry>,
+        }
+    );
 
-    #[derive(Debug, Deserialize, Eq, PartialEq)]
-    enum Entry {
-        Number(Option<u64>),
-    }
+    newtype_shape!(enum Entry { Number: Option<u64> });
 
     #[test]
     fn nested_field_variant_and_scalar_errors_are_bounded() -> Result<(), serde_json::Error> {
-        assert_eq!(
-            from_slice::<Probe>(br#"{"entries":[{"Number":7},{"Number":null}]}"#)?,
-            Probe {
-                entries: vec![Entry::Number(Some(7)), Entry::Number(None)],
-            }
-        );
+        let probe = from_slice::<Probe>(br#"{"entries":[{"Number":7},{"Number":null}]}"#)?;
+        assert!(matches!(
+            probe.entries.as_slice(),
+            [Entry::Number(Some(7)), Entry::Number(None)]
+        ));
+        let positional = from_slice::<Probe>(br#"[[{"Number":null}]]"#)?;
+        assert!(matches!(
+            positional.entries.as_slice(),
+            [Entry::Number(None)]
+        ));
         let token = "x".repeat(32 * 1024);
         for malformed in [
             format!(r#"{{"{token}":[]}}"#),
             format!(r#"{{"entries":[{{"{token}":null}}]}}"#),
             format!(r#"{{"entries":[{{"Number":"{token}"}}]}}"#),
         ] {
-            let error = from_slice::<Probe>(malformed.as_bytes())
-                .expect_err("malformed shape must be refused")
-                .to_string();
+            let error = match from_slice::<Probe>(malformed.as_bytes()) {
+                Err(error) => error.to_string(),
+                Ok(_) => panic!("malformed shape must be refused"),
+            };
             assert!(error.starts_with(LARGE_ERROR));
             assert!(error.contains("line 1 column"));
             assert!(error.len() < MAX_ERROR_BYTES);
