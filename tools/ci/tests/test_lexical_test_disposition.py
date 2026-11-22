@@ -547,6 +547,8 @@ def test_release_source_manifest_rejects_checkout_drift(tmp_path, monkeypatch, s
     "outside-profile", "outside-profile-without-expectation", "retained-outside-profile",
     "retained-outside-roster-without-expectation", "roster-resume", "roster-changed-terminal",
     "native-stale-old-q", "native-platform-drift", "retained-native-platform-drift",
+    "manifest-publication-source-drift", "manifest-publication-directory-replaced",
+    "manifest-publication-file-replaced",
 ])
 def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, monkeypatch, changed):
     checkout = tmp_path / "source"
@@ -700,6 +702,52 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         filterset="test(=passes)", features=["native-one, native-two"],
         expected_events=[event],
     )
+    if changed == "manifest-publication-source-drift":
+        def refuse_after_publish(*_):
+            if any(evidence.glob("*-source-manifest.json")):
+                raise ValueError("retirement source changed during manifest publication")
+
+        monkeypatch.setattr(retirement_nextest, "_require_frozen_checkout", refuse_after_publish)
+        with pytest.raises(ValueError, match="source changed during manifest publication"):
+            retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
+        assert len(calls) == 4
+        assert list(evidence.glob("*-nextest.jsonl"))
+        assert not list(evidence.glob("*-source-manifest.json"))
+        return
+    if changed == "manifest-publication-directory-replaced":
+        retained_evidence = evidence.with_name("retained-evidence")
+        original_manifest = retirement_nextest._source_manifest_for_execution
+
+        def replace_directory_after_readback(*args):
+            manifest = original_manifest(*args)
+            evidence.rename(retained_evidence)
+            evidence.mkdir()
+            return manifest
+
+        monkeypatch.setattr(retirement_nextest, "_source_manifest_for_execution", replace_directory_after_readback)
+        with pytest.raises(ValueError, match="retirement evidence directory changed during capture"):
+            retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
+        assert len(calls) == 4
+        assert list(retained_evidence.glob("*-nextest.jsonl"))
+        assert not list(retained_evidence.glob("*-source-manifest.json"))
+        assert not list(evidence.iterdir())
+        return
+    if changed == "manifest-publication-file-replaced":
+        original_link = os.link
+
+        def link_replaced_manifest(source, destination, **kwargs):
+            prepared = evidence / source
+            prepared.rename(prepared.with_suffix(".original"))
+            prepared.write_bytes(b'{"replacement":true}\n')
+            return original_link(source, destination, **kwargs)
+
+        monkeypatch.setattr(retirement_nextest.os, "link", link_replaced_manifest)
+        with pytest.raises(ValueError, match="published retirement manifest differs from the prepared file"):
+            retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
+        assert len(calls) == 4
+        assert list(evidence.glob("*-nextest.jsonl"))
+        assert not list(evidence.glob("*-source-manifest.json"))
+        return
     if changed in {"outside-profile", "outside-profile-without-expectation"}:
         args["features"].append("extra")
         if changed == "outside-profile-without-expectation":

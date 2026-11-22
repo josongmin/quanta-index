@@ -12,6 +12,7 @@ import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
+from contextlib import suppress
 from functools import cache, lru_cache
 from pathlib import Path
 from uuid import uuid4
@@ -620,7 +621,8 @@ def capture_release_execution(
         raise ValueError("retirement capture requires --lib or at least one --test")
     root = root.resolve(strict=True)
     evidence_dir = evidence_dir.resolve(strict=True)
-    if evidence_dir.is_relative_to(root) or not evidence_dir.is_dir():
+    evidence_identity = evidence_dir.lstat()
+    if evidence_dir.is_relative_to(root) or not stat.S_ISDIR(evidence_identity.st_mode):
         raise ValueError("retirement evidence must use an existing directory outside the checkout")
     resolved_features = [
         feature if "/" in feature else f"{package}/{feature}"
@@ -650,6 +652,13 @@ def capture_release_execution(
     input_states: dict[Path, tuple[tuple[int, ...], ...]] = {}
 
     def require_capture_identity() -> None:
+        try:
+            current = evidence_dir.lstat()
+            canonical = evidence_dir.resolve(strict=True)
+        except OSError as error:
+            raise ValueError("retirement evidence directory changed during capture") from error
+        if not os.path.samestat(evidence_identity, current) or canonical != evidence_dir:
+            raise ValueError("retirement evidence directory changed during capture")
         if _require_evidence_directory is not None:
             _require_evidence_directory()
         _require_frozen_checkout(root, revision, source_states)
@@ -749,9 +758,33 @@ def capture_release_execution(
         output.write("\n")
         output.flush()
         os.fsync(output.fileno())
-        require_capture_identity()
-        os.link(output.name, path)
-        require_capture_identity()
+        directory_fd = os.open(evidence_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            require_capture_identity()
+            if not os.path.samestat(evidence_identity, os.fstat(directory_fd)):
+                raise ValueError("retirement evidence directory changed during capture")
+            os.link(
+                Path(output.name).name, path.name,
+                src_dir_fd=directory_fd, dst_dir_fd=directory_fd, follow_symlinks=False,
+            )
+            linked = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+            try:
+                if not os.path.samestat(linked, os.fstat(output.fileno())):
+                    raise ValueError("published retirement manifest differs from the prepared file")
+                require_capture_identity()
+                current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+                if not os.path.samestat(linked, current):
+                    raise ValueError("retirement manifest changed during publication")
+            except BaseException:
+                # The run did not qualify. Remove only the name linked by this
+                # capture, even if its evidence directory has been moved.
+                with suppress(FileNotFoundError):
+                    current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+                    if os.path.samestat(linked, current):
+                        os.unlink(path.name, dir_fd=directory_fd)
+                raise
+        finally:
+            os.close(directory_fd)
     return path
 
 
