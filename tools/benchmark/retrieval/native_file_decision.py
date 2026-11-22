@@ -504,22 +504,38 @@ def build_native_file_decision(
                 for path in native_file_paths.custody_paths(execution_evidence_root)
             )
     manifest_sha = hashlib.sha256(raw_manifest).hexdigest()
-    policy, policy_sha = _policy(policy_path, manifest_sha, manifest)
-    daemon_sha, runner_sha = _sha(daemon_binary), _sha(runner_binary)
-    tracked_files = {
-        manifest_path: manifest_sha,
-        policy_path: policy_sha,
-        daemon_binary: daemon_sha,
-        runner_binary: runner_sha,
-    }
-    tracked_path_targets = [(declared_manifest, manifest_path)]
+    declared_files = (policy_path, daemon_binary, runner_binary)
+    resolved_files = tuple(resolve_path(path) for path in declared_files)
+    policy_file, daemon_file, runner_file = resolved_files
+    policy, policy_sha = _policy(policy_file, manifest_sha, manifest)
+    daemon_sha, runner_sha = _sha(daemon_file), _sha(runner_file)
+    tracked_files: dict[Path, str] = {}
+    tracked_path_targets = list(zip(declared_files, resolved_files, strict=True))
+    tracked_path_targets.append((declared_manifest, manifest_path))
     tracked_selections: dict[Path, str] = {}
+
+    def bind_digest(tracked: dict[Path, str], path: Path, observed: str) -> None:
+        _require(
+            tracked.setdefault(path, observed) == observed,
+            "Native decision input path is reused with different bytes",
+        )
+
+    for path, observed in (
+        (manifest_path, manifest_sha), (policy_file, policy_sha),
+        (daemon_file, daemon_sha), (runner_file, runner_sha),
+    ):
+        bind_digest(tracked_files, path, observed)
+
     runtime = {}
     roots, sockets = set(), set()
     common_recipe = None
     per_family = manifest["schema_version"] == 2
+    legacy_config = daemon_config
+    if not per_family and daemon_config is not None:
+        legacy_config = resolve_path(daemon_config)
+        tracked_path_targets.append((daemon_config, legacy_config))
     for family in manifest["families"]:
-        config_path, config_sha, selection = _cohort_runtime(manifest_path, family, daemon_config)
+        config_path, config_sha, selection = _cohort_runtime(manifest_path, family, legacy_config)
         raw_config = read_control(config_path)
         _require(hashlib.sha256(raw_config).hexdigest() == config_sha, "Native daemon config changed during read")
         config = evaluator._parse_json_text(raw_config.decode("utf-8"))
@@ -549,8 +565,8 @@ def build_native_file_decision(
             selection_path, selection_sha = selection
             _, selected = load_selected_snapshot(selection_path, selection_sha)
             _require(selected.state_root == Path(config["state_root"]), "Native family selection root differs")
-            tracked_selections[selection_path] = selection_sha
-        tracked_files[config_path] = config_sha
+            bind_digest(tracked_selections, selection_path, selection_sha)
+        bind_digest(tracked_files, config_path, config_sha)
         runtime[family["family_id"]] = config_path, config_sha, socket, selected
     reviewed: dict[str, Path] = {}
     reviewed_bytes: dict[Path, tuple[str, int]] = {}
@@ -578,10 +594,10 @@ def build_native_file_decision(
             (declared, reviewed[family]) for family, declared in declared_reviews.items()
         )
         reviewed_sha = hashlib.sha256(raw_reviewed).hexdigest()
-        tracked_files[reviewed_labels_path] = reviewed_sha
+        bind_digest(tracked_files, reviewed_labels_path, reviewed_sha)
         for receipt in reviewed.values():
             receipt_digest = file_digest(receipt)
-            tracked_files[receipt] = receipt_digest[0].removeprefix("sha256:")
+            bind_digest(tracked_files, receipt, receipt_digest[0].removeprefix("sha256:"))
             reviewed_bytes[receipt] = receipt_digest
 
     def path(entry: dict, key: str) -> Path:
@@ -620,11 +636,10 @@ def build_native_file_decision(
             observed_bytes = file_digest(source)
             observed = observed_bytes[0].removeprefix("sha256:")
             _require(
-                tracked_files.get(source, observed) == observed
-                and tracked_selections.get(source, observed) == observed,
+                tracked_selections.get(source, observed) == observed,
                 "Native decision input path is reused with different bytes",
             )
-            tracked_files[source] = observed
+            bind_digest(tracked_files, source, observed)
             tracked_input_bytes[source] = observed_bytes
 
     signed_install_identity: dict[str, str] = {}
@@ -858,9 +873,22 @@ def build_native_file_decision(
             == {"active_generation_sha256", "release_manifest_sha256", "q_elf_sha256"},
             "Native signed installation identity is absent",
         )
+    evaluator.verify_native_replay_sources(
+        (family_paths[entry["family_id"]]["repo"], replay)
+        for entry, replay in zip(manifest["families"], families, strict=True)
+    )
+    if require_signed_install:
+        _require(len(signed_install_recheck) == 1, "Native signed installation recheck is absent")
+        plan, selection_path, selection_sha = signed_install_recheck[0]
+        _raw, selected = load_selected_snapshot(selection_path, selection_sha)
+        import native_file_capture
+
+        native_file_capture._verify_signed_install(plan, selected, policy_sha)
+
+    # Finish source, installation and release-tree checks before rechecking control inputs.
     _require(
-        all(_sha(path) == sha for path, sha in tracked_files.items())
-        and all(_release_tree_sha(path) == sha for path, sha in tracked_releases.items())
+        all(_release_tree_sha(path) == sha for path, sha in tracked_releases.items())
+        and all(_sha(path) == sha for path, sha in tracked_files.items())
         and all(resolve_path(declared) == target for declared, target in tracked_path_targets)
         and all(
             path(entry, key) == frozen
@@ -879,17 +907,6 @@ def build_native_file_decision(
             load_selected_snapshot(selection_path, selection_sha)
         except EvidenceError as error:
             raise NativeDecisionError(f"Native selection changed during replay: {error}") from error
-    evaluator.verify_native_replay_sources(
-        (family_paths[entry["family_id"]]["repo"], replay)
-        for entry, replay in zip(manifest["families"], families, strict=True)
-    )
-    if require_signed_install:
-        _require(len(signed_install_recheck) == 1, "Native signed installation recheck is absent")
-        plan, selection_path, selection_sha = signed_install_recheck[0]
-        _raw, selected = load_selected_snapshot(selection_path, selection_sha)
-        import native_file_capture
-
-        native_file_capture._verify_signed_install(plan, selected, policy_sha)
     return {
         "status": "quality_reject" if reasons else "quality_admit",
         "reasons": reasons,

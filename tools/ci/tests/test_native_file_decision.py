@@ -342,8 +342,9 @@ def test_native_quality_resolves_manifest_location_before_relative_release_input
     assert result["execution_binding_verified"] is False
 
 
+@pytest.mark.parametrize("phase", ["family", "source_recheck"])
 def test_native_quality_rejects_cohort_manifest_retargeted_during_replay(
-    tmp_path, monkeypatch, synthetic_replay_sources,
+    tmp_path, monkeypatch, synthetic_replay_sources, phase,
 ):
     manifest, policy, binaries, families = _case(tmp_path)
     alias = tmp_path / "cohort-alias.json"
@@ -352,19 +353,57 @@ def test_native_quality_rejects_cohort_manifest_retargeted_during_replay(
     replacement.write_bytes(manifest.read_bytes())
     by_family = {item["suite"]["suite_id"]: item for item in families}
 
-    def replay(*args, **_options):
+    def retarget():
         if alias.readlink() == manifest:
             alias.unlink()
             alias.symlink_to(replacement)
+
+    def replay(*args, **_options):
+        if phase == "family":
+            retarget()
         return copy.deepcopy(by_family[args[-1][-1]])
 
+    if phase == "source_recheck":
+        verify_repo = ev.verify_repo
+
+        def verify_and_retarget(repo, commit):
+            result = verify_repo(repo, commit)
+            retarget()
+            return result
+
+        monkeypatch.setattr(ev, "verify_repo", verify_and_retarget)
     monkeypatch.setattr(ev, "load_native_file_replay", replay)
     with pytest.raises(decision.NativeDecisionError, match="inputs changed during replay"):
         decision.build_native_file_decision(alias, policy, *binaries)
     assert alias.readlink() == replacement
 
 
-def test_native_quality_keeps_each_family_capture_path_pinned(tmp_path, monkeypatch):
+def test_native_quality_keeps_legacy_config_alias_pinned_during_replay(
+    tmp_path, monkeypatch, synthetic_replay_sources,
+):
+    manifest, policy, binaries, families = _case(tmp_path)
+    daemon, config, runner = binaries
+    alias = tmp_path / "config-alias.json"
+    alias.symlink_to(config)
+    replacement = tmp_path / "replacement-config.json"
+    replacement.write_bytes(config.read_bytes())
+    by_family = {item["suite"]["suite_id"]: item for item in families}
+
+    def replay(*args, **_options):
+        if alias.readlink() == config:
+            alias.unlink()
+            alias.symlink_to(replacement)
+        return copy.deepcopy(by_family[args[-1][-1]])
+
+    monkeypatch.setattr(ev, "load_native_file_replay", replay)
+    with pytest.raises(decision.NativeDecisionError, match="inputs changed during replay"):
+        decision.build_native_file_decision(manifest, policy, daemon, alias, runner)
+    assert alias.readlink() == replacement
+
+
+def test_native_quality_keeps_each_family_capture_path_pinned(
+    tmp_path, monkeypatch, synthetic_replay_sources,
+):
     manifest, policy, binaries, families = _case(tmp_path)
     entries = json.loads(manifest.read_bytes())["families"]
     alias = tmp_path / entries[1]["capture"]
@@ -491,7 +530,7 @@ def test_controlled_capture_refuses_nonstring_run_id(tmp_path: Path) -> None:
 
 
 def test_native_quality_refuses_input_changed_during_replay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, synthetic_replay_sources,
 ) -> None:
     manifest, policy, binaries, families = _case(tmp_path)
     by_family = {item["suite"]["suite_id"]: item for item in families}
@@ -609,7 +648,8 @@ def test_native_reviewed_labels_reader_binds_bytes_consumed_during_replay(
 
 @pytest.mark.parametrize("change_on_disk", [False, True])
 def test_controlled_capture_must_match_scored_bytes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change_on_disk: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, synthetic_replay_sources,
+    change_on_disk: bool,
 ) -> None:
     manifest, policy, binaries, families = _case(tmp_path)
     by_family = {item["suite"]["suite_id"]: item for item in families}
@@ -642,7 +682,8 @@ def test_controlled_capture_must_match_scored_bytes(
 
 @pytest.mark.parametrize("mutation", ["base_content", "target_membership", "target_mode"])
 def test_native_quality_refuses_release_tree_changed_during_replay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, synthetic_replay_sources,
+    mutation: str,
 ) -> None:
     manifest, policy, binaries, families = _case(tmp_path)
     by_family = {item["suite"]["suite_id"]: item for item in families}
@@ -822,6 +863,38 @@ def test_native_quality_replays_exact_review_roster_and_checks_receipt_freshness
         decision.build_native_file_decision(manifest, policy, *binaries, reviewed_labels_path=reviewed)
 
 
+@pytest.mark.parametrize("via_alias", [False, True])
+def test_native_quality_rejects_review_receipt_reusing_a_frozen_policy_path(
+    tmp_path, monkeypatch, synthetic_replay_sources, via_alias,
+):
+    manifest, policy, binaries, families = _case(tmp_path)
+    declared_policy = policy
+    if via_alias:
+        declared_policy = tmp_path / "policy-alias.json"
+        declared_policy.symlink_to(policy)
+    by_family = {item["suite"]["suite_id"]: item for item in families}
+    reviewed = tmp_path / "reviews.json"
+    rows = {family: f"review-{index}.json" for index, family in enumerate(by_family)}
+    rows[next(iter(rows))] = policy.name
+    reviewed.write_text(json.dumps(rows), encoding="utf-8")
+    for receipt in rows.values():
+        if receipt != policy.name:
+            (tmp_path / receipt).write_bytes(b"{}")
+    verify_policy = decision._policy
+
+    def verify_and_replace_policy(*args):
+        result = verify_policy(*args)
+        policy.write_bytes(b"{}")
+        return result
+
+    monkeypatch.setattr(decision, "_policy", verify_and_replace_policy)
+    monkeypatch.setattr(
+        ev, "load_native_file_replay", lambda *args, **_: copy.deepcopy(by_family[args[-1][-1]])
+    )
+    with pytest.raises(decision.NativeDecisionError, match="input path is reused with different bytes"):
+        decision.build_native_file_decision(manifest, declared_policy, *binaries, reviewed_labels_path=reviewed)
+
+
 def test_native_quality_binds_independent_family_configs_to_one_recipe(
     tmp_path, monkeypatch, synthetic_replay_sources
 ):
@@ -985,10 +1058,10 @@ def test_signed_native_quality_requires_controlled_v2_before_scoring(
         )
 
 
-@pytest.mark.parametrize("install_drifts_during_score", [False, True])
+@pytest.mark.parametrize("drift", [None, "generation", "other_selection"])
 def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact_scope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, synthetic_replay_sources,
-    install_drifts_during_score: bool,
+    drift: str | None,
 ) -> None:
     import importlib
 
@@ -1070,7 +1143,7 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
     def replay(*args, **_options):
         nonlocal drifted
         assert verified, "signed installation must be verified before scoring"
-        if install_drifts_during_score:
+        if drift == "generation":
             drifted = True
         return copy.deepcopy(by_family[args[-1][-1]])
 
@@ -1081,6 +1154,9 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
         checked.append(True)
         if drifted:
             raise EvidenceError("Native signed installation differs: active generation changed")
+        if drift == "other_selection":
+            other_selection = tmp_path / cohort["families"][1]["selection_path"]
+            other_selection.write_bytes(other_selection.read_bytes() + b" ")
 
     monkeypatch.setattr(decision, "verify_controlled_capture_runs", verify)
     monkeypatch.setattr(ev, "load_native_file_replay", replay)
@@ -1090,8 +1166,13 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
         "execution_run_ids": ["fixture"],
         "require_signed_install": True,
     }
-    if install_drifts_during_score:
-        with pytest.raises(EvidenceError, match="active generation changed"):
+    expected_errors = {
+        "generation": (EvidenceError, "active generation changed"),
+        "other_selection": (decision.NativeDecisionError, "selection digest changed"),
+    }
+    if drift is not None:
+        error, message = expected_errors[drift]
+        with pytest.raises(error, match=message):
             decision.build_native_file_decision(
                 manifest, policy, selected.binary, None, binaries[2], **options,
             )
