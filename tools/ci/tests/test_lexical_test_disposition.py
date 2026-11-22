@@ -923,6 +923,10 @@ def test_shipment_checks_committed_roster_not_working_tree(checker, capsys):
         ("cross_compiled", "requires x86-64 Linux host and target"),
         ("collection_platform_drift", "Nextest collection platform differs"),
         ("missing_platform", "Nextest host and target platform metadata is absent or invalid"),
+        ("dirty_source", "retained test source differs from committed HEAD"),
+        ("source_swap", "observation source changed"),
+        ("source_swap_with_original_observation", "retained test source changed during proof verification"),
+        ("head_advance", "HEAD changed during retained proof verification"),
         ("relabeled_pending", "frozen old-Q tests must retain their original disposition"),
     ],
 )
@@ -1067,6 +1071,11 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
     }
     manifest_bytes = json.dumps(manifest).encode()
     (evidence_dir / f"{run_id}-source-manifest.json").write_bytes(manifest_bytes)
+    test_path = checker.ROOT / source
+    changed_body = body + b"// Uncommitted test change\n"
+    if evidence == "dirty_source":
+        test_path.write_bytes(changed_body)
+    observed_body = changed_body if evidence in {"dirty_source", "source_swap"} else body
     observations = []
     for index, case in enumerate(cases):
         if evidence == "partial" and index == 1:
@@ -1075,7 +1084,7 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
         if evidence == "foreign" and index == 1:
             observed_event = f"{package}::other_target${case}"
         observations.append({
-            "source": source, "case": case, "source_sha256": hashlib.sha256(body).hexdigest(),
+            "source": source, "case": case, "source_sha256": hashlib.sha256(observed_body).hexdigest(),
             "run_id": run_id, "event": observed_event,
             "events_sha256": manifest["events_sha256"],
             "inventory_sha256": manifest["inventory_sha256"],
@@ -1104,9 +1113,45 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
     if evidence == "dirty_approval":
         circleci.write_text(ci_config.replace(approved_digest, legacy_digest), encoding="utf-8")
 
-    assert checker.main(revision=revision, evidence_dir=evidence_dir) == (0 if expected_error is None else 1)
-    if expected_error is not None:
-        assert expected_error in capsys.readouterr().err
+    read_git = checker.git_text
+
+    def swap_after_source_check(*args):
+        result = read_git(*args)
+        if args == ("show", f"{revision}:{source}"):
+            test_path.write_bytes(changed_body)
+        return result
+
+    def advance_after_head_read(*args):
+        result = read_git(*args)
+        if args == ("rev-parse", "--verify", "HEAD") and result.strip() == revision:
+            cargo = checker.LEXICAL_CARGO_MANIFEST
+            cargo.write_bytes(cargo.read_bytes() + b"\n# Changed committed build input\n")
+            git("add", str(cargo.relative_to(checker.ROOT)))
+            git("commit", "-qm", "advance candidate during local check")
+        return result
+
+    swaps_source = evidence in {"source_swap", "source_swap_with_original_observation"}
+    for candidate in (revision, None):
+        if swaps_source and candidate is None:
+            monkeypatch.setattr(checker, "git_text", swap_after_source_check)
+        if evidence == "head_advance" and candidate is None:
+            monkeypatch.setattr(checker, "git_text", advance_after_head_read)
+        local_only = {"head_advance", "source_swap_with_original_observation"}
+        check_error = None if evidence in local_only and candidate is not None else expected_error
+        assert checker.main(revision=candidate, evidence_dir=evidence_dir) == (
+            0 if check_error is None else 1
+        ), candidate
+        if check_error is not None:
+            error = (
+                "observation source changed"
+                if evidence == "dirty_source" and candidate is not None
+                else check_error
+            )
+            assert error in capsys.readouterr().err
+    if swaps_source:
+        assert test_path.read_bytes() == changed_body
+    if evidence == "head_advance":
+        assert git("rev-parse", "HEAD") != revision
 
 
 @pytest.mark.parametrize(

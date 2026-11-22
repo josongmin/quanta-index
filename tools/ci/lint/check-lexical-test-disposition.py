@@ -136,6 +136,8 @@ def main(
         return 1
     errors: list[str] = []
     committed_paths: set[str] | None = None
+    local_retained_revision: str | None = None
+    local_retained_sources: dict[Path, str] = {}
     pending_groups: list[str] = []
     executable_digest = retained_executable_digests()
 
@@ -285,15 +287,36 @@ def main(
                         if case not in candidate_test_names(ROOT / candidate_path):
                             raise ValueError(f"replacement test {case!r} is absent from {candidate_path}")
                     if proof == "VERIFIED":
+                        proof_revision = revision
+                        proof_read = read
+                        if disposition == "retain" and not inventory_only and proof_revision is None:
+                            # The working-tree ledger can stage observations, but
+                            # retained execution still has to prove committed inputs.
+                            if local_retained_revision is None:
+                                local_retained_revision = git_text("rev-parse", "--verify", "HEAD").strip()
+                            proof_revision = local_retained_revision
+                            retained_source = read(path)
+                            if retained_source != git_text("show", f"{proof_revision}:{relative}"):
+                                raise ValueError("retained test source differs from committed HEAD")
+                            local_retained_sources[path] = retained_source
+
+                            def proof_read(
+                                observed_path: Path, *, expected_path: Path = path,
+                                source: str = retained_source,
+                            ) -> str:
+                                if observed_path != expected_path:
+                                    raise ValueError("retained observation names a different test source")
+                                return source
+
                         observed = check_migration_observations(
-                            group.get("observations"), read,
+                            group.get("observations"), proof_read,
                             root=ROOT, source_tests=source_tests,
                             inventory_only=inventory_only, evidence_dir=evidence_dir,
-                            release_revision=revision,
+                            release_revision=proof_revision,
                             event_matches=event_matches,
                             executable_digest=executable_digest,
                         )
-                        if retained_release:
+                        if disposition == "retain" and proof_revision is not None:
                             if evidence_dir is None:
                                 raise ValueError("retained old-Q execution requires Nextest evidence")
                             for observation in group["observations"]:
@@ -306,7 +329,7 @@ def main(
                                 if execution["legacy_searchd"] is None:
                                     raise ValueError("retained old-Q executable is absent")
                         if observed != expected:
-                            subject = "retained tests" if retained_release else "declared replacement tests"
+                            subject = "retained tests" if disposition == "retain" else "declared replacement tests"
                             raise ValueError(
                                 f"terminal observations differ from {subject}: "
                                 f"missing={sorted(expected - observed)} extra={sorted(observed - expected)}"
@@ -362,6 +385,19 @@ def main(
 
     for missing in sorted(FROZEN_TARGETS.keys() - seen_paths):
         errors.append(f"{missing}: missing frozen target")
+    if not errors and local_retained_revision is not None:
+        for path, source in local_retained_sources.items():
+            relative = path.relative_to(ROOT)
+            try:
+                if path.read_bytes() != source.encode("utf-8"):
+                    errors.append(f"{relative}: retained test source changed during proof verification")
+            except OSError as error:
+                errors.append(f"{relative}: cannot recheck retained test source: {error}")
+        try:
+            if git_text("rev-parse", "--verify", "HEAD").strip() != local_retained_revision:
+                errors.append("HEAD changed during retained proof verification")
+        except subprocess.CalledProcessError:
+            errors.append("cannot recheck HEAD after retained proof verification")
     if errors:
         if not inventory_only:
             errors.extend(pending_groups)
