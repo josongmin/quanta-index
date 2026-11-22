@@ -58,7 +58,7 @@ impl HistorySnapshotPageV1 {
 /// Private child stdout stream. Checkpoint pages are provisional until Complete;
 /// inventory keys are provisional until InventoryComplete. Native BOOT later
 /// independently verifies the saved Legacy source.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
 #[serde(tag = "kind", content = "body", rename_all = "snake_case")]
 pub enum HistorySnapshotExportFrameV1 {
     NativeProtectedComplete {
@@ -107,6 +107,99 @@ pub enum HistorySnapshotExportFrameV1 {
     },
 }
 
+macro_rules! history_export_body {
+    ($serializer:ident, $name:literal, { $($field:ident),+ $(,)? }) => {{
+        let mut body = $serializer.serialize_struct($name, [$(stringify!($field)),+].len())?;
+        $(serde::ser::SerializeStruct::serialize_field(&mut body, stringify!($field), $field)?;)+
+        serde::ser::SerializeStruct::end(body)
+    }};
+}
+
+struct HistoryExportBodyRef<'a>(&'a HistorySnapshotExportFrameV1);
+
+impl serde::Serialize for HistoryExportBodyRef<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            HistorySnapshotExportFrameV1::NativeProtectedComplete {
+                source_root_nonce,
+                source_routes,
+                snapshot,
+            } => history_export_body!(serializer, "NativeProtectedComplete", {
+                source_root_nonce, source_routes, snapshot
+            }),
+            HistorySnapshotExportFrameV1::NativeObjectBegin {
+                reference,
+                payload_bytes,
+                children,
+            } => history_export_body!(serializer, "NativeObjectBegin", {
+                reference, payload_bytes, children
+            }),
+            HistorySnapshotExportFrameV1::NativeObjectChunk { offset, bytes } => {
+                history_export_body!(serializer, "NativeObjectChunk", { offset, bytes })
+            }
+            HistorySnapshotExportFrameV1::NativeObjectEnd { reference } => {
+                history_export_body!(serializer, "NativeObjectEnd", { reference })
+            }
+            HistorySnapshotExportFrameV1::NativeHistory {
+                source_root_nonce,
+                source_view,
+                instance,
+                member,
+                cut,
+            } => history_export_body!(serializer, "NativeHistory", {
+                source_root_nonce, source_view, instance, member, cut
+            }),
+            HistorySnapshotExportFrameV1::NativeInventoryComplete { repo_id, count } => {
+                history_export_body!(serializer, "NativeInventoryComplete", { repo_id, count })
+            }
+            HistorySnapshotExportFrameV1::Page(page) => {
+                serde::Serialize::serialize(page, serializer)
+            }
+            HistorySnapshotExportFrameV1::Complete {
+                generation,
+                legacy_root,
+                durable_epoch,
+                snapshot_digest,
+                row_count,
+                terminal_ack,
+            } => history_export_body!(serializer, "Complete", {
+                generation, legacy_root, durable_epoch, snapshot_digest, row_count, terminal_ack
+            }),
+            HistorySnapshotExportFrameV1::InventoryKey { generation } => {
+                history_export_body!(serializer, "InventoryKey", { generation })
+            }
+            HistorySnapshotExportFrameV1::InventoryComplete { repo_id, count } => {
+                history_export_body!(serializer, "InventoryComplete", { repo_id, count })
+            }
+        }
+    }
+}
+
+impl serde::Serialize for HistorySnapshotExportFrameV1 {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let kind = match self {
+            Self::NativeProtectedComplete { .. } => "native_protected_complete",
+            Self::NativeObjectBegin { .. } => "native_object_begin",
+            Self::NativeObjectChunk { .. } => "native_object_chunk",
+            Self::NativeObjectEnd { .. } => "native_object_end",
+            Self::NativeHistory { .. } => "native_history",
+            Self::NativeInventoryComplete { .. } => "native_inventory_complete",
+            Self::Page(_) => "page",
+            Self::Complete { .. } => "complete",
+            Self::InventoryKey { .. } => "inventory_key",
+            Self::InventoryComplete { .. } => "inventory_complete",
+        };
+        let mut frame = serializer.serialize_struct("HistorySnapshotExportFrameV1", 2)?;
+        serde::ser::SerializeStruct::serialize_field(&mut frame, "kind", kind)?;
+        serde::ser::SerializeStruct::serialize_field(
+            &mut frame,
+            "body",
+            &HistoryExportBodyRef(self),
+        )?;
+        serde::ser::SerializeStruct::end(frame)
+    }
+}
+
 /// Version 2 is distinct from the retained-original HistorySourceInputV1.
 /// The terminal ACK is observed DATA; no receipt or replay position is minted
 /// by decoding this carrier. Pages are ordered here; immutable direct children
@@ -146,5 +239,54 @@ impl HistorySnapshotCheckpointV1 {
             return Err("History snapshot checkpoint shape or terminal ACK is invalid");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_frames_preserve_derived_json_and_cbor_bytes() {
+        let cases = [
+            (
+                HistorySnapshotExportFrameV1::NativeObjectChunk {
+                    offset: 3,
+                    bytes: vec![1, 2, 255],
+                },
+                r#"{"kind":"native_object_chunk","body":{"offset":3,"bytes":[1,2,255]}}"#,
+                "a2646b696e64736e61746976655f6f626a6563745f6368756e6b64626f6479a2666f66667365740365627974657383010218ff",
+            ),
+            (
+                HistorySnapshotExportFrameV1::InventoryComplete {
+                    repo_id: RepoId::new("repo").expect("fixture repo"),
+                    count: 4,
+                },
+                r#"{"kind":"inventory_complete","body":{"repo_id":"repo","count":4}}"#,
+                "a2646b696e6472696e76656e746f72795f636f6d706c65746564626f6479a2677265706f5f6964647265706f65636f756e7404",
+            ),
+        ];
+
+        for (frame, expected_json, expected_cbor) in cases {
+            let json = serde_json::to_string(&frame).expect("JSON export frame");
+            assert_eq!(json, expected_json);
+            assert_eq!(
+                serde_json::from_str::<HistorySnapshotExportFrameV1>(&json).expect("JSON readback"),
+                frame
+            );
+
+            let mut cbor = Vec::new();
+            ciborium::into_writer(&frame, &mut cbor).expect("CBOR export frame");
+            let encoded = cbor
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(encoded, expected_cbor);
+            assert_eq!(
+                ciborium::from_reader::<HistorySnapshotExportFrameV1, _>(cbor.as_slice())
+                    .expect("CBOR readback"),
+                frame
+            );
+        }
     }
 }
