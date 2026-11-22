@@ -20,24 +20,43 @@ if [[ -n "$provided_binary" && "$provided_binary" != /* ]]; then
   provided_binary="$(pwd -P)/$provided_binary"
 fi
 
+# Inspect the two requested worktrees even when invoked from a Git hook
+# or another checkout with a repository-specific environment.
+git_local_env="$(git rev-parse --local-env-vars)"
+while IFS= read -r name; do
+  unset "$name"
+done <<< "$git_local_env"
+unset GIT_NAMESPACE
+export GIT_NO_REPLACE_OBJECTS=1
+
 require_frozen_source() {
   local root="$1"
   local head="$2"
-  local current_head status
-  current_head="$(git --no-replace-objects -C "$root" rev-parse --verify HEAD)" || exit 1
-  if [[ "$current_head" != "$head" ]]; then
+  local identity status hidden
+  identity="$(git -C "$root" rev-parse --show-toplevel --verify HEAD)" || exit 1
+  if [[ "${identity%$'\n'*}" != "$root" ]]; then
+    printf 'cross-repo proof requires the checkout root: %s\n' "$root" >&2
+    exit 1
+  fi
+  if [[ "${identity##*$'\n'}" != "$head" ]]; then
     printf 'source HEAD changed during cross-repo proof: %s\n' "$root" >&2
     exit 1
   fi
-  status="$(git --no-replace-objects -C "$root" status --porcelain=v1 --untracked-files=all)" || exit 1
+  status="$(git --no-optional-locks -c core.fsmonitor=false -C "$root" status \
+    --porcelain=v1 --untracked-files=all --ignore-submodules=none)" || exit 1
   if [[ -n "$status" ]]; then
     printf 'cross-repo proof requires a clean checkout: %s\n' "$root" >&2
     exit 1
   fi
+  hidden="$(git -C "$root" ls-files -v | LC_ALL=C sed -n '/^[Sa-z] /p')" || exit 1
+  if [[ -n "$hidden" ]]; then
+    printf 'cross-repo proof refuses hidden Git index entries: %s\n' "$root" >&2
+    exit 1
+  fi
 }
 
-quanta_head="$(git --no-replace-objects -C "$quanta_root" rev-parse --verify HEAD)"
-semantica_head="$(git --no-replace-objects -C "$semantica_root" rev-parse --verify HEAD)"
+quanta_head="$(git -C "$quanta_root" rev-parse --verify HEAD)"
+semantica_head="$(git -C "$semantica_root" rev-parse --verify HEAD)"
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
 
@@ -51,7 +70,7 @@ paired_python="$(
     printf 'paired Python helper is not a physical regular file: %s\n' "$helper" >&2
     exit 1
   fi
-  entry="$(git --no-replace-objects -C "$semantica_root" ls-tree --full-tree \
+  entry="$(git -C "$semantica_root" ls-tree --full-tree \
     "$semantica_head" -- "$helper_relative")" || exit 1
   IFS=$' \t' read -r mode type blob path <<< "$entry"
   if [[ "$type" != blob || "$path" != "$helper_relative" ||
@@ -59,16 +78,22 @@ paired_python="$(
     printf 'paired Python helper is not a regular file in frozen HEAD: %s\n' "$helper" >&2
     exit 1
   fi
-  helper_snapshot="$(mktemp "${TMPDIR:-/tmp}/quanta-paired-python-XXXXXX")" || exit 1
-  trap 'rm -f -- "$helper_snapshot"' EXIT
-  git --no-replace-objects -C "$semantica_root" cat-file blob "$blob" > "$helper_snapshot" || exit 1
-  if ! cmp -s -- "$helper" "$helper_snapshot"; then
+  # Preserve trailing newlines and check that the shell retained every byte.
+  helper_source="$(git -C "$semantica_root" cat-file blob "$blob" && printf '.')" || exit 1
+  helper_source="${helper_source%.}"
+  source_blob="$(printf '%s' "$helper_source" | git -C "$semantica_root" hash-object --stdin)" || exit 1
+  if [[ "$source_blob" != "$blob" ]] || ! printf '%s' "$helper_source" | cmp -s -- "$helper" -; then
     printf 'paired Python helper differs from the frozen Git blob: %s\n' "$helper" >&2
     exit 1
   fi
-  # shellcheck source=/dev/null
-  source "$helper_snapshot" || exit 1
-  cg_resolve_python_bin "$semantica_root"
+
+  # A fresh Bash receives the checked bytes. The dedicated signer socket
+  # stays in a shell variable in the launcher.
+  # shellcheck disable=SC2016
+  printf '%s' "$helper_source" | BASH_ENV='' "$BASH" -euo pipefail -c '
+    source /dev/stdin
+    cg_resolve_python_bin "$1"
+  ' paired-python "$semantica_root"
 )"
 
 resolved_pair() {
@@ -101,6 +126,7 @@ require_frozen_source "$semantica_root" "$semantica_head"
 
 release_binary="$(PYTHONPATH="$quanta_root${PYTHONPATH:+:$PYTHONPATH}" "$paired_python" "$quanta_root/tools/ci/paired_r5_result.py" \
   --verify-resolution-only --quanta-root "$quanta_root" --semantica-root "$semantica_root" \
+  --quanta-head "$quanta_head" --semantica-head "$semantica_head" \
   --runtime-resolution "$runtime_resolution" --kernel-resolution "$kernel_resolution")"
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"

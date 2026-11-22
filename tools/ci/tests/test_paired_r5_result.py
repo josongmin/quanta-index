@@ -548,7 +548,12 @@ def test_paired_lock_path_refuses_another_anchor(tmp_path: Path, lock_path: str)
         _verify_resolution_files(root, paired, resolutions)
 
 
-def test_resolution_preflight_cli_checks_nested_lock_without_runner(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "state", ["clean", "dirty", "wrong-head", "foreign-module", "import-error", "wrong-lock"]
+)
+def test_resolution_preflight_cli_checks_nested_lock_without_runner(
+    tmp_path: Path, state: str
+) -> None:
     root, paired, resolutions = _complete_resolution_fixture(tmp_path)
     registry = root / "tools/ci/proof-authority.toml"
     registry.parent.mkdir(parents=True)
@@ -565,8 +570,37 @@ def test_resolution_preflight_cli_checks_nested_lock_without_runner(tmp_path: Pa
     (paired / "Cargo.lock").write_bytes(b"unrelated root lock\n")
     modules = paired / "tools/quanta-build-cli"
     modules.mkdir(parents=True)
-    for name in ("qbc_completed_run_v1", "verification_completion_locator_v1", "quanta_build_cli"):
+    for name in ("qbc_completed_run_v1", "verification_completion_locator_v1"):
         (modules / (name + ".py")).write_text("# import-only runtime fixture\n")
+    marker = tmp_path / "qbc-module-imported"
+    observe_import = f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
+    qbc_module = modules / "quanta_build_cli.py"
+    foreign = tmp_path / "foreign_modules"
+    foreign.mkdir()
+    if state == "foreign-module":
+        (foreign / qbc_module.name).write_text(observe_import)
+    elif state == "import-error":
+        qbc_module.write_text("raise RuntimeError('QBC runtime unavailable')\n")
+    else:
+        qbc_module.write_text(observe_import)
+
+    heads = {}
+    for checkout in (root, paired):
+        git = ["git", "-C", str(checkout)]
+        for args in (
+            ["init", "-q"], ["add", "."],
+            ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+             "commit", "-qm", "fixture"],
+        ):
+            subprocess.run([*git, *args], check=True, capture_output=True)
+        heads[checkout] = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+    if state == "dirty":
+        qbc_module.write_text(observe_import + "# changed after freeze\n")
+    elif state == "wrong-head":
+        heads[paired] = "f" * 40
+    elif state == "wrong-lock":
+        resolutions["runtime"]["dependency_lock"]["sha256"] = "sha256:" + "f" * 64
+
     command = [
         sys.executable,
         str(Path(RUNNER.__file__)),
@@ -575,31 +609,37 @@ def test_resolution_preflight_cli_checks_nested_lock_without_runner(tmp_path: Pa
         str(root),
         "--semantica-root",
         str(paired),
+        "--quanta-head",
+        heads[root],
+        "--semantica-head",
+        heads[paired],
         "--runtime-resolution",
         json.dumps(resolutions["runtime"]),
         "--kernel-resolution",
         json.dumps(resolutions["kernel"]),
     ]
     environment = os.environ.copy()
-    environment["PYTHONPATH"] = str(Path(RUNNER.__file__).resolve().parents[2])
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(Path(RUNNER.__file__).resolve().parents[2]), str(foreign))
+    )
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     result = subprocess.run(
         command, cwd=tmp_path, env=environment, capture_output=True, text=True, check=False
     )
-    assert result.returncode == 0, result.stderr
-    (modules / "quanta_build_cli.py").write_text("raise RuntimeError('QBC runtime unavailable')\n")
-    result = subprocess.run(
-        command, cwd=tmp_path, env=environment, capture_output=True, text=True, check=False
-    )
-    assert result.returncode != 0
-    assert "QBC runtime unavailable" in result.stderr
-    (modules / "quanta_build_cli.py").write_text("# import-only runtime fixture\n")
-    (paired / "packages/analysis/quanta-v2/Cargo.lock").write_bytes(b"changed nested lock\n")
-    result = subprocess.run(
-        command, cwd=tmp_path, env=environment, capture_output=True, text=True, check=False
-    )
-    assert result.returncode != 0
-    assert "paired resolver file identity changed" in result.stderr
+    if state == "clean":
+        assert result.returncode == 0, result.stderr
+        assert marker.exists()
+    else:
+        expected = {
+            "dirty": "QBC resolver preflight requires a clean source",
+            "wrong-head": "source changed or is dirty",
+            "foreign-module": "paired QBC module belongs to another source",
+            "import-error": "QBC runtime unavailable",
+            "wrong-lock": "paired resolver file identity changed",
+        }[state]
+        assert not marker.exists()
+        assert result.returncode != 0
+        assert expected in result.stderr
 
 
 @pytest.mark.parametrize("version", [False, True, 1.0])
@@ -1102,8 +1142,8 @@ def test_staged_runner_rechecks_witness_and_custody_before_publication(
         "paired_r5_result.py",
         "--quanta-root", str(root),
         "--semantica-root", str(pair),
-        "--quanta-head", RUNNER._head(root),
-        "--semantica-head", RUNNER._head(pair),
+        "--quanta-head", RUNNER.frozen_source_head(root),
+        "--semantica-head", RUNNER.frozen_source_head(pair),
         "--evidence-root", str(evidence),
         "--qbc-lane", "fixture",
         "--daemon-digest", digest,
@@ -1114,7 +1154,7 @@ def test_staged_runner_rechecks_witness_and_custody_before_publication(
         "--kernel-resolution", json.dumps(resolutions["kernel"]),
     ])
     completed = SimpleNamespace(read_completed_run_receipt_at_path_v1=completed_runs.__getitem__)
-    monkeypatch.setattr(RUNNER, "_qbc_modules", lambda _root: (completed, completion, owner))
+    monkeypatch.setattr(RUNNER, "_qbc_modules", lambda _root, _head: (completed, completion, owner))
     monkeypatch.setattr(RUNNER, "_execute_qbc_phase", execute_phase)
     monkeypatch.setattr(RUNNER, "_resolved_after", resolver)
     errors = {

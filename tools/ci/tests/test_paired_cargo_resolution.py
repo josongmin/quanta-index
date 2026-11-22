@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -183,10 +184,8 @@ def _commit_fixture_checkout(root: Path) -> None:
         subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
 
 
-@pytest.mark.parametrize("dirty_source", ["quanta", "paired", "hidden-helper"])
-def test_cross_repo_script_rejects_dirty_source_before_python_helper(
-    resolution, tmp_path, monkeypatch, dirty_source,
-):
+@pytest.fixture
+def paired_bootstrap(resolution, tmp_path, monkeypatch):
     quanta, paired, _, _ = resolution
     runner_path = Path("scripts/verify-repomap-cross-repo.sh")
     runner = quanta / runner_path
@@ -198,31 +197,119 @@ def test_cross_repo_script_rejects_dirty_source_before_python_helper(
     marker = tmp_path / "python-helper-sourced"
     helper.write_text(
         f": > {shlex.quote(str(marker))}\n"
-        f"cg_resolve_python_bin() {{ printf '%s\\n' {shlex.quote(sys.executable)}; }}\n"
+        "cg_resolve_python_bin() {\n"
+        "  printf '%s\\n' 'fixture resolver reached' >&2\n"
+        "  return 67\n"
+        "}\n"
     )
+    monkeypatch.setenv("QUANTA_P11_R5_QBC_LANE", "registered-resolution")
+    return quanta, paired, runner, helper, marker
+
+
+@pytest.mark.parametrize(
+    "source_state",
+    [
+        "dirty-quanta", "dirty-paired", "hidden-helper", "hidden-quanta", "hidden-paired",
+        "normalized-helper", "foreign-git-env", "nested-paired", "helper-symlink",
+    ],
+)
+def test_cross_repo_script_refuses_unbound_source_before_python_helper(
+    paired_bootstrap, monkeypatch, source_state,
+):
+    quanta, paired, runner, helper, marker = paired_bootstrap
+    helper_path = helper.relative_to(paired)
+    supplied_root = paired
+    if source_state == "normalized-helper":
+        (paired / ".gitattributes").write_text(f"{helper_path} text eol=crlf\n")
+    elif source_state == "nested-paired":
+        supplied_root = paired / "nested"
+        nested_helper = supplied_root / helper_path
+        nested_helper.parent.mkdir(parents=True)
+        nested_helper.write_bytes(helper.read_bytes())
+    elif source_state == "helper-symlink":
+        target = helper.with_name("same-bytes.sh")
+        helper.rename(target)
+        helper.symlink_to(target.name)
+
     for root in (quanta, paired):
         _commit_fixture_checkout(root)
 
     expected_error = "cross-repo proof requires a clean checkout"
-    if dirty_source == "hidden-helper":
-        git = ["git", "-C", str(paired)]
+    if source_state.startswith("hidden-"):
+        dirty_root = quanta if source_state == "hidden-quanta" else paired
+        path = {
+            "hidden-helper": helper,
+            "hidden-quanta": quanta / "Cargo.toml",
+            "hidden-paired": paired / "packages/analysis/quanta-v2/Cargo.toml",
+        }[source_state]
+        flag = "--skip-worktree" if source_state == "hidden-paired" else "--assume-unchanged"
+        git = ["git", "-C", str(dirty_root)]
         subprocess.run(
-            [*git, "update-index", "--assume-unchanged", "--", helper_path],
+            [*git, "update-index", flag, "--", str(path.relative_to(dirty_root))],
             check=True, capture_output=True,
         )
-        helper.write_bytes(helper.read_bytes() + b"# hidden worktree change\n")
+        path.write_bytes(path.read_bytes() + b"# hidden worktree change\n")
         assert subprocess.check_output([*git, "status", "--porcelain"]) == b""
+        expected_error = "cross-repo proof refuses hidden Git index entries"
+    elif source_state == "normalized-helper":
+        helper.write_bytes(helper.read_bytes().replace(b"\n", b"\r\n"))
+        git = ["git", "-C", str(paired)]
+        subprocess.run([*git, "add", "--", str(helper_path)], check=True, capture_output=True)
+        assert subprocess.check_output([*git, "status", "--porcelain"]) == b""
+        assert subprocess.check_output([*git, "show", f"HEAD:{helper_path}"]) != helper.read_bytes()
         expected_error = "paired Python helper differs from the frozen Git blob"
+    elif source_state == "nested-paired":
+        expected_error = "cross-repo proof requires the checkout root"
+    elif source_state == "helper-symlink":
+        expected_error = "paired Python helper is not a physical regular file"
     else:
-        dirty_root = quanta if dirty_source == "quanta" else paired
+        dirty_root = paired if source_state == "dirty-paired" else quanta
         (dirty_root / "dirty.txt").touch()
+        if source_state == "foreign-git-env":
+            monkeypatch.setenv("GIT_DIR", str(paired / ".git"))
+            monkeypatch.setenv("GIT_WORK_TREE", str(paired))
 
-    monkeypatch.setenv("QUANTA_P11_R5_QBC_LANE", "registered-resolution")
-    completed = subprocess.run(["bash", str(runner), str(paired)], text=True, capture_output=True)
+    completed = subprocess.run(
+        ["bash", str(runner), str(supplied_root)], text=True, capture_output=True,
+    )
 
     assert not marker.exists()
-    assert completed.returncode != 0
+    assert completed.returncode == 1
     assert expected_error in completed.stderr
+
+
+def test_cross_repo_script_runs_checked_helper_bytes_after_comparison(
+    paired_bootstrap, tmp_path, monkeypatch,
+):
+    quanta, paired, runner, _, marker = paired_bootstrap
+    for root in (quanta, paired):
+        _commit_fixture_checkout(root)
+    real_cmp = shutil.which("cmp")
+    assert real_cmp is not None
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    comparator = bin_dir / "cmp"
+    # Interleave a write immediately after a successful comparison if the
+    # candidate bytes are still backed by a writable staging file.
+    comparator.write_text(
+        "#!/usr/bin/env bash\n"
+        f"{shlex.quote(real_cmp)} \"$@\" || exit $?\n"
+        "for last; do :; done\n"
+        'if [[ -f "$last" ]]; then\n'
+        """  printf '\\n%s\\n' 'exit 66' >> "$last"\n"""
+        "fi\n"
+    )
+    comparator.chmod(0o700)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+
+    completed = subprocess.run(
+        ["bash", str(runner), str(paired)], text=True, capture_output=True,
+    )
+
+    assert completed.returncode == 67
+    assert completed.stderr.strip() == "fixture resolver reached"
+    assert marker.exists()
 
 
 @pytest.mark.parametrize("mutate", [False, True])
@@ -247,6 +334,7 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
     python_env.write_text(
         "cg_resolve_python_bin() {\n"
         '  test -z "${SSH_AUTH_SOCK:-}${QUANTA_P11_SIGNER_SOCKET:-}" || exit 86\n'
+        '  test -z "${paired_signer_socket:-}" || exit 86\n'
         "  printf '%s\\n' " + shlex.quote(sys.executable) + "\n}\n"
     )
     monkeypatch.delenv("QUANTA_P11_R5_EVIDENCE_ROOT", raising=False)
@@ -338,7 +426,7 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         f"    pathlib.Path({str(evidence_parent_record)!r}).write_text(str(evidence.parent))\n"
         f"    if {(mutate and not use_p10)!r}: pathlib.Path({str(built)!r}).write_bytes(b'changed release bytes')\n"
         "    return {}\n"
-        "def qbc_modules(_):\n"
+        "def qbc_modules(_, _head):\n"
         f"    if {preflight_failure!r}: raise SystemExit(7)\n"
         "    return None, None, None\n"
         "runner._qbc_modules = qbc_modules\n"
@@ -583,7 +671,7 @@ def test_qbc_resolver_uses_own_stable_auxiliary_stdout_and_refuses_bad_owners(
             return b"changed", (1, 2, 3, 4, 5)
         return raw, (1, 2, len(raw), 4, 5)
 
-    monkeypatch.setattr(MODULE, "_frozen_head", lambda _root: "f" * 40)
+    monkeypatch.setattr(MODULE, "frozen_source_head", lambda _root: "f" * 40)
     monkeypatch.setattr(MODULE, "_status", fake_status)
     monkeypatch.setattr(MODULE, "_read_bounded_regular", fake_read)
     monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
@@ -607,6 +695,95 @@ def test_qbc_resolver_uses_own_stable_auxiliary_stdout_and_refuses_bad_owners(
             assert status_calls == 1
         if failure == "bad-json":
             assert reads == 1
+
+
+@pytest.mark.parametrize("source_state", ["hidden", "foreign-git-environment"])
+def test_qbc_resolver_checks_source_before_invoking_external_cli(
+    resolution, tmp_path, monkeypatch, source_state,
+):
+    quanta, paired, consumer, _ = resolution
+    marker = tmp_path / "qbc-cli-invoked"
+    cli = paired / "scripts/quanta-build-cli"
+    cli.parent.mkdir()
+    cli.write_text(f"#!/bin/sh\n: > {shlex.quote(str(marker))}\nexit 91\n")
+    cli.chmod(0o700)
+    for root in (quanta, paired):
+        _commit_fixture_checkout(root)
+    if source_state == "hidden":
+        subprocess.run(
+            ["git", "-C", str(paired), "update-index", "--skip-worktree", "scripts/quanta-build-cli"],
+            check=True, capture_output=True,
+        )
+        cli.write_bytes(cli.read_bytes() + b"# changed worktree\n")
+        assert subprocess.check_output(["git", "-C", str(paired), "status", "--porcelain"]) == b""
+        expected_error = "hidden Git index entries"
+    else:
+        (quanta / "dirty.txt").touch()
+        monkeypatch.setenv("GIT_DIR", str(paired / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(paired))
+        expected_error = "Git repository environment"
+
+    with pytest.raises(ValueError) as error:
+        MODULE.resolve_from_qbc(
+            quanta_root=quanta, paired_root=paired, consumer=consumer,
+            feature="index-sdk-ingress", lane="registered-resolution",
+        )
+    assert not marker.exists()
+    assert expected_error in str(error.value)
+
+
+def test_qbc_resolver_keeps_the_dedicated_signer_out_of_external_cli(
+    resolution, tmp_path, monkeypatch,
+):
+    import socket
+
+    quanta, paired, consumer, _ = resolution
+    monkeypatch.chdir(tmp_path)
+    with socket.socket(socket.AF_UNIX) as signer:
+        signer.bind("signer")
+    signer_alias = tmp_path / "signer-alias"
+    signer_alias.symlink_to("signer")
+    monkeypatch.setenv("QUANTA_P11_SIGNER_SOCKET", str(tmp_path / "signer"))
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(signer_alias))
+    cli = paired / "scripts/quanta-build-cli"
+    cli.parent.mkdir()
+    cli.write_text(
+        "#!/bin/sh\n"
+        'test -z "${QUANTA_P11_SIGNER_SOCKET:-}${SSH_AUTH_SOCK:-}" || exit 86\n'
+        "exit 91\n"
+    )
+    cli.chmod(0o700)
+    for root in (quanta, paired):
+        _commit_fixture_checkout(root)
+
+    with pytest.raises(ValueError, match="QBC observational status failed: exit 91"):
+        MODULE.resolve_from_qbc(
+            quanta_root=quanta, paired_root=paired, consumer=consumer,
+            feature="index-sdk-ingress", lane="registered-resolution",
+        )
+    assert os.environ["SSH_AUTH_SOCK"] == str(signer_alias)
+    assert os.environ["QUANTA_P11_SIGNER_SOCKET"] == str(tmp_path / "signer")
+
+
+def test_qbc_auxiliary_output_reader_refuses_fifo_without_waiting_for_writer(tmp_path):
+    output = tmp_path / "stdout.log"
+    os.mkfifo(output)
+    result = subprocess.run(
+        [
+            sys.executable, "-B", "-c",
+            "import runpy, sys\n"
+            "from pathlib import Path\n"
+            "reader = runpy.run_path(sys.argv[1])['_read_bounded_regular']\n"
+            "try:\n"
+            "    reader(Path(sys.argv[2]))\n"
+            "except ValueError as error:\n"
+            "    sys.exit(str(error))\n",
+            str(MODULE_PATH), str(output),
+        ],
+        text=True, capture_output=True, timeout=4, check=False,
+    )
+    assert result.returncode == 1
+    assert result.stderr.strip() == "QBC metadata output is not a bounded regular file"
 
 
 def test_qbc_auxiliary_output_reader_requires_bounded_regular_single_link(tmp_path, monkeypatch):

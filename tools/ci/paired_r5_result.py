@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import secrets
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -36,7 +36,11 @@ from tools.ci.lint.handoff_validation import (
 )
 from tools.ci.nextest_events import parse_nextest_bytes, parse_nextest_inventory_bytes
 from tools.ci.p11_attestation import SOCKET_ENV, remove_signing_agent
-from tools.ci.paired_cargo_resolution import REQUIRED_QUANTA_PACKAGES, resolve_from_qbc
+from tools.ci.paired_cargo_resolution import (
+    REQUIRED_QUANTA_PACKAGES,
+    frozen_source_head,
+    resolve_from_qbc,
+)
 from tools.ci.proof_json import parse_proof_json
 
 SCHEMA = "quanta-paired-r5-runner-candidate/v1"
@@ -53,17 +57,12 @@ def _canonical(payload: object) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
 
 
-def _head(root: Path) -> str:
-    return subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
-
-
 def _frozen(root: Path, expected: str) -> None:
-    if (
-        _head(root) != expected
-        or subprocess.check_output(
-            ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"], text=True
-        ).strip()
-    ):
+    try:
+        observed = frozen_source_head(root)
+    except ValueError as error:
+        raise ValueError(f"source changed or is dirty: {root}") from error
+    if observed != expected:
         raise ValueError(f"source changed or is dirty: {root}")
 
 
@@ -254,19 +253,26 @@ def publish_paired_output(root: Path, relative: Path, parent: int, raw: bytes) -
         raise
 
 
-def _qbc_modules(root: Path) -> tuple[Any, Any, Any]:
-    sys.path.insert(0, str(root / "tools/quanta-build-cli"))
-    import qbc_completed_run_v1 as completed
-    import quanta_build_cli as qbc
-    import verification_completion_locator_v1 as completion
-
-    for module, name in (
-        (completed, "qbc_completed_run_v1"),
-        (completion, "verification_completion_locator_v1"),
-        (qbc, "quanta_build_cli"),
-    ):
-        if Path(module.__file__).resolve() != root / "tools/quanta-build-cli" / (name + ".py"):
+def _qbc_modules(root: Path, expected_head: str) -> tuple[Any, Any, Any]:
+    _frozen(root, expected_head)
+    directory = root / "tools/quanta-build-cli"
+    module_paths = {
+        name: directory / (name + ".py")
+        for name in (
+            "qbc_completed_run_v1", "quanta_build_cli", "verification_completion_locator_v1",
+        )
+    }
+    sys.path.insert(0, str(directory))
+    # Check every possible entry before any of them can import a sibling.
+    for name, path in module_paths.items():
+        spec = importlib.util.find_spec(name)
+        if spec is None or spec.origin != str(path) or not path.is_file() or path.resolve() != path:
             raise ValueError("paired QBC module belongs to another source")
+    modules = [importlib.import_module(name) for name in module_paths]
+    for module, path in zip(modules, module_paths.values(), strict=True):
+        if Path(module.__file__).resolve() != path:
+            raise ValueError("paired QBC module belongs to another source")
+    completed, qbc, completion = modules
     return completed, completion, qbc
 
 
@@ -777,6 +783,8 @@ def main() -> int:
     # QBC and Cargo spawn descendants using this process' environment.
     socket = os.environ.pop(SOCKET_ENV, None)
     removed_agent = remove_signing_agent(os.environ, socket)
+    git_no_replace = os.environ.get("GIT_NO_REPLACE_OBJECTS")
+    os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
     removed_witness = {
         key: os.environ.pop(key) for key in (WITNESS_DIR_ENV, WITNESS_NONCE_ENV)
         if key in os.environ
@@ -789,6 +797,10 @@ def main() -> int:
         if removed_agent is not None:
             os.environ["SSH_AUTH_SOCK"] = removed_agent
         os.environ.update(removed_witness)
+        if git_no_replace is None:
+            os.environ.pop("GIT_NO_REPLACE_OBJECTS", None)
+        else:
+            os.environ["GIT_NO_REPLACE_OBJECTS"] = git_no_replace
 
 
 def _main(signer_socket: str | None) -> int:
@@ -801,8 +813,8 @@ def _main(signer_socket: str | None) -> int:
         help="verify paired resolution and print the P10 archive for executable P11",
     )
     parser.add_argument("--evidence-root", type=Path)
-    parser.add_argument("--quanta-head")
-    parser.add_argument("--semantica-head")
+    parser.add_argument("--quanta-head", required=True)
+    parser.add_argument("--semantica-head", required=True)
     parser.add_argument("--daemon-digest")
     parser.add_argument("--built-binary", type=Path)
     parser.add_argument("--provided-binary", type=Path)
@@ -815,6 +827,8 @@ def _main(signer_socket: str | None) -> int:
     semantica = args.semantica_root.resolve(strict=True)
     from tools.ci.paired_r5_release import admit_release, prepare_terminal
 
+    _frozen(root, args.quanta_head)
+    _frozen(semantica, args.semantica_head)
     registered_cases = r5_cases(live_proof(root, R5_PROOF))
     resolutions = {
         "runtime": parse_proof_json(args.runtime_resolution.encode()),
@@ -822,15 +836,15 @@ def _main(signer_socket: str | None) -> int:
     }
     _verify_resolution_files(root, semantica, resolutions, cases=registered_cases)
     if args.verify_resolution_only:
-        _qbc_modules(semantica)
+        _qbc_modules(semantica, args.semantica_head)
         release = admit_release(root, semantica, None, preflight_signer=False)
+        _frozen(root, args.quanta_head)
+        _frozen(semantica, args.semantica_head)
         if release is not None:
             print(root / release["binary_path"])
         return 0
     for field in (
         "evidence_root",
-        "quanta_head",
-        "semantica_head",
         "daemon_digest",
         "built_binary",
         "provided_binary",
@@ -873,7 +887,7 @@ def _main(signer_socket: str | None) -> int:
     _frozen(root, args.quanta_head)
     _frozen(semantica, args.semantica_head)
     output.mkdir(mode=0o700, parents=False)
-    completed, completion, qbc_owner = _qbc_modules(semantica)
+    completed, completion, qbc_owner = _qbc_modules(semantica, args.semantica_head)
     case_results = [
         _one(
             semantica,

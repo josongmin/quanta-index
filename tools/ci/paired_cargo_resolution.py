@@ -17,6 +17,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tools.ci.p11_attestation import SOCKET_ENV, remove_signing_agent  # noqa: E402
+
 try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10 compatibility, matching proof tooling.
@@ -36,14 +40,46 @@ def _raw_exit_acceptable(value: Any) -> bool:
     return value is None or (type(value) is int and value == 0)
 
 
-def _frozen_head(root: Path) -> str:
-    head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
-    dirty = subprocess.check_output(
-        ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
-        text=True,
+def _unsigned_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    remove_signing_agent(environment, environment.pop(SOCKET_ENV, None))
+    return environment
+
+
+def frozen_source_head(root: Path) -> str:
+    """Admit a physical checkout before running any of its QBC code."""
+    environment = _unsigned_environment()
+    local_env = subprocess.check_output(
+        ["git", "rev-parse", "--local-env-vars"], env=environment, text=True,
     )
-    if dirty or len(head) != 40:
+    if any(
+        name in environment
+        for name in (*local_env.splitlines(), "GIT_NAMESPACE")
+        if name not in {
+            "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_NO_REPLACE_OBJECTS",
+        }
+    ):
+        raise ValueError(f"paired proof refuses an overridden Git repository environment: {root}")
+    git = [
+        "git", "--no-replace-objects", "--no-optional-locks",
+        "-c", "core.fsmonitor=false", "-C", str(root),
+    ]
+    identity = subprocess.check_output(
+        [*git, "rev-parse", "--show-toplevel", "--verify", "HEAD^{commit}"],
+        env=environment, text=True,
+    )
+    actual_root, _, head = identity.rstrip("\n").rpartition("\n")
+    if actual_root != str(root) or len(head) != 40:
+        raise ValueError(f"paired proof requires the checkout root: {root}")
+    dirty = subprocess.check_output(
+        [*git, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"],
+        env=environment,
+    )
+    if dirty:
         raise ValueError(f"QBC resolver preflight requires a clean source: {root}")
+    index = subprocess.check_output([*git, "ls-files", "-v", "-z"], env=environment)
+    if any(entry[:1] == b"S" or entry[:1].islower() for entry in index.split(b"\0")):
+        raise ValueError(f"paired proof refuses hidden Git index entries: {root}")
     return head
 
 
@@ -62,7 +98,7 @@ def _bound_inputs(quanta_root: Path, paired_root: Path, consumer: str) -> dict[s
 def _read_bounded_regular(path: Path) -> tuple[bytes, tuple[int, ...]]:
     if path.resolve(strict=True) != path:
         raise ValueError("QBC metadata output path contains an alias")
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as handle:
         before = os.fstat(handle.fileno())
         if (
@@ -141,10 +177,11 @@ def resolve_from_qbc(
     paired_root = paired_root.resolve(strict=True)
     if not lane or "/" in lane or lane in {".", ".."}:
         raise ValueError("QBC resolver lane is invalid")
-    roots = {root: _frozen_head(root) for root in (quanta_root, paired_root)}
+    roots = {root: frozen_source_head(root) for root in (quanta_root, paired_root)}
     inputs = _bound_inputs(quanta_root, paired_root, consumer)
-    environment = os.environ.copy()
+    environment = _unsigned_environment()
     environment["CODEGRAPH_PERSONA"] = "agent"
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     before, prior = _status(paired_root, lane, environment)
     prior_id = (prior.get("receipt") or {}).get("last_run_id_v1")
     command = [
@@ -261,7 +298,7 @@ def resolve_from_qbc(
         or (latest_meta.get("command_context") or {}).get("last_run_id_v1") != run_id
     ):
         raise ValueError("QBC metadata owner or output changed during resolver preflight")
-    if any(_frozen_head(root) != head for root, head in roots.items()):
+    if any(frozen_source_head(root) != head for root, head in roots.items()):
         raise ValueError("source HEAD changed during QBC resolver preflight")
     if _bound_inputs(quanta_root, paired_root, consumer) != inputs:
         raise ValueError("resolver manifests or nested lock changed during QBC preflight")

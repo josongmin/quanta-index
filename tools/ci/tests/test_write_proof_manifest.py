@@ -996,7 +996,7 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
     monkeypatch.setattr(
         release,
         "_qbc_modules",
-        lambda _: (
+        lambda _, _head: (
             SimpleNamespace(read_completed_run_receipt_at_path_v1=read_run),
             None,
             SimpleNamespace(_campaign_cargo_admission_owner_v1=lambda: owner),

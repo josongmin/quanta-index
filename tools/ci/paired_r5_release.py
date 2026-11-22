@@ -177,7 +177,7 @@ def prepare_terminal(
     index = _read_repo_regular_bytes(output, INDEX, label="original paired runner index")
     if index != _canonical(candidate) + b"\n":
         raise ValueError("original paired runner index differs from the completed execution")
-    completed, _, qbc_owner = _qbc_modules(pair)
+    completed, _, qbc_owner = _qbc_modules(pair, admitted_binding["source_pair"]["source"]["head"])
     source_digest = (
         qbc_owner._campaign_cargo_admission_owner_v1().campaign_source_snapshot_digest_v1(pair)
     )
