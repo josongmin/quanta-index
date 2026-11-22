@@ -16,6 +16,25 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def signed_product_active(key, root, manifest_sha, *, generation=1):
+    payload = {
+        "schema_version": "semantica-installed-product-active/v1",
+        "install_root": str(root),
+        "generation": generation,
+        "ag5_active_record_sha256": "a" * 64,
+        "release_manifest_sha256": manifest_sha,
+        "cli_sha256": "b" * 64,
+        "server_sha256": "c" * 64,
+        "sql_rulepack_worker_sha256": "d" * 64,
+        "parser_native_worker_sha256": "e" * 64,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii")
+    signature = key.sign(b"semantica.installed-product-active.v1\n" + canonical).hex()
+    return json.dumps(
+        {"payload": payload, "signature_hex": signature}, sort_keys=True, separators=(",", ":"),
+    ).encode("ascii") + b"\n"
+
+
 def selection_fixture(root, *, binary_bytes=b"test Q ELF"):
     binary, state, config = (root / name for name in ("searchd", "native-state", "native.json"))
     binary.write_bytes(binary_bytes)
@@ -53,11 +72,8 @@ def test_d_approves_the_selected_q_and_f_requires_the_same_install(tmp_path, mon
     selected, request = selection_fixture(tmp_path.resolve())
     manifest = b"installed four-role release"
     manifest_sha = sha(manifest)
-    active = json.dumps({"payload": {
-        "schema_version": "semantica-installed-product-active/v1",
-        "install_root": str(tmp_path), "release_manifest_sha256": manifest_sha,
-    }}).encode()
     private_key = Ed25519PrivateKey.generate()
+    active = signed_product_active(private_key, tmp_path, manifest_sha)
     boot = Mock()
     monkeypatch.setattr(launcher, "_run_selected_command", boot)
     boot.return_value = 0
@@ -85,10 +101,34 @@ def test_d_approves_the_selected_q_and_f_requires_the_same_install(tmp_path, mon
         approval.verify_installed_approval(
             foreign, selected, request["selection_sha256"], request["decision_policy_sha256"],
         )
-    installed["active-generation.json"] = active + b"\n"
+    installed["active-generation.json"] = signed_product_active(private_key, tmp_path, manifest_sha, generation=2)
     with pytest.raises(ValueError, match="differs from the selected installation"):
         approval.verify_installed_approval(
             issued, selected, request["selection_sha256"], request["decision_policy_sha256"],
+        )
+
+
+@pytest.mark.parametrize("generation_signer", ["unsigned", "foreign"])
+def test_f_requires_active_generation_signature_under_installed_key(tmp_path, monkeypatch, generation_signer):
+    selected, request = selection_fixture(tmp_path.resolve())
+    manifest = b"installed four-role release"
+    key = Ed25519PrivateKey.generate()
+    active = signed_product_active(Ed25519PrivateKey.generate(), tmp_path, sha(manifest))
+    if generation_signer == "unsigned":
+        active = json.dumps({"payload": json.loads(active)["payload"]}).encode()
+    payload = approval.binding(selected, request["selection_sha256"], request["decision_policy_sha256"],
+                               sha(active), sha(manifest))
+    signed_q_approval = {"payload": payload, "signature_hex": key.sign(approval.signing_bytes(payload)).hex()}
+    installed = {
+        "active-generation.json": active,
+        "deployment-public-key.bin": key.public_key().public_bytes_raw(),
+        "release-manifest.json": manifest,
+    }
+    monkeypatch.setattr(approval, "_installed_bytes", lambda path, _limit: installed[path.name])
+
+    with pytest.raises(ValueError, match="installed Product generation signature"):
+        approval.verify_installed_approval(
+            signed_q_approval, selected, request["selection_sha256"], request["decision_policy_sha256"],
         )
 
 

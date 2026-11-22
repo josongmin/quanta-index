@@ -9,18 +9,63 @@ from pathlib import Path
 
 SCHEMA = "semantica-installed-native-q-approval/v1"
 DOMAIN = b"semantica.installed-native-q-approval.v1\n"
+PRODUCT_ACTIVE_SCHEMA = "semantica-installed-product-active/v1"
+PRODUCT_ACTIVE_DOMAIN = b"semantica.installed-product-active.v1\n"
+PRODUCT_ACTIVE_MAX_BYTES = 8 * 1024
 TRUST = Path("/etc/semantica-codegraph-v2/trust")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+SIGNATURE_HEX = re.compile(r"[0-9a-f]{128}\Z")
+PRODUCT_ACTIVE_DIGESTS = frozenset({
+    "ag5_active_record_sha256", "release_manifest_sha256", "cli_sha256", "server_sha256",
+    "sql_rulepack_worker_sha256", "parser_native_worker_sha256",
+})
 REQUEST_FIELDS = {
     "deployment_root", "selection_path", "selection_sha256",
     "decision_policy_path", "decision_policy_sha256",
 }
 
 
-def signing_bytes(payload: dict) -> bytes:
-    return DOMAIN + json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False,
+def _canonical_bytes(value: object) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False,
     ).encode("ascii")
+
+
+def signing_bytes(payload: dict) -> bytes:
+    return DOMAIN + _canonical_bytes(payload)
+
+
+def verify_installed_product_generation(raw: bytes, key: bytes) -> dict:
+    """Authenticate the installed S Product record before consuming its Q approval."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    if len(raw) > PRODUCT_ACTIVE_MAX_BYTES:
+        raise ValueError("installed Product generation exceeds its byte bound")
+    envelope = json.loads(raw)
+    if not isinstance(envelope, dict) or set(envelope) != {"payload", "signature_hex"}:
+        raise ValueError("installed Product generation signature envelope differs")
+    payload, signature = envelope["payload"], envelope["signature_hex"]
+    if not isinstance(signature, str) or SIGNATURE_HEX.fullmatch(signature) is None:
+        raise ValueError("installed Product generation signature is malformed")
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != PRODUCT_ACTIVE_DIGESTS | {"schema_version", "install_root", "generation"}
+        or payload["schema_version"] != PRODUCT_ACTIVE_SCHEMA
+        or type(payload["generation"]) is not int or payload["generation"] < 0
+        or not isinstance(payload["install_root"], str) or not payload["install_root"].isascii()
+        or any(not isinstance(payload[field], str) or SHA256.fullmatch(payload[field]) is None
+               for field in PRODUCT_ACTIVE_DIGESTS)
+        or raw != _canonical_bytes(envelope) + b"\n"
+    ):
+        raise ValueError("installed Product generation payload differs")
+    try:
+        Ed25519PublicKey.from_public_bytes(key).verify(
+            bytes.fromhex(signature), PRODUCT_ACTIVE_DOMAIN + _canonical_bytes(payload),
+        )
+    except (InvalidSignature, ValueError) as error:
+        raise ValueError("installed Product generation signature differs") from error
+    return payload
 
 
 def binding(selection, selection_sha256, policy_sha256, active_sha256, manifest_sha256):
@@ -151,13 +196,11 @@ def verify_installed_approval(receipt, selection, selection_sha256, policy_sha25
 
     if (not isinstance(receipt, dict) or set(receipt) != {"payload", "signature_hex"}
             or not isinstance(receipt["signature_hex"], str)
-            or re.fullmatch(r"[0-9a-f]{128}", receipt["signature_hex"]) is None):
+            or SIGNATURE_HEX.fullmatch(receipt["signature_hex"]) is None):
         raise ValueError("Native release approval envelope differs")
-    active = _installed_bytes(TRUST / "active-generation.json", 16 * 1024)
+    active = _installed_bytes(TRUST / "active-generation.json", PRODUCT_ACTIVE_MAX_BYTES)
     key = _installed_bytes(TRUST / "deployment-public-key.bin", 32)
-    payload = json.loads(active)["payload"]
-    if not isinstance(payload, dict) or payload.get("schema_version") != "semantica-installed-product-active/v1":
-        raise ValueError("Native release approval requires the installed Product generation")
+    payload = verify_installed_product_generation(active, key)
     manifest_sha = payload["release_manifest_sha256"]
     expected = binding(selection, selection_sha256, policy_sha256,
                        hashlib.sha256(active).hexdigest(), manifest_sha)
@@ -173,6 +216,6 @@ def verify_installed_approval(receipt, selection, selection_sha256, policy_sha25
     manifest = Path(payload["install_root"]) / "releases" / manifest_sha / "share/quanta/release-manifest.json"
     if hashlib.sha256(_installed_bytes(manifest, 1024 * 1024)).hexdigest() != manifest_sha:
         raise ValueError("Native release approval manifest changed")
-    if (active != _installed_bytes(TRUST / "active-generation.json", 16 * 1024)
+    if (active != _installed_bytes(TRUST / "active-generation.json", PRODUCT_ACTIVE_MAX_BYTES)
             or key != _installed_bytes(TRUST / "deployment-public-key.bin", 32)):
         raise ValueError("Native release approval installation changed")

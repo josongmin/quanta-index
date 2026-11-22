@@ -890,7 +890,7 @@ def shipped_release(release_build, tmp_path):
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-    from tools.ci.tests.test_native_release_approval import selection_fixture
+    from tools.ci.tests.test_native_release_approval import selection_fixture, signed_product_active
     from tools.deployment.native_release_approval import binding, signing_bytes
 
     checker, evidence, binary, events = release_build
@@ -996,13 +996,9 @@ def shipped_release(release_build, tmp_path):
     release_manifest.write_bytes(manifest_bytes)
     trust = tmp_path / "trust"
     trust.mkdir()
-    active = {"payload": {
-        "schema_version": "semantica-installed-product-active/v1",
-        "install_root": str(install_root), "release_manifest_sha256": manifest_sha,
-    }}
-    active_bytes = json.dumps(active).encode()
-    (trust / "active-generation.json").write_bytes(active_bytes)
     key = Ed25519PrivateKey.generate()
+    active_bytes = signed_product_active(key, install_root, manifest_sha)
+    (trust / "active-generation.json").write_bytes(active_bytes)
     (trust / "deployment-public-key.bin").write_bytes(key.public_key().public_bytes(
         encoding=serialization.Encoding.Raw,
         format=serialization.PublicFormat.Raw,
@@ -1020,7 +1016,7 @@ def shipped_release(release_build, tmp_path):
     readback.write_text(json.dumps({
         "state": "LOCAL_SIGNED_LINUX_INSTALLED_PRODUCT_PRODUCED_NOT_C01_ACCEPTANCE",
         "installed_active_generation_sha256": payload["active_generation_sha256"],
-        "selected": active["payload"],
+        "selected": json.loads(active_bytes)["payload"],
         "native_q_approval": {"payload": payload, "signature_hex": key.sign(signing_bytes(payload)).hex()},
         "original_Linux_C01_bodies": 0,
         "C01_acceptance": False,
@@ -1036,6 +1032,7 @@ def shipped_release(release_build, tmp_path):
     "wrong_approval", "wrong_manifest", "wrong_source", "swapped_cli", "swapped_sdk",
     "wrong_s_head", "wrong_provenance", "cli_mach_o", "cli_aarch64",
     "readback_state", "readback_generation", "readback_selection", "standalone_approval", "swapped_selected_q",
+    "foreign_product_key",
 ])
 def test_shipped_release_requires_compiled_consumers_and_approved_bundle(
     shipped_release, fault, capsys, monkeypatch,
@@ -1059,6 +1056,17 @@ def test_shipped_release_requires_compiled_consumers_and_approved_bundle(
     elif fault == "wrong_approval":
         issued = json.loads(readback.read_text())
         issued["native_q_approval"]["payload"]["q_elf_sha256"] = "0" * 64
+        readback.write_text(json.dumps(issued))
+    elif fault == "foreign_product_key":
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        from tools.deployment.native_release_approval import signing_bytes
+
+        key = Ed25519PrivateKey.generate()
+        (trust / "deployment-public-key.bin").write_bytes(key.public_key().public_bytes_raw())
+        issued = json.loads(readback.read_text())
+        approval = issued["native_q_approval"]
+        approval["signature_hex"] = key.sign(signing_bytes(approval["payload"])).hex()
         readback.write_text(json.dumps(issued))
     elif fault in {"readback_state", "readback_generation", "readback_selection", "standalone_approval"}:
         issued = json.loads(readback.read_text())
@@ -1116,6 +1124,8 @@ def test_shipped_release_requires_compiled_consumers_and_approved_bundle(
         assert "signed install readback differs" in capsys.readouterr().err
     if fault == "swapped_selected_q":
         assert "selected binary SHA-256 changed" in capsys.readouterr().err
+    if fault == "foreign_product_key":
+        assert "installed Product generation signature differs" in capsys.readouterr().err
 
 
 def test_signed_bundle_cannot_qualify_without_committed_candidate_authority(shipped_release, capsys):

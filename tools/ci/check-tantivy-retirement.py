@@ -436,15 +436,19 @@ def shipped_bundle_findings(
     from tools.benchmark.evidence import CONTROL_DOCUMENT_BYTES
     from tools.ci.proof_json import parse_proof_json
     from tools.ci.proof_operational_result import installation_identity
-    from tools.deployment.native_release_approval import SCHEMA, signing_bytes
+    from tools.deployment.native_release_approval import (
+        PRODUCT_ACTIVE_MAX_BYTES,
+        SCHEMA,
+        signing_bytes,
+        verify_installed_product_generation,
+    )
 
-    active_bytes = read_regular_bytes(trust_root / "active-generation.json", 16 * 1024, "installed active generation")
+    active_path = trust_root / "active-generation.json"
+    active_bytes = read_regular_bytes(active_path, PRODUCT_ACTIVE_MAX_BYTES, "installed active generation")
     key = read_regular_bytes(trust_root / "deployment-public-key.bin", 32, "deployment public key")
     if len(key) != 32:
         raise ValueError("deployment public key length differs")
-    active = json.loads(active_bytes)["payload"]
-    if not isinstance(active, dict) or active["schema_version"] != "semantica-installed-product-active/v1":
-        raise ValueError("installed Product generation schema differs")
+    active = verify_installed_product_generation(active_bytes, key)
     manifest_sha = active["release_manifest_sha256"]
     install_root = Path(active["install_root"])
     if (
@@ -541,7 +545,7 @@ def shipped_bundle_findings(
         read_regular_bytes(approval_request_path, CONTROL_DOCUMENT_BYTES, "installed Q approval request")
     )
     require_live_approved_q(approval_request, payload, daemon_sha256)
-    if active_bytes != read_regular_bytes(trust_root / "active-generation.json", 16 * 1024, "installed active generation"):
+    if active_bytes != read_regular_bytes(active_path, PRODUCT_ACTIVE_MAX_BYTES, "installed active generation"):
         raise ValueError("installed Product generation changed during inventory")
     if key != read_regular_bytes(trust_root / "deployment-public-key.bin", 32, "deployment public key"):
         raise ValueError("deployment public key changed during inventory")
