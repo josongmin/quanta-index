@@ -139,8 +139,130 @@ pub(crate) struct LockedDeploymentSelectionV1 {
     _memory: MemoryLease,
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+struct RecoveryWitnessFieldSeed(&'static [&'static str]);
+
+impl<'de> serde::de::DeserializeSeed<'de> for RecoveryWitnessFieldSeed {
+    type Value = &'static str;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_identifier(self)
+    }
+}
+
+impl serde::de::Visitor<'_> for RecoveryWitnessFieldSeed {
+    type Value = &'static str;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("field identifier")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        self.0
+            .iter()
+            .copied()
+            .find(|field| *field == value)
+            .ok_or_else(|| E::unknown_field(value, self.0))
+    }
+
+    fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+        self.0
+            .iter()
+            .copied()
+            .find(|field| field.as_bytes() == value)
+            .ok_or_else(|| E::unknown_field(&String::from_utf8_lossy(value), self.0))
+    }
+}
+
+// These records accept omitted nullable map fields but require every position in
+// sequence readers. Keep the declaration order for durable witness bytes.
+macro_rules! recovery_witness_codec {
+    ($name:ident $(<$($param:ident),+>)?, $shape:literal, {
+        $($field:ident : $ty:ty $(= $map_default:ident)?),+ $(,)?
+    }) => {
+        impl $(<$($param: serde::Serialize),+>)? serde::Serialize for $name $(<$($param),+>)? {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                let mut record = serializer.serialize_struct(stringify!($name), FIELDS.len())?;
+                $(serde::ser::SerializeStruct::serialize_field(&mut record, stringify!($field), &self.$field)?;)+
+                serde::ser::SerializeStruct::end(record)
+            }
+        }
+
+        impl<'de $(, $($param: serde::Deserialize<'de>),+)?> serde::Deserialize<'de>
+            for $name $(<$($param),+>)?
+        {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                struct WireVisitor<T>(std::marker::PhantomData<fn() -> T>);
+
+                impl<'de $(, $($param: serde::Deserialize<'de>),+)?> serde::de::Visitor<'de>
+                    for WireVisitor<$name $(<$($param),+>)?>
+                {
+                    type Value = $name $(<$($param),+>)?;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        formatter.write_str(concat!("struct ", stringify!($name)))
+                    }
+
+                    fn visit_map<A: serde::de::MapAccess<'de>>(
+                        self,
+                        mut map: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        $(let mut $field: Option<$ty> = None;)+
+                        while let Some(key) = map.next_key_seed(
+                            RecoveryWitnessFieldSeed(FIELDS)
+                        )? {
+                            match key {
+                                $(stringify!($field) => {
+                                    if $field.is_some() {
+                                        return Err(serde::de::Error::duplicate_field(stringify!($field)));
+                                    }
+                                    $field = Some(map.next_value()?);
+                                },)+
+                                _ => unreachable!("closed field seed only returns witness keys"),
+                            }
+                        }
+                        Ok($name {
+                            $($field: recovery_witness_codec!(@map_value $field $(= $map_default)?),)+
+                        })
+                    }
+
+                    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                        self,
+                        mut seq: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        let mut indices = 0..FIELDS.len();
+                        $(let $field = {
+                            let index = indices.next().unwrap_or(FIELDS.len());
+                            seq.next_element()?.ok_or_else(|| {
+                                serde::de::Error::invalid_length(
+                                    index, &concat!("struct ", stringify!($name), " with ", $shape, " elements"),
+                                )
+                            })?
+                        };)+
+                        Ok($name { $($field,)+ })
+                    }
+                }
+
+                deserializer.deserialize_struct(
+                    stringify!($name),
+                    FIELDS,
+                    WireVisitor::<Self>(std::marker::PhantomData),
+                )
+            }
+        }
+    };
+    (@map_value $field:ident) => {
+        $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
+    (@map_value $field:ident = default) => {
+        $field.unwrap_or_default()
+    };
+}
+
 struct RecoveryWitnessBindingV1 {
     mode: NativeCutoverRecoveryModeV1,
     nonce: Digest,
@@ -150,8 +272,15 @@ struct RecoveryWitnessBindingV1 {
     evidence_sha256: Digest,
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+recovery_witness_codec!(RecoveryWitnessBindingV1, "6", {
+    mode: NativeCutoverRecoveryModeV1,
+    nonce: Digest,
+    config_sha256: Digest,
+    helper_sha256: Digest,
+    evidence_length: u64,
+    evidence_sha256: Digest,
+});
+
 struct RecoveryWitnessWireV1<B, H, L, R> {
     format_version: u8,
     binding: B,
@@ -162,14 +291,29 @@ struct RecoveryWitnessWireV1<B, H, L, R> {
     repomap: Option<R>,
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+recovery_witness_codec!(RecoveryWitnessWireV1<B, H, L, R>, "7", {
+    format_version: u8,
+    binding: B,
+    root_device: u64,
+    root_inode: u64,
+    history: Option<H> = default,
+    legacy: Option<L> = default,
+    repomap: Option<R> = default,
+});
+
 pub(crate) struct LegacyPublishedRecoveryWitnessV1<R = RepoId, V = RevisionId> {
     pub(crate) repo_id: R,
     pub(crate) revision_id: V,
     pub(crate) durable_sequence: u64,
     pub(crate) activation: Digest,
 }
+
+recovery_witness_codec!(LegacyPublishedRecoveryWitnessV1<R, V>, "4", {
+    repo_id: R,
+    revision_id: V,
+    durable_sequence: u64,
+    activation: Digest,
+});
 
 impl<'a> LegacyPublishedRecoveryWitnessV1<&'a RepoId, &'a RevisionId> {
     pub(crate) fn from_publication_v1(
