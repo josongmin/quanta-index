@@ -89,6 +89,95 @@ quanta_index_contract::native_serde_struct!(FileMapRoot {
     source: SourceCut,
 });
 
+struct RootHeader {
+    capability: FileMapCapability,
+}
+
+impl<'de> Deserialize<'de> for RootHeader {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+
+        struct CapabilityKey;
+
+        impl<'de> DeserializeSeed<'de> for CapabilityKey {
+            type Value = bool;
+
+            fn deserialize<D: serde::Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                deserializer.deserialize_identifier(self)
+            }
+        }
+
+        impl Visitor<'_> for CapabilityKey {
+            type Value = bool;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("field identifier")
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(value == "capability")
+            }
+
+            fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                Ok(value == b"capability")
+            }
+
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                if value == 0 {
+                    Ok(true)
+                } else {
+                    Err(E::invalid_value(
+                        de::Unexpected::Unsigned(value),
+                        &"field index 0 <= i < 1",
+                    ))
+                }
+            }
+        }
+
+        struct Header;
+
+        impl<'de> Visitor<'de> for Header {
+            type Value = RootHeader;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct RootHeader")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut capability = None;
+                while let Some(is_capability) = map.next_key_seed(CapabilityKey)? {
+                    if is_capability {
+                        if capability.is_some() {
+                            return Err(de::Error::duplicate_field("capability"));
+                        }
+                        capability = Some(map.next_value()?);
+                    } else {
+                        let _ignored = map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                let capability =
+                    capability.ok_or_else(|| de::Error::missing_field("capability"))?;
+                Ok(RootHeader { capability })
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let capability = sequence.next_element()?.ok_or_else(|| {
+                    de::Error::invalid_length(0, &"struct RootHeader with 1 element")
+                })?;
+                Ok(RootHeader { capability })
+            }
+        }
+
+        deserializer.deserialize_struct("RootHeader", &["capability"], Header)
+    }
+}
+
 struct PathKey {
     bytes: Vec<u8>,
     _memory: Option<MemoryLease>,
@@ -1059,10 +1148,6 @@ fn load_root(
         ));
     }
     // This header only distinguishes persisted formats; it never reads V1 data.
-    #[derive(Deserialize)]
-    struct RootHeader {
-        capability: FileMapCapability,
-    }
     let header: RootHeader = decode(&stored.payload)?;
     if header.capability == FileMapCapability::FilePathInventoryV1 {
         if commitment_in_domain(LEGACY_COMMIT_DOMAIN, &stored.payload) != binding.logical_commitment
