@@ -47,6 +47,7 @@ use super::{
 
 const SDK_TIMEOUT: Duration = Duration::from_secs(60);
 const STAGE_TIMEOUT: Duration = Duration::from_secs(60);
+const CORPUS_TEXT_ADMISSION_POLICY: Digest = Digest([31; 32]);
 
 /// Explicit benchmark binding for a configured Native local-code owner.
 /// The daemon owns embedding execution and validates this spec at Reconfigure.
@@ -166,7 +167,7 @@ fn semantic_recipe_from_config(
 }
 
 impl NativeSemanticCorpusInput<'_> {
-    fn preflight(&self) -> Result<AdmittedSemanticCorpus> {
+    fn preflight(&self, text_layout: NativeCorpusTextLayout) -> Result<AdmittedSemanticCorpus> {
         lower_sha256(self.config_sha256, "native config SHA-256")?;
         lower_sha256(self.source_universe_sha256, "source universe SHA-256")?;
         lower_sha256(self.source_binding_sha256, "source binding SHA-256")?;
@@ -293,6 +294,7 @@ impl NativeSemanticCorpusInput<'_> {
                 && instance.group != literal_spec().group,
             "Native Semantic instance/group collides with a Core instance"
         );
+        text_layout.verify_external_config(&config)?;
         Ok(AdmittedSemanticCorpus {
             config: self.config_path.to_path_buf(),
             socket: self.socket_path.to_path_buf(),
@@ -331,15 +333,43 @@ impl NativeCorpusTextLayout {
         match self {
             Self::TreeV1 => {}
             Self::SegmentedFullV1 => {
-                instance.policy = TextRecipe::segmented_full(Digest([31; 32])).output_policy();
+                instance.policy =
+                    TextRecipe::segmented_full(CORPUS_TEXT_ADMISSION_POLICY).output_policy();
                 instance.format = StorageFormatId([76; 16]);
             }
             Self::SegmentedLayeredV2 => {
-                instance.policy = TextRecipe::segmented_layered(Digest([31; 32])).output_policy();
+                instance.policy =
+                    TextRecipe::segmented_layered(CORPUS_TEXT_ADMISSION_POLICY).output_policy();
                 instance.format = StorageFormatId([77; 16]);
             }
         }
         instance
+    }
+
+    fn verify_external_config(self, config: &Value) -> Result<()> {
+        let layout = config
+            .pointer("/text/layout")
+            .map_or(Some("tree-v1"), Value::as_str);
+        anyhow::ensure!(
+            layout == Some(self.config_name()),
+            "Native Text layout differs from selected corpus profile"
+        );
+        let text = self.text_instance();
+        anyhow::ensure!(
+            config.pointer("/text/descriptor")
+                == Some(&json!({
+                    "kind": text.kind.0,
+                    "schema": text.schema.0,
+                    "format": text.format.0,
+                })),
+            "Native Text descriptor differs from selected corpus profile"
+        );
+        anyhow::ensure!(
+            config.pointer("/text/admission_policy")
+                == Some(&json!(CORPUS_TEXT_ADMISSION_POLICY.0)),
+            "Native Text admission policy differs from selected corpus profile"
+        );
+        Ok(())
     }
 }
 
@@ -517,7 +547,7 @@ fn bound_corpus(input: &NativeCorpusInput<'_>) -> Result<(Vec<SourceInput>, u64,
             path: file.path,
             bytes: content,
             text: SourceTextAdmission::Utf8 {
-                policy: Digest([31; 32]),
+                policy: CORPUS_TEXT_ADMISSION_POLICY,
             },
             language: None,
         });
@@ -848,13 +878,13 @@ fn measure_native_corpus_inner(
     semantic: Option<&NativeSemanticCorpusInput<'_>>,
 ) -> Result<Value> {
     anyhow::ensure!(
-        input.text_layout == NativeCorpusTextLayout::TreeV1 || semantic.is_none(),
+        input.text_layout != NativeCorpusTextLayout::SegmentedFullV1 || semantic.is_none(),
         "the Text segment FULL candidate requires an isolated Core profile"
     );
     let text_instance = input.text_layout.text_instance();
     // A missing or altered operator config refuses before output/state creation.
     let semantic = semantic
-        .map(NativeSemanticCorpusInput::preflight)
+        .map(|semantic| semantic.preflight(input.text_layout))
         .transpose()?;
     if let Some(bytes) = input.trace_max_output_bytes {
         let _limits = DiagnosticCaptureLimitsV1::default()
@@ -1541,6 +1571,123 @@ mod tests {
     }
 
     #[test]
+    fn layered_text_semantic_config_is_bound_before_corpus_side_effects() -> Result<()> {
+        let temp = TempDir::new()?;
+        let config_path = temp.path().join("native.json");
+        let socket = temp.path().join("native.sock");
+        let state = temp.path().join("state");
+        let workload = NativeForegroundWorkload {
+            limits: FIXED_FOREGROUND_WORK_LIMITS,
+            mode: NativeWorkloadMode::Fixed,
+        };
+        let mut config = native_config(&state, &socket, workload);
+        config["text"]["layout"] = json!("segmented-layered-v2");
+        config["text"]["descriptor"]["format"] = json!([77_u8; 16]);
+        config["resources"]["physical"]["inventory"]["max_files"] = json!(30_000);
+        for class in ["capacity", "interactive", "enrichment"] {
+            config["resources"]["execution"][class]["provider_units"] = json!(1);
+        }
+        let scope = json!({"workspace": workspace(), "epoch": 1});
+        config["semantic"] = json!({
+            "provider": {"kind": "local_code", "egress": {"source_content_consent": true}},
+            "scopes": [scope.clone()],
+            "max_source_bytes": 1024,
+            "descriptor": {"kind": [32_u8; 16], "schema": [34_u8; 16], "format": [35_u8; 16]},
+        });
+        config["owned_work"] = json!({"scopes": [scope]});
+        config["read_sessions"] = json!({});
+        let input = NativeCorpusInput {
+            source_root: temp.path(),
+            manifest: temp.path(),
+            manifest_sha256: "unused",
+            repository_commit: "unused",
+            query_path: "a.go",
+            query_token: "needle",
+            daemon_bin: temp.path(),
+            output_root: temp.path(),
+            trace_max_output_bytes: None,
+            text_layout: NativeCorpusTextLayout::SegmentedLayeredV2,
+        };
+        let run_until_output_check =
+            |config: &Value, input: &NativeCorpusInput<'_>| -> Result<Value> {
+                let raw = serde_json::to_vec(config)?;
+                fs::write(&config_path, &raw)?;
+                let sha = digest(&raw);
+                let semantic = semantic_preflight_input(&config_path, &sha, &socket);
+                measure_native_corpus_with_semantic(input, &semantic)
+            };
+        let result = run_until_output_check(&config, &input);
+        assert!(
+            result
+                .is_err_and(|cause| cause.to_string() == "output root must be a new absolute path"),
+            "matching Layered and Semantic inputs should reach the output preflight"
+        );
+        for (pointer, changed, expected) in [
+            ("/text/layout", json!("tree-v1"), "Text layout"),
+            (
+                "/text/descriptor/format",
+                json!([75_u8; 16]),
+                "Text descriptor",
+            ),
+            (
+                "/text/descriptor/schema",
+                json!([17_u8; 16]),
+                "Text descriptor",
+            ),
+            (
+                "/text/descriptor/kind",
+                json!([1_u8; 16]),
+                "Text descriptor",
+            ),
+            (
+                "/text/admission_policy",
+                json!([17_u8; 32]),
+                "Text admission policy",
+            ),
+        ] {
+            let original = std::mem::replace(
+                config
+                    .pointer_mut(pointer)
+                    .context("fixture field missing")?,
+                changed,
+            );
+            assert!(
+                run_until_output_check(&config, &input)
+                    .is_err_and(|cause| cause.to_string().contains(expected)),
+                "mismatched external config passed preflight at {pointer}"
+            );
+            *config
+                .pointer_mut(pointer)
+                .context("fixture field missing")? = original;
+        }
+
+        let isolated = NativeCorpusInput {
+            text_layout: NativeCorpusTextLayout::SegmentedFullV1,
+            ..input
+        };
+        assert!(
+            run_until_output_check(&config, &isolated)
+                .is_err_and(|cause| cause.to_string().contains("isolated Core profile"))
+        );
+
+        config["text"]["descriptor"]["format"] = json!([75_u8; 16]);
+        let _layout = config["text"]
+            .as_object_mut()
+            .context("fixture Text config missing")?
+            .remove("layout");
+        let tree = NativeCorpusInput {
+            text_layout: NativeCorpusTextLayout::TreeV1,
+            ..input
+        };
+        assert!(
+            run_until_output_check(&config, &tree)
+                .is_err_and(|cause| cause.to_string() == "output root must be a new absolute path")
+        );
+        assert!(!state.exists() && !socket.exists());
+        Ok(())
+    }
+
+    #[test]
     fn semantic_preflight_refuses_text_only_config_before_daemon_or_state() -> Result<()> {
         let temp = TempDir::new()?;
         let config = temp.path().join("native.json");
@@ -1557,7 +1704,7 @@ mod tests {
         let input = semantic_preflight_input(&config, &sha, &socket);
         anyhow::ensure!(
             input
-                .preflight()
+                .preflight(NativeCorpusTextLayout::TreeV1)
                 .is_err_and(|error| error.to_string().contains("local-code provider")),
             "Text-only config entered Semantic corpus publication"
         );
@@ -1586,7 +1733,7 @@ mod tests {
         let input = semantic_preflight_input(&config, &sha, &socket);
         anyhow::ensure!(
             input
-                .preflight()
+                .preflight(NativeCorpusTextLayout::TreeV1)
                 .is_err_and(|error| error.to_string().contains("owned-work pump")),
             "source-only Semantic config entered Native publication"
         );
@@ -1605,7 +1752,7 @@ mod tests {
         let input = semantic_preflight_input(&config, &original, &socket);
         anyhow::ensure!(
             input
-                .preflight()
+                .preflight(NativeCorpusTextLayout::TreeV1)
                 .is_err_and(|error| error.to_string().contains("SHA-256 differs")),
             "changed operator config entered Native publication"
         );
