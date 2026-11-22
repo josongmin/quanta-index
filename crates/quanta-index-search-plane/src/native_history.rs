@@ -13,6 +13,7 @@ pub use build::{
     with_native_history_restore_member_v1, with_native_history_source_input_v1,
 };
 pub use reader::{NativeHistoryReaderV1, PlannedNativeHistoryReadV1, plan_native_history_read_v1};
+use row_budget::shape_codec::{closed_shape, newtype_shape};
 
 use crate::readiness::serde_support::impl_struct_serde;
 use quanta_index_contract::{
@@ -979,20 +980,14 @@ struct NativeRow {
     key: Vec<u8>,
     data: NativeRowData,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NativeDiffHunkRow {
-    key: Vec<u8>,
-    data: NativeDiffHunkData,
-}
-#[derive(Deserialize)]
-enum NativeDiffHunkData {
-    Row(NativeDiffHunkValue),
-}
-#[derive(Deserialize)]
-enum NativeDiffHunkValue {
-    DiffHunk(HistoryDiffHunkUpsert),
-}
+closed_shape!(
+    struct NativeDiffHunkRow {
+        key: Vec<u8>,
+        data: NativeDiffHunkData,
+    }
+);
+newtype_shape!(enum NativeDiffHunkData { Row: NativeDiffHunkValue });
+newtype_shape!(enum NativeDiffHunkValue { DiffHunk: HistoryDiffHunkUpsert });
 enum NativeRowData {
     Epoch(AuxEpochV1),
     Row(HistoryReadbackRowV1),
