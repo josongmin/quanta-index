@@ -241,7 +241,7 @@ fn send(
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)) => Err(IpcError::Decode(format!(
             "the stub answers with a typed marker only, got {other:?}"

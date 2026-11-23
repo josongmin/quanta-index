@@ -14,10 +14,10 @@ use std::{
 
 use quanta_index_core::index::{IndexError, MemoryLease, ObjectReadFile};
 use quanta_index_core::{
-    CoreError, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
+    CoreError, DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
     DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1, DiagnosticTraceErrorV1,
 };
-use rusqlite::{Connection, PagerCacheStatus};
+use rusqlite::Connection;
 
 mod close_connection;
 
@@ -58,55 +58,15 @@ struct CatalogLockHoldTrace(Option<ObservedHold>);
 
 struct ObservedHold {
     span: Option<DiagnosticSpanGuardV1>,
-    context: DiagnosticContextV1,
-    before: rusqlite::Result<PagerCacheStatus>,
-    after: Option<rusqlite::Result<PagerCacheStatus>>,
-}
-
-fn pager_cache_delta(
-    before: rusqlite::Result<PagerCacheStatus>,
-    after: Option<rusqlite::Result<PagerCacheStatus>>,
-) -> Result<PagerCacheStatus, DiagnosticHealthCodeV1> {
-    // Preserve raw snapshot errors until this fixed diagnostic classification.
-    // No product error is replaced, and unavailable samples emit health only.
-    let (Ok(before), Some(Ok(after))) = (before, after) else {
-        return Err(DiagnosticHealthCodeV1::CounterUnavailable);
-    };
-    let (Some(hit), Some(miss), Some(write), Some(spill)) = (
-        after.hit.checked_sub(before.hit),
-        after.miss.checked_sub(before.miss),
-        after.write.checked_sub(before.write),
-        after.spill.checked_sub(before.spill),
-    ) else {
-        return Err(DiagnosticHealthCodeV1::CounterRegressed);
-    };
-    Ok(PagerCacheStatus {
-        hit,
-        miss,
-        write,
-        spill,
-    })
 }
 
 impl CatalogLockHoldTrace {
-    fn begin(diagnostics: Option<&DiagnosticContextV1>, connection: &Connection) -> Self {
+    fn begin(diagnostics: Option<&DiagnosticContextV1>) -> Self {
         let observed = diagnostics.and_then(|context| {
-            catalog_lock_span(Some(context), DiagnosticStageV1::CatalogLockHold).map(|span| {
-                ObservedHold {
-                    span: Some(span),
-                    context: context.clone(),
-                    before: connection.pager_cache_status(),
-                    after: None,
-                }
-            })
+            catalog_lock_span(Some(context), DiagnosticStageV1::CatalogLockHold)
+                .map(|span| ObservedHold { span: Some(span) })
         });
         Self(observed)
-    }
-
-    fn observe_end(&mut self, connection: &Connection) {
-        if let Some(observed) = self.0.as_mut() {
-            observed.after = Some(connection.pager_cache_status());
-        }
     }
 }
 
@@ -115,19 +75,6 @@ impl Drop for CatalogLockHoldTrace {
         if let Some(mut observed) = self.0.take()
             && let Some(span) = observed.span.take()
         {
-            match pager_cache_delta(observed.before, observed.after) {
-                Ok(delta) => {
-                    for (key, value) in [
-                        (DiagnosticCounterV1::SqliteCacheHits, delta.hit),
-                        (DiagnosticCounterV1::SqliteCacheMisses, delta.miss),
-                        (DiagnosticCounterV1::SqliteCacheWrites, delta.write),
-                        (DiagnosticCounterV1::SqliteCacheSpills, delta.spill),
-                    ] {
-                        observed.context.counter(&span, key, value);
-                    }
-                }
-                Err(health) => observed.context.health(health),
-            }
             if std::thread::panicking() {
                 // An unfinished span records Aborted after the mutex releases.
                 drop(span);
@@ -363,13 +310,12 @@ impl CatalogConnectionOwner {
         guard: MutexGuard<'a, Connection>,
         diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> CatalogConnectionGuard<'a> {
-        // Both samples belong to this exact mutex-held connection. The first
-        // precedes native scope replacement; the second is taken in guard
-        // destruction before the mutex releases. Emission waits until after.
-        let hold = CatalogLockHoldTrace::begin(diagnostics, &guard);
+        // Start the lock-hold span before entering the native scope. Field
+        // drop order finishes it after the connection mutex is released.
+        let hold = CatalogLockHoldTrace::begin(diagnostics);
         CatalogConnectionGuard {
             guard,
-            hold,
+            _hold: hold,
             _scope: ScopeLease::enter(self.admission.as_ref(), diagnostics),
         }
     }
@@ -448,16 +394,8 @@ pub(crate) struct CatalogConnectionGuard<'a> {
     // Rust drops fields in declaration order: release the mutex, finish the
     // hold span, then restore the VFS scope. The latter is not lock tenure.
     guard: MutexGuard<'a, Connection>,
-    hold: CatalogLockHoldTrace,
+    _hold: CatalogLockHoldTrace,
     _scope: ScopeLease,
-}
-
-impl Drop for CatalogConnectionGuard<'_> {
-    fn drop(&mut self) {
-        // Drop runs before fields are released. Only the raw SQLite snapshot
-        // happens here; the hold field emits after the guard field unlocks.
-        self.hold.observe_end(&self.guard);
-    }
 }
 
 impl Deref for CatalogConnectionGuard<'_> {
@@ -479,25 +417,19 @@ mod tests {
     use std::{
         path::PathBuf,
         sync::{
-            Arc, Mutex,
-            atomic::{AtomicU64, AtomicUsize, Ordering},
+            Arc,
+            atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
     };
 
-    use rusqlite::{Connection, Error, PagerCacheStatus, ffi};
+    use rusqlite::{Connection, Error, ffi};
 
     use super::{
-        CatalogConnectionOwner, CatalogIoAdmission, CatalogIoScope, CatalogLockHoldTrace,
-        ObservedHold, ScopeLease, is_capacity_refusal, pager_cache_delta,
+        CatalogConnectionOwner, CatalogIoAdmission, CatalogIoScope, ScopeLease, is_capacity_refusal,
     };
     use crate::{SqliteCatalog, SystemCatalogClock};
-    use quanta_index_core::{
-        DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticEmitV1, DiagnosticEventKindV1,
-        DiagnosticEventSinkV1, DiagnosticHealthCodeV1, DiagnosticLaneV1, DiagnosticRootKindV1,
-        DiagnosticStageV1,
-        index::{MemoryLease, MemoryLeaseOwner},
-    };
+    use quanta_index_core::index::{MemoryLease, MemoryLeaseOwner};
 
     macro_rules! check {
         ($condition:expr $(,)?) => {{
@@ -698,128 +630,6 @@ mod tests {
         check_eq!(released.load(Ordering::SeqCst), 0);
         check_eq!(active.load(Ordering::SeqCst), 0);
         check_eq!(entries.load(Ordering::SeqCst), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn pager_cache_delta_requires_two_available_monotonic_snapshots() {
-        let before = PagerCacheStatus {
-            hit: 11,
-            miss: 17,
-            write: 23,
-            spill: 3,
-        };
-        let after = PagerCacheStatus {
-            hit: 18,
-            miss: 19,
-            write: 29,
-            spill: 3,
-        };
-        assert_eq!(
-            pager_cache_delta(Ok(before), Some(Ok(after))),
-            Ok(PagerCacheStatus {
-                hit: 7,
-                miss: 2,
-                write: 6,
-                spill: 0,
-            })
-        );
-        assert_eq!(
-            pager_cache_delta(Err(Error::InvalidQuery), Some(Ok(after))),
-            Err(DiagnosticHealthCodeV1::CounterUnavailable)
-        );
-        assert_eq!(
-            pager_cache_delta(Ok(before), None),
-            Err(DiagnosticHealthCodeV1::CounterUnavailable)
-        );
-        assert_eq!(
-            pager_cache_delta(Ok(before), Some(Err(Error::InvalidQuery))),
-            Err(DiagnosticHealthCodeV1::CounterUnavailable)
-        );
-        assert_eq!(
-            pager_cache_delta(Ok(before), Some(Ok(PagerCacheStatus { spill: 2, ..after }))),
-            Err(DiagnosticHealthCodeV1::CounterRegressed)
-        );
-    }
-
-    #[test]
-    fn unavailable_or_regressed_pager_status_emits_health_without_partial_counters()
-    -> Result<(), Box<dyn std::error::Error>> {
-        #[derive(Debug, Default)]
-        struct TickClock(AtomicU64);
-        impl DiagnosticClockV1 for TickClock {
-            fn now_ns(&self) -> u64 {
-                self.0.fetch_add(1, Ordering::Relaxed)
-            }
-        }
-        #[derive(Debug, Default)]
-        struct Events(Mutex<Vec<DiagnosticEmitV1>>);
-        impl DiagnosticEventSinkV1 for Events {
-            fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
-                let mut rows = match self.0.lock() {
-                    Ok(rows) => rows,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                rows.push(event);
-                true
-            }
-        }
-        let first = PagerCacheStatus {
-            hit: 10,
-            miss: 10,
-            write: 10,
-            spill: 10,
-        };
-        let lower = PagerCacheStatus { spill: 9, ..first };
-        for (ordinal, before, after, expected) in [
-            (
-                1,
-                Err(Error::InvalidQuery),
-                Some(Ok(first)),
-                DiagnosticHealthCodeV1::CounterUnavailable,
-            ),
-            (
-                2,
-                Ok(first),
-                Some(Ok(lower)),
-                DiagnosticHealthCodeV1::CounterRegressed,
-            ),
-        ] {
-            let events = Arc::new(Events::default());
-            let context = quanta_index_core::DiagnosticContextV1::new(
-                DiagnosticCaptureIdV1([ordinal; 16]),
-                Arc::new(TickClock::default()),
-                events.clone(),
-            );
-            let root = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
-            let child = context.child_context(&root);
-            let span = child.enter(DiagnosticStageV1::CatalogLockHold, DiagnosticLaneV1(0))?;
-            drop(CatalogLockHoldTrace(Some(ObservedHold {
-                span: Some(span),
-                context: child,
-                before,
-                after,
-            })));
-            let rows = match events.0.lock() {
-                Ok(rows) => rows,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            check_eq!(
-                rows.iter()
-                    .filter(|event| matches!(event.kind, DiagnosticEventKindV1::Counter { .. }))
-                    .count(),
-                0
-            );
-            check_eq!(
-                rows.iter()
-                    .filter(|event| {
-                        matches!(event.kind, DiagnosticEventKindV1::Health { code } if code == expected)
-                    })
-                    .count(),
-                1
-            );
-            drop(rows);
-        }
         Ok(())
     }
 

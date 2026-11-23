@@ -428,7 +428,15 @@ fn publish_previous_native_v1(
             return Err(IndexError::DigestConflict.into());
         }
         verify_candidate_install_attestation_v1(&authority, command, locked, budget)?;
-        preserved_native_v1::verify_preserved_native_v1(&held, &authority, command, budget)?;
+        preserved_native_v1::verify_preserved_native_v1(
+            &held,
+            &authority,
+            command,
+            joined,
+            matches!(old_repomap, RepoMap::Required { .. })
+                && matches!(new_repomap, RepoMap::NotApplicable { .. }),
+            budget,
+        )?;
         let old_config = held.selected_config_v1();
         let old_verified = verify_native_separate_repomap_v1(
             old_repomap,

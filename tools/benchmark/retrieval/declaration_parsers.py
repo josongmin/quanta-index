@@ -1,14 +1,17 @@
-"""Use the producer's canonical vendored grammars in benchmark oracles.
+"""Load released grammars where compatible; retain three patched grammars.
 
-Other languages retain their existing pinned language-pack parser. Vendored
-C sources are compiled once outside the checkout; no downloaded grammar or
-fallback is allowed to silently change declaration eligibility.
+Go, JavaScript and TypeScript still require local grammar changes. Rust and
+Python use locked upstream extension binaries. All loaded parser bytes are
+bound to the census identity for the process lifetime.
 """
 
 from __future__ import annotations
 
+import base64
 import ctypes
 import hashlib
+import importlib
+import importlib.metadata
 import json
 import os
 import platform
@@ -21,9 +24,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 VENDOR = ROOT / "vendor/tree-sitter-typescript"
 GO_VENDOR = ROOT / "vendor/tree-sitter-go"
-RUST_VENDOR = ROOT / "vendor/tree-sitter-rust"
-PYTHON_VENDOR = ROOT / "vendor/tree-sitter-python"
 JAVASCRIPT_VENDOR = ROOT / "vendor/tree-sitter-javascript"
+RELEASED_GRAMMARS = frozenset({"rust", "python"})
+RELEASED_VERSIONS = {"rust": "0.24.2", "python": "0.25.0", "go": "0.25.0"}
 # Loaded grammar pointers are process-local. A later source commitment must
 # bind those same bytes; a new grammar generation needs a fresh process.
 _LOADED_SOURCE_DIGESTS: dict[str, str] | None = None
@@ -32,17 +35,46 @@ _LOADED_SOURCE_DIGESTS: dict[str, str] | None = None
 def _grammar_sources() -> dict[str, Path]:
     return {
         "go": GO_VENDOR / "src",
-        "rust": RUST_VENDOR / "src",
-        "python": PYTHON_VENDOR / "src",
         "javascript": JAVASCRIPT_VENDOR / "src",
         "typescript": VENDOR / "typescript/src",
         "tsx": VENDOR / "tsx/src",
     }
 
 
+def _released_extension(grammar: str) -> Path:
+    if grammar not in RELEASED_VERSIONS:
+        raise ValueError("unsupported released grammar")
+    package = "tree-sitter-" + grammar
+    distribution = importlib.metadata.distribution(package)
+    if distribution.version != RELEASED_VERSIONS[grammar]:
+        raise ValueError("released grammar version differs from parser lock")
+    module_dir = "tree_sitter_" + grammar
+    candidates = [
+        entry
+        for entry in distribution.files or ()
+        if len(entry.parts) == 2
+        and entry.parts[0] == module_dir
+        and entry.name.startswith("_binding.")
+        and entry.suffix in {".so", ".pyd", ".dylib"}
+    ]
+    if len(candidates) != 1:
+        raise ValueError("released grammar distribution lacks a unique extension")
+    entry = candidates[0]
+    path = Path(distribution.locate_file(entry))
+    if not path.is_file() or path.is_symlink() or path.suffix not in {".so", ".pyd", ".dylib"}:
+        raise ValueError("released grammar extension missing or linked")
+    digest = entry.hash
+    if digest is None or digest.mode != "sha256" or entry.size != path.stat().st_size:
+        raise ValueError("released grammar extension has no recorded integrity")
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(path.read_bytes()).digest()).rstrip(b"=")
+    if encoded.decode("ascii") != digest.value:
+        raise ValueError("released grammar extension differs from installed distribution")
+    return path
+
+
 def component_source_digests() -> dict[str, str]:
     paths = []
-    for vendor in (VENDOR, GO_VENDOR, RUST_VENDOR, PYTHON_VENDOR, JAVASCRIPT_VENDOR):
+    for vendor in (VENDOR, GO_VENDOR, JAVASCRIPT_VENDOR):
         if vendor.is_symlink() or vendor.parent.is_symlink() or not vendor.is_dir():
             raise ValueError("vendored parser sources missing or linked")
         entries = sorted(vendor.rglob("*"))
@@ -56,6 +88,11 @@ def component_source_digests() -> dict[str, str]:
         path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in paths
     }
+    for grammar in sorted(RELEASED_GRAMMARS):
+        extension = _released_extension(grammar)
+        digests[f"tree-sitter-{grammar}/{extension.name}"] = hashlib.sha256(
+            extension.read_bytes()
+        ).hexdigest()
     if _LOADED_SOURCE_DIGESTS is not None and digests != _LOADED_SOURCE_DIGESTS:
         raise ValueError("loaded parser source identity changed; restart the producer")
     return digests
@@ -176,6 +213,21 @@ def _language(grammar: str):
 
 
 def get_parser(grammar: str):
+    if grammar in RELEASED_GRAMMARS:
+        from tree_sitter import Language, Parser
+
+        # Snapshot the actual binary before and after import/parser creation.
+        before = component_source_digests()
+        module = importlib.import_module("tree_sitter_" + grammar)
+        binding = importlib.import_module("tree_sitter_" + grammar + "._binding")
+        if Path(binding.__file__) != _released_extension(grammar):
+            raise ValueError("loaded grammar extension differs from installed distribution")
+        parser = Parser(Language(module.language()))
+        if component_source_digests() != before:
+            raise ValueError("released grammar extension changed during loading")
+        global _LOADED_SOURCE_DIGESTS
+        _LOADED_SOURCE_DIGESTS = before
+        return parser
     if grammar not in _grammar_sources():
         from tree_sitter_language_pack import get_parser as language_pack_parser
 
@@ -184,3 +236,23 @@ def get_parser(grammar: str):
 
     language, _library_handle = _language(grammar)
     return Parser(language)
+
+
+def get_released_go_candidate_parser():
+    """Load the pinned Go wheel for opt-in projection comparisons only.
+
+    The ordinary ``get_parser('go')`` and source census continue to use the
+    patched grammar until all external corpus and install gates pass.
+    """
+    from tree_sitter import Language, Parser
+
+    before = _released_extension("go")
+    expected_digest = hashlib.sha256(before.read_bytes()).hexdigest()
+    binding = importlib.import_module("tree_sitter_go._binding")
+    if Path(binding.__file__) != before:
+        raise ValueError("loaded Go grammar extension differs from installed distribution")
+    parser = Parser(Language(binding.language()))
+    after = _released_extension("go")
+    if after != before or hashlib.sha256(after.read_bytes()).hexdigest() != expected_digest:
+        raise ValueError("released Go grammar extension changed during loading")
+    return parser, expected_digest

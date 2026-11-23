@@ -8,15 +8,14 @@ use std::sync::Arc;
 
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    MetricsSnapshotV1, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
-    RepoMapActiveHeadResponseV2, RepoMapTerminalReceiptV2,
+    MetricsSnapshotV1,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusActivationCasAck,
     SearchPlaneSearchCorpusRollbackCasAck, TrackReadinessRecord,
 };
 use quanta_index_core::{
-    CoreError, RepoMapGenerationActivatePort, RequestBudgetV1, SourcePublicationCatalogPort,
+    CoreError, RequestBudgetV1, SourcePublicationCatalogPort,
 };
 
 use crate::observability::ObservabilityScrape;
@@ -31,12 +30,6 @@ const ERR_ROLLBACK_CAS_CONFLICT: quanta_index_contract::SearchPlaneErrorCodeV2 =
     quanta_index_contract::SearchPlaneErrorCodeV2::RollbackCasConflict;
 
 pub struct SearchPlaneControlDispatcher {
-    // QI-INT-01: `repo_map_ingest` field removed. RepoMap bundle ingest now
-    // lives exclusively on the ingest IPC surface
-    // (`SearchPlaneIngestDispatcher`). The composition root still wires
-    // `RepoMapBundleIngestPort` into that dispatcher; this control surface
-    // no longer needs the port.
-    repo_map_activate: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
     activation_catalog: Arc<ActivationCatalog>,
     search_corpus_lifecycle: SearchCorpusLifecycleService,
     /// The metrics scrape (QI-BB-015): the query plane's aggregates and
@@ -51,7 +44,6 @@ pub struct SearchPlaneControlDispatcher {
 
 /// The ports one [`SearchPlaneControlDispatcher`] is composed from.
 pub struct SearchPlaneControlDispatcherParts {
-    pub repo_map_activate: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
     pub lifecycle: SearchCorpusLifecycleParts,
     pub observability: Arc<ObservabilityScrape>,
     pub quarantine: QuarantineService,
@@ -104,8 +96,7 @@ impl ControlCapabilityV1 {
             | SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(_)
             | SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
-            | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
-            | SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_)
+
             | SearchPlaneControlIpcRequest::QuarantineDiscard(_) => Self::Admin,
         }
     }
@@ -178,7 +169,6 @@ impl SearchPlaneControlDispatcher {
     #[must_use]
     pub fn new(parts: SearchPlaneControlDispatcherParts) -> Self {
         let SearchPlaneControlDispatcherParts {
-            repo_map_activate,
             lifecycle,
             observability,
             quarantine,
@@ -188,7 +178,6 @@ impl SearchPlaneControlDispatcher {
         let activation_catalog = Arc::clone(&lifecycle.activation_catalog);
         let search_corpus_lifecycle = SearchCorpusLifecycleService::new(lifecycle);
         Self {
-            repo_map_activate,
             activation_catalog,
             search_corpus_lifecycle,
             observability,
@@ -231,20 +220,6 @@ impl SearchPlaneControlDispatcher {
             .validate_encoded_size_v1()
             .map_err(CoreError::InvalidContract)?;
         Ok(response)
-    }
-
-    fn repo_map_activate_v2(
-        &self,
-        request: &RepoMapActivateGenerationRequestV2,
-    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
-        self.repo_map_activate.activate_generation(request)
-    }
-
-    fn repo_map_active_head_v2(
-        &self,
-        request: &RepoMapActiveHeadRequestV2,
-    ) -> Result<RepoMapActiveHeadResponseV2, CoreError> {
-        self.repo_map_activate.active_head(request)
     }
 
     /// Promote a prepared lexical plus semantic corpus after proving both
@@ -477,18 +452,6 @@ impl SearchPlaneControlDispatcher {
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneControlIpcRequest::RepoMapActivateV2(request) => {
-                match self.repo_map_activate_v2(&request) {
-                    Ok(resp) => SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(resp),
-                    Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
-                }
-            }
-            SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(request) => {
-                match self.repo_map_active_head_v2(&request) {
-                    Ok(resp) => SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(resp),
-                    Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
-                }
-            }
             SearchPlaneControlIpcRequest::CurrentGeneration(request) => {
                 match self.current_generation(&request) {
                     Ok(snapshot) => {
@@ -579,16 +542,14 @@ mod tests {
     use quanta_index_contract::{
         GenerationSnapshot, ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1,
         QuarantineDiscardOutcomeDtoV1, QuarantineDiscardRequest, QuarantineInventoryRequest,
-        QuarantineTargetV1, RepoId, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
-        RepoMapActiveHeadResponseV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
-        RepoMapTerminalReceiptV2, RevisionId, SearchCorpusGenerationIdentityV1,
+        QuarantineTargetV1, RepoId, RevisionId, SearchCorpusGenerationIdentityV1,
         SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
         SearchPlaneControlIpcResponse, SearchPlaneIpcError,
         SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind,
     };
     use quanta_index_core::{
         CoreError, GenerationQuarantineReasonV1, MetricPointV1, MetricSourcePort,
-        QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RepoMapGenerationActivatePort, RequestBudgetV1,
+        QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RequestBudgetV1,
         SourcePublicationCatalogPort as _,
     };
     use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
@@ -658,7 +619,6 @@ mod tests {
         })
     }
 
-    struct StubRepoMapActivatePort;
 
     /// Openers whose generations are sealed under `manifest-digest-<generation>`.
     ///
@@ -776,7 +736,6 @@ mod tests {
     ) -> (SearchPlaneControlDispatcherParts, SnapshotRegistries) {
         let snapshots = SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT);
         let parts = SearchPlaneControlDispatcherParts {
-            repo_map_activate: Arc::new(StubRepoMapActivatePort),
             lifecycle: SearchCorpusLifecycleParts {
                 idempotency: crate::ingest_dispatcher::tests::support::memory_catalog(),
                 activation_catalog,
@@ -1145,8 +1104,8 @@ mod tests {
         match other {
             SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+
+
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -1169,8 +1128,8 @@ mod tests {
             SearchPlaneControlIpcResponse::Error(error) => error.code,
             ref other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+
+
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -1360,8 +1319,8 @@ mod tests {
             }
             ref other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+
+
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -1383,8 +1342,8 @@ mod tests {
             }
             ref other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+
+
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -1402,7 +1361,6 @@ mod tests {
     /// A quarantine service whose adapters quarantine nothing.
     fn empty_quarantine() -> QuarantineService {
         crate::quarantine::tests::service(
-            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -1453,8 +1411,8 @@ mod tests {
             SearchPlaneControlIpcResponse::Error(error) => Err(error),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+
+
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -1618,72 +1576,6 @@ mod tests {
         Ok(())
     }
 
-    impl RepoMapGenerationActivatePort for StubRepoMapActivatePort {
-        fn active_head(
-            &self,
-            request: &RepoMapActiveHeadRequestV2,
-        ) -> Result<RepoMapActiveHeadResponseV2, CoreError> {
-            Ok(RepoMapActiveHeadResponseV2 {
-                repo_id: request.repo_id.clone(),
-                revision_id: request.revision_id.clone(),
-                active: None,
-            })
-        }
-
-        fn activate_generation(
-            &self,
-            request: &RepoMapActivateGenerationRequestV2,
-        ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
-            if request.manifest_digest.is_empty() {
-                return Err(CoreError::InvalidContract(
-                    "repo-map activate: manifest_digest must not be empty".to_string(),
-                ));
-            }
-            Ok(RepoMapTerminalReceiptV2 {
-                phase: RepoMapMutationPhaseV2::Activate,
-                mutation: RepoMapMutationAck {
-                    repo_id: request.repo_id.clone(),
-                    revision_id: request.revision_id.clone(),
-                    manifest_generation: request.manifest_generation,
-                    prior_candidate_commitment: None,
-                    new_candidate_commitment: "sha256:".to_string(),
-                    activation_epoch: 1,
-                    terminal_sequence: 1,
-                    replayed: false,
-                },
-                manifest_digest: request.manifest_digest.clone(),
-                snapshot_id: request.snapshot_id.clone(),
-                projection_version: request.projection_version,
-                authority_digest: request.authority_digest.clone(),
-                source_bundle_digest: request.source_bundle_digest.clone(),
-            })
-        }
-    }
-
-    fn into_repo_map_mutation_ack(
-        response: SearchPlaneControlIpcResponse,
-    ) -> Result<RepoMapMutationAck, Box<dyn std::error::Error>> {
-        match response {
-            SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(receipt) => {
-                Ok(receipt.mutation)
-            }
-            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
-            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
-            | SearchPlaneControlIpcResponse::Error(_)
-            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
-            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
-            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
-            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
-            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
-            | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
-            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
-            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
-                Err(format!("expected repo-map mutation ack, got {other:?}").into())
-            }
-        }
-    }
 
     fn into_error_code(
         response: SearchPlaneControlIpcResponse,
@@ -1691,8 +1583,8 @@ mod tests {
         match response {
             SearchPlaneControlIpcResponse::Error(err) => Ok(err.code),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+
+
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
@@ -1708,153 +1600,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn repo_map_control_and_prepared_corpus_activation_preserve_composite_identity() -> TestResult {
-        // RepoMap activation is a control mutation; publication is ingest-only.
-        let dir = tempdir()?;
-        let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
-        let ledger = Arc::new(RwLock::new(Ledger::new()));
-        {
-            let mut guard = ledger
-                .write()
-                .map_err(|err| format!("ledger poisoned: {err}"))?;
-            let repo_id =
-                RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy");
-            let revision_id = RevisionId::new("rev-map-ipc")
-                .expect("static fixture ID satisfies canonical policy");
-            guard.record_track_materialized(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Semantic,
-                ManifestGeneration::new(11),
-                Some("manifest-digest-11"),
-            );
-            guard.record_track_seal_with_digest(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Lexical,
-                ManifestGeneration::new(11),
-                "manifest-digest-11",
-            );
-            guard.record_track_seal_with_digest(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Semantic,
-                ManifestGeneration::new(11),
-                "manifest-digest-11",
-            );
-            guard.record_historically_sealed_search_corpus(
-                &repo_id,
-                &revision_id,
-                ManifestGeneration::new(11),
-                "manifest-digest-11",
-            );
-        }
-        let dispatcher = control_dispatcher(activation_catalog.clone(), ledger);
-
-        let activate = into_repo_map_mutation_ack(
-            dispatcher.dispatch(
-                SearchPlaneControlIpcRequest::RepoMapActivateV2(
-                    RepoMapActivateGenerationRequestV2 {
-                        repo_id: RepoId::new("repo-map-ipc")
-                            .expect("static fixture ID satisfies canonical policy"),
-                        revision_id: RevisionId::new("rev-map-ipc")
-                            .expect("static fixture ID satisfies canonical policy"),
-                        manifest_generation: ManifestGeneration::new(9),
-                        manifest_digest: "manifest-digest-9".to_string(),
-                        snapshot_id: "snapshot-9".to_string(),
-                        projection_version: 1,
-                        authority_digest: "sha256:".to_string() + &"a".repeat(64),
-                        source_bundle_digest: "sha256:".to_string() + &"b".repeat(64),
-                        expected_active: None,
-                    },
-                ),
-                &RequestBudgetV1::unbounded(),
-            ),
-        )?;
-        if activate.manifest_generation.get() != 9 {
-            return Err(format!(
-                "unexpected activate manifest generation: {}",
-                activate.manifest_generation.get()
-            )
-            .into());
-        }
-
-        let response = dispatcher.dispatch(
-            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
-                SearchPlaneActivateSearchCorpusGenerationCasRequest {
-                    candidate: SearchCorpusGenerationIdentityV1 {
-                        lexical: GenerationSnapshot {
-                            repo_id: RepoId::new("repo-map-ipc")
-                                .expect("static fixture ID satisfies canonical policy"),
-                            revision_id: RevisionId::new("rev-map-ipc")
-                                .expect("static fixture ID satisfies canonical policy"),
-                            track: SearchPlaneTrackKind::Lexical,
-                            manifest_generation: ManifestGeneration::new(11),
-                            manifest_digest: "manifest-digest-11".to_string(),
-                        },
-                        semantic: GenerationSnapshot {
-                            repo_id: RepoId::new("repo-map-ipc")
-                                .expect("static fixture ID satisfies canonical policy"),
-                            revision_id: RevisionId::new("rev-map-ipc")
-                                .expect("static fixture ID satisfies canonical policy"),
-                            track: SearchPlaneTrackKind::Semantic,
-                            manifest_generation: ManifestGeneration::new(11),
-                            manifest_digest: "manifest-digest-11".to_string(),
-                        },
-                        semantic_content: roots_for_generation(11),
-                    },
-                    expected_active: None,
-                },
-            ),
-            &RequestBudgetV1::unbounded(),
-        );
-        let SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(activation) = response
-        else {
-            return Err("expected composite activation acknowledgment".into());
-        };
-        if activation
-            .active
-            .generation
-            .lexical
-            .manifest_generation
-            .get()
-            != 11
-        {
-            return Err(format!(
-                "unexpected activation manifest generation: {}",
-                activation
-                    .active
-                    .generation
-                    .lexical
-                    .manifest_generation
-                    .get()
-            )
-            .into());
-        }
-        let lexical_pin = activation_catalog.resolve(
-            &RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
-            &RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
-            SearchPlaneTrackKind::Lexical,
-        )?;
-        if lexical_pin.manifest_generation.get() != 11 {
-            return Err(format!(
-                "unexpected lexical pin generation: {}",
-                lexical_pin.manifest_generation.get()
-            )
-            .into());
-        }
-        let semantic_pin = activation_catalog.resolve(
-            &RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
-            &RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
-            SearchPlaneTrackKind::Semantic,
-        )?;
-        assert_eq!(
-            semantic_pin.manifest_generation,
-            lexical_pin.manifest_generation
-        );
-        Ok(())
-    }
 
     #[test]
     fn composite_ipc_rejects_malformed_identity_before_catalog_mutation() -> TestResult {
@@ -2426,7 +2171,6 @@ mod tests {
             vec![listed.clone()],
             Vec::new(),
             Vec::new(),
-            Vec::new(),
             Arc::new(RwLock::new(Ledger::new())),
         );
         let quarantine = doubles.service;
@@ -2447,7 +2191,6 @@ mod tests {
         };
         if inventory.lexical.len() != 1
             || !inventory.semantic.is_empty()
-            || !inventory.repo_map.is_empty()
         {
             return Err(format!("the listing is exactly the adapters' own: {inventory:?}").into());
         }

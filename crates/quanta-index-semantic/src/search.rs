@@ -25,13 +25,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array};
+use arrow_array::{
+    Array, FixedSizeListArray, Float32Array, RecordBatch, StringArray, UInt32Array, UInt64Array,
+};
 use arrow_schema::DataType;
 use futures::TryStreamExt as _;
 use lance::session::Session;
+use lance_linalg::distance::DistanceType as LanceDistanceType;
 use lancedb::DistanceType;
 use lancedb::connect;
-use lancedb::query::{ExecutableQuery as _, QueryBase as _, VectorQuery};
+use lancedb::query::{
+    ExecutableQuery as _, QueryBase as _, QueryExecutionOptions, Select, VectorQuery,
+};
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
@@ -61,7 +66,8 @@ use crate::layout::{
     COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID, COLUMN_MEMBERSHIP_CONTENT_DIGEST,
     COLUMN_MEMBERSHIP_MEMBER_COUNT, COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, COLUMN_MEMBERSHIP_ORDINAL,
     COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_RECORD_ID, COLUMN_REPO_RELATIVE_PATH,
-    COLUMN_SNIPPET, COLUMN_SOURCE_REPO_ID, COLUMN_START_LINE, TABLE_NAME, dataset_uri,
+    COLUMN_SNIPPET, COLUMN_SOURCE_REPO_ID, COLUMN_START_LINE, COLUMN_VECTOR, TABLE_NAME,
+    dataset_uri,
 };
 use crate::manifest::{SemanticManifest, VectorIndexSealV1};
 use crate::sealed_manifest::verify_sealed_manifest_with_admission;
@@ -71,6 +77,12 @@ use crate::vector_index::{LoadedVectorIndexV1, verify_vector_index_v1};
 use lance_io::object_store::file_admission::FileAdmission;
 
 const COLUMN_DISTANCE: &str = "_distance";
+
+mod exact_tie_heap;
+use exact_tie_heap::{ExactTieHeap, ExactTieKey};
+
+const EXACT_SCAN_BATCH_ROWS: u32 = 32;
+const COLUMN_ROW_ID: &str = "_rowid";
 
 fn load_generation_contract(
     generation_dir: &Path,
@@ -661,6 +673,71 @@ fn extract_hits(
     Ok(())
 }
 
+fn extract_hit_at(
+    batch: &RecordBatch,
+    row: usize,
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+    generation: ManifestGeneration,
+    score: f32,
+) -> Result<SemanticSearchHit, CoreError> {
+    let id = column_as::<StringArray>(batch, COLUMN_EMBEDDING_ID, "Utf8")?
+        .value(row)
+        .to_owned();
+    let path = column_as::<StringArray>(batch, COLUMN_REPO_RELATIVE_PATH, "Utf8")?
+        .value(row)
+        .to_owned();
+    let source_repo = column_as::<StringArray>(batch, COLUMN_SOURCE_REPO_ID, "Utf8")?.value(row);
+    let source_file = SourceFileKey {
+        source_repo_id: RepoId::new(source_repo).map_err(|error| {
+            CoreError::Storage(format!(
+                "semantic: invalid source_repo_id on record {id}: {error}"
+            ))
+        })?,
+        repo_relative_path: RepoRelativePath::new(path),
+    };
+    source_file.validate().map_err(|error| {
+        CoreError::Storage(format!(
+            "semantic: invalid source path on record {id}: {error}"
+        ))
+    })?;
+    Ok(SemanticSearchHit {
+        candidate: LexicalCandidate {
+            source_repo_id: source_file.source_repo_id,
+            source: None,
+            preview: None,
+            candidate_id: id,
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            manifest_generation: generation,
+            repo_relative_path: source_file.repo_relative_path,
+            start_line: column_as::<UInt32Array>(batch, COLUMN_START_LINE, "UInt32")?.value(row),
+            end_line: column_as::<UInt32Array>(batch, COLUMN_END_LINE, "UInt32")?.value(row),
+            score,
+            snippet: column_as::<StringArray>(batch, COLUMN_SNIPPET, "Utf8")?
+                .value(row)
+                .to_owned(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        },
+        record_id: column_as::<StringArray>(batch, COLUMN_RECORD_ID, "Utf8")?
+            .value(row)
+            .to_owned(),
+        owner_id: column_as::<StringArray>(batch, COLUMN_OWNER_ID, "Utf8")?
+            .value(row)
+            .to_owned(),
+        owner_kind: column_as::<StringArray>(batch, COLUMN_OWNER_KIND, "Utf8")?
+            .value(row)
+            .to_owned(),
+        corpus_kind: column_as::<StringArray>(batch, COLUMN_CORPUS_KIND, "Utf8")?
+            .value(row)
+            .to_owned(),
+        authority_digest: column_as::<StringArray>(batch, COLUMN_AUTHORITY_DIGEST, "Utf8")?
+            .value(row)
+            .to_owned(),
+    })
+}
+
 impl LoadedGeneration {
     fn cluster_membership_rejection_v1(
         &self,
@@ -992,7 +1069,7 @@ impl LoadedGeneration {
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
         let lane = self.vector_index.lane_kind();
         let hits = self
-            .run_lane(query_vector, top_k, filter.clone(), watch, lane, false)
+            .run_lane(query_vector, top_k, filter.clone(), watch, lane)
             .await?;
         if lane == DenseLaneKindV1::Exact || hits.len() >= top_k {
             return Ok(hits);
@@ -1008,15 +1085,8 @@ impl LoadedGeneration {
             return Ok(hits);
         }
         watch.tallies.count_exact_completion();
-        self.run_lane(
-            query_vector,
-            top_k,
-            filter,
-            watch,
-            DenseLaneKindV1::Exact,
-            false,
-        )
-        .await
+        self.run_lane(query_vector, top_k, filter, watch, DenseLaneKindV1::Exact)
+            .await
     }
 
     /// One pass through `lane`: the sealed effort pinned for the approximate
@@ -1029,7 +1099,6 @@ impl LoadedGeneration {
         filter: Option<String>,
         watch: DenseLaneBudgetV1<'_>,
         lane: DenseLaneKindV1,
-        canonical_ties: bool,
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
         let query = self
             .table
@@ -1041,15 +1110,6 @@ impl LoadedGeneration {
             DenseLaneKindV1::Approximate => self.vector_index.apply(query, top_k)?,
             DenseLaneKindV1::Exact => query.bypass_vector_index(),
         };
-        if canonical_ties {
-            vector_query = vector_query.exact_tie_order(&[
-                COLUMN_SOURCE_REPO_ID,
-                COLUMN_REPO_RELATIVE_PATH,
-                COLUMN_START_LINE,
-                COLUMN_END_LINE,
-                COLUMN_EMBEDDING_ID,
-            ]);
-        }
         if let Some(predicate) = filter {
             vector_query = vector_query.only_if(predicate);
         }
@@ -1058,6 +1118,117 @@ impl LoadedGeneration {
             lane,
             self.issue_and_read_back(vector_query, top_k, watch, lane),
         )
+        .await
+    }
+
+    /// Scan every eligible row before the Top-K cut. LanceDB's ordinary
+    /// `query()` exposes the row identity and vector without its fork-only
+    /// exact tie option; the retained heap never holds more than K hits.
+    async fn run_canonical_exact_scan(
+        &self,
+        query_vector: &[f32],
+        top_k: usize,
+        filter: Option<String>,
+        watch: DenseLaneBudgetV1<'_>,
+    ) -> Result<Vec<SemanticSearchHit>, CoreError> {
+        let lane = DenseLaneKindV1::Exact;
+        race_with_budget(watch, lane, async {
+            failpoint::hold_dense_lane_if_armed().await;
+            let mut query = self.table.query().with_row_id().select(Select::columns(&[
+                COLUMN_VECTOR,
+                COLUMN_EMBEDDING_ID,
+                COLUMN_SOURCE_REPO_ID,
+                COLUMN_REPO_RELATIVE_PATH,
+                COLUMN_START_LINE,
+                COLUMN_END_LINE,
+                COLUMN_SNIPPET,
+                COLUMN_RECORD_ID,
+                COLUMN_OWNER_ID,
+                COLUMN_OWNER_KIND,
+                COLUMN_CORPUS_KIND,
+                COLUMN_AUTHORITY_DIGEST,
+            ]));
+            if let Some(predicate) = filter {
+                query = query.only_if(predicate);
+            }
+            watch.tallies.count_query(lane);
+            let mut options = QueryExecutionOptions::default();
+            options.max_batch_length = EXACT_SCAN_BATCH_ROWS;
+            let mut stream = query
+                .execute_with_options(options)
+                .await
+                .map_err(|error| lancedb_err("canonical exact scan execute", error))?;
+            let key = Float32Array::from(query_vector.to_vec());
+            let mut probe = RowBudgetProbe::new(watch, lane);
+            let mut heap = ExactTieHeap::new(top_k)?;
+            while let Some(batch) = stream
+                .try_next()
+                .await
+                .map_err(|error| lancedb_err("canonical exact scan stream", error))?
+            {
+                if batch.num_rows() > EXACT_SCAN_BATCH_ROWS as usize {
+                    return Err(CoreError::Storage(
+                        "semantic: canonical exact scan exceeded output batch limit".into(),
+                    ));
+                }
+                let vectors =
+                    column_as::<FixedSizeListArray>(&batch, COLUMN_VECTOR, "FixedSizeList")?;
+                if usize::try_from(vectors.value_length()).ok() != Some(query_vector.len()) {
+                    return Err(CoreError::Storage(
+                        "semantic: canonical exact scan vector dimension mismatch".into(),
+                    ));
+                }
+                let distances = LanceDistanceType::Cosine.arrow_batch_func()(&key, vectors)
+                    .map_err(|error| {
+                        CoreError::Storage(format!(
+                            "semantic: canonical exact scan distance: {error}"
+                        ))
+                    })?;
+                let ids = column_as::<StringArray>(&batch, COLUMN_EMBEDDING_ID, "Utf8")?;
+                let repos = column_as::<StringArray>(&batch, COLUMN_SOURCE_REPO_ID, "Utf8")?;
+                let paths = column_as::<StringArray>(&batch, COLUMN_REPO_RELATIVE_PATH, "Utf8")?;
+                let starts = column_as::<UInt32Array>(&batch, COLUMN_START_LINE, "UInt32")?;
+                let ends = column_as::<UInt32Array>(&batch, COLUMN_END_LINE, "UInt32")?;
+                let row_ids = column_as::<UInt64Array>(&batch, COLUMN_ROW_ID, "UInt64")?;
+                for row in 0..batch.num_rows() {
+                    probe.tick()?;
+                    if vectors.is_null(row)
+                        || distances.is_null(row)
+                        || ids.is_null(row)
+                        || repos.is_null(row)
+                        || paths.is_null(row)
+                        || starts.is_null(row)
+                        || ends.is_null(row)
+                        || row_ids.is_null(row)
+                    {
+                        return Err(CoreError::Storage(
+                            "semantic: canonical exact scan required column is null".into(),
+                        ));
+                    }
+                    let score = cosine_distance_to_score_v1(distances.value(row), ids.value(row))?;
+                    let candidate_key = ExactTieKey {
+                        score,
+                        source_repo_id: repos.value(row).to_owned(),
+                        repo_relative_path: paths.value(row).to_owned(),
+                        start_line: starts.value(row),
+                        end_line: ends.value(row),
+                        embedding_id: ids.value(row).to_owned(),
+                        row_id: row_ids.value(row),
+                    };
+                    let _selected = heap.consider_try_with(candidate_key, || {
+                        extract_hit_at(
+                            &batch,
+                            row,
+                            &self.repo_id,
+                            &self.revision_id,
+                            self.generation,
+                            score,
+                        )
+                    })?;
+                }
+            }
+            Ok(heap.into_best().into_iter().map(|(_, hit)| hit).collect())
+        })
         .await
     }
 
@@ -1432,14 +1603,8 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         );
         crate::run_blocking(
             &self.runtime,
-            self.loaded.run_lane(
-                query_vector,
-                limit,
-                filter,
-                self.watch(budget),
-                DenseLaneKindV1::Exact,
-                true,
-            ),
+            self.loaded
+                .run_canonical_exact_scan(query_vector, limit, filter, self.watch(budget)),
         )
         .map(LoadedGeneration::map_hits_to_candidates)
     }
@@ -1476,7 +1641,6 @@ impl SemanticSearcher for PersistedSemanticSearcher {
                 ),
                 self.watch(budget),
                 DenseLaneKindV1::Exact,
-                false,
             ),
         )
         .map(LoadedGeneration::map_hits_to_candidates)

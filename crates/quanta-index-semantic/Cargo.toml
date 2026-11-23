@@ -36,6 +36,7 @@ arrow-schema = { workspace = true }
 ciborium = { workspace = true }
 futures = { workspace = true }
 lance = { workspace = true }
+lance-linalg = { workspace = true }
 lancedb = { workspace = true }
 object_store = { workspace = true }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }

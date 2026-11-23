@@ -1,6 +1,6 @@
 //! Read back every physical row before a region can become an immutable file set.
 
-use arrow_array::{Array as _, FixedSizeListArray, Float32Array};
+use arrow_array::{Array as _, FixedSizeListArray, Float32Array, RecordBatch};
 use futures::TryStreamExt as _;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _, Select};
 use quanta_index_contract::native_protocol::MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES;
@@ -90,7 +90,7 @@ pub(super) async fn attest(
             return Err(error);
         }
     };
-    settle_query_batches(batches.map_err(backend), |batch| {
+    let attest_batch = |batch: Result<RecordBatch, IndexError>| {
         budget.checkpoint()?;
         let batch = batch?;
         if batch.num_rows() > scan_cap.saturating_sub(count) {
@@ -171,8 +171,8 @@ pub(super) async fn attest(
             prior_vector_id.extend_from_slice(vector_id);
         }
         Ok(())
-    })
-    .await?;
+    };
+    settle_query_batches(batches.map_err(backend), attest_batch, || {}).await?;
     if count != rows || Digest(hash.finalize().into()) != seal.rows_digest {
         return Err(corrupt(
             "Native ANN physical row count/digest differs from seal",

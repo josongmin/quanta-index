@@ -12,9 +12,10 @@ workspace = true
 path = "src/lib.rs"
 
 [features]
-quanta-native-identity-v1 = ["unicode-normalization/quanta-native-scratch-v1"]
+quanta-native-identity-v1 = ["dep:quanta-index-unicode"]
 
 [dependencies]
+quanta-index-unicode = { version = "0.1.0", path = "../quanta-index-unicode", optional = true }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true }
 unicode-normalization = { workspace = true }

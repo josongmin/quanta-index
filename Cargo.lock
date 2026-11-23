@@ -4294,6 +4294,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanta-index-cbor"
+version = "0.1.0"
+dependencies = [
+ "ciborium-io",
+ "ciborium-ll",
+ "serde",
+]
+
+[[package]]
 name = "quanta-index-contract"
 version = "0.1.0"
 dependencies = [
@@ -4315,6 +4324,7 @@ name = "quanta-index-contract-base"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "quanta-index-unicode",
  "serde",
  "serde_json",
  "sha2",
@@ -4364,6 +4374,7 @@ dependencies = [
  "ciborium-ll",
  "nix",
  "quanta-explicit-fd-process",
+ "quanta-index-cbor",
  "quanta-index-contract",
  "quanta-index-core",
  "rustix",
@@ -4493,6 +4504,7 @@ dependencies = [
 name = "quanta-index-lq-text-normalizer"
 version = "0.1.0"
 dependencies = [
+ "quanta-index-unicode",
  "unicode-normalization",
 ]
 
@@ -4514,7 +4526,6 @@ dependencies = [
  "quanta-index-catalog",
  "quanta-index-contract",
  "quanta-index-core",
- "quanta-index-lq-text-normalizer",
  "quanta-index-scratch-sqlite",
  "rusqlite",
  "serde",
@@ -4541,8 +4552,10 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 1.0.69",
+ "toml",
  "tree-sitter",
- "tree-sitter-go",
+ "tree-sitter-go 0.25.0",
+ "tree-sitter-go 0.25.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tree-sitter-javascript",
  "tree-sitter-python",
  "tree-sitter-rust",
@@ -4564,6 +4577,7 @@ name = "quanta-index-sdk"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "quanta-index-cbor",
  "quanta-index-contract",
  "quanta-index-ipc",
  "serde",
@@ -4578,6 +4592,7 @@ version = "0.1.0"
 dependencies = [
  "ciborium",
  "imbl",
+ "quanta-index-cbor",
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-ipc",
@@ -4706,6 +4721,7 @@ dependencies = [
  "futures",
  "lance",
  "lance-io",
+ "lance-linalg",
  "lancedb",
  "object_store",
  "quanta-index-contract",
@@ -4731,6 +4747,14 @@ dependencies = [
  "rustix",
  "sha2",
  "tempfile",
+]
+
+[[package]]
+name = "quanta-index-unicode"
+version = "0.1.0"
+dependencies = [
+ "tinyvec",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -5133,6 +5157,8 @@ dependencies = [
 [[package]]
 name = "rusqlite"
 version = "0.40.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
 dependencies = [
  "bitflags 2.13.0",
  "fallible-iterator",
@@ -6197,6 +6223,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-go"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8560a4d2f835cc0d4d2c2e03cbd0dde2f6114b43bc491164238d333e28b16ea"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-javascript"
 version = "0.25.0"
 dependencies = [
@@ -6213,6 +6249,8 @@ checksum = "ca0d1bf6fdd806e43ae5198f82f527056d359def39e54e67a0f478ac09dac081"
 [[package]]
 name = "tree-sitter-python"
 version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bf85fd39652e740bf60f46f4cda9492c3a9ad75880575bf14960f775cb74a1c"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -6221,6 +6259,8 @@ dependencies = [
 [[package]]
 name = "tree-sitter-rust"
 version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439e577dbe07423ec2582ac62c7531120dbfccfa6e5f92406f93dd271a120e45"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -6276,6 +6316,8 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 [[package]]
 name = "unicode-normalization"
 version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
 dependencies = [
  "tinyvec",
 ]

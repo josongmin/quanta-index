@@ -19,6 +19,8 @@ members = [
     "crates/quanta-index-sdk",
     "crates/quanta-index-lq-norm",
     "crates/quanta-index-lq-text-normalizer",
+    "crates/quanta-index-unicode",
+    "crates/quanta-index-cbor",
     "crates/quanta-index-lq-trigram",
     "crates/quanta-index-lq-positions",
     "crates/quanta-index-lq-regex",
@@ -132,6 +134,7 @@ arrow-schema = "58"
 blake3 = { version = "1.5", default-features = false, features = ["pure"] }
 bytes = "1.12.0"
 ciborium = { version = "=0.2.2", path = "vendor/ciborium-0.2.2" }
+ciborium-io = { version = "=0.2.2", features = ["std"] }
 ciborium-ll = "0.2.2"
 crc32fast = "1.4.2"
 criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
@@ -155,6 +158,7 @@ lancedb = { version = "0.30", default-features = false }
 # its statistics, which lancedb does not surface (QI-BB-027).
 lance = { version = "=7.0.0", default-features = false }
 lance-io = { version = "=7.0.0", default-features = false }
+lance-linalg = "=7.0.0"
 memchr = "2.8"
 # Safe Mach task-info access for current process RSS on macOS. Linux keeps
 # the existing /proc probe; this dependency is target-specific in searchd.
@@ -185,6 +189,7 @@ rusqlite = { version = "0.40", default-features = false, features = ["bundled", 
 sha2 = "0.10"
 tempfile = "3.16.0"
 thiserror = "1.0.69"
+tinyvec = "=1.11.0"
 toml = "0.8"
 tokio = { version = "1.42", default-features = false, features = ["fs", "rt", "rt-multi-thread", "net", "io-util", "macros", "signal", "sync", "time"] }
 # Bounded compression for IPC request bodies that exceed the wire-frame cap;
@@ -195,13 +200,12 @@ zstd = { version = "0.13.3", default-features = false }
 # replace the retired hand lexer. No product crate may depend on these.
 tree-sitter = "0.25"
 tree-sitter-go = { version = "=0.25.0", path = "vendor/tree-sitter-go" }
+tree-sitter-go-official = { package = "tree-sitter-go", version = "=0.25.0" }
 tree-sitter-javascript = { version = "=0.25.0", path = "vendor/tree-sitter-javascript" }
-tree-sitter-python = { version = "=0.25.0", path = "vendor/tree-sitter-python" }
-tree-sitter-rust = { version = "=0.24.2", path = "vendor/tree-sitter-rust" }
+tree-sitter-python = "=0.25.0"
+tree-sitter-rust = "=0.24.2"
 tree-sitter-typescript = { version = "=0.23.2", path = "vendor/tree-sitter-typescript" }
-# Path custody also applies when another workspace consumes the contract crate;
-# Cargo does not inherit this workspace's [patch.crates-io] entries there.
-unicode-normalization = { version = "=0.1.25", path = "vendor/unicode-normalization-0.1.25" }
+unicode-normalization = "=0.1.25"
 url = "2.5.8"
 
 [profile.dev]
@@ -245,13 +249,9 @@ codegen-units = 16
 [patch.crates-io]
 # One controlled CBOR parser for standalone Quanta and sibling consumers.
 ciborium = { path = "vendor/ciborium-0.2.2" }
-# Native identity admission shares the pinned canonical NFC producer.
-unicode-normalization = { path = "vendor/unicode-normalization-0.1.25" }
 
 # One bundled SQLite instance; the pinned fork adds the admitted Unix VFS.
 libsqlite3-sys = { path = "vendor/libsqlite3-sys-0.38.2" }
-# Same pinned Connection owner; safe pager snapshots retain its handle borrow.
-rusqlite = { path = "vendor/rusqlite-0.40.2" }
 
 # IVF metadata caches must not retain self-referential open reader leases.
 lance = { path = "vendor/lance-7.0.0" }

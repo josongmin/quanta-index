@@ -19,7 +19,6 @@ use crate::query_dispatcher::tests::support::common::{
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState, RejectLexicalOpener, StubLexicalOpener,
 };
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
 
@@ -28,7 +27,6 @@ fn code_search_syntax_cannot_enter_symbol_route() -> TestResult {
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -63,7 +61,6 @@ fn code_search_text_route_reports_file_rank_unit_for_empty_and_nonempty_pages() 
                 results,
             }),
             Arc::new(RejectSemanticOpener),
-            Arc::new(StubRepoMapSnapshotPort::default()),
             Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
             test_activation_catalog()?,
@@ -95,7 +92,6 @@ fn lexical_dispatch_fail_closed_when_generation_is_not_ready() -> TestResult {
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         Arc::new(RwLock::new(Ledger::default())),
         test_activation_catalog()?,
@@ -135,7 +131,7 @@ fn lexical_dispatch_fail_closed_when_generation_is_not_ready() -> TestResult {
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
@@ -163,7 +159,6 @@ fn the_request_budget_reaches_the_lexical_searcher() -> TestResult {
             results: vec![candidate("alpha", 1.0)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -207,7 +202,6 @@ fn sourcegraph_text_syntax_dispatch_returns_text_payload() -> TestResult {
             results: vec![candidate("alpha", 1.0), candidate("beta", 0.9)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -253,7 +247,7 @@ fn sourcegraph_text_syntax_dispatch_returns_text_payload() -> TestResult {
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
@@ -284,7 +278,6 @@ fn symbol_dispatch_admits_only_typed_exact_path_as_constraint_only_authority_v1(
             results: vec![candidate("path-owned", 1.0)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -376,7 +369,6 @@ fn lexical_dispatch_stabilizes_tied_text_results() -> TestResult {
             ],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -421,7 +413,7 @@ fn lexical_dispatch_stabilizes_tied_text_results() -> TestResult {
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
@@ -441,7 +433,6 @@ fn sourcegraph_dispatch_rejects_structural_pattern_type_before_lexical_execution
             results: vec![candidate("alpha", 1.0)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -548,7 +539,6 @@ fn lexical_dispatch_returns_typed_when_filter_is_fork_only() -> TestResult {
             results: Vec::new(),
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -590,7 +580,7 @@ fn lexical_dispatch_returns_typed_when_filter_is_fork_only() -> TestResult {
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Text response, got {other:?}").into());
@@ -622,7 +612,6 @@ fn lexical_dispatch_returns_typed_when_filter_is_rev() -> TestResult {
             results: Vec::new(),
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -660,7 +649,6 @@ fn lexical_dispatch_passes_through_when_no_unavailable_filters() -> TestResult {
             results: vec![candidate("hit", 1.0)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -708,7 +696,7 @@ fn lexical_dispatch_passes_through_when_no_unavailable_filters() -> TestResult {
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
@@ -739,7 +727,6 @@ fn symbol_dispatch_returns_symbol_candidates_with_kind_truth() -> TestResult {
             results: vec![candidate("sym-hit", 1.0)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -788,7 +775,7 @@ fn symbol_dispatch_returns_symbol_candidates_with_kind_truth() -> TestResult {
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Symbol response, got {other:?}").into());

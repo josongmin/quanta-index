@@ -747,6 +747,14 @@ pub trait ObjectCustodyPort: Send + Sync {
 /// follows reservation; only confirmed inputs may seal an immutable request.
 pub trait InputStagingPort: Send + Sync {
     fn open_ingress(&self, operation: OperationKey) -> Result<IngressRef, IndexError>;
+    /// Open a writable submission fence or return the existing sealed ingress.
+    /// A sealed ingress only permits admission of its exact request, so the
+    /// caller must verify it and skip input installation.
+    fn open_submission_ingress(
+        &self,
+        operation: OperationKey,
+        budget: &WorkBudget,
+    ) -> Result<(IngressRef, Option<ObjectRef>), IndexError>;
     /// Adopts exact confirmed registrations under the original request budget.
     /// An empty batch still validates the open ingress fence.
     fn adopt_registered_inputs(
@@ -910,7 +918,21 @@ pub trait OperationJournalPort: Send + Sync {
         Err(IndexError::SnapshotUnavailable)
     }
     fn operation(&self, key: OperationKey) -> Result<ImmutableOperation, IndexError>;
-    fn claim_recovery(&self, key: OperationKey) -> Result<AttemptRef, IndexError>;
+    /// Exact immutable operation lookup for an active request. The original
+    /// request budget bounds Catalog lock acquisition and the returned result;
+    /// this read does not add work-usage charges to the legacy lookup.
+    fn operation_request(
+        &self,
+        key: OperationKey,
+        budget: &WorkBudget,
+    ) -> Result<ImmutableOperation, IndexError>;
+    /// Rotate a pending attempt under the original recovery budget. A committed
+    /// fence is returned even if the request expires during commit.
+    fn claim_recovery(
+        &self,
+        key: OperationKey,
+        budget: &WorkBudget,
+    ) -> Result<AttemptRef, IndexError>;
     fn refuse(&self, attempt: AttemptRef, reason: Refusal) -> Result<OperationStatus, IndexError>;
 }
 
@@ -1252,9 +1274,11 @@ pub trait WorkClaimPort: Send + Sync {
     /// Catalog transaction. Unknown/pending requests also require their live
     /// materialization claim. Terminal status permits replay only; the returned
     /// observation does not replace validation at execution or publication.
+    /// Connection acquisition and the returned observation honor the request budget.
     fn validate_owned_work(
         &self,
         request: &super::UpdateRequest,
+        budget: &WorkBudget,
     ) -> Result<OperationStatus, IndexError>;
     /// Manual claim uses the caller's original budget for Catalog mutex
     /// waiting and the pre-commit checkpoint. Once committed, the durable
@@ -1299,8 +1323,22 @@ pub trait WorkClaimPort: Send + Sync {
         intent: &WorkIntent,
         budget: &WorkBudget,
     ) -> Result<WorkStatus, IndexError>;
-    fn prepared_work(&self, claim: &WorkClaim) -> Result<Option<OwnerMemberBinding>, IndexError>;
-    fn stage_work(&self, claim: &WorkClaim, binding: OwnerMemberBinding) -> Result<(), IndexError>;
+    /// Observe the exact live claim and its prepared artifact in one read snapshot.
+    /// The original budget bounds connection acquisition and returning the observation.
+    fn prepared_work(
+        &self,
+        claim: &WorkClaim,
+        budget: &WorkBudget,
+    ) -> Result<Option<OwnerMemberBinding>, IndexError>;
+    /// Durably retain the prepared artifact under the same live claim. The
+    /// original budget bounds connection acquisition and the pre-commit check.
+    /// A committed stage remains recoverable even if the caller then expires.
+    fn stage_work(
+        &self,
+        claim: &WorkClaim,
+        binding: OwnerMemberBinding,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError>;
 }
 
 pub trait IndexOwnerBuildPort: Send + Sync {

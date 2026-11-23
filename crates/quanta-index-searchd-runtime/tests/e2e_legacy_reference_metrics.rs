@@ -361,11 +361,6 @@ fn expect_empty_boot_inventory(scrape: &Scrape) -> TestResult {
         "boot_active_pairs_validated",
         "boot_half_sealed_pairs",
         "boot_auxiliary_rows_restored",
-        "boot_repomap_snapshots_loaded",
-        "boot_repomap_activations_loaded",
-        "boot_repomap_stale_temporaries_removed",
-        "boot_repomap_quarantined_files",
-        "boot_repomap_activations_without_snapshot",
     ] {
         expect_eq(name, &scrape.gauge(name)?, &0.0)?;
     }

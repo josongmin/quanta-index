@@ -90,7 +90,7 @@ pub use retained_scalar_decode_v1::{NativeRetainedScalarDecodeDataV1, NativeReta
 // Consumers implement admission against this exact producer dependency;
 // they must not select a second package instance to name its policy types.
 #[cfg(feature = "quanta-native-identity-v1")]
-pub use unicode_normalization::{
+pub use quanta_index_unicode::{
     NativeNormalizationAdmissionV1, NativeNormalizationDataRefusalV1, NativeNormalizationDataV1,
     NativeNormalizationErrorV1, NativeNormalizationOutcomeV1, NativeNormalizationScratchDemandV1,
     NativeNormalizationScratchOwnerV1, try_for_each_nfc_into_with_native_admission_v1,

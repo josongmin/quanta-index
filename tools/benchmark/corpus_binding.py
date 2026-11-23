@@ -719,6 +719,8 @@ def _gold_material(
             "unicode": unicodedata.unidata_version,
             "tree_sitter": runtime["tree-sitter"],
             "tree_sitter_language_pack": runtime["tree-sitter-language-pack"],
+            "tree_sitter_python": runtime["tree-sitter-python"],
+            "tree_sitter_rust": runtime["tree-sitter-rust"],
         },
         "files": {name: digest_bytes(raw) for name, raw in sorted(material.items())},
     }

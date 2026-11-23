@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use ciborium::de::{
+use quanta_index_cbor::{
     Error as CborError, FiniteParserAllocationAdmissionV3, FiniteParserAllocationRefusalV3,
     FiniteReadErrorV3, from_slice_with_finite_seed_and_allocation_v3,
 };

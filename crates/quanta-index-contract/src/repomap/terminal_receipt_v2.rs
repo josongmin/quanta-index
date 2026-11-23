@@ -1013,11 +1013,9 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_publish_and_activation_preserve_existing_cbor_wire() {
+    fn borrowed_publish_preserves_source_bundle_cbor_wire() {
         let bundle = bundle_fixture_v2();
         let publish = RepoMapPublishBundleRequestV2::new(bundle.clone()).expect("bundle digest");
-        let activation =
-            RepoMapActivateGenerationRequestV2::for_bundle(&bundle).expect("activation digest");
         let borrowed_publish = BorrowedRepoMapPublishBundleRequestV3 {
             source_bundle_digest: &publish.source_bundle_digest,
             bundle: &bundle,
@@ -1029,23 +1027,6 @@ mod tests {
             .expect("borrowed publish wire");
         assert_eq!(owned, borrowed);
 
-        let absent = crate::DiagnosticAttemptFieldV1::Absent;
-        let owned_control = crate::SearchPlaneControlIpcRequestEnvelope {
-            request_id: 41,
-            payload: crate::SearchPlaneControlIpcRequest::RepoMapActivateV2(activation.clone()),
-            diagnostic_attempt: absent,
-        };
-        let borrowed_control = crate::BorrowedRepoMapActivateControlIpcRequestEnvelopeV3 {
-            request_id: 41,
-            payload: crate::BorrowedRepoMapActivateControlIpcRequestV3(&activation),
-            diagnostic_attempt: absent,
-        };
-        owned.clear();
-        borrowed.clear();
-        ciborium::ser::into_writer(&owned_control, &mut owned).expect("owned control wire");
-        ciborium::ser::into_writer(&borrowed_control, &mut borrowed)
-            .expect("borrowed control wire");
-        assert_eq!(owned, borrowed);
     }
 
     #[test]

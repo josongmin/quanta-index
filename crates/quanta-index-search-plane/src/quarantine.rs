@@ -28,14 +28,14 @@ use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
     QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
-    QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1, RepoId, RevisionId,
+    QuarantinedGenerationEntryV1, RepoId, RevisionId,
     SearchPlaneTrackKind,
 };
 use quanta_index_core::domains::generation::GenerationStorageKeyV1;
 use quanta_index_core::{
     CoreError, DiagnosticContextV1, GenerationQuarantineReasonV1, InventoriedSealedGenerationV1,
     QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, QuarantinedGenerationV1,
-    QuarantinedRepoMapFileV1, RepoMapQuarantinePort, SealedGenerationInventoryV1,
+    SealedGenerationInventoryV1,
     SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
 };
 
@@ -128,7 +128,6 @@ pub struct QuarantineServiceParts {
     pub semantic_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync>,
     pub lexical_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     pub semantic_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
-    pub repo_map: Arc<dyn RepoMapQuarantinePort + Send + Sync>,
     /// The retained identities orphans are computed against.
     pub ledger: Arc<RwLock<Ledger>>,
     /// The durable authority and pair lock that serialize a sealed record
@@ -149,7 +148,6 @@ struct TrackPorts {
 pub struct QuarantineService {
     lexical: TrackPorts,
     semantic: TrackPorts,
-    repo_map: Arc<dyn RepoMapQuarantinePort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
     lifecycle: Arc<SearchCorpusLifecycleOwner>,
     snapshots: SnapshotRegistries,
@@ -165,7 +163,6 @@ impl QuarantineService {
             semantic_discard,
             lexical_reclaim,
             semantic_reclaim,
-            repo_map,
             ledger,
             lifecycle,
             snapshots,
@@ -181,7 +178,6 @@ impl QuarantineService {
                 discard: semantic_discard,
                 reclaim: semantic_reclaim,
             },
-            repo_map,
             ledger,
             lifecycle,
             snapshots,
@@ -236,12 +232,6 @@ impl QuarantineService {
         Ok(QuarantineInventoryV1 {
             lexical,
             semantic,
-            repo_map: self
-                .repo_map
-                .quarantined_files()?
-                .iter()
-                .map(repo_map_entry)
-                .collect(),
         })
     }
 
@@ -264,13 +254,6 @@ impl QuarantineService {
                 } else {
                     self.discard_adapter_quarantine(&core_entry)?
                 }
-            }
-            QuarantineTargetV1::RepoMapFile(entry) => {
-                self.repo_map
-                    .discard_quarantined_file(&QuarantinedRepoMapFileV1 {
-                        file_name: entry.file_name.clone(),
-                        reason: entry.reason.clone(),
-                    })?
             }
         };
         Ok(QuarantineDiscardAck {
@@ -664,13 +647,6 @@ fn track_entries(
         .collect()
 }
 
-fn repo_map_entry(entry: &QuarantinedRepoMapFileV1) -> QuarantinedRepoMapFileEntryV1 {
-    QuarantinedRepoMapFileEntryV1 {
-        file_name: entry.file_name.clone(),
-        reason: entry.reason.clone(),
-    }
-}
-
 /// The adapter-side entry a wire entry names; a reason code the domain
 /// does not know is refused before any port sees it.
 fn generation_entry_from_wire(
@@ -703,14 +679,14 @@ pub(crate) mod tests {
 
     use quanta_index_contract::{
         GenerationSnapshot, ManifestGeneration, QuarantineDiscardOutcomeDtoV1, QuarantineTargetV1,
-        QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1, RepoId, RevisionId,
+        QuarantinedGenerationEntryV1, RepoId, RevisionId,
         SearchPlaneTrackKind,
     };
     use quanta_index_core::{
         CoreError, GenerationQuarantineReasonV1, GenerationStorageKeyV1,
         InventoriedSealedGenerationV1, QUARANTINE_TARGET_NOT_QUARANTINED_CODE,
         QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, QuarantinedGenerationV1,
-        QuarantinedRepoMapFileV1, RepoMapQuarantinePort, RequestBudgetV1, SealedGenerationBytesV1,
+        RequestBudgetV1, SealedGenerationBytesV1,
         SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
         SealedGenerationScanPort,
     };
@@ -863,37 +839,6 @@ pub(crate) mod tests {
         }
     }
 
-    struct ScriptedRepoMap(Vec<QuarantinedRepoMapFileV1>);
-
-    impl RepoMapQuarantinePort for ScriptedRepoMap {
-        fn quarantined_files(&self) -> Result<Vec<QuarantinedRepoMapFileV1>, CoreError> {
-            Ok(self.0.clone())
-        }
-
-        fn discard_quarantined_file(
-            &self,
-            entry: &QuarantinedRepoMapFileV1,
-        ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
-            match self
-                .0
-                .iter()
-                .find(|listed| listed.file_name == entry.file_name)
-            {
-                Some(listed) if listed == entry => {
-                    Ok(QuarantineDiscardOutcomeV1::Discarded { bytes: 7 })
-                }
-                Some(listed) => Err(CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
-                    message: format!(
-                        "recorded as `{}` now, not `{}`",
-                        listed.reason, entry.reason
-                    ),
-                }),
-                None => Ok(QuarantineDiscardOutcomeV1::Absent),
-            }
-        }
-    }
-
     pub(crate) fn quarantined(track: SearchPlaneTrackKind, path: &str) -> QuarantinedGenerationV1 {
         QuarantinedGenerationV1 {
             track,
@@ -946,7 +891,6 @@ pub(crate) mod tests {
         lexical: Vec<QuarantinedGenerationV1>,
         lexical_sealed: Vec<InventoriedSealedGenerationV1>,
         semantic: Vec<QuarantinedGenerationV1>,
-        repo_map: Vec<QuarantinedRepoMapFileV1>,
         ledger: Arc<RwLock<Ledger>>,
     ) -> Doubles {
         let lexical_scanner = Arc::new(ScriptedScanner {
@@ -995,7 +939,6 @@ pub(crate) mod tests {
             semantic_discard: semantic_discard.clone(),
             lexical_reclaim: lexical_reclaim.clone(),
             semantic_reclaim,
-            repo_map: Arc::new(ScriptedRepoMap(repo_map)),
             ledger,
             lifecycle,
             snapshots: snapshots.clone(),
@@ -1022,16 +965,11 @@ pub(crate) mod tests {
             vec![lexical.clone()],
             Vec::new(),
             vec![semantic],
-            vec![QuarantinedRepoMapFileV1 {
-                file_name: "stale--marker.json".to_string(),
-                reason: "did not decode".to_string(),
-            }],
             Arc::new(RwLock::new(Ledger::new())),
         );
         let inventory = doubles.service.inventory()?;
         assert_eq!(inventory.lexical.len(), 1);
         assert_eq!(inventory.semantic.len(), 1);
-        assert_eq!(inventory.repo_map.len(), 1);
         let listed = inventory.lexical.first().ok_or("lexical entry")?;
         assert_eq!(
             (listed.track, listed.path.as_str(), listed.reason.as_str()),
@@ -1062,16 +1000,6 @@ pub(crate) mod tests {
             "the lexical port got the lexical entry"
         );
 
-        let ack = doubles.service.discard(&QuarantineTargetV1::RepoMapFile(
-            QuarantinedRepoMapFileEntryV1 {
-                file_name: "stale--marker.json".to_string(),
-                reason: "did not decode".to_string(),
-            },
-        ))?;
-        assert_eq!(
-            ack.outcome,
-            QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 7 }
-        );
         Ok(())
     }
 
@@ -1095,7 +1023,7 @@ pub(crate) mod tests {
                 key.generation,
                 "digest-7",
             );
-        let doubles = service(vec![entry], Vec::new(), Vec::new(), Vec::new(), ledger);
+        let doubles = service(vec![entry], Vec::new(), Vec::new(), ledger);
         let held = doubles
             .snapshots
             .lexical
@@ -1152,7 +1080,6 @@ pub(crate) mod tests {
             vec![entry],
             Vec::new(),
             Vec::new(),
-            Vec::new(),
             Arc::clone(&ledger),
         );
         let listed = doubles.service.inventory()?.lexical.remove(0);
@@ -1204,7 +1131,6 @@ pub(crate) mod tests {
                 } else {
                     Vec::new()
                 },
-                Vec::new(),
                 Arc::new(RwLock::new(Ledger::new())),
             );
             let key = SnapshotKey::new(&repo(), &revision(), generation);
@@ -1265,7 +1191,6 @@ pub(crate) mod tests {
             vec![entry],
             Vec::new(),
             Vec::new(),
-            Vec::new(),
             Arc::new(RwLock::new(Ledger::new())),
         );
         let listed = doubles.service.inventory()?.lexical.remove(0);
@@ -1317,7 +1242,7 @@ pub(crate) mod tests {
                 key.generation,
                 "digest-7",
             );
-        let doubles = service(vec![entry], Vec::new(), Vec::new(), Vec::new(), ledger);
+        let doubles = service(vec![entry], Vec::new(), Vec::new(), ledger);
         let _failed_receipt = doubles
             .snapshots
             .lexical
@@ -1348,7 +1273,6 @@ pub(crate) mod tests {
                 SearchPlaneTrackKind::Lexical,
                 "/root/lexical/junk",
             )],
-            Vec::new(),
             Vec::new(),
             Vec::new(),
             Arc::new(RwLock::new(Ledger::new())),
@@ -1413,7 +1337,6 @@ pub(crate) mod tests {
         let doubles = service(
             Vec::new(),
             vec![orphaned, retained],
-            Vec::new(),
             Vec::new(),
             ledger,
         );
@@ -1482,7 +1405,6 @@ pub(crate) mod tests {
             Vec::new(),
             vec![listed],
             Vec::new(),
-            Vec::new(),
             Arc::new(RwLock::new(Ledger::new())),
         );
         let orphan = doubles
@@ -1538,7 +1460,6 @@ pub(crate) mod tests {
             Vec::new(),
             vec![sealed(SearchPlaneTrackKind::Lexical, 2)],
             Vec::new(),
-            Vec::new(),
             Arc::new(RwLock::new(Ledger::new())),
         );
         let orphan = doubles
@@ -1589,7 +1510,6 @@ pub(crate) mod tests {
         let doubles = service(
             Vec::new(),
             vec![sealed(SearchPlaneTrackKind::Lexical, 2)],
-            Vec::new(),
             Vec::new(),
             Arc::new(RwLock::new(Ledger::new())),
         );

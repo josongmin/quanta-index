@@ -1,4 +1,4 @@
-use ciborium::de::FiniteParserAllocationAdmissionV3;
+use quanta_index_cbor::FiniteParserAllocationAdmissionV3;
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
 use quanta_index_contract::{
     BatchPublishReceipt, QueryErrorRepair, SearchPlaneErrorCodeV2,
@@ -83,7 +83,7 @@ impl<O> AdmittedAuxiliaryBatchReceiptV1<O> {
             | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
             | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
             | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_) => {
@@ -134,7 +134,7 @@ impl<O> AdmittedAuxiliaryRemoteErrorV1<O> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
             | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => {
                 unreachable!("validated auxiliary remote-error wrapper has an error")
@@ -288,11 +288,6 @@ where
         BorrowedAuxiliaryIngestIpcRequestV1::Structural(batch) => {
             verify_auxiliary_wire_digest_with_progress_v1(*batch, work)?;
         }
-        BorrowedAuxiliaryIngestIpcRequestV1::RepoMap(_) => {
-            return Err(AuxiliaryAdmittedPublishErrorV1::Sdk(SdkError::Protocol(
-                "RepoMap requires its exact source-bundle receipt binding route".to_string(),
-            )));
-        }
     }
 
     let mut transport_refusal = None;
@@ -378,11 +373,6 @@ where
         }
         BorrowedAuxiliaryIngestIpcRequestV1::Structural(batch) => {
             (batch.generation, batch.batch_digest.as_str())
-        }
-        BorrowedAuxiliaryIngestIpcRequestV1::RepoMap(_) => {
-            return Err(AuxiliaryAdmittedPublishErrorV1::Sdk(SdkError::Protocol(
-                "RepoMap requires its exact source-bundle receipt binding route".to_string(),
-            )));
         }
     };
     if !crate::binding::auxiliary_receipt_matches_v1(generation, digest, receipt) {
@@ -1143,7 +1133,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -1169,7 +1159,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -1199,7 +1189,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo description receipt",
@@ -1227,7 +1217,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -1481,7 +1471,7 @@ fn dispatch_history_query_request_v1(
         | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(

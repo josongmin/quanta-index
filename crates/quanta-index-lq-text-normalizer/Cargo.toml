@@ -13,4 +13,5 @@ workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-unicode-normalization = { workspace = true, features = ["quanta-native-scratch-v1"] }
+quanta-index-unicode = { version = "0.1.0", path = "../quanta-index-unicode" }
+unicode-normalization = { workspace = true }

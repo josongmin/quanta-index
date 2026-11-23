@@ -14,10 +14,7 @@ use quanta_index_contract::lex::DirtyRecord;
 use quanta_index_contract::{
     BatchPublishReceipt, ChunkId, DirtyIngestBatch, DirtyMutation, FileContributorIngestBatch,
     FileOwnershipIngestBatch, HistoryIngestBatch, IngestOperationKindV1, ManifestGeneration,
-    RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMapExactnessSummary,
-    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
-    RepoMapMutationAck, RepoMapMutationPhaseV2, RepoMapPublishBundleRequestV2,
-    RepoMapRedactionState, RepoMapSourceBundle, RepoMapTerminalReceiptV2, RepoMetaIngestBatch,
+    RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch,
     RepoTopicIngestBatch, RevisionId, RuntimeCatalogIngestBatch, SearchCorpusIngestBatch,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, StructuralIngestBatch,
 };
@@ -25,7 +22,7 @@ use quanta_index_core::{
     BATCH_DIGEST_MISMATCH_CODE, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
     IdempotencyCatalogPort as _, IdempotencyKeyV1, IngestBatchBodyV1, IngestResourcePolicy,
     OperationInspectV1, OperationJournalStateV1, PublicationValidationOwner,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
     RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, RequestProviderStageV1,
     RequestStageDiagnosticPortV1, SearchCorpusIngestPort, SemanticIngestPort,
     SemanticStreamWindowPolicy, SourceEventAllocationOutcomeV1, SourceEventAllocationRequestV1,
@@ -188,14 +185,6 @@ impl StructuralIngestPort for Unreachable {
         Err(unreachable_route("structural"))
     }
 }
-impl RepoMapBundleIngestPort for Unreachable {
-    fn ingest_bundle(
-        &self,
-        _request: &RepoMapPublishBundleRequestV2,
-    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
-        Err(unreachable_route("repo map bundle"))
-    }
-}
 
 /// The one live route: counts applies and answers the dirty receipt.
 struct CountingRuntime {
@@ -232,7 +221,6 @@ fn dispatcher<R: RuntimeMetadataIngestPort + Send + Sync + 'static>(
         unreachable.clone(),
         runtime,
         unreachable.clone(),
-        unreachable,
         catalog,
         source_publication,
         Arc::new(super::support::RecordingSearchCorpusAuthority {
@@ -302,7 +290,6 @@ fn search_corpus_dispatcher_with_authority(
         unreachable.clone(),
         unreachable.clone(),
         unreachable.clone(),
-        unreachable,
         catalog,
         source_publication,
         authority,
@@ -551,7 +538,7 @@ fn overlay_receipt(response: SearchPlaneIngestIpcResponse) -> Result<BatchPublis
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
         | SearchPlaneIngestIpcResponse::Error(_)) => {
             Err(format!("expected lexical overlay receipt, got {other:?}"))
         }
@@ -574,7 +561,6 @@ fn lexical_overlays_require_retained_generation_before_claim_and_replay_terminal
         overlay.clone(),
         unreachable.clone(),
         unreachable.clone(),
-        unreachable,
         catalog.clone(),
         catalog.source_publication.clone(),
         Arc::new(super::support::RecordingSearchCorpusAuthority {
@@ -1178,7 +1164,7 @@ fn staged_commits_overlap_across_repos_and_refuse_same_repo() -> TestRes {
 }
 
 #[test]
-fn ingest_claims_use_absolute_deadlines_on_batch_and_repomap_paths() -> TestRes {
+fn ingest_claims_use_absolute_deadlines_on_batch_path() -> TestRes {
     let catalog = memory_catalog();
     let runtime = Arc::new(CountingRuntime {
         applies: AtomicUsize::new(0),
@@ -1199,24 +1185,7 @@ fn ingest_claims_use_absolute_deadlines_on_batch_and_repomap_paths() -> TestRes 
     let after = quanta_index_core::now_unix_ms();
     assert_claim_deadline(&catalog, &batch_key, before, after)?;
 
-    let repomap = Arc::new(CountingRepoMap {
-        calls: AtomicUsize::new(0),
-    });
-    let request = RepoMapPublishBundleRequestV2::new(repomap_bundle_fixture())?;
-    let repomap_key = IdempotencyKeyV1 {
-        kind: IngestOperationKindV1::RepoMapBundle,
-        repo_id: request.bundle.repo_id.clone(),
-        revision_id: request.bundle.revision_id.clone(),
-        generation: request.bundle.manifest_generation,
-        batch_digest: request.source_bundle_digest.clone(),
-    };
-    let before = quanta_index_core::now_unix_ms();
-    let _receipt = repomap_receipt_of(repomap_dispatcher(repomap, Arc::clone(&catalog)).dispatch(
-        SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request),
-        &RequestBudgetV1::unbounded(),
-    ))?;
-    let after = quanta_index_core::now_unix_ms();
-    assert_claim_deadline(&catalog, &repomap_key, before, after)
+    Ok(())
 }
 
 fn assert_claim_deadline(
@@ -1350,7 +1319,7 @@ fn typed_code_of(
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
         | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => None,
@@ -1371,7 +1340,7 @@ fn receipt_of(response: SearchPlaneIngestIpcResponse) -> Result<BatchPublishRece
         | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
         | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)) => {
@@ -1991,196 +1960,6 @@ fn ingest_dispatch_carries_provider_window_stages_and_replay_does_not() -> TestR
             != calls
     {
         return Err("journal replay must not re-enter the provider boundary".into());
-    }
-    Ok(())
-}
-
-/// A repo-map store double behind the journal: counts V2 applies and
-/// answers a canned terminal receipt built from the request.
-struct CountingRepoMap {
-    calls: AtomicUsize,
-}
-
-impl RepoMapBundleIngestPort for CountingRepoMap {
-    fn ingest_bundle(
-        &self,
-        request: &RepoMapPublishBundleRequestV2,
-    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
-        let _prior = self.calls.fetch_add(1, Ordering::SeqCst);
-        let bundle = &request.bundle;
-        Ok(RepoMapTerminalReceiptV2 {
-            phase: RepoMapMutationPhaseV2::Publish,
-            mutation: RepoMapMutationAck {
-                repo_id: bundle.repo_id.clone(),
-                revision_id: bundle.revision_id.clone(),
-                manifest_generation: bundle.manifest_generation,
-                prior_candidate_commitment: None,
-                new_candidate_commitment: "c".repeat(64),
-                activation_epoch: 0,
-                terminal_sequence: 41,
-                replayed: false,
-            },
-            manifest_digest: bundle.manifest_digest.clone(),
-            snapshot_id: bundle.snapshot_id.clone(),
-            projection_version: bundle.projection_version,
-            authority_digest: bundle.authority_digest.clone(),
-            source_bundle_digest: request.source_bundle_digest.clone(),
-        })
-    }
-}
-
-fn repomap_dispatcher(
-    repomap: Arc<CountingRepoMap>,
-    catalog: Arc<MemoryIdempotencyCatalog>,
-) -> SearchPlaneIngestDispatcher {
-    let unreachable = Arc::new(Unreachable);
-    let source_publication = catalog.source_publication.clone();
-    SearchPlaneIngestDispatcher::new(
-        unreachable.clone(),
-        unreachable.clone(),
-        unreachable.clone(),
-        unreachable.clone(),
-        unreachable.clone(),
-        unreachable.clone(),
-        unreachable.clone(),
-        unreachable.clone(),
-        unreachable.clone(),
-        unreachable,
-        repomap,
-        catalog,
-        source_publication,
-        Arc::new(super::support::RecordingSearchCorpusAuthority {
-            exact: true,
-            ..Default::default()
-        }),
-    )
-}
-
-fn repomap_bundle_fixture() -> RepoMapSourceBundle {
-    RepoMapSourceBundle::new(
-        RepoId::new("repo-rm2").expect("static fixture ID satisfies canonical policy"),
-        RevisionId::new("rev-rm2").expect("static fixture ID satisfies canonical policy"),
-        ManifestGeneration::new(9),
-        "m".repeat(64),
-        "snap-rm2",
-        3,
-        "a".repeat(64),
-        RepoMapGraphCoverage {
-            item_index_availability: RepoMapItemIndexAvailability::Available,
-            graph_coverage_class: RepoMapGraphCoverageClass::Complete,
-        },
-        RepoMapExactnessSummary::Exact,
-        RepoMapRedactionState::Unredacted,
-    )
-}
-
-fn repomap_receipt_of(
-    response: SearchPlaneIngestIpcResponse,
-) -> Result<RepoMapTerminalReceiptV2, String> {
-    match response {
-        SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt) => Ok(receipt),
-        SearchPlaneIngestIpcResponse::Error(error) => {
-            Err(format!("{}: {}", error.code, error.message))
-        }
-        other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
-        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
-        | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)) => {
-            Err(format!("unexpected response {other:?}"))
-        }
-    }
-}
-
-/// SEP-21 P02B: a `RepoMap` V2 publish travels the operation journal —
-/// exactly one store apply, then replays carry the stored terminal
-/// receipt with zero store contact.
-///
-/// A forged source-bundle digest is refused before the journal or the
-/// store is touched, and the journal-free V1 bundle arm records
-/// nothing.
-#[test]
-fn a_repomap_v2_publish_journals_once_and_replays_without_the_store() -> TestRes {
-    let catalog = memory_catalog();
-    let repomap = Arc::new(CountingRepoMap {
-        calls: AtomicUsize::new(0),
-    });
-    let dispatcher = repomap_dispatcher(Arc::clone(&repomap), Arc::clone(&catalog));
-    let budget = RequestBudgetV1::unbounded();
-
-    let request = RepoMapPublishBundleRequestV2::new(repomap_bundle_fixture())?;
-    let records_before = catalog.records();
-    let first = repomap_receipt_of(dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request.clone()),
-        &budget,
-    ))?;
-    if first.mutation.replayed || first.source_bundle_digest != request.source_bundle_digest {
-        return Err(format!("the first V2 publish must apply: {first:?}").into());
-    }
-    if repomap.calls.load(Ordering::SeqCst) != 1 {
-        return Err("the first V2 publish applies exactly once".into());
-    }
-
-    let replay = repomap_receipt_of(dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request.clone()),
-        &budget,
-    ))?;
-    if !replay.mutation.replayed
-        || replay.mutation.new_candidate_commitment != first.mutation.new_candidate_commitment
-    {
-        return Err(format!("the V2 replay must be the stored receipt: {replay:?}").into());
-    }
-    if replay.mutation.terminal_sequence != first.mutation.terminal_sequence
-        || replay.source_bundle_digest != first.source_bundle_digest
-    {
-        return Err("the V2 replay must carry the original terminal identity".into());
-    }
-    if repomap.calls.load(Ordering::SeqCst) != 1 {
-        return Err(format!(
-            "a V2 replay never reaches the store: calls={}",
-            repomap.calls.load(Ordering::SeqCst)
-        )
-        .into());
-    }
-
-    // A forged digest is refused before the journal or the store.
-    let mut forged = request.clone();
-    forged.source_bundle_digest = format!("sha256:{}", "0".repeat(64));
-    if forged.source_bundle_digest == request.source_bundle_digest {
-        return Err("the forged digest fixture must differ".into());
-    }
-    let refused = dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(forged),
-        &budget,
-    );
-    if !matches!(
-        &refused,
-        SearchPlaneIngestIpcResponse::Error(error)
-            if error.code == quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest
-                && error.message.contains("source bundle digest mismatch")
-    ) {
-        return Err(format!(
-            "a forged bundle digest must be refused as a mismatch, got {refused:?}"
-        )
-        .into());
-    }
-    if repomap.calls.load(Ordering::SeqCst) != 1 {
-        return Err("a forged digest must not reach the store".into());
-    }
-
-    if catalog.records() != records_before + 1 {
-        return Err(format!(
-            "only the current publish journals: records={} before={records_before}",
-            catalog.records()
-        )
-        .into());
     }
     Ok(())
 }

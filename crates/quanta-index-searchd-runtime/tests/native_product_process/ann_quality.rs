@@ -7,7 +7,7 @@ use anyhow::Context as _;
 use std::io::Write as _;
 
 use quanta_index_contract::{
-    index::{CoverageBinding, MapRoot, ViewRef},
+    index::{CoverageBinding, InputBinding, MapRoot, ViewRef},
     native_protocol::{
         NativeOverlayDocument, NativeOverlayReply, NativeOverlayRequest, NativeOverlaySession,
         NativeOverlayTextQuery, NativeSemanticResult, NativeSemanticTraversal,
@@ -811,6 +811,89 @@ fn coverage_probe_needed(
     Ok(latest.sequence >= minimum_sequence)
 }
 
+fn readiness_probe_is_complete(
+    coverage: &CoverageBinding,
+    instance: IndexInstanceId,
+    expected: InputBinding,
+) -> TestResult<bool> {
+    if coverage.status != CoverageStatus::Complete {
+        return Ok(false);
+    }
+    require_equal(&coverage.desired, &expected, "ANN readiness input binding")?;
+    check_complete_ann_coverage(coverage, instance, expected.root)?;
+    Ok(true)
+}
+
+#[test]
+fn readiness_probe_rejects_malformed_complete_coverage() -> TestResult {
+    type ProbeMutation = (&'static str, fn(&mut CoverageBinding));
+    let instance = IndexInstanceId([3; 16]);
+    let source_owners = MapRoot(Some(ObjectRef(Digest([2; 32]))));
+    let desired = InputBinding {
+        root: source_owners,
+        schema: SchemaId([4; 16]),
+        policy: Digest([5; 32]),
+        context: Digest([6; 32]),
+    };
+    let result = CoverageBinding {
+        instance,
+        desired,
+        covered: Some(desired),
+        searchable: Some(ObjectRef(Digest([7; 32]))),
+        status: CoverageStatus::Complete,
+        owners: source_owners,
+    };
+    let ready = |result: &CoverageBinding| readiness_probe_is_complete(result, instance, desired);
+    require(
+        ready(&result)?,
+        "valid ANN coverage did not advance readiness",
+    )?;
+
+    let mut partial = result;
+    partial.status = CoverageStatus::Partial {
+        missing: source_owners,
+    };
+    partial.covered = None;
+    partial.searchable = None;
+    require(!ready(&partial)?, "partial ANN coverage advanced readiness")?;
+
+    let corruptions: [ProbeMutation; 7] = [
+        ("empty owners and searchable roots", |probe| {
+            probe.owners = MapRoot(None);
+            probe.searchable = None;
+        }),
+        ("foreign coverage instance", |probe| {
+            probe.instance = IndexInstanceId([8; 16]);
+        }),
+        ("missing owner root", |probe| probe.owners = MapRoot(None)),
+        ("wrong source owner root", |probe| {
+            probe.desired.root = MapRoot(None);
+            probe.covered = Some(probe.desired);
+        }),
+        ("foreign semantic schema", |probe| {
+            probe.desired.schema = SchemaId([10; 16]);
+            probe.covered = Some(probe.desired);
+        }),
+        ("stale source context", |probe| {
+            probe.desired.context = Digest([12; 32]);
+            probe.covered = Some(probe.desired);
+        }),
+        ("foreign semantic policy", |probe| {
+            probe.desired.policy = Digest([13; 32]);
+            probe.covered = Some(probe.desired);
+        }),
+    ];
+    for (label, mutate) in corruptions {
+        let mut malformed = result;
+        mutate(&mut malformed);
+        require(
+            ready(&malformed).is_err(),
+            format!("ANN readiness oracle accepted {label}"),
+        )?;
+    }
+    Ok(())
+}
+
 #[test]
 fn readiness_probes_coverage_once_per_published_view() -> TestResult {
     let previous = ViewRef {
@@ -993,10 +1076,11 @@ fn wait_for_complete(
             last_coverage.map(|(view, _)| view),
             minimum_sequence,
         )? {
+            let spec = completion.spec();
             let probe = client
                 .search_semantic(
                     ViewSelection::Exact(latest.identity),
-                    completion.instance(),
+                    spec.instance,
                     quality_query(0, config)?,
                     &budget().capped_at(deadline),
                 )
@@ -1009,10 +1093,13 @@ fn wait_for_complete(
                     )
                 })?;
             last_coverage = Some((latest.identity, probe.coverage));
-            if probe.coverage.status == CoverageStatus::Complete
-                && probe.coverage.desired.root == latest.source.owners
-                && probe.coverage.covered == Some(probe.coverage.desired)
-            {
+            let expected = InputBinding {
+                root: latest.source.owners,
+                schema: spec.schema,
+                policy: spec.policy,
+                context: latest.source.input_context_digest()?,
+            };
+            if readiness_probe_is_complete(&probe.coverage, spec.instance, expected)? {
                 require(
                     Instant::now() < deadline,
                     format!(
@@ -1315,6 +1402,32 @@ fn check_quality_result_order<'a>(
     Ok(())
 }
 
+/// Coverage assumed by the nonempty Native ANN quality fixtures.
+pub(super) fn check_complete_ann_coverage(
+    coverage: &CoverageBinding,
+    instance: IndexInstanceId,
+    source_owners: MapRoot,
+) -> TestResult {
+    require_equal(&coverage.instance, &instance, "ANN coverage instance")?;
+    require_equal(
+        &coverage.status,
+        &CoverageStatus::Complete,
+        "ANN source coverage",
+    )?;
+    require_equal(
+        &coverage.covered,
+        &Some(coverage.desired),
+        "ANN covered input binding",
+    )?;
+    require_equal(
+        &coverage.desired.root,
+        &source_owners,
+        "ANN selected source owner root",
+    )?;
+    require(coverage.owners.0.is_some(), "ANN covered owner root absent")?;
+    require(coverage.searchable.is_some(), "ANN searchable root absent")
+}
+
 fn check_query_result(
     result: &NativeSemanticResult,
     selection: &QualitySelection<'_>,
@@ -1326,24 +1439,10 @@ fn check_query_result(
         &selection.instance,
         "ANN selected instance",
     )?;
-    require_equal(
-        &result.coverage.status,
-        &CoverageStatus::Complete,
-        "ANN source coverage",
-    )?;
-    require_equal(
-        &result.coverage.covered,
-        &Some(result.coverage.desired),
-        "ANN covered input binding",
-    )?;
-    require_equal(
-        &result.coverage.desired.root,
-        &selection.source_owners,
-        "ANN selected source owner root",
-    )?;
-    require(
-        result.coverage.searchable.is_some(),
-        "ANN searchable root absent",
+    check_complete_ann_coverage(
+        &result.coverage,
+        selection.instance,
+        selection.source_owners,
     )?;
     require(
         matches!(

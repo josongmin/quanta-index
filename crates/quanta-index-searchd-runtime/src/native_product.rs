@@ -19,7 +19,6 @@ use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::index::{
     Digest, IndexKind, ProducerId, ProjectionId, SchemaId, StorageFormatId, TenantId,
 };
-use quanta_index_contract::native_protocol::{NativeRepoMapGraphDescriptorV1, NativeRepoMapQuery};
 use quanta_index_core::index::{
     AttemptContext, CoverageBinding, IndexError, IndexQueryPort, InstanceSpec, MapRoot, ObjectRef,
     OwnedWorkPolicy, OwnerInputBinding, OwnerKey, OwnerMemberBinding, QueryOutcome,
@@ -45,14 +44,7 @@ use quanta_index_lexical::native::{
     PlannedTextRead, TextReadResult, TextRecipe,
 };
 use quanta_index_repomap::native::graph::{GraphPage, GraphQuery, NativeGraph, NativeGraphReader};
-use quanta_index_repomap::native::{
-    NATIVE_LEGACY_REPOMAP_FORMAT_V1, NATIVE_LEGACY_REPOMAP_KIND_V1,
-    NATIVE_LEGACY_REPOMAP_SCHEMA_V1, NativeLegacyRepoMapBuildV1, NativeLegacyRepoMapGraphPageV1,
-    NativeLegacyRepoMapGraphReaderV1, NativeLegacyRepoMapRankReaderV1,
-};
-use quanta_index_repomap::native::{
-    NativeFileMap, NativePathReader, NativeRepoMapRankPage, NativeRepoMapRankReader,
-};
+use quanta_index_repomap::native::{NativeFileMap, NativePathReader};
 use quanta_index_semantic::native::{
     EmbeddingInputPolicy, EmbeddingProvider, EmbeddingRecipe, NativeSemantic,
     NativeSemanticReadConfig, NativeSemanticReader, SearchResult, SemanticCandidate,
@@ -81,6 +73,7 @@ mod boot;
 #[path = "native_boot/legacy_source_census_v1.rs"]
 pub(crate) mod legacy_source_census_v1;
 pub(crate) use boot::{FundedInstalledHistoryV1, RestoreForwardHistoryV1};
+pub(crate) use boot::retired_policy_profile_v1::reject_candidate_profile_overlap_v1;
 #[path = "history_checkpoint_export.rs"]
 pub mod history_checkpoint_export;
 
@@ -1731,12 +1724,10 @@ impl NativeServeConfigV1 {
             .into_iter()
             .chain(semantic.as_ref().map(|config| config.descriptor.kind))
             .chain(graph.as_ref().map(|config| config.descriptor.kind))
-            .chain(std::iter::once(NATIVE_LEGACY_REPOMAP_KIND_V1))
             .collect::<BTreeSet<_>>();
         let expected_kinds = 3_usize
             .checked_add(usize::from(semantic.is_some()))
             .and_then(|count| count.checked_add(usize::from(graph.is_some())))
-            .and_then(|count| count.checked_add(1))
             .ok_or_else(|| anyhow!("native adapter kind count overflow"))?;
         if unique.len() != expected_kinds {
             bail!("native adapter kinds must be distinct");
@@ -2182,11 +2173,6 @@ fn register_semantic(
 
 struct NativeComposition {
     graph: Option<QueryAdapterRegistry<GraphQuery, GraphPage>>,
-    repomap: Option<QueryAdapterRegistry<NativeRepoMapQuery, NativeRepoMapRankPage>>,
-    imported_repomap_graph: QueryAdapterRegistry<
-        quanta_index_contract::native_protocol::NativeImportedRepoMapQueryV1,
-        NativeLegacyRepoMapGraphPageV1,
-    >,
     capabilities: NativeServiceCapabilities,
     provider_signals: Option<Arc<crate::native_provider_signals::NativeProviderPoolSignals>>,
 }
@@ -2195,20 +2181,6 @@ fn register_base_builders(config: &ValidatedConfig, builders: &mut AdapterRegist
     if let Some(graph) = &config.graph {
         builders.register_projection(graph.descriptor, NativeGraph)?;
     }
-    builders.register_projection(
-        AdapterDescriptor {
-            kind: NATIVE_LEGACY_REPOMAP_KIND_V1,
-            schema: NATIVE_LEGACY_REPOMAP_SCHEMA_V1,
-            format: NATIVE_LEGACY_REPOMAP_FORMAT_V1,
-        },
-        NativeLegacyRepoMapBuildV1::new(
-            ResourceNeed {
-                provider_units: 0,
-                ..config.resources.execution.core
-            },
-            config.resources.execution.interactive.memory_bytes,
-        )?,
-    )?;
     builders.register(
         config.literal,
         NativeLiteralIndex,
@@ -2263,51 +2235,6 @@ fn compose(config: &ValidatedConfig) -> Result<NativeComposition> {
             Ok(readers)
         })
         .transpose()?;
-    let repomap = {
-        let mut readers = QueryAdapterRegistry::new();
-        if let Some(graph) = &config.graph {
-            readers.register(
-                graph.descriptor,
-                graph.read_need,
-                NativeRepoMapRankReader::new(graph.read_need)?,
-            )?;
-        }
-        {
-            let read_need = ResourceNeed {
-                provider_units: 0,
-                ..config.resources.execution.interactive
-            };
-            readers.register(
-                AdapterDescriptor {
-                    kind: NATIVE_LEGACY_REPOMAP_KIND_V1,
-                    schema: NATIVE_LEGACY_REPOMAP_SCHEMA_V1,
-                    format: NATIVE_LEGACY_REPOMAP_FORMAT_V1,
-                },
-                read_need,
-                NativeLegacyRepoMapRankReaderV1::new(read_need)?,
-            )?;
-        }
-        readers.validate_reservation(config.resources.execution.interactive)?;
-        Some(readers)
-    };
-    let imported_repomap_graph = {
-        let read_need = ResourceNeed {
-            provider_units: 0,
-            ..config.resources.execution.interactive
-        };
-        let mut readers = QueryAdapterRegistry::new();
-        readers.register(
-            AdapterDescriptor {
-                kind: NATIVE_LEGACY_REPOMAP_KIND_V1,
-                schema: NATIVE_LEGACY_REPOMAP_SCHEMA_V1,
-                format: NATIVE_LEGACY_REPOMAP_FORMAT_V1,
-            },
-            read_need,
-            NativeLegacyRepoMapGraphReaderV1::new(read_need)?,
-        )?;
-        readers.validate_reservation(config.resources.execution.interactive)?;
-        readers
-    };
     let mut text = QueryAdapterRegistry::<PlannedTextRead, TextReadResult>::new();
     text.register(
         config.text,
@@ -2367,8 +2294,6 @@ fn compose(config: &ValidatedConfig) -> Result<NativeComposition> {
     )?;
     Ok(NativeComposition {
         graph,
-        repomap,
-        imported_repomap_graph,
         capabilities,
         provider_signals,
     })
@@ -2384,8 +2309,6 @@ fn bind(
 ) -> Result<NativeIndexService> {
     let NativeComposition {
         graph,
-        repomap,
-        imported_repomap_graph,
         capabilities,
         provider_signals,
     } = composition;
@@ -2444,23 +2367,7 @@ fn bind(
     if let Some(readers) = graph {
         service.configure_graph(readers)?;
     }
-    if let Some(readers) = repomap {
-        service.configure_repomap(readers)?;
-    }
-    if let Some(graph) = &config.graph {
-        service.configure_repomap_prior_files(graph.descriptor, graph.read_need)?;
-    }
     service.record_installation_config_sha256(config_sha256)?;
-    if let Some(graph) = &config.graph
-        && config.read_sessions.is_some()
-    {
-        service.record_repomap_graph_installation(NativeRepoMapGraphDescriptorV1 {
-            kind: graph.descriptor.kind,
-            schema: graph.descriptor.schema,
-            format: graph.descriptor.format,
-        })?;
-    }
-    service.configure_imported_repomap_graph(imported_repomap_graph)?;
     let recorder = if config.overlay.is_some()
         || config
             .effort

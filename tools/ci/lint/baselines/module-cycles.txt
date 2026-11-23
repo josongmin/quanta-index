@@ -9,4 +9,4 @@
 # it means the builders depend on a request-transport port below the
 # clients, which reshapes the SDK's public builder types; deferred while
 # the SDK surface is under concurrent change.
-quanta-index-sdk: client, generations, history, lexical, namespace, observability, quarantine, repomap, runtime, search, semantic, structural, symbol, text_query_builder
+quanta-index-sdk: client, generations, history, lexical, namespace, observability, quarantine, runtime, search, semantic, structural, symbol, text_query_builder

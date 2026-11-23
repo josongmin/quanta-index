@@ -5,9 +5,12 @@ mod history;
 mod immutable_object_wire;
 mod legacy_repomap_import;
 mod protected_source_routes;
+mod retired_projection_policy_v1;
 mod protected_native_snapshot;
 pub use protected_native_snapshot::*;
 mod source_restore;
+mod native_source_restore;
+pub use native_source_restore::{NativeImportedNativeSourceCompactV1, NativeImportedNativeSourceHeadV1, NativeSourceOriginCompactV1, NativeSourceOriginV1, NativeSourceSnapshotExportFrameV1, imported_native_source_manifest_digest_v1, imported_native_source_completed_digest_v1, native_source_target_manifest_digest_v1};
 pub use source_restore::{
     LegacySourceManifestDigestV1, LegacySourceOriginV1, LexicalSourceHeadsCommitmentV1,
     NativeImportedSourceHeadV1, MAX_SOURCE_SNAPSHOT_CHUNK_BYTES_V1,
@@ -24,6 +27,14 @@ pub use protected_source_routes::{
     MAX_NATIVE_PROTECTED_VIEW_MARKER_BYTES_V1, NativeProtectedRepoMapHeadV1, NativeProtectedSourceHeadV1,
     NativeProtectedSourceRoutesV1, NativeProtectedNativeOriginV1, native_protected_view_marker_bytes_v1,
     native_protected_view_marker_ref_v1, native_protected_source_route_seal_key_v1,
+};
+pub use retired_projection_policy_v1::{
+    MAX_RETIRED_PROJECTION_IDENTITIES_V1, MAX_RETIRED_PROJECTION_POLICY_BYTES_V1,
+    RetiredProjectionIdentityV1, RetiredProjectionPolicyErrorV1, RetiredProjectionPolicyHeaderV1,
+    RetiredProjectionPolicyRefV1, RetiredProjectionPolicyViewV1,
+    decode_retired_projection_policy_v1, encode_retired_projection_policy_v1,
+    preflight_retired_projection_policy_v1,
+    retired_repomap_route_identity_v1,
 };
 pub use immutable_object_wire::{
     NATIVE_IMMUTABLE_OBJECT_HASH_DOMAIN_V1, NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1,
@@ -1251,6 +1262,12 @@ pub enum UpdateKind {
         prior_epoch: u64,
         transition: SourceTransition,
     },
+    /// Replace the producer's Source prefix and advance its History generation
+    /// in the same Catalog publication.
+    SourceHistoryResync {
+        prior_epoch: u64,
+        transition: Box<SourceHistoryTransitionV1>,
+    },
     ProjectionAdvance(Box<ProjectionTransition>),
     HistoryAdvance(HistoryTransition),
     HistoryAppend(HistoryAppendV1),
@@ -1275,7 +1292,17 @@ impl UpdateKind {
     pub fn source_transition_v1(&self) -> Option<&SourceTransition> {
         match self {
             Self::SourceAdvance(transition) | Self::SourceResync { transition, .. } => Some(transition),
-            Self::SourceHistoryAdvance(transition) => Some(&transition.source),
+            Self::SourceHistoryAdvance(transition)
+            | Self::SourceHistoryResync { transition, .. } => Some(&transition.source),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn history_generation_advance_v1(&self) -> Option<&HistoryGenerationAdvanceV1> {
+        match self {
+            Self::SourceHistoryAdvance(transition)
+            | Self::SourceHistoryResync { transition, .. } => Some(&transition.history),
             _ => None,
         }
     }
@@ -1284,7 +1311,7 @@ impl UpdateKind {
     pub const fn source_mode(&self) -> SourceOperationMode {
         match self {
             Self::SourceAdvance(_) | Self::SourceHistoryAdvance(_) => SourceOperationMode::Advance,
-            Self::SourceResync { prior_epoch, .. } => SourceOperationMode::Resync {
+            Self::SourceResync { prior_epoch, .. } | Self::SourceHistoryResync { prior_epoch, .. } => SourceOperationMode::Resync {
                 prior_epoch: *prior_epoch,
             },
             Self::ProjectionAdvance(_)
@@ -1598,7 +1625,7 @@ quanta_index_contract_base::native_serde_struct!(CatalogView {
     coverage: MapRoot
 });
 quanta_index_contract_base::native_serde_enum!(SourceOperationMode { units { Unchanged = 0, Advance = 1 } newtypes { } records { Resync = 2 { prior_epoch: u64 } } });
-quanta_index_contract_base::native_serde_enum!(UpdateKind { units {  } newtypes { SourceAdvance = 0 => SourceTransition, ProjectionAdvance = 1 => Box<ProjectionTransition>, HistoryAdvance = 5 => HistoryTransition, HistoryAppend = 6 => HistoryAppendV1, SourceHistoryAdvance = 7 => Box<SourceHistoryTransitionV1> } records { Reconfigure = 2 { profile: ObjectRef }, Materialize = 3 { claim: WorkClaim }, SourceResync = 4 { prior_epoch: u64, transition: SourceTransition }, CompactSourceLocal = 8 { instance: IndexInstanceId, expected_artifact: ObjectRef, owner: OwnerKey } } });
+quanta_index_contract_base::native_serde_enum!(UpdateKind { units {  } newtypes { SourceAdvance = 0 => SourceTransition, ProjectionAdvance = 1 => Box<ProjectionTransition>, HistoryAdvance = 5 => HistoryTransition, HistoryAppend = 6 => HistoryAppendV1, SourceHistoryAdvance = 7 => Box<SourceHistoryTransitionV1> } records { Reconfigure = 2 { profile: ObjectRef }, Materialize = 3 { claim: WorkClaim }, SourceResync = 4 { prior_epoch: u64, transition: SourceTransition }, CompactSourceLocal = 8 { instance: IndexInstanceId, expected_artifact: ObjectRef, owner: OwnerKey }, SourceHistoryResync = 9 { prior_epoch: u64, transition: Box<SourceHistoryTransitionV1> } } });
 quanta_index_contract_base::native_serde_struct!(UpdateRequest {
     operation: OperationKey,
     expected_view: ViewRef,

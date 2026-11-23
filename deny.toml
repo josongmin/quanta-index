@@ -23,12 +23,9 @@ wildcards = "deny"
 highlight = "all"
 workspace-default-features = "deny"
 external-default-features = "allow"
-# The pinned Unicode fork is a workspace member so its controlled scratch tests
-# remain in workspace verification. Lance/Lindera also enable its upstream
-# default (= std). Preserve that unified graph while requiring this exact,
-# reviewed feature set; newly added or unexpectedly disabled features fail.
+# The registry Unicode tables are pinned with their upstream standard-library features.
 features = [
-  { name = "unicode-normalization", version = "=0.1.25", allow = ["default", "std", "quanta-native-scratch-v1"], exact = true },
+  { name = "unicode-normalization", version = "=0.1.25", allow = ["default", "std"], exact = true },
   # The vendored decoder is a workspace member for its bounded-reader tests.
   # Criterion also uses its upstream default, which consists only of std.
   { name = "ciborium", version = "=0.2.2", allow = ["default", "std"], exact = true },

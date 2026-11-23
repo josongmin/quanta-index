@@ -50,6 +50,8 @@ pub struct NativeSourceExportCommandV1 {
     pub expected_current_sha256: Digest,
     pub config_path: PathBuf,
     pub config_digest: Digest,
+    /// Explicitly select the independently authenticated Native Source format.
+    pub source_only_native: bool,
 }
 
 impl NativeSourceExportCommandV1 {
@@ -102,6 +104,7 @@ pub(super) struct NativeRecoveryInput {
 impl NativeRecoveryInput {
     pub(super) fn finish_source_export(
         self,
+        source_only_native: bool,
         config_path: Option<PathBuf>,
         config_digest: Option<String>,
     ) -> Result<NativeSourceExportCommandV1> {
@@ -132,6 +135,7 @@ impl NativeRecoveryInput {
                     .ok_or_else(|| anyhow::anyhow!("Source exporter requires --config-digest"))?,
                 "--config-digest",
             )?,
+            source_only_native,
         };
         command.validate()?;
         Ok(command)

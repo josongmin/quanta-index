@@ -1,0 +1,9 @@
+[package]
+name = "quanta-index-sqlite-fd-ledger"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# This safe package is intentionally standalone until SQLite link ownership
+# and process-global Unix syscall override isolation have been qualified.
+[workspace]

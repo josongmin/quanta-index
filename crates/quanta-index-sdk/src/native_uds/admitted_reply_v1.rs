@@ -178,13 +178,13 @@ pub(super) enum ReplyMode {
     Publication,
     Stub,
     ReadSession,
-    RepoMapPriorFile,
+    GraphQuery,
 }
 
 pub(super) fn prepare(bytes: &[u8], mode: ReplyMode) -> Result<PreparedReply<'_>, NativeUdsError> {
     let allow_stub = mode == ReplyMode::Stub;
     let allow_read = mode == ReplyMode::ReadSession;
-    let allow_prior_file = mode == ReplyMode::RepoMapPriorFile;
+    let allow_graph = mode == ReplyMode::GraphQuery;
     if allow_stub && bytes.len() > MAX_STUB_REPLY_BODY_BYTES {
         return Err(NativeUdsError::Protocol(
             "Stub reply exceeds admitted body bound".into(),
@@ -195,7 +195,7 @@ pub(super) fn prepare(bytes: &[u8], mode: ReplyMode) -> Result<PreparedReply<'_>
         offset: 0,
         allow_stub,
         allow_read,
-        allow_prior_file,
+        allow_graph,
         stub_replacement_bytes: 0,
         read_decoded_bytes: read_size(std::mem::size_of::<NativeIndexResponseEnvelope>())?,
     };
@@ -205,7 +205,7 @@ pub(super) fn prepare(bytes: &[u8], mode: ReplyMode) -> Result<PreparedReply<'_>
             "Native publication reply has trailing CBOR".into(),
         ));
     }
-    let decoded_bytes = if allow_read || allow_prior_file {
+    let decoded_bytes = if allow_read || allow_graph {
         // Fixed fields are inline in the envelope. The scan includes every
         // dynamic vector/string, including the canonical Error.message.
         scan.read_decoded_bytes
@@ -235,7 +235,7 @@ struct CborScan<'a> {
     offset: usize,
     allow_stub: bool,
     allow_read: bool,
-    allow_prior_file: bool,
+    allow_graph: bool,
     read_decoded_bytes: u64,
     stub_replacement_bytes: u64,
 }
@@ -318,7 +318,8 @@ impl<'a> CborScan<'a> {
         }
         let key = std::str::from_utf8(self.take(length)?)
             .map_err(|_error| NativeUdsError::Protocol("invalid CBOR map key UTF-8".into()))?;
-        if !(known_identifier(key) || self.allow_prior_file && prior_file_identifier(key)) {
+        if !(known_identifier(key) || self.allow_graph && graph_identifier(key))
+        {
             return Err(NativeUdsError::Protocol(
                 "unknown Native publication CBOR identifier".into(),
             ));
@@ -374,8 +375,8 @@ impl<'a> CborScan<'a> {
                                 | "snippet"
                         )
                     )
-                    || self.allow_prior_file
-                        && (field == Some("message") || field.is_some_and(prior_file_text_field));
+                    || self.allow_graph
+                        && (field == Some("message") || field.is_some_and(graph_text_field));
                 let limit = if field == Some("message") {
                     MAX_PUBLICATION_ERROR_MESSAGE_BYTES
                 } else if self.allow_read
@@ -417,7 +418,7 @@ impl<'a> CborScan<'a> {
                         NativeUdsError::Protocol("invalid CBOR identifier UTF-8".into())
                     })?;
                     if !(known_identifier(identifier)
-                        || self.allow_prior_file && prior_file_identifier(identifier))
+                        || self.allow_graph && graph_identifier(identifier))
                         || (!self.allow_stub && matches!(identifier, "Stub" | "Prepared"))
                         || (!self.allow_read && read_identifier(identifier))
                     {
@@ -429,7 +430,7 @@ impl<'a> CborScan<'a> {
                 Ok(())
             }
             4 => {
-                if self.allow_read || self.allow_prior_file {
+                if self.allow_read || self.allow_graph {
                     self.read_array(field, value)?;
                 }
                 if self.allow_stub && field == Some("edits") && value > MAX_STUB_EDITS {
@@ -514,21 +515,10 @@ impl<'a> CborScan<'a> {
             },
         };
         let (limit, size) = match field {
-            Some("nodes") if self.allow_prior_file => (
-                read_size(quanta_index_contract::native_protocol::MAX_NATIVE_GRAPH_ITEMS)?,
-                std::mem::size_of::<quanta_index_contract::RepoMapNode>(),
+            Some("edges") if self.allow_graph => (
+                u64::from(quanta_index_contract::native_protocol::MAX_NATIVE_GRAPH_EDGES),
+                std::mem::size_of::<quanta_index_contract::native_protocol::NativeGraphRow>(),
             ),
-            Some("edges") if self.allow_prior_file => (
-                read_size(quanta_index_contract::native_protocol::MAX_NATIVE_GRAPH_ITEMS)?,
-                std::mem::size_of::<quanta_index_contract::native_protocol::GraphEdge>(),
-            ),
-            Some("degrees") if self.allow_prior_file => (
-                read_size(quanta_index_contract::native_protocol::MAX_NATIVE_GRAPH_ITEMS)?,
-                std::mem::size_of::<
-                    quanta_index_contract::native_protocol::NativeRepoMapPriorNodeDegreeV1,
-                >(),
-            ),
-            Some("contribution" | "output") if self.allow_prior_file => (32, 0),
             Some("instances") => (
                 read_size(MAX_NATIVE_READ_PROFILE_INSTANCES)?,
                 std::mem::size_of::<InstanceSpec>(),
@@ -573,6 +563,7 @@ impl<'a> CborScan<'a> {
                 | "producer"
                 | "stable_id"
                 | "digest"
+                | "payload_digest"
                 | "profile"
                 | "owners"
                 | "paths"
@@ -654,55 +645,27 @@ impl<'a> CborScan<'a> {
     }
 }
 
-fn prior_file_text_field(field: &str) -> bool {
-    matches!(
-        field,
-        "file_id"
-            | "module_id"
-            | "symbol_id"
-            | "chunk_id"
-            | "repo_relative_path"
-            | "owner_path"
-            | "local_name"
-            | "qualified_name"
-            | "symbol_kind"
-            | "language"
-            | "preview_text"
-            | "File"
-            | "Module"
-            | "Symbol"
-            | "Chunk"
-    )
-}
-
-fn prior_file_identifier(value: &str) -> bool {
-    prior_file_text_field(value)
+fn graph_identifier(value: &str) -> bool {
+    graph_text_field(value)
         || matches!(
             value,
-            "RepoMapPriorFileV1"
-                | "file"
-                | "source_owner"
-                | "output"
-                | "facts"
-                | "nodes"
-                | "edges"
-                | "degrees"
-                | "incoming"
-                | "outgoing"
+            "Graph"
+                | "edge"
                 | "target"
-                | "line_count"
-                | "start_byte"
-                | "end_byte"
-                | "token_count"
-                | "exactness"
-                | "Exact"
-                | "Approximate"
+                | "source_supporters"
+                | "supporters"
+                | "payload_digest"
+                | "exhaustive"
                 | "Call"
                 | "Import"
                 | "Contains"
                 | "OwnsChunk"
                 | "DependsOn"
         )
+}
+
+fn graph_text_field(value: &str) -> bool {
+    matches!(value, "File" | "Module" | "Symbol" | "Chunk")
 }
 
 fn read_identifier(value: &str) -> bool {
@@ -858,13 +821,9 @@ fn known_identifier(value: &str) -> bool {
             | "PublishedViewMetadata"
             | "RootScopedView"
             | "CandidateInstallationV1"
-            | "RepoMapGraphInstallationV1"
-            | "RepoMapEventFrontierV1"
             | "cursor"
             | "config_sha256"
             | "descriptor"
-            | "ProtectedRepoMapHead"
-            | "ImportedRepoMapMember"
             | "member_binding"
             | "root_nonce"
             | "root_device"
@@ -1056,11 +1015,7 @@ enum PublicationVariant {
     PublishedViewMetadata,
     RootScopedView,
     CandidateInstallationV1,
-    RepoMapGraphInstallationV1,
-    RepoMapEventFrontierV1,
-    RepoMapPriorFileV1,
-    ProtectedRepoMapHead,
-    ImportedRepoMapMember,
+    Graph,
     Status,
     Error,
     InputOpened,
@@ -1097,11 +1052,7 @@ const PUBLICATION_VARIANTS: &[&str] = &[
     "PublishedViewMetadata",
     "RootScopedView",
     "CandidateInstallationV1",
-    "RepoMapGraphInstallationV1",
-    "RepoMapEventFrontierV1",
-    "RepoMapPriorFileV1",
-    "ProtectedRepoMapHead",
-    "ImportedRepoMapMember",
+    "Graph",
     "Status",
     "Error",
     "InputOpened",
@@ -1149,13 +1100,7 @@ impl<'de> serde::Deserialize<'de> for PublicationVariant {
                     "PublishedViewMetadata" => Ok(PublicationVariant::PublishedViewMetadata),
                     "RootScopedView" => Ok(PublicationVariant::RootScopedView),
                     "CandidateInstallationV1" => Ok(PublicationVariant::CandidateInstallationV1),
-                    "RepoMapGraphInstallationV1" => {
-                        Ok(PublicationVariant::RepoMapGraphInstallationV1)
-                    }
-                    "RepoMapEventFrontierV1" => Ok(PublicationVariant::RepoMapEventFrontierV1),
-                    "RepoMapPriorFileV1" => Ok(PublicationVariant::RepoMapPriorFileV1),
-                    "ProtectedRepoMapHead" => Ok(PublicationVariant::ProtectedRepoMapHead),
-                    "ImportedRepoMapMember" => Ok(PublicationVariant::ImportedRepoMapMember),
+                    "Graph" => Ok(PublicationVariant::Graph),
                     "Status" => Ok(PublicationVariant::Status),
                     "Error" => Ok(PublicationVariant::Error),
                     "InputOpened" => Ok(PublicationVariant::InputOpened),
@@ -1255,20 +1200,8 @@ impl<'de> serde::Deserialize<'de> for PublicationPayload {
                     PublicationVariant::CandidateInstallationV1 => NativeIndexResponse::CandidateInstallationV1(
                         variant.newtype_variant::<quanta_index_contract::native_protocol::NativeCandidateInstallationV1>()?,
                     ),
-                    PublicationVariant::RepoMapGraphInstallationV1 => NativeIndexResponse::RepoMapGraphInstallationV1(
-                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeRepoMapGraphInstallationV1>()?,
-                    ),
-                    PublicationVariant::RepoMapEventFrontierV1 => NativeIndexResponse::RepoMapEventFrontierV1(
-                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeRepoMapEventFrontierV1>()?,
-                    ),
-                    PublicationVariant::RepoMapPriorFileV1 => NativeIndexResponse::RepoMapPriorFileV1(
-                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeRepoMapPriorFileResultV1>()?,
-                    ),
-                    PublicationVariant::ProtectedRepoMapHead => NativeIndexResponse::ProtectedRepoMapHead(
-                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1>()?,
-                    ),
-                    PublicationVariant::ImportedRepoMapMember => NativeIndexResponse::ImportedRepoMapMember(
-                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeImportedRepoMapMemberReadV1>()?,
+                    PublicationVariant::Graph => NativeIndexResponse::Graph(
+                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeGraphResult>()?,
                     ),
                     PublicationVariant::View => {
                         NativeIndexResponse::View(variant.newtype_variant::<CatalogView>()?)
@@ -1815,76 +1748,46 @@ mod tests {
     }
 
     #[test]
-    fn predecessor_file_decodes_only_on_its_funded_owner_route()
+    fn exact_graph_reply_uses_only_its_funded_admitted_route()
     -> Result<(), Box<dyn std::error::Error>> {
         use quanta_index_contract::{
-            ChunkId, RepoMapChunkExactness, RepoMapChunkNode, RepoMapNode, RepoRelativePath,
+            ChunkId, RepoMapEdgeKind, RepoMapNodeRef, SymbolId,
             index::IndexInstanceId,
-            lex::LanguageCode,
-            native_protocol::{
-                MAX_NATIVE_GRAPH_ITEMS, NativeRepoMapFileFactsV1, NativeRepoMapPriorFileResultV1,
-                NativeRepoMapPriorFileV1, NativeRepoMapPriorNodeDegreeV1,
-            },
+            native_protocol::{GraphEdge, GraphNode, NativeGraphResult, NativeGraphRow},
         };
-
-        let preview = "retained previous preview".repeat(12);
         let operation = operation();
-        let owner = OwnerKey {
-            producer: operation.producer,
-            stable_id: StableOwnerId([9; 16]),
+        let view = ViewRef {
+            workspace: operation.workspace,
+            epoch: operation.epoch,
+            sequence: 1,
+            digest: Digest([21; 32]),
         };
-        let object = ObjectRef(Digest([11; 32]));
-        let degrees = NativeRepoMapPriorNodeDegreeV1 {
-            incoming: 0,
-            outgoing: 0,
-        };
-        let mut prior = NativeRepoMapPriorFileResultV1 {
-            view: ViewRef {
-                workspace: operation.workspace,
-                epoch: operation.epoch,
-                sequence: 1,
-                digest: Digest([7; 32]),
-            },
-            instance: IndexInstanceId([10; 16]),
-            owner,
-            file: Some(NativeRepoMapPriorFileV1 {
-                contribution: object,
-                source_owner: owner,
-                source: object,
-                output: object,
-                facts: NativeRepoMapFileFactsV1 {
-                    owner_path: RepoRelativePath::new("src/example.rs"),
-                    nodes: vec![RepoMapNode::Chunk(RepoMapChunkNode {
-                        chunk_id: ChunkId::new("chunk://example"),
-                        owner_path: RepoRelativePath::new("src/example.rs"),
-                        language: LanguageCode::new("rust")?,
-                        start_byte: 0,
-                        end_byte: 2,
-                        start_line: 1,
-                        end_line: 1,
-                        token_count: 1,
-                        preview_text: preview.clone(),
-                        exactness: RepoMapChunkExactness::Exact,
-                    })],
-                },
-                edges: Vec::new(),
-                degrees: vec![degrees],
+        let chunk = RepoMapNodeRef::Chunk(ChunkId::new("src/b.rs::chunk"));
+        let response = NativeIndexResponse::Graph(NativeGraphResult {
+            view,
+            instance: IndexInstanceId([22; 16]),
+            source: Some(GraphNode {
+                identity: chunk.clone(),
+                payload_digest: Digest([23; 32]),
             }),
-        };
-        let response = NativeIndexResponse::RepoMapPriorFileV1(prior.clone());
-        let body = encoded(response.clone())?;
-        let prepared = prepare(&body, ReplyMode::RepoMapPriorFile)?;
-        if decode(&body).is_ok()
-            || prepared.decoded_retained_limit()? < u64::try_from(preview.len())? * 2
-            || prepared.decode()?.payload != response
+            source_supporters: 1,
+            edges: vec![NativeGraphRow {
+                edge: GraphEdge {
+                    kind: RepoMapEdgeKind::OwnsChunk,
+                    source: RepoMapNodeRef::Symbol(SymbolId::new("src/a.rs::A")),
+                    target: chunk,
+                },
+                supporters: 1,
+            }],
+            exhaustive: true,
+        });
+        let bytes = encoded(response.clone())?;
+        let graph = prepare(&bytes, ReplyMode::GraphQuery)?;
+        if graph.decode()?.payload != response
+            || prepare(&bytes, ReplyMode::Publication).is_ok()
+            || prepare(&bytes, ReplyMode::ReadSession).is_ok()
         {
-            return Err("predecessor file used the wrong admission or wire shape".into());
-        }
-        prior.file.as_mut().ok_or("test file is missing")?.degrees =
-            vec![degrees; MAX_NATIVE_GRAPH_ITEMS + 1];
-        let body = encoded(NativeIndexResponse::RepoMapPriorFileV1(prior))?;
-        if prepare(&body, ReplyMode::RepoMapPriorFile).is_ok() {
-            return Err("predecessor degree vector exceeded bounded reply admission".into());
+            return Err("Graph reply crossed its admitted read route".into());
         }
         Ok(())
     }

@@ -3459,14 +3459,24 @@ fn begin(connection: &mut Connection) -> Result<rusqlite::Transaction<'_>, Index
         .map_err(|error| sql(&error))
 }
 
+#[derive(Clone, Copy)]
+enum IngressOpen<'a> {
+    Stage,
+    ExistingStage,
+    Submit(&'a WorkBudget),
+}
+
 fn open_ingress_transaction(
     catalog: &SqliteCatalog,
     operation: OperationKey,
-    existing_only: bool,
-) -> Result<Option<IngressRef>, IndexError> {
-    let mut guard = catalog
-        .lock()
-        .map_err(|error| IndexError::Storage(error.to_string()))?;
+    mode: IngressOpen<'_>,
+) -> Result<Option<IngressRow>, IndexError> {
+    let mut guard = match mode {
+        IngressOpen::Submit(budget) => catalog.lock_native_budget(budget)?,
+        IngressOpen::Stage | IngressOpen::ExistingStage => catalog
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))?,
+    };
     let tx = begin(&mut guard)?;
     if operation.producer == OWNED_WORK_PRODUCER {
         let now = catalog_now_ms(&tx, catalog.clock.now_unix_ms())?;
@@ -3480,31 +3490,55 @@ fn open_ingress_transaction(
         return Err(IndexError::Conflict);
     }
     let prior = read_ingress(&tx, operation)?;
-    if existing_only && prior.is_none() {
+    if matches!(mode, IngressOpen::ExistingStage) && prior.is_none() {
         return Ok(None);
+    }
+    // A sealed request already has immutable custody. Observe it without
+    // changing its fence, even if a caller later presents different bytes.
+    if let (IngressOpen::Submit(budget), Some(row)) = (mode, prior)
+        && row.sealed.is_some()
+    {
+        budget.checkpoint()?;
+        return Ok(Some(row));
     }
     let stage = IngressRef {
         operation,
         fence: next_fence(&tx)?,
     };
-    write_ingress(
-        &tx,
-        IngressRow {
-            stage,
-            sealed: prior.and_then(|row| row.sealed),
-        },
-        prior.is_none(),
-    )?;
+    let row = IngressRow {
+        stage,
+        sealed: prior.and_then(|row| row.sealed),
+    };
+    write_ingress(&tx, row, prior.is_none())?;
+    if let IngressOpen::Submit(budget) = mode {
+        budget.checkpoint()?;
+    }
     tx.commit().map_err(|error| sql(&error))?;
     drop(guard);
-    Ok(Some(stage))
+    Ok(Some(row))
 }
 
 impl InputStagingPort for SqliteCatalog {
     fn open_ingress(&self, operation: OperationKey) -> Result<IngressRef, IndexError> {
-        open_ingress_transaction(self, operation, false)?.ok_or_else(|| {
-            IndexError::BackendViolation("new ingress transaction returned no stage".into())
-        })
+        open_ingress_transaction(self, operation, IngressOpen::Stage)?
+            .map(|row| row.stage)
+            .ok_or_else(|| {
+                IndexError::BackendViolation("new ingress transaction returned no stage".into())
+            })
+    }
+
+    fn open_submission_ingress(
+        &self,
+        operation: OperationKey,
+        budget: &WorkBudget,
+    ) -> Result<(IngressRef, Option<ObjectRef>), IndexError> {
+        open_ingress_transaction(self, operation, IngressOpen::Submit(budget))?
+            .map(|row| (row.stage, row.sealed))
+            .ok_or_else(|| {
+                IndexError::BackendViolation(
+                    "submission ingress transaction returned no stage".into(),
+                )
+            })
     }
 
     fn adopt_registered_inputs(
@@ -3754,7 +3788,10 @@ impl SqliteCatalog {
         &self,
         operation: OperationKey,
     ) -> Result<Option<IngressRef>, IndexError> {
-        open_ingress_transaction(self, operation, true)
+        Ok(
+            open_ingress_transaction(self, operation, IngressOpen::ExistingStage)?
+                .map(|row| row.stage),
+        )
     }
 
     fn admit_common(
@@ -3972,10 +4009,27 @@ impl OperationJournalPort for SqliteCatalog {
             .ok_or(IndexError::SnapshotUnavailable)
     }
 
-    fn claim_recovery(&self, key: OperationKey) -> Result<AttemptRef, IndexError> {
-        let mut guard = self
-            .lock()
-            .map_err(|error| IndexError::Storage(error.to_string()))?;
+    fn operation_request(
+        &self,
+        key: OperationKey,
+        budget: &WorkBudget,
+    ) -> Result<ImmutableOperation, IndexError> {
+        let guard = self.lock_native_budget(budget)?;
+        let operation = read_operation(&guard, key);
+        drop(guard);
+        let operation = operation?;
+        budget.checkpoint()?;
+        operation
+            .map(|row| row.immutable)
+            .ok_or(IndexError::SnapshotUnavailable)
+    }
+
+    fn claim_recovery(
+        &self,
+        key: OperationKey,
+        budget: &WorkBudget,
+    ) -> Result<AttemptRef, IndexError> {
+        let mut guard = self.lock_native_budget(budget)?;
         let tx = begin(&mut guard)?;
         let mut row = read_operation(&tx, key)?.ok_or(IndexError::SnapshotUnavailable)?;
         if !matches!(row.status, OperationStatus::Pending(_)) {
@@ -3989,6 +4043,7 @@ impl OperationJournalPort for SqliteCatalog {
         let attempt = attempt_ref(key, row.fence)?;
         row.status = OperationStatus::Pending(attempt);
         write_operation(&tx, &row, false)?;
+        budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
         drop(guard);
         Ok(attempt)
@@ -4096,8 +4151,12 @@ impl WorkClaimPort for SqliteCatalog {
         self.finish_owned_work_impl(grant, report)
     }
 
-    fn validate_owned_work(&self, request: &UpdateRequest) -> Result<OperationStatus, IndexError> {
-        self.validate_owned_work_impl(request)
+    fn validate_owned_work(
+        &self,
+        request: &UpdateRequest,
+        budget: &WorkBudget,
+    ) -> Result<OperationStatus, IndexError> {
+        self.validate_owned_work_impl(request, budget)
     }
 
     fn ready_work(
@@ -4293,12 +4352,16 @@ impl WorkClaimPort for SqliteCatalog {
         self.acquire_materialization_ticket_impl(session, request, lease, budget)
     }
 
-    fn prepared_work(&self, claim: &WorkClaim) -> Result<Option<OwnerMemberBinding>, IndexError> {
+    fn prepared_work(
+        &self,
+        claim: &WorkClaim,
+        budget: &WorkBudget,
+    ) -> Result<Option<OwnerMemberBinding>, IndexError> {
         let claim = *claim;
-        let mut guard = self
-            .lock()
-            .map_err(|error| IndexError::Storage(error.to_string()))?;
-        let tx = begin(&mut guard)?;
+        let mut guard = self.lock_native_budget(budget)?;
+        let tx = guard
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(|error| sql(&error))?;
         let now = observed_catalog_now_ms(&tx, self.clock.now_unix_ms())?;
         let row = live_claim(&tx, &claim, now)?;
         if let Some(binding) = &row.prepared {
@@ -4306,14 +4369,18 @@ impl WorkClaimPort for SqliteCatalog {
         }
         tx.commit().map_err(|error| sql(&error))?;
         drop(guard);
+        budget.checkpoint()?;
         Ok(row.prepared)
     }
 
-    fn stage_work(&self, claim: &WorkClaim, binding: OwnerMemberBinding) -> Result<(), IndexError> {
+    fn stage_work(
+        &self,
+        claim: &WorkClaim,
+        binding: OwnerMemberBinding,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
         let claim = *claim;
-        let mut guard = self
-            .lock()
-            .map_err(|error| IndexError::Storage(error.to_string()))?;
+        let mut guard = self.lock_native_budget(budget)?;
         let tx = begin(&mut guard)?;
         let now = catalog_now_ms(&tx, self.clock.now_unix_ms())?;
         let mut row = live_claim(&tx, &claim, now)?;
@@ -4339,6 +4406,7 @@ impl WorkClaimPort for SqliteCatalog {
         protect_work_root(&tx, &claim.intent, binding.artifact)?;
         row.prepared = Some(binding);
         write_prepared_work(&tx, &row)?;
+        budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
         drop(guard);
         Ok(())
@@ -6193,6 +6261,7 @@ mod tests {
         publication.coverage = MapRoot(Some(object));
         publication.identity.digest = publication.identity_digest()?;
         let manifest = NativeBootManifest {
+            format_version: NativeBootManifest::FORMAT_VERSION_V1,
             operation: ImmutableOperation {
                 key: widest,
                 request: object,
@@ -6208,12 +6277,49 @@ mod tests {
                 )?,
                 marker_anchor: Some(object),
             }),
+            retired_projection_policy: None,
         };
         check!(serde_json::to_vec(&manifest)?.len() <= 4096);
         check_eq!(
             serde_json::from_slice::<NativeBootManifest>(&serde_json::to_vec(&manifest)?)?,
             manifest
         );
+        let retired = NativeBootManifest {
+            format_version: NativeBootManifest::FORMAT_VERSION_V2,
+            retired_projection_policy: Some(
+                quanta_index_contract::index::RetiredProjectionPolicyRefV1 {
+                    object: ObjectRef(Digest([252; 32])),
+                    sha256: Digest([253; 32]),
+                    identity_count: 4_096,
+                },
+            ),
+            ..manifest.clone()
+        };
+        check_eq!(
+            serde_json::from_slice::<NativeBootManifest>(&serde_json::to_vec(&retired)?)?,
+            retired
+        );
+        for routes in [retired.protected_source_routes, None] {
+            let positional = serde_json::json!([
+                retired.operation,
+                retired.publication,
+                routes,
+                NativeBootManifest::FORMAT_VERSION_V2,
+                retired.retired_projection_policy,
+            ]);
+            let decoded: NativeBootManifest = serde_json::from_value(positional.clone())?;
+            check_eq!(decoded.protected_source_routes, routes);
+            check_eq!(decoded.retired_projection_policy, retired.retired_projection_policy);
+            let mut trailing = positional.as_array().ok_or("positional BOOT array")?.clone();
+            trailing.push(serde_json::json!(0));
+            check!(serde_json::from_value::<NativeBootManifest>(serde_json::Value::Array(trailing)).is_err());
+        }
+        check_eq!(retired.all_protected_roots().last(), Some(ObjectRef(Digest([252; 32]))));
+        let invalid = NativeBootManifest {
+            retired_projection_policy: None,
+            ..retired
+        };
+        check!(serde_json::to_vec(&invalid).is_err());
         check_eq!(manifest.protected_roots(), [Some(object); 5]);
         Ok(())
     }
@@ -6387,6 +6493,7 @@ mod tests {
         for (query, index, parameters) in [
             (READY_PENDING_QUERY, "native_owned_open_idx_v1", 3),
             (READY_EXPIRED_QUERY, "native_owned_claim_idx_v1", 4),
+            (owned_work::OWNED_DUE_QUERY, "native_owned_due_idx_v1", 4),
         ] {
             let explain = format!("EXPLAIN QUERY PLAN {query}");
             let mut statement = connection.prepare(&explain)?;
@@ -6696,12 +6803,15 @@ mod tests {
             WorkStatus::Claimed(*claim)
         );
         catalog.validate_ticket(session.as_ref(), ticket.lease)?;
-        check_eq!(catalog.prepared_work(claim)?, None);
+        check_eq!(catalog.prepared_work(claim, &admission_budget())?, None);
         // A live read pin is not execution authority. The independent check
         // immediately before the provider still rejects an expired claim.
         clock.set(claim.lease_until_ms);
         catalog.validate_ticket(session.as_ref(), ticket.lease)?;
-        check_eq!(catalog.prepared_work(claim), Err(IndexError::WorkFenceLost));
+        check_eq!(
+            catalog.prepared_work(claim, &admission_budget()),
+            Err(IndexError::WorkFenceLost)
+        );
         check!(matches!(
             catalog.acquire_materialization_ticket(
                 session.as_ref(),
@@ -6767,6 +6877,54 @@ mod tests {
     }
 
     #[test]
+    fn owned_entry_validation_honors_deadline_when_catalog_is_held() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let intent = owner_work(93);
+        let _queued = publish_work_next(&catalog, &genesis, 1, &intent, 199, 200)?;
+        let assignment = catalog
+            .acquire_owned_work(&intent, retirement_owned_policy(), &admission_budget())?
+            .ok_or("missing owned assignment")?;
+        let grant = require_owned_grant(
+            catalog.begin_owned_work(&assignment)?,
+            "missing owned grant",
+        )?;
+        let request = &grant.assignment.request;
+        let writer = catalog.lock()?;
+        let observed = std::thread::scope(|scope| -> Result<_, Box<dyn Error>> {
+            let (send, receive) = std::sync::mpsc::channel();
+            let catalog = &catalog;
+            let job = scope.spawn(move || {
+                let budget = WorkBudget::with_request(
+                    WorkLimits {
+                        reads: 1,
+                        writes: 1,
+                        bytes: 1,
+                        mutations: 1,
+                    },
+                    quanta_index_core::RequestBudgetV1::for_duration(Duration::from_millis(50)),
+                );
+                let status = catalog.validate_owned_work(request, &budget);
+                send.send((status, budget.first_denial()))
+            });
+            let observed = receive.recv_timeout(Duration::from_secs(2));
+            drop(writer);
+            job.join().map_err(|_panic| "owned validation panicked")??;
+            Ok(observed?)
+        })?;
+        check_eq!(observed.0, Err(IndexError::ResourceLimited));
+        check_eq!(
+            observed.1,
+            Some(quanta_index_core::index::WorkBudgetDenial::Deadline)
+        );
+        check_eq!(
+            catalog.validate_owned_work(request, &admission_budget())?,
+            OperationStatus::Unknown
+        );
+        Ok(())
+    }
+
+    #[test]
     fn owned_materialization_pin_and_completion_read_each_live_row_once() -> TestResult {
         let root = tempfile::tempdir()?;
         let clock = Arc::new(ManualClock::new(1_000));
@@ -6786,8 +6944,9 @@ mod tests {
             return Err("owned request lost materialization claim".into());
         };
         let claim = *claim;
-        let (before_admission, before_reads) =
-            counted_owned_materialization(&catalog, || catalog.validate_owned_work(request))?;
+        let (before_admission, before_reads) = counted_owned_materialization(&catalog, || {
+            catalog.validate_owned_work(request, &admission_budget())
+        })?;
         check_eq!(before_admission, OperationStatus::Unknown);
         check_eq!(before_reads, (1, 1, 2));
         check_eq!(OWNED_OPERATION_READS.with(std::cell::Cell::get), 1);
@@ -6827,14 +6986,19 @@ mod tests {
                 return Err(format!("expected fresh owned admission, got {status:?}").into());
             }
         };
-        let (admitted, admission_reads) =
-            counted_owned_materialization(&catalog, || catalog.validate_owned_work(request))?;
+        let (admitted, admission_reads) = counted_owned_materialization(&catalog, || {
+            catalog.validate_owned_work(request, &admission_budget())
+        })?;
         check_eq!(admitted, OperationStatus::Pending(attempt));
         check_eq!(admission_reads, (1, 1, 2));
         check_eq!(OWNED_OPERATION_READS.with(std::cell::Cell::get), 1);
         let artifact = object(181, vec![]);
         reserve_confirm(&catalog, attempt, std::slice::from_ref(&artifact))?;
-        catalog.stage_work(&claim, owner_result(&intent, artifact.reference)?)?;
+        catalog.stage_work(
+            &claim,
+            owner_result(&intent, artifact.reference)?,
+            &admission_budget(),
+        )?;
         let mut completed = view(2, genesis.profile, None);
         completed.coverage = MapRoot(Some(artifact.reference));
         completed.identity.digest = completed.identity_digest()?;
@@ -6856,8 +7020,9 @@ mod tests {
         })?;
         check_eq!(publication_reads, (1, 1, 2));
         check_eq!(status, OperationStatus::Published(completed.identity));
-        let (terminal, _terminal_reads) =
-            counted_owned_materialization(&catalog, || catalog.validate_owned_work(request))?;
+        let (terminal, _terminal_reads) = counted_owned_materialization(&catalog, || {
+            catalog.validate_owned_work(request, &admission_budget())
+        })?;
         check_eq!(terminal, OperationStatus::Published(completed.identity));
         check_eq!(OWNED_OPERATION_READS.with(std::cell::Cell::get), 1);
         let mut altered = request.clone();
@@ -6867,7 +7032,7 @@ mod tests {
             .checked_add(1)
             .ok_or("owned terminal view sequence overflow")?;
         check_eq!(
-            catalog.validate_owned_work(&altered),
+            catalog.validate_owned_work(&altered, &admission_budget()),
             Err(IndexError::DigestConflict)
         );
         check_eq!(fixture_current_view(&catalog)?, completed);
@@ -7182,7 +7347,7 @@ mod tests {
         clock.set(1_031);
         catalog.validate_materialization(&grant.assignment.request)?;
         check_eq!(
-            catalog.validate_owned_work(&grant.assignment.request)?,
+            catalog.validate_owned_work(&grant.assignment.request, &admission_budget())?,
             OperationStatus::Unknown
         );
         let floor: i64 = catalog.lock()?.query_row(
@@ -7197,12 +7362,12 @@ mod tests {
             Err(IndexError::Storage(reason)) if reason == "catalog clock regressed"
         ));
         check!(matches!(
-            catalog.validate_owned_work(&grant.assignment.request),
+            catalog.validate_owned_work(&grant.assignment.request, &admission_budget()),
             Err(IndexError::Storage(reason)) if reason == "catalog clock regressed"
         ));
         clock.set(1_059);
         check_eq!(
-            catalog.validate_owned_work(&grant.assignment.request),
+            catalog.validate_owned_work(&grant.assignment.request, &admission_budget()),
             Err(IndexError::WorkFenceLost)
         );
         Ok(())
@@ -7227,16 +7392,16 @@ mod tests {
             .ok_or("owned view sequence overflow")?;
         clock.set(claim.lease_until_ms);
         check_eq!(
-            catalog.validate_owned_work(&altered),
+            catalog.validate_owned_work(&altered, &admission_budget()),
             Err(IndexError::DigestConflict)
         );
         check_eq!(
-            catalog.validate_owned_work(request),
+            catalog.validate_owned_work(request, &admission_budget()),
             Err(IndexError::WorkFenceLost)
         );
         clock.set(999);
         check!(matches!(
-            catalog.validate_owned_work(&altered),
+            catalog.validate_owned_work(&altered, &admission_budget()),
             Err(IndexError::Storage(reason)) if reason == "catalog clock regressed"
         ));
         clock.set(1_000);
@@ -7246,7 +7411,7 @@ mod tests {
         )?;
         check_eq!(changed, 1);
         check!(matches!(
-            catalog.validate_owned_work(&altered),
+            catalog.validate_owned_work(&altered, &admission_budget()),
             Err(IndexError::Storage(reason)) if reason == "native work clock digest mismatch"
         ));
         Ok(())
@@ -7392,7 +7557,7 @@ mod tests {
             require_owned_grant(catalog.begin_owned_work(&assigned)?, "missing first grant")?;
         check_eq!(first.ordinal, 1);
         check_eq!(
-            catalog.validate_owned_work(&first.assignment.request)?,
+            catalog.validate_owned_work(&first.assignment.request, &admission_budget())?,
             OperationStatus::Unknown
         );
         catalog.validate_materialization(&first.assignment.request)?;
@@ -7774,7 +7939,11 @@ mod tests {
         let UpdateKind::Materialize { claim } = assignment.request.kind else {
             return Err("owned request is not materialization".into());
         };
-        catalog.stage_work(&claim, owner_result(&intent, artifact.reference)?)?;
+        catalog.stage_work(
+            &claim,
+            owner_result(&intent, artifact.reference)?,
+            &admission_budget(),
+        )?;
         let mut completed = view(2, genesis.profile, None);
         completed.coverage = MapRoot(Some(artifact.reference));
         completed.identity.digest = completed.identity_digest()?;
@@ -8260,7 +8429,8 @@ mod tests {
                 "missing rotated dispatch",
             )?;
             check_eq!(second.ordinal, 2);
-            let _validated_status = catalog.validate_owned_work(&second.assignment.request)?;
+            let _validated_status =
+                catalog.validate_owned_work(&second.assignment.request, &admission_budget())?;
             check_eq!(
                 catalog.finish_owned_work(&grant, OwnedWorkReport::Interrupted),
                 Err(IndexError::WorkFenceLost)
@@ -8607,12 +8777,15 @@ mod tests {
         let mut wrong = owner_result(&intent, artifact.reference)?;
         wrong.input.derivation_policy = digest_id(99);
         check!(matches!(
-            catalog.stage_work(&claim, wrong),
+            catalog.stage_work(&claim, wrong, &admission_budget()),
             Err(IndexError::BackendViolation(_))
         ));
         let result = owner_result(&intent, artifact.reference)?;
-        catalog.stage_work(&claim, result.clone())?;
-        check_eq!(catalog.prepared_work(&claim)?, Some(result.clone()));
+        catalog.stage_work(&claim, result.clone(), &admission_budget())?;
+        check_eq!(
+            catalog.prepared_work(&claim, &admission_budget())?,
+            Some(result.clone())
+        );
         check_eq!(
             catalog.work_status(&intent, &admission_budget())?,
             WorkStatus::Claimed(claim)
@@ -8646,18 +8819,27 @@ mod tests {
             |row| row.get(0),
         )?;
         check_eq!(indexed_claims, 1);
-        catalog.stage_work(&claim, result.clone())?;
-        check_eq!(catalog.prepared_work(&claim)?, Some(result.clone()));
+        catalog.stage_work(&claim, result.clone(), &admission_budget())?;
+        check_eq!(
+            catalog.prepared_work(&claim, &admission_budget())?,
+            Some(result.clone())
+        );
         let conflicting = owner_result(&intent, genesis.profile)?;
         check_eq!(
-            catalog.stage_work(&claim, conflicting),
+            catalog.stage_work(&claim, conflicting, &admission_budget()),
             Err(IndexError::DigestConflict)
         );
-        check_eq!(catalog.prepared_work(&claim)?, Some(result.clone()));
+        check_eq!(
+            catalog.prepared_work(&claim, &admission_budget())?,
+            Some(result.clone())
+        );
         drop(catalog);
 
         let catalog = open(root.path())?;
-        check_eq!(catalog.prepared_work(&claim)?, Some(result));
+        check_eq!(
+            catalog.prepared_work(&claim, &admission_budget())?,
+            Some(result)
+        );
         let mut completed_view = view(2, genesis.profile, None);
         completed_view.coverage = MapRoot(Some(artifact.reference));
         completed_view.identity.digest = completed_view.identity_digest()?;
@@ -8771,16 +8953,146 @@ mod tests {
         let rearmed = catalog.claim_work(&intent, Duration::from_secs(5), &admission_budget())?;
         check_ne!(rearmed.fence, claim.fence);
         check_eq!(
-            catalog.prepared_work(&rearmed)?,
+            catalog.prepared_work(&rearmed, &admission_budget())?,
             Some(owner_result(&intent, artifact.reference)?)
         );
         check_eq!(
-            catalog.prepared_work(&claim),
+            catalog.prepared_work(&claim, &admission_budget()),
             Err(IndexError::WorkFenceLost)
         );
         check_eq!(
             inspect_with_test_budget(&catalog, second.key)?,
             OperationStatus::Published(completed_view.identity)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn owner_preparation_deadline_while_catalog_mutex_is_held() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let intent = owner_work(96);
+        let _queued = publish_work_next(&catalog, &genesis, 1, &intent, 401, 202)?;
+        let claim = catalog.claim_work(&intent, Duration::from_secs(30), &admission_budget())?;
+        let artifact = object(203, vec![]);
+        let attempt = admit_new(&catalog, operation(402, 204))?;
+        reserve_confirm(&catalog, attempt, std::slice::from_ref(&artifact))?;
+        let binding = owner_result(&intent, artifact.reference)?;
+
+        let held = catalog.lock()?;
+        let (read, stage, read_denial, stage_denial) =
+            std::thread::scope(|scope| -> Result<_, Box<dyn Error>> {
+                let (finished, result) = std::sync::mpsc::channel();
+                let catalog = &catalog;
+                let binding = binding.clone();
+                let worker = scope.spawn(move || {
+                    let short_budget = || {
+                        WorkBudget::with_request(
+                            WorkLimits {
+                                reads: 1,
+                                writes: 1,
+                                bytes: 1,
+                                mutations: 1,
+                            },
+                            quanta_index_core::RequestBudgetV1::for_duration(
+                                Duration::from_millis(50),
+                            ),
+                        )
+                    };
+                    let read_budget = short_budget();
+                    let read = catalog.prepared_work(&claim, &read_budget);
+                    let stage_budget = short_budget();
+                    let stage = catalog.stage_work(&claim, binding, &stage_budget);
+                    finished.send((
+                        read,
+                        stage,
+                        read_budget.first_denial(),
+                        stage_budget.first_denial(),
+                    ))
+                });
+                let observed = result.recv_timeout(Duration::from_secs(2));
+                drop(held);
+                worker
+                    .join()
+                    .map_err(|_panic| "owner preparation worker panicked")??;
+                Ok(observed?)
+            })?;
+        check_eq!(read, Err(IndexError::ResourceLimited));
+        check_eq!(stage, Err(IndexError::ResourceLimited));
+        check_eq!(read_denial, Some(WorkBudgetDenial::Deadline));
+        check_eq!(stage_denial, Some(WorkBudgetDenial::Deadline));
+        check_eq!(catalog.prepared_work(&claim, &admission_budget())?, None);
+        catalog.stage_work(&claim, binding.clone(), &admission_budget())?;
+        check_eq!(
+            catalog.prepared_work(&claim, &admission_budget())?,
+            Some(binding)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn owner_preparation_cancellation_preserves_the_stage_commit_boundary() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let clock = Arc::new(CancelOnNextClock {
+            now: 1_000,
+            armed: AtomicBool::new(false),
+            stop: Arc::clone(&stop),
+        });
+        let (catalog, genesis) = setup_with_clock(root.path(), clock.clone())?;
+        let intent = owner_work(96);
+        let _queued = publish_work_next(&catalog, &genesis, 1, &intent, 401, 202)?;
+        let claim = catalog.claim_work(&intent, Duration::from_secs(30), &admission_budget())?;
+        let artifact = object(203, vec![]);
+        let attempt = admit_new(&catalog, operation(402, 204))?;
+        reserve_confirm(&catalog, attempt, std::slice::from_ref(&artifact))?;
+        let binding = owner_result(&intent, artifact.reference)?;
+        let cancellable = || -> Result<WorkBudget, Box<dyn Error>> {
+            let deadline = Instant::now()
+                .checked_add(Duration::from_secs(5))
+                .ok_or("stage deadline overflow")?;
+            Ok(WorkBudget::with_request(
+                WorkLimits {
+                    reads: 100,
+                    writes: 100,
+                    bytes: 4096,
+                    mutations: 100,
+                },
+                quanta_index_core::RequestBudgetV1::until_with_external_cancellation(
+                    deadline,
+                    Arc::clone(&stop),
+                ),
+            ))
+        };
+        let budget = cancellable()?;
+        clock.armed.store(true, Ordering::Release);
+        check_eq!(
+            catalog.stage_work(&claim, binding.clone(), &budget),
+            Err(IndexError::Cancelled)
+        );
+        check_eq!(budget.first_denial(), Some(WorkBudgetDenial::Cancelled));
+        check_eq!(catalog.prepared_work(&claim, &admission_budget())?, None);
+        let protected: i64 = catalog.lock()?.query_row(
+            "SELECT COUNT(*) FROM native_work_object_v1 WHERE work=?1 AND object=?2",
+            params![work_key(&intent)?, object_key(artifact.reference)],
+            |row| row.get(0),
+        )?;
+        check_eq!(protected, 0);
+
+        stop.store(false, Ordering::Release);
+        let stop_on_commit = Arc::clone(&stop);
+        catalog.lock()?.commit_hook(Some(move || {
+            stop_on_commit.store(true, Ordering::Release);
+            false
+        }))?;
+        catalog.stage_work(&claim, binding.clone(), &cancellable()?)?;
+        check!(stop.load(Ordering::Acquire));
+        drop(catalog);
+
+        let reopened = SqliteCatalog::open_with_clock(root.path(), Duration::from_secs(1), clock)?;
+        check_eq!(
+            reopened.prepared_work(&claim, &admission_budget())?,
+            Some(binding)
         );
         Ok(())
     }
@@ -8803,7 +9115,11 @@ mod tests {
             (guard.total_changes(), row)
         };
         clock.set(1_001);
-        check_eq!(catalog.prepared_work(&claim)?, None);
+        // Reading prepared state does not need SQLite's writer reservation.
+        let mut other = Connection::open(catalog.path())?;
+        let concurrent_writer = other.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_eq!(catalog.prepared_work(&claim, &admission_budget())?, None);
+        concurrent_writer.rollback()?;
         let after = {
             let guard = catalog.lock()?;
             let row: (i64, Vec<u8>) = guard.query_row(
@@ -8819,7 +9135,7 @@ mod tests {
         let attempt = admit_new(&catalog, operation(402, 204))?;
         reserve_confirm(&catalog, attempt, std::slice::from_ref(&artifact))?;
         let binding = owner_result(&intent, artifact.reference)?;
-        catalog.stage_work(&claim, binding.clone())?;
+        catalog.stage_work(&claim, binding.clone(), &admission_budget())?;
         let staged_floor: i64 = catalog.lock()?.query_row(
             "SELECT last_ms FROM native_work_clock_v1 WHERE singleton=1",
             [],
@@ -8840,7 +9156,10 @@ mod tests {
             )?;
             (guard.total_changes(), row)
         };
-        check_eq!(reopened.prepared_work(&claim)?, Some(binding.clone()));
+        check_eq!(
+            reopened.prepared_work(&claim, &admission_budget())?,
+            Some(binding.clone())
+        );
         let after_replay = {
             let guard = reopened.lock()?;
             let row: (i64, Vec<u8>) = guard.query_row(
@@ -8855,20 +9174,23 @@ mod tests {
         // An advisory observation is not a new durable clock floor. Only the
         // already persisted stage is authoritative after a later clock sample.
         clock.set(1_001);
-        check_eq!(reopened.prepared_work(&claim)?, Some(binding.clone()));
+        check_eq!(
+            reopened.prepared_work(&claim, &admission_budget())?,
+            Some(binding.clone())
+        );
 
         clock.set(1_000);
         check!(matches!(
-            reopened.prepared_work(&claim),
+            reopened.prepared_work(&claim, &admission_budget()),
             Err(IndexError::Storage(reason)) if reason == "catalog clock regressed"
         ));
         clock.set(claim.lease_until_ms);
         check_eq!(
-            reopened.prepared_work(&claim),
+            reopened.prepared_work(&claim, &admission_budget()),
             Err(IndexError::WorkFenceLost)
         );
         check_eq!(
-            reopened.stage_work(&claim, binding),
+            reopened.stage_work(&claim, binding, &admission_budget()),
             Err(IndexError::WorkFenceLost)
         );
         clock.set(1_002);
@@ -8878,7 +9200,7 @@ mod tests {
         )?;
         check_eq!(changed, 1);
         check!(matches!(
-            reopened.prepared_work(&claim),
+            reopened.prepared_work(&claim, &admission_budget()),
             Err(IndexError::Storage(reason)) if reason == "native work clock digest mismatch"
         ));
         Ok(())
@@ -8906,7 +9228,7 @@ mod tests {
         )?;
         check_eq!(changed, 1);
         check!(matches!(
-            catalog.stage_work(&claim, owner_result(&intent, artifact.reference)?),
+            catalog.stage_work(&claim, owner_result(&intent, artifact.reference)?, &admission_budget()),
             Err(IndexError::Storage(reason)) if reason == "native work row identity mismatch"
         ));
         let after: (Vec<u8>, Vec<u8>) = catalog.lock()?.query_row(
@@ -8951,12 +9273,15 @@ mod tests {
             ..old
         };
         check_eq!(
-            catalog.prepared_work(&forged),
+            catalog.prepared_work(&forged, &admission_budget()),
             Err(IndexError::WorkFenceLost)
         );
         let new = catalog.claim_work(&intent, Duration::from_millis(200), &admission_budget())?;
         check_ne!(old.fence, new.fence);
-        check_eq!(catalog.prepared_work(&old), Err(IndexError::WorkFenceLost));
+        check_eq!(
+            catalog.prepared_work(&old, &admission_budget()),
+            Err(IndexError::WorkFenceLost)
+        );
         check_eq!(
             catalog.work_status(&intent, &admission_budget())?,
             WorkStatus::Claimed(new)
@@ -8965,7 +9290,7 @@ mod tests {
         check_eq!(renewed.fence, new.fence);
         check!(renewed.lease_until_ms > new.lease_until_ms);
         std::thread::sleep(Duration::from_millis(250));
-        check_eq!(catalog.prepared_work(&new)?, None);
+        check_eq!(catalog.prepared_work(&new, &admission_budget())?, None);
         let again = catalog.renew_work(&new, Duration::from_secs(1), &admission_budget())?;
         check_eq!(again.fence, new.fence);
         check_eq!(again.lease_until_ms, renewed.lease_until_ms);
@@ -9135,6 +9460,88 @@ mod tests {
     }
 
     #[test]
+    fn recovery_claim_honors_deadline_and_preserves_commit_boundary() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, _) = setup(root.path())?;
+        let original = operation(2, 70);
+        let pending = admit_new(&catalog, original)?;
+        let fence_before = manual_fence_next(&catalog)?;
+        let recovery_budget = |duration| {
+            WorkBudget::with_request(
+                WorkLimits {
+                    reads: 100,
+                    writes: 100,
+                    bytes: 4096,
+                    mutations: 100,
+                },
+                quanta_index_core::RequestBudgetV1::for_duration(duration),
+            )
+        };
+
+        let held = catalog.lock()?;
+        let (result, denial) = std::thread::scope(|scope| -> Result<_, Box<dyn Error>> {
+            let (finished, result) = std::sync::mpsc::channel();
+            let catalog = &catalog;
+            let worker = scope.spawn(move || {
+                let budget = recovery_budget(Duration::from_millis(50));
+                let claimed = catalog.claim_recovery(pending.operation, &budget);
+                finished.send((claimed, budget.first_denial()))
+            });
+            let observed = result.recv_timeout(Duration::from_secs(2));
+            drop(held);
+            worker
+                .join()
+                .map_err(|_panic| "recovery worker panicked")??;
+            Ok(observed?)
+        })?;
+        check_eq!(result, Err(IndexError::ResourceLimited));
+        check_eq!(denial, Some(WorkBudgetDenial::Deadline));
+        check_eq!(
+            inspect_with_test_budget(&catalog, pending.operation)?,
+            OperationStatus::Pending(pending)
+        );
+        check_eq!(manual_fence_next(&catalog)?, fence_before);
+
+        let budget = recovery_budget(Duration::from_secs(5));
+        let cancel = budget.request().cancel_handle();
+        catalog
+            .lock()?
+            .update_hook(Some(move |_, _: &str, table: &str, _| {
+                if table == "native_operation_v1" {
+                    cancel.cancel();
+                }
+            }))?;
+        let result = catalog.claim_recovery(pending.operation, &budget);
+        catalog
+            .lock()?
+            .update_hook(None::<fn(rusqlite::hooks::Action, &str, &str, i64)>)?;
+        check_eq!(result, Err(IndexError::Cancelled));
+        check_eq!(budget.first_denial(), Some(WorkBudgetDenial::Cancelled));
+        check_eq!(
+            inspect_with_test_budget(&catalog, pending.operation)?,
+            OperationStatus::Pending(pending)
+        );
+        check_eq!(manual_fence_next(&catalog)?, fence_before);
+
+        let budget = recovery_budget(Duration::from_secs(5));
+        let cancel = budget.request().cancel_handle();
+        catalog.lock()?.commit_hook(Some(move || {
+            cancel.cancel();
+            false
+        }))?;
+        let recovered = catalog.claim_recovery(pending.operation, &budget)?;
+        check_eq!(budget.checkpoint(), Err(IndexError::Cancelled));
+        check_ne!(recovered, pending);
+        drop(catalog);
+        let reopened = open(root.path())?;
+        check_eq!(
+            inspect_with_test_budget(&reopened, recovered.operation)?,
+            OperationStatus::Pending(recovered)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn missing_root_conflict_and_stale_fence_leave_pending_unpublished() -> TestResult {
         let root = tempfile::tempdir()?;
         let (catalog, genesis) = setup(root.path())?;
@@ -9161,7 +9568,7 @@ mod tests {
             inspect_with_test_budget(&catalog, first_operation.key)?,
             OperationStatus::Pending(old_attempt)
         );
-        let new_attempt = catalog.claim_recovery(first_operation.key)?;
+        let new_attempt = catalog.claim_recovery(first_operation.key, &admission_budget())?;
         check_ne!(new_attempt, old_attempt);
         check_eq!(
             catalog.register_objects(old_attempt, &[object(41, vec![])]),
@@ -13312,7 +13719,7 @@ mod tests {
             OperationStatus::Refused(Refusal::ResourceLimited)
         );
         check_eq!(
-            catalog.validate_owned_work(&assignment.request)?,
+            catalog.validate_owned_work(&assignment.request, &admission_budget())?,
             OperationStatus::Refused(Refusal::ResourceLimited)
         );
         check_eq!(
@@ -13353,7 +13760,7 @@ mod tests {
         check_eq!((assignment_rows, request_rows), (0, 1));
         drop(connection);
         check_eq!(
-            catalog.validate_owned_work(&assignment.request)?,
+            catalog.validate_owned_work(&assignment.request, &admission_budget())?,
             OperationStatus::Refused(Refusal::ResourceLimited)
         );
         check_eq!(
@@ -13379,7 +13786,7 @@ mod tests {
         check_eq!(fresh.prepared, None);
         drop(guard);
         check_eq!(
-            catalog.validate_owned_work(&assignment.request)?,
+            catalog.validate_owned_work(&assignment.request, &admission_budget())?,
             OperationStatus::Refused(Refusal::ResourceLimited)
         );
         Ok(())
@@ -13515,8 +13922,10 @@ mod tests {
         );
         check_eq!(terminal_work_rows(&catalog, &first)?, 1);
         check_eq!(terminal_work_rows(&catalog, &second)?, 1);
-        let _validated_status = catalog.validate_owned_work(&first_assignment.request)?;
-        let _validated_status = catalog.validate_owned_work(&second_assignment.request)?;
+        let _validated_status =
+            catalog.validate_owned_work(&first_assignment.request, &admission_budget())?;
+        let _validated_status =
+            catalog.validate_owned_work(&second_assignment.request, &admission_budget())?;
         Ok(())
     }
 
@@ -13920,7 +14329,7 @@ mod tests {
             WorkStatus::Superseded
         );
         check!(matches!(
-            catalog.validate_owned_work(&assignment.request),
+            catalog.validate_owned_work(&assignment.request, &admission_budget()),
             Err(IndexError::WorkFenceLost)
         ));
         let session = catalog.open_read_session()?;
@@ -13956,7 +14365,7 @@ mod tests {
             OperationStatus::Unknown
         );
         check!(matches!(
-            catalog.validate_owned_work(&assignment.request),
+            catalog.validate_owned_work(&assignment.request, &admission_budget()),
             Err(IndexError::WorkFenceLost)
         ));
         let connection = Connection::open(catalog.path())?;
@@ -13983,7 +14392,7 @@ mod tests {
         check_ne!(fresh.request.operation, assignment.request.operation);
         check_eq!(fresh.request.expected_view, three.identity);
         check!(matches!(
-            catalog.validate_owned_work(&assignment.request),
+            catalog.validate_owned_work(&assignment.request, &admission_budget()),
             Err(IndexError::WorkFenceLost)
         ));
         Ok(())
@@ -16842,6 +17251,88 @@ mod tests {
     #[test]
     fn operation_inspect_deadline_while_catalog_mutex_is_held() -> TestResult {
         assert_operation_inspect_mutex_wait(false)
+    }
+
+    #[test]
+    fn exact_operation_request_honors_deadline_and_cancellation_without_new_read_charges()
+    -> TestResult {
+        use std::sync::mpsc;
+
+        let root = tempfile::tempdir()?;
+        let (catalog, _) = setup(root.path())?;
+        let original = operation(993, 203);
+        let _attempt = admit_new(&catalog, original)?;
+        for cancel in [false, true] {
+            let held = catalog.lock()?;
+            let request = quanta_index_core::RequestBudgetV1::for_duration(if cancel {
+                Duration::from_secs(5)
+            } else {
+                Duration::from_millis(80)
+            });
+            let worker_request = request.clone();
+            let observed = std::thread::scope(|scope| -> Result<_, Box<dyn Error>> {
+                let (send, receive) = mpsc::channel();
+                let catalog_ref = &catalog;
+                let key = original.key;
+                let worker = scope.spawn(move || {
+                    let budget = WorkBudget::with_request(
+                        WorkLimits {
+                            reads: 0,
+                            writes: 0,
+                            bytes: 0,
+                            mutations: 0,
+                        },
+                        worker_request,
+                    );
+                    send.send((
+                        catalog_ref.operation_request(key, &budget),
+                        budget.first_denial(),
+                    ))
+                });
+                std::thread::sleep(Duration::from_millis(20));
+                if cancel {
+                    request.cancel_handle().cancel();
+                }
+                let observed = receive.recv_timeout(Duration::from_secs(2));
+                drop(held);
+                worker
+                    .join()
+                    .map_err(|_panic| "exact lookup worker panicked")??;
+                Ok(observed?)
+            })?;
+            check_eq!(
+                observed,
+                (
+                    Err(if cancel {
+                        IndexError::Cancelled
+                    } else {
+                        IndexError::ResourceLimited
+                    }),
+                    Some(if cancel {
+                        WorkBudgetDenial::Cancelled
+                    } else {
+                        WorkBudgetDenial::Deadline
+                    }),
+                )
+            );
+        }
+        let budget = WorkBudget::with_request(
+            WorkLimits {
+                reads: 0,
+                writes: 0,
+                bytes: 0,
+                mutations: 0,
+            },
+            quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(5)),
+        );
+        let before = budget.usage();
+        check_eq!(catalog.operation_request(original.key, &budget)?, original);
+        check_eq!(budget.usage(), before);
+        check_eq!(
+            catalog.operation_request(operation(994, 204).key, &budget),
+            Err(IndexError::SnapshotUnavailable)
+        );
+        Ok(())
     }
 
     #[test]

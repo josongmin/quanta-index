@@ -139,7 +139,10 @@ impl SourceSaveIntentPort for SaveAuthority<'_> {
                 return Err(IndexError::Conflict);
             }
             OperationStatus::Pending(_) => {
-                let original = self.0.catalog.operation(intent.operation())?;
+                let original = self
+                    .0
+                    .catalog
+                    .operation_request(intent.operation(), budget)?;
                 if original.key != intent.operation()
                     || original.source_mode != SourceOperationMode::Advance
                 {
@@ -224,7 +227,10 @@ impl SourceSaveFrontierPort for SaveAuthority<'_> {
             | OperationStatus::Pending(_)
             | OperationStatus::Unknown => return Err(IndexError::Conflict),
         }
-        let original = self.0.catalog.operation(receipt.operation)?;
+        let original = self
+            .0
+            .catalog
+            .operation_request(receipt.operation, budget)?;
         if original.key != receipt.operation
             || original.source_mode != SourceOperationMode::Advance
             || original.request != bound.request

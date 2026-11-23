@@ -11,7 +11,7 @@ use quanta_index_core::{
     DiagnosticLaneV1, DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1,
     DiagnosticTraceErrorV1,
 };
-use rusqlite::{Connection, PagerCacheStatus, limits::Limit, types::ValueRef};
+use rusqlite::{Connection, limits::Limit, types::ValueRef};
 
 use crate::{
     MAX_WIDE_WRITE_BATCH_ROWS, MAX_WRITE_BATCH_ROWS, map_value, reserve_for_write_batch_with_limit,
@@ -129,16 +129,10 @@ fn enter_posting_span(
     }
 }
 
-/// Record a sampled successful posting execution and its optional pager packet.
-///
-/// Missing or regressed pager snapshots are diagnostic-only.
-/// `SQLite` does not define the write counter after a failed
-/// SQL write, so that path emits no counters or additional health events.
+/// Record the row count for a sampled successful posting execution.
 fn record_posting_execute(
     context: &DiagnosticContextV1,
     span: &DiagnosticSpanGuardV1,
-    before: Option<rusqlite::Result<PagerCacheStatus>>,
-    after: Option<rusqlite::Result<PagerCacheStatus>>,
     changed: Option<usize>,
 ) {
     let Some(changed) = changed else {
@@ -150,27 +144,6 @@ fn record_posting_execute(
     };
     context.counter(span, DiagnosticCounterV1::SqliteRows, rows);
     context.counter(span, DiagnosticCounterV1::SqliteBatches, 1);
-    let (Some(Ok(before)), Some(Ok(after))) = (before, after) else {
-        context.health(DiagnosticHealthCodeV1::CounterUnavailable);
-        return;
-    };
-    let (Some(hit), Some(miss), Some(write), Some(spill)) = (
-        after.hit.checked_sub(before.hit),
-        after.miss.checked_sub(before.miss),
-        after.write.checked_sub(before.write),
-        after.spill.checked_sub(before.spill),
-    ) else {
-        context.health(DiagnosticHealthCodeV1::CounterRegressed);
-        return;
-    };
-    for (key, value) in [
-        (DiagnosticCounterV1::SqliteCacheHits, hit),
-        (DiagnosticCounterV1::SqliteCacheMisses, miss),
-        (DiagnosticCounterV1::SqliteCacheWrites, write),
-        (DiagnosticCounterV1::SqliteCacheSpills, spill),
-    ] {
-        context.counter(span, key, value);
-    }
 }
 
 /// Fields borrowed only while binding one scratch row. A caller with an
@@ -813,7 +786,6 @@ pub fn write_posting_edit_fields_batch<'a>(
             let execute_span = execute_context
                 .as_ref()
                 .and_then(|context| enter_posting_span(context, DiagnosticLaneV1(35)));
-            let pager_before = execute_span.as_ref().map(|_| db.pager_cache_status());
             before_execute();
             let executed = statement
                 .raw_execute()
@@ -831,19 +803,16 @@ pub fn write_posting_edit_fields_batch<'a>(
                 phases.record_execute_rows(*changed);
             }
             if let Some(span) = execute_span {
-                let (pager_after, changed) = match &executed {
-                    Ok(changed) => (Some(db.pager_cache_status()), Some(*changed)),
-                    Err(_primary) => (None, None),
-                };
+                let changed = executed.as_ref().ok().copied();
                 if let Some(context) = execute_context.as_ref() {
-                    record_posting_execute(context, &span, pager_before, pager_after, changed);
+                    record_posting_execute(context, &span, changed);
                 }
                 let _finished = span.finish(DiagnosticTerminalV1::from_result(&executed));
             }
             let _changed = executed?;
             budget.checkpoint()
         })();
-        // CachedStatement::drop clears bindings through the vendored cache owner.
+        // CachedStatement::drop clears bindings through its cache owner.
         // Drop it before _query_memory; manual clearing would scan every slot twice.
         drop(statement);
         written
@@ -960,7 +929,9 @@ fn write_map_edit_fields_batch_inner<'a>(
             )
             .map_err(|error| sql(&error))?;
         for (offset, value) in [(2usize, edit.expected), (3usize, edit.next)] {
-            let parameter = first.checked_add(offset).ok_or(IndexError::ResourceLimited)?;
+            let parameter = first
+                .checked_add(offset)
+                .ok_or(IndexError::ResourceLimited)?;
             match value {
                 None => statement
                     .raw_bind_parameter(parameter, Option::<i64>::None)
@@ -978,7 +949,6 @@ fn write_map_edit_fields_batch_inner<'a>(
     let execute_span = diagnostic
         .as_ref()
         .and_then(|context| enter_posting_span(context, DiagnosticLaneV1(35)));
-    let pager_before = execute_span.as_ref().map(|_| db.pager_cache_status());
     let executed = statement
         .raw_execute()
         .map_err(|error| sql(&error))
@@ -992,12 +962,9 @@ fn write_map_edit_fields_batch_inner<'a>(
             }
         });
     if let Some(span) = execute_span {
-        let (pager_after, changed) = match &executed {
-            Ok(changed) => (Some(db.pager_cache_status()), Some(*changed)),
-            Err(_primary) => (None, None),
-        };
+        let changed = executed.as_ref().ok().copied();
         if let Some(context) = diagnostic.as_ref() {
-            record_posting_execute(context, &span, pager_before, pager_after, changed);
+            record_posting_execute(context, &span, changed);
         }
         let _finished = span.finish(DiagnosticTerminalV1::from_result(&executed));
     }
@@ -1020,7 +987,6 @@ mod tests {
         DiagnosticEmitV1, DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticHealthCodeV1,
         DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticStageV1, DiagnosticTraceErrorV1,
     };
-    use rusqlite::{Error, PagerCacheStatus};
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -1196,105 +1162,21 @@ mod tests {
     }
 
     #[test]
-    fn successful_posting_sample_emits_complete_pager_and_actual_row_packet()
+    fn posting_sample_records_successful_rows_and_no_failed_rows()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (context, events, _root, span) = capture(31)?;
-        let before = PagerCacheStatus {
-            hit: 11,
-            miss: 17,
-            write: 23,
-            spill: 3,
-        };
-        let after = PagerCacheStatus {
-            hit: 18,
-            miss: 19,
-            write: 29,
-            spill: 3,
-        };
-        record_posting_execute(&context, &span, Some(Ok(before)), Some(Ok(after)), Some(7));
-        let rows = events
-            .0
-            .lock()
-            .map_err(|error| format!("diagnostic event lock was poisoned: {error}"))?;
-        let counters: Vec<_> = rows
-            .iter()
-            .filter_map(|event| {
-                if let DiagnosticEventKindV1::Counter { key, value, .. } = event.kind {
-                    Some((key, value))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let expected = [
-            (DiagnosticCounterV1::SqliteRows, 7),
-            (DiagnosticCounterV1::SqliteBatches, 1),
-            (DiagnosticCounterV1::SqliteCacheHits, 7),
-            (DiagnosticCounterV1::SqliteCacheMisses, 2),
-            (DiagnosticCounterV1::SqliteCacheWrites, 6),
-            (DiagnosticCounterV1::SqliteCacheSpills, 0),
-        ];
-        if counters != expected {
-            return Err(format!("posting counters differ: {counters:?} != {expected:?}").into());
-        }
-        if rows
-            .iter()
-            .any(|event| matches!(event.kind, DiagnosticEventKindV1::Health { .. }))
-        {
-            return Err("successful posting emitted diagnostic health".into());
-        }
-        drop(rows);
-        Ok(())
-    }
-
-    #[test]
-    fn unavailable_or_regressed_pager_keeps_rows_but_failed_sql_emits_nothing()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let before = PagerCacheStatus {
-            hit: 10,
-            miss: 10,
-            write: 10,
-            spill: 10,
-        };
-        for (id, first, last, changed, health) in [
+        for (id, changed, expected) in [
             (
-                1,
-                None,
-                Some(Ok(before)),
+                31,
                 Some(7),
-                DiagnosticHealthCodeV1::CounterUnavailable,
+                vec![
+                    (DiagnosticCounterV1::SqliteRows, 7),
+                    (DiagnosticCounterV1::SqliteBatches, 1),
+                ],
             ),
-            (
-                2,
-                Some(Err(Error::InvalidQuery)),
-                Some(Ok(before)),
-                Some(7),
-                DiagnosticHealthCodeV1::CounterUnavailable,
-            ),
-            (
-                3,
-                Some(Ok(before)),
-                Some(Err(Error::InvalidQuery)),
-                Some(7),
-                DiagnosticHealthCodeV1::CounterUnavailable,
-            ),
-            (
-                4,
-                Some(Ok(before)),
-                None,
-                None,
-                DiagnosticHealthCodeV1::CounterUnavailable,
-            ),
-            (
-                5,
-                Some(Ok(before)),
-                Some(Ok(PagerCacheStatus { spill: 9, ..before })),
-                Some(7),
-                DiagnosticHealthCodeV1::CounterRegressed,
-            ),
+            (32, None, vec![]),
         ] {
             let (context, events, _root, span) = capture(id)?;
-            record_posting_execute(&context, &span, first, last, changed);
+            record_posting_execute(&context, &span, changed);
             let rows = events
                 .0
                 .lock()
@@ -1309,32 +1191,7 @@ mod tests {
                     }
                 })
                 .collect();
-            if changed.is_some() {
-                let expected = [
-                    (DiagnosticCounterV1::SqliteRows, 7),
-                    (DiagnosticCounterV1::SqliteBatches, 1),
-                ];
-                if counters != expected {
-                    return Err(format!(
-                        "partial posting counters differ: {counters:?} != {expected:?}"
-                    )
-                    .into());
-                }
-            } else if !counters.is_empty() {
-                return Err(format!("failed posting emitted counters: {counters:?}").into());
-            }
-            let actual_health = rows
-                .iter()
-                .filter(|event| matches!(event.kind, DiagnosticEventKindV1::Health { code } if code == health))
-                .count();
-            let expected_health = usize::from(changed.is_some());
-            if actual_health != expected_health {
-                return Err(format!(
-                    "posting health count differs: {actual_health} != {expected_health}"
-                )
-                .into());
-            }
-            drop(rows);
+            assert_eq!(counters, expected);
         }
         Ok(())
     }

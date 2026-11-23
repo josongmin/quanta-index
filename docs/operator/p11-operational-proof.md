@@ -188,9 +188,11 @@ refuses before the recipe selects a daemon or starts a build.
 The QBC metadata adapter reads the same auxiliary invocation's output using
 its nonce, new run ID, exact command, stable owner status/file identity and
 clean source/manifest/lock checks. This establishes dependency resolution only.
-The recipe prefixes Quanta's Python import path, and its regular `tools`
-package keeps imports within this checkout even when the paired working
-directory contains a different package with the same name.
+The recipe passes the checkout as one argument to the isolated Bash launcher.
+The launcher clears Bash and Python startup overrides for proof children and
+uses isolated Bash for the staged Native build recipe. The isolated Python
+runner anchors `tools` to the Quanta checkout and clears the dedicated signing
+agent environment before loading site packages.
 Selected Nextest inventory and execution retain QBC's immutable completion
 locator and receipt checks. Effective exit125, source drift, missing completion
 or output replacement cannot be treated as success.

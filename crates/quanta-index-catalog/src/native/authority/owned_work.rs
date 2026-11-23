@@ -56,7 +56,7 @@ fn encode_owned<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IndexError> {
 const OWNED_OPEN_QUERY: &str = "SELECT work,length(payload),ready_since_ms FROM native_work_v1
     WHERE workspace=?1 AND epoch=?2 AND owner_mode=0 AND status=0
     ORDER BY ready_since_ms,work LIMIT ?3";
-const OWNED_DUE_QUERY: &str = "SELECT native_owned_work_v1.work,length(native_owned_work_v1.payload),native_owned_work_v1.due_ms FROM native_owned_work_v1
+pub(super) const OWNED_DUE_QUERY: &str = "SELECT native_owned_work_v1.work,length(native_owned_work_v1.payload),native_owned_work_v1.due_ms FROM native_owned_work_v1
     JOIN native_work_v1 USING(work)
     WHERE native_owned_work_v1.workspace=?1 AND native_owned_work_v1.epoch=?2
       AND native_owned_work_v1.due_ms<=?3 AND native_work_v1.status=1
@@ -827,15 +827,14 @@ impl SqliteCatalog {
     pub(super) fn validate_owned_work_impl(
         &self,
         request: &UpdateRequest,
+        budget: &WorkBudget,
     ) -> Result<OperationStatus, IndexError> {
         if request.operation.producer != OWNED_WORK_PRODUCER {
             return Err(IndexError::InvalidInput(
                 "request is not catalog-owned".into(),
             ));
         }
-        let mut guard = self
-            .lock()
-            .map_err(|error| IndexError::Storage(error.to_string()))?;
+        let mut guard = self.lock_native_budget(budget)?;
         let tx = begin(&mut guard)?;
         let now = catalog_now_ms(&tx, self.clock.now_unix_ms())?;
         let (validated, status) = validate_request_state_with_status(&tx, request, now)?;
@@ -859,6 +858,7 @@ impl SqliteCatalog {
         }
         tx.commit().map_err(|error| sql(&error))?;
         drop(guard);
+        budget.checkpoint()?;
         Ok(status)
     }
 }

@@ -35,7 +35,7 @@ import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import BinaryIO, Callable, TypeVar
+from typing import BinaryIO, Callable, Optional, Tuple, TypeVar
 
 FORMAT_VERSION = 2
 MAX_SELECTION_BYTES = 64 * 1024
@@ -119,6 +119,7 @@ _PROCESS_ENV = frozenset({"HOME", "PATH", "TMPDIR", "XDG_CACHE_HOME", "LANG", "L
 _ALLOWED_ENV = _CONFIG_ENV | _PROCESS_ENV
 FaultHook = Callable[[str], None]
 ControlDocument = TypeVar("ControlDocument")
+CandidateSourcePublication = Tuple[str, str, str, int, Optional[str], Optional[Tuple[str, str, int]]]
 
 
 class SelectionError(Exception):
@@ -186,13 +187,19 @@ class NativeBootReceipt:
     source_cut_digest_hex: str
     install_catalog_digest_hex: str
     protected_source_routes_hex: str | None = None
+    retired_policy_object_hex: str | None = None
+    retired_policy_sha256_hex: str | None = None
+    retired_policy_identity_count: int | None = None
 
     @classmethod
     def from_wire(cls, wire: object) -> NativeBootReceipt:
         if (
             not isinstance(wire, dict)
             or not _NATIVE_RECEIPT_FIELDS <= set(wire)
-            or set(wire) - _NATIVE_RECEIPT_FIELDS - {"protected_source_routes_hex"}
+            or set(wire) - _NATIVE_RECEIPT_FIELDS - {
+                "protected_source_routes_hex", "retired_policy_object_hex",
+                "retired_policy_sha256_hex", "retired_policy_identity_count",
+            }
         ):
             raise SelectionError("native boot receipt fields differ from format version")
         nonce = _hex_digest(wire["root_nonce_hex"], "root_nonce_hex")
@@ -205,6 +212,29 @@ class NativeBootReceipt:
         )
         if routes == "0" * 64:
             raise SelectionError("native boot receipt has a zero protected Source route")
+        policy_keys = {
+            "retired_policy_object_hex", "retired_policy_sha256_hex",
+            "retired_policy_identity_count",
+        }
+        policy_present = policy_keys & set(wire)
+        if policy_present and policy_present != policy_keys:
+            raise SelectionError("native boot receipt has incomplete retired policy reference")
+        policy_object = (
+            _hex_digest(wire["retired_policy_object_hex"], "retired policy object")
+            if policy_present else None
+        )
+        policy_sha = (
+            _hex_digest(wire["retired_policy_sha256_hex"], "retired policy SHA-256")
+            if policy_present else None
+        )
+        policy_count = (
+            _uint64(wire["retired_policy_identity_count"], "retired policy count")
+            if policy_present else None
+        )
+        if policy_object == "0" * 64 or policy_sha == "0" * 64 or (
+            policy_count is not None and policy_count > 4096
+        ):
+            raise SelectionError("native boot receipt has invalid retired policy reference")
         return cls(
             nonce,
             _canonical_operation(wire["manifest_operation"]),
@@ -212,6 +242,9 @@ class NativeBootReceipt:
             source,
             _hex_digest(wire["install_catalog_digest_hex"], "install_catalog_digest_hex"),
             routes,
+            policy_object,
+            policy_sha,
+            policy_count,
         )
 
     def to_wire(self) -> dict[str, object]:
@@ -224,6 +257,10 @@ class NativeBootReceipt:
         }
         if self.protected_source_routes_hex is not None:
             wire["protected_source_routes_hex"] = self.protected_source_routes_hex
+        if self.retired_policy_object_hex is not None:
+            wire["retired_policy_object_hex"] = self.retired_policy_object_hex
+            wire["retired_policy_sha256_hex"] = self.retired_policy_sha256_hex
+            wire["retired_policy_identity_count"] = self.retired_policy_identity_count
         return wire
 
 
@@ -239,7 +276,11 @@ class Selection:
 
     def to_wire(self) -> dict[str, object]:
         wire: dict[str, object] = {
-            "schema_version": FORMAT_VERSION,
+            "schema_version": (
+                3 if self.native_boot_receipt is not None
+                and self.native_boot_receipt.retired_policy_object_hex is not None
+                else FORMAT_VERSION
+            ),
             "mode": "native" if self.native_config else "legacy",
             "binary": str(self.binary),
             "binary_sha256": self.binary_sha256,
@@ -297,11 +338,13 @@ def selection_from_wire(wire: object) -> Selection:
     if not isinstance(wire, dict):
         raise SelectionError("selection must be a JSON object")
     version = wire.get("schema_version")
-    if type(version) is not int or version != FORMAT_VERSION:
+    if type(version) is not int or version not in (FORMAT_VERSION, 3):
         raise SelectionError("unsupported selection format")
     mode = wire.get("mode")
     if mode not in ("legacy", "native"):
         raise SelectionError("unsupported selection mode")
+    if version == 3 and mode != "native":
+        raise SelectionError("schema-3 requires Native selection")
     if set(wire) != (_FIELDS if mode == "legacy" else _NATIVE_FIELDS):
         raise SelectionError("selection fields differ from format version")
     binary = wire["binary"]
@@ -330,6 +373,10 @@ def selection_from_wire(wire: object) -> Selection:
             raise SelectionError("native config path is not canonical")
         native_config_sha256 = config_digest
         native_boot_receipt = NativeBootReceipt.from_wire(wire["native_boot_receipt"])
+        if native_boot_receipt is not None and (
+            (version == 3) != (native_boot_receipt.retired_policy_object_hex is not None)
+        ):
+            raise SelectionError("selection schema and retired policy reference differ")
         _check_native_config(native_config, canonical_root, config_digest)
     return Selection(
         canonical_binary,
@@ -563,6 +610,12 @@ def _native_identity_args(receipt: NativeBootReceipt, *, install: bool) -> list[
         args.extend(("--catalog-content-digest", receipt.install_catalog_digest_hex))
     if receipt.protected_source_routes_hex is not None:
         args.extend(("--protected-source-routes", receipt.protected_source_routes_hex))
+    if receipt.retired_policy_object_hex is not None:
+        args.extend((
+            "--retired-policy-object", receipt.retired_policy_object_hex,
+            "--retired-policy-sha256", receipt.retired_policy_sha256_hex,
+            "--retired-policy-identity-count", str(receipt.retired_policy_identity_count),
+        ))
     return args
 
 
@@ -572,7 +625,7 @@ def _run_selected_command(
     lock_fd: int,
     *,
     shutdown_timeout_seconds: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
-    candidate_receipt: tuple[Path, str, str, str, str | None] | None = None,
+    candidate_receipt: tuple[Path, str, str, str, str | None, tuple[str, str, int] | None] | None = None,
     with_candidate: Callable[[subprocess.Popen[bytes], Callable[[], bool]], None] | None = None,
     fail_on_external_signal: bool = False,
 ) -> int:
@@ -593,7 +646,7 @@ def _run_selected_command(
         and selection.native_config is not None
         and candidate_receipt is not None
     ):
-        path, nonce, published_operation, source_cut, protected_routes = candidate_receipt
+        path, nonce, published_operation, source_cut, protected_routes, retired_policy = candidate_receipt
         args.extend(
             (
                 "--config", str(selection.native_config),
@@ -606,6 +659,12 @@ def _run_selected_command(
         )
         if protected_routes is not None:
             args.extend(("--protected-source-routes", protected_routes))
+        if retired_policy is not None:
+            args.extend((
+                "--retired-policy-object", retired_policy[0],
+                "--retired-policy-sha256", retired_policy[1],
+                "--retired-policy-identity-count", str(retired_policy[2]),
+            ))
     elif operation in {"verify-native-state", "verify-native-candidate"} and selection.native_config is not None:
         args.extend(("--config", str(selection.native_config)))
         if selection.native_boot_receipt is None:
@@ -962,6 +1021,7 @@ def _prepare_native_candidate_locked(
     source_cut_digest: str,
     lock_fd: int,
     protected_source_routes: str | None = None,
+    retired_policy: tuple[str, str, int] | None = None,
 ) -> str:
     _require_candidate_source_selection(active, expected_current_sha256, selection.state_root)
     if not os.path.lexists(receipt_path):
@@ -970,7 +1030,7 @@ def _prepare_native_candidate_locked(
         status = _run_selected_command(
             selection, "select-native-candidate", lock_fd,
             candidate_receipt=(receipt_path, root_nonce, manifest_operation, source_cut_digest,
-                               protected_source_routes),
+                               protected_source_routes, retired_policy),
             fail_on_external_signal=True,
         )
         if status != 0 and not os.path.lexists(receipt_path):
@@ -983,6 +1043,8 @@ def _prepare_native_candidate_locked(
         or receipt.manifest_operation_json != manifest_operation
         or receipt.source_cut_digest_hex != source_cut_digest
         or receipt.protected_source_routes_hex != protected_source_routes
+        or (receipt.retired_policy_object_hex, receipt.retired_policy_sha256_hex,
+            receipt.retired_policy_identity_count) != (retired_policy or (None, None, None))
     ):
         raise SelectionError("candidate receipt differs from expected publication identity")
     selection = replace(selection, native_boot_receipt=receipt)
@@ -1010,7 +1072,7 @@ def _prepare_native_candidate_locked(
     return _selection_fingerprint(selection)
 
 
-def _candidate_source_handoff(payload: bytes) -> tuple[str, str, str, int, str | None]:
+def _candidate_source_handoff(payload: bytes) -> CandidateSourcePublication:
     try:
         wire = json.loads(payload.decode("utf-8"), object_pairs_hook=_reject_duplicate_fields)
     except (UnicodeError, ValueError) as error:
@@ -1018,7 +1080,11 @@ def _candidate_source_handoff(payload: bytes) -> tuple[str, str, str, int, str |
     required = {
         "root_nonce_hex", "manifest_operation", "source_cut_digest_hex", "original_full_sequence",
     }
-    if not isinstance(wire, dict) or set(wire) not in (required, required | {"protected_source_routes_hex"}):
+    policy_keys = {"retired_policy_object_hex", "retired_policy_sha256_hex", "retired_policy_identity_count"}
+    if (not isinstance(wire, dict)
+            or set(wire) - required - {"protected_source_routes_hex"} - policy_keys
+            or not required <= set(wire)
+            or policy_keys & set(wire) not in (set(), policy_keys)):
         raise SelectionError("candidate FULL handoff has unexpected fields")
     root_nonce = _hex_digest(wire["root_nonce_hex"], "candidate root nonce")
     source_cut = _hex_digest(wire["source_cut_digest_hex"], "candidate SourceCut")
@@ -1027,9 +1093,18 @@ def _candidate_source_handoff(payload: bytes) -> tuple[str, str, str, int, str |
         if "protected_source_routes_hex" in wire else None
     )
     sequence = _uint64(wire["original_full_sequence"], "candidate Original FULL sequence")
+    retired_policy = None
+    if policy_keys <= set(wire):
+        retired_policy = (
+            _hex_digest(wire["retired_policy_object_hex"], "candidate retired policy object"),
+            _hex_digest(wire["retired_policy_sha256_hex"], "candidate retired policy SHA-256"),
+            _uint64(wire["retired_policy_identity_count"], "candidate retired policy count"),
+        )
+        if retired_policy[0] == "0" * 64 or retired_policy[1] == "0" * 64 or retired_policy[2] > 4096:
+            raise SelectionError("candidate retired policy identity is invalid")
     if not sequence or root_nonce == "0" * 64 or source_cut == "0" * 64 or protected_routes == "0" * 64:
         raise SelectionError("candidate FULL handoff has an empty identity")
-    return root_nonce, _canonical_operation(wire["manifest_operation"]), source_cut, sequence, protected_routes
+    return root_nonce, _canonical_operation(wire["manifest_operation"]), source_cut, sequence, protected_routes, retired_policy
 
 
 def _unreaped_child_exited(process: subprocess.Popen[bytes]) -> bool:
@@ -1236,9 +1311,9 @@ def build_native_candidate(
     source_modes = [value for flag, value in zip(
         producer_arguments[::2], producer_arguments[1::2]
     ) if flag == "--native-candidate-source-mode"]
-    if len(source_modes) > 1 or (source_modes and source_modes[0] != "legacy-multiactive"):
-        raise SelectionError("candidate Source mode must be legacy-multiactive exactly once")
-    multiactive_source = source_modes == ["legacy-multiactive"]
+    if len(source_modes) > 1 or (source_modes and source_modes[0] != "source-only"):
+        raise SelectionError("candidate Source mode must be source-only exactly once")
+    source_only = source_modes == ["source-only"]
     pinned_flags = {
         "--native-source-socket": str(socket),
         "--native-q-executable": str(selection.binary),
@@ -1253,12 +1328,14 @@ def build_native_candidate(
             "--native-candidate-active-selection-sha256",
             "--native-candidate-q-config",
             "--native-candidate-q-config-sha256",
+            "--native-candidate-old-q-config",
+            "--native-candidate-old-q-config-sha256",
             "--native-candidate-source-exporter-executable",
             "--native-candidate-source-exporter-executable-sha256",
         }
     ):
         raise SelectionError("launcher owns the candidate Q endpoint and PID flags")
-    if snapshot_history or native_history or multiactive_source:
+    if snapshot_history or native_history or source_only:
         pinned_flags.update({
             "--native-candidate-active-selection-path": str(active),
             "--native-candidate-active-selection-sha256": _hex_digest(
@@ -1267,10 +1344,18 @@ def build_native_candidate(
             "--native-candidate-q-config": str(selection.native_config),
             "--native-candidate-q-config-sha256": selection.native_config_sha256,
         })
-    if multiactive_source:
+    if native_history:
         current_source = _require_current_selection(active, expected_current_sha256)
-        if current_source.native_config is not None:
-            raise SelectionError("multi-active Source export requires an active Legacy selection")
+        if current_source.native_config is None or current_source.native_config_sha256 is None:
+            raise SelectionError("Native History export requires an active Native config")
+        pinned_flags.update({
+            "--native-candidate-old-q-config": str(current_source.native_config),
+            "--native-candidate-old-q-config-sha256": current_source.native_config_sha256,
+        })
+    if source_only:
+        current_source = _require_current_selection(active, expected_current_sha256)
+        if current_source.native_config is not None and not native_history:
+            raise SelectionError("Native Source-only export requires Native History selection")
         pinned_flags.update({
             "--native-candidate-source-exporter-executable": str(current_source.binary),
             "--native-candidate-source-exporter-executable-sha256": current_source.binary_sha256,
@@ -1303,8 +1388,8 @@ def build_native_candidate(
             raise SelectionError("candidate History snapshot requires an active Legacy selection")
         if native_history and _require_current_selection(active, expected_current_sha256).native_config is None:
             raise SelectionError("candidate Native History source requires an active Native selection")
-        if multiactive_source and _require_current_selection(active, expected_current_sha256).native_config is not None:
-            raise SelectionError("multi-active Source export requires an active Legacy selection")
+        if source_only and _require_current_selection(active, expected_current_sha256).native_config is not None and not native_history:
+            raise SelectionError("Native Source-only export requires Native History selection")
         completed_drain = False
         if not os.path.lexists(handoff):
             if any(os.path.lexists(path) for path in (drained, receipt_path, candidate)):
@@ -1356,10 +1441,10 @@ def build_native_candidate(
             drained, lock_fd, publication, MAX_NATIVE_RECEIPT_BYTES,
             lambda payload: _decode_candidate_handoff(payload, binding),
         )
-        root_nonce, operation, source_cut, original_full_sequence, protected_routes = publication
+        root_nonce, operation, source_cut, original_full_sequence, protected_routes, retired_policy = publication
         digest = _prepare_native_candidate_locked(
             active, candidate, selection, expected_current_sha256, receipt_path,
-            root_nonce, operation, source_cut, lock_fd, protected_routes,
+            root_nonce, operation, source_cut, lock_fd, protected_routes, retired_policy,
         )
     return {
         "candidate_path": str(candidate),
@@ -1368,8 +1453,8 @@ def build_native_candidate(
     }
 
 
-def _candidate_handoff_envelope(binding: str, publication: tuple[str, str, str, int, str | None]) -> bytes:
-    nonce, operation, source_cut, sequence, protected_routes = publication
+def _candidate_handoff_envelope(binding: str, publication: CandidateSourcePublication) -> bytes:
+    nonce, operation, source_cut, sequence, protected_routes, retired_policy = publication
     published = {
         "root_nonce_hex": nonce,
         "manifest_operation": json.loads(operation),
@@ -1378,6 +1463,10 @@ def _candidate_handoff_envelope(binding: str, publication: tuple[str, str, str, 
     }
     if protected_routes is not None:
         published["protected_source_routes_hex"] = protected_routes
+    if retired_policy is not None:
+        published["retired_policy_object_hex"] = retired_policy[0]
+        published["retired_policy_sha256_hex"] = retired_policy[1]
+        published["retired_policy_identity_count"] = retired_policy[2]
     payload = json.dumps({
         "binding": binding,
         "publication": published,
@@ -1387,7 +1476,7 @@ def _candidate_handoff_envelope(binding: str, publication: tuple[str, str, str, 
     return payload
 
 
-def _decode_candidate_handoff(payload: bytes, binding: str) -> tuple[str, str, str, int, str | None]:
+def _decode_candidate_handoff(payload: bytes, binding: str) -> CandidateSourcePublication:
     try:
         wire = json.loads(payload.decode("utf-8"), object_pairs_hook=_reject_duplicate_fields)
     except (UnicodeError, ValueError) as error:
@@ -1397,7 +1486,7 @@ def _decode_candidate_handoff(payload: bytes, binding: str) -> tuple[str, str, s
     return _candidate_source_handoff(json.dumps(wire["publication"]).encode())
 
 
-def _read_candidate_handoff(path: Path, binding: str) -> tuple[str, str, str, int, str | None]:
+def _read_candidate_handoff(path: Path, binding: str) -> CandidateSourcePublication:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, "rb") as stream:

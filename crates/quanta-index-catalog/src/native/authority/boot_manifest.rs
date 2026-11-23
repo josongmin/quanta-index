@@ -6,6 +6,7 @@ use quanta_index_contract::{
     index::{
         MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1, MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1,
         NativeProtectedRepoMapHeadV1, NativeProtectedSourceRoutesV1,
+        RetiredProjectionPolicyRefV1,
     },
 };
 use quanta_index_core::index::{
@@ -354,6 +355,7 @@ struct RouteMarkerRefs {
 fn route_marker_refs(
     routes: &NativeProtectedSourceRoutesV1,
     route_object: ObjectRef,
+    retired_policy: Option<ObjectRef>,
     budget: &WorkBudget,
 ) -> Result<RouteMarkerRefs, IndexError> {
     if routes.heads.len() > MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1
@@ -372,6 +374,7 @@ fn route_marker_refs(
         .checked_add(routes.repomap_heads.len())
         .and_then(|heads| heads.checked_add(genesis_markers))
         .and_then(|markers| markers.checked_add(1))
+        .and_then(|markers| markers.checked_add(usize::from(retired_policy.is_some())))
         .ok_or(IndexError::ResourceLimited)?;
     let bytes = capacity
         .checked_mul(std::mem::size_of::<ObjectRef>())
@@ -383,6 +386,9 @@ fn route_marker_refs(
         .try_reserve_exact(capacity)
         .map_err(|_allocation| IndexError::ResourceLimited)?;
     objects.push(route_object);
+    if let Some(policy) = retired_policy {
+        objects.push(policy);
+    }
     for head in &routes.heads {
         objects.push(
             quanta_index_contract::index::native_protected_view_marker_ref_v1(
@@ -424,6 +430,7 @@ fn validate_route_ingress(
     ingress: IngressRef,
     route_object: ObjectRef,
     routes: &NativeProtectedSourceRoutesV1,
+    retired_policy: Option<ObjectRef>,
     budget: &mut WorkBudget,
 ) -> Result<RouteMarkerRefs, IndexError> {
     if ingress.operation == primary
@@ -434,7 +441,7 @@ fn validate_route_ingress(
         return Err(IndexError::Conflict);
     }
     require_open_protected_route_ingress(connection, ingress, budget)?;
-    let markers = route_marker_refs(routes, route_object, budget)?;
+    let markers = route_marker_refs(routes, route_object, retired_policy, budget)?;
     let objects = &markers.objects;
     let count: i64 = connection
         .query_row(
@@ -657,7 +664,7 @@ impl SqliteCatalog {
         key: OperationKey,
         budget: &mut WorkBudget,
     ) -> Result<NativeBootManifest, IndexError> {
-        self.select_native_boot_manifest_impl(key, budget, false, None)
+        self.select_native_boot_manifest_impl(key, budget, false, None, None, None)
     }
 
     /// Candidate selection requires the current Published view and quiescence,
@@ -668,7 +675,33 @@ impl SqliteCatalog {
         key: OperationKey,
         budget: &mut WorkBudget,
     ) -> Result<NativeBootManifest, IndexError> {
-        self.select_native_boot_manifest_impl(key, budget, true, None)
+        self.select_native_boot_manifest_impl(key, budget, true, None, None, None)
+    }
+
+    /// The policy object must already be registered. This stores a reference,
+    /// not retirement authority; installation reauthenticates predecessor and
+    /// signed activation evidence before any request gate may use it.
+    pub fn select_native_boot_manifest_with_retired_policy_if_current(
+        &self,
+        key: OperationKey,
+        policy: RetiredProjectionPolicyRefV1,
+        budget: &mut WorkBudget,
+    ) -> Result<NativeBootManifest, IndexError> {
+        policy.validate_v1().map_err(|reason| IndexError::InvalidInput(reason.into()))?;
+        self.select_native_boot_manifest_impl(key, budget, true, None, Some(policy), None)
+    }
+
+    /// Map-only predecessor: stage just the policy object and transfer its
+    /// ingress to BOOT without inventing a Source route or workspace.
+    pub fn select_native_boot_manifest_with_retired_policy_ingress_if_current(
+        &self,
+        key: OperationKey,
+        ingress: IngressRef,
+        policy: RetiredProjectionPolicyRefV1,
+        budget: &mut WorkBudget,
+    ) -> Result<NativeBootManifest, IndexError> {
+        policy.validate_v1().map_err(|reason| IndexError::InvalidInput(reason.into()))?;
+        self.select_native_boot_manifest_impl(key, budget, true, None, Some(policy), Some(ingress))
     }
 
     /// Select a complete, physically staged Source route set in the same
@@ -688,6 +721,28 @@ impl SqliteCatalog {
             budget,
             true,
             Some((route_object, routes, ingress)),
+            None,
+            None,
+        )
+    }
+
+    pub fn select_native_boot_manifest_with_protected_routes_and_retired_policy_if_current(
+        &self,
+        key: OperationKey,
+        route_object: ObjectRef,
+        routes: &NativeProtectedSourceRoutesV1,
+        ingress: IngressRef,
+        policy: RetiredProjectionPolicyRefV1,
+        budget: &mut WorkBudget,
+    ) -> Result<NativeBootManifest, IndexError> {
+        policy.validate_v1().map_err(|reason| IndexError::InvalidInput(reason.into()))?;
+        self.select_native_boot_manifest_impl(
+            key,
+            budget,
+            true,
+            Some((route_object, routes, ingress)),
+            Some(policy),
+            None,
         )
     }
 
@@ -697,6 +752,8 @@ impl SqliteCatalog {
         budget: &mut WorkBudget,
         require_current: bool,
         protected_routes: Option<(ObjectRef, &NativeProtectedSourceRoutesV1, IngressRef)>,
+        retired_projection_policy: Option<RetiredProjectionPolicyRefV1>,
+        retired_policy_ingress: Option<IngressRef>,
     ) -> Result<NativeBootManifest, IndexError> {
         budget.checkpoint()?;
         let _scratch = budget.reserve_memory(SCRATCH_BYTES, MemoryLifetime::Temporary)?;
@@ -728,7 +785,10 @@ impl SqliteCatalog {
         };
         let protected = protected_routes
             .map(|(object, routes, ingress)| {
-                let markers = validate_route_ingress(&tx, key, ingress, object, routes, budget)?;
+                let markers = validate_route_ingress(
+                    &tx, key, ingress, object, routes,
+                    retired_projection_policy.map(|policy| policy.object), budget,
+                )?;
                 let mut route = validate_protected_routes(
                     &tx,
                     key,
@@ -751,8 +811,31 @@ impl SqliteCatalog {
             })
             .transpose()?;
         let route_ref = protected.as_ref().map(|(route, ..)| *route);
+        if let Some(ingress) = retired_policy_ingress {
+            let policy = retired_projection_policy.ok_or(IndexError::DigestConflict)?;
+            if ingress.operation == key
+                || ingress.operation.workspace != key.workspace
+                || ingress.operation.epoch != key.epoch
+                || protected_route_operation_exists(&tx, ingress.operation, budget)?
+            {
+                return Err(IndexError::Conflict);
+            }
+            require_open_protected_route_ingress(&tx, ingress, budget)?;
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM native_ingress_object_v1 WHERE operation=?1",
+                params![operation_key(ingress.operation)?], |row| row.get(0),
+            ).map_err(|error| sql(&error))?;
+            if count != 1 || !confirmed_ingress_membership(&tx, ingress.operation, policy.object)? {
+                return Err(IndexError::Conflict);
+            }
+            // Retire the one-object ingress in this transaction before the
+            // ordinary no-route quiescence check. Any later failure rolls back.
+            transfer_and_retire_route_ingress(&tx, key, ingress, false, &[policy.object], budget)?;
+        }
         let selected = if let Some(previous) = previous.as_ref().filter(|value| {
-            value.operation.key == key && value.protected_source_routes == route_ref
+            value.operation.key == key
+                && value.protected_source_routes == route_ref
+                && value.retired_projection_policy == retired_projection_policy
         }) {
             if previous.operation != immutable || previous.publication.identity != identity {
                 return Err(IndexError::Storage(
@@ -763,9 +846,15 @@ impl SqliteCatalog {
         } else {
             let view = load_publication(&tx, identity, budget)?;
             NativeBootManifest {
+                format_version: if retired_projection_policy.is_some() {
+                    NativeBootManifest::FORMAT_VERSION_V2
+                } else {
+                    NativeBootManifest::FORMAT_VERSION_V1
+                },
                 operation: immutable,
                 publication: view,
                 protected_source_routes: route_ref,
+                retired_projection_policy,
             }
         };
         if require_current {

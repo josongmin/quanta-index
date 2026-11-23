@@ -35,7 +35,7 @@ pub use preflight::{
 /// digest and invalidates frozen evidence.
 pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
     "tree-sitter@0.25.10;",
-    "rust@0.24.2+quanta-abi14-1;vendored-source-sha256=",
+    "rust@0.24.2;registry-checksum=",
     env!("QI_RUST_GRAMMAR_SHA256"),
     ";",
     "go@0.25.0+quanta-go-compatibility-1;vendored-source-sha256=",
@@ -44,7 +44,7 @@ pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
     "javascript@0.25.0+quanta-javascript-export-names-1;vendored-source-sha256=",
     env!("QI_JAVASCRIPT_GRAMMAR_SHA256"),
     ";",
-    "python@0.25.0+quanta-abi14-1;vendored-source-sha256=",
+    "python@0.25.0;registry-checksum=",
     env!("QI_PYTHON_GRAMMAR_SHA256"),
     ";",
     "typescript@0.23.2+quanta-typescript-compatibility-2;vendored-source-sha256=",
@@ -55,8 +55,6 @@ pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
 // vendor directory alone must not claim that those bytes were linked.
 const _: &str = tree_sitter_typescript::QUANTA_COMPATIBILITY_PATCH_ID;
 const _: &str = tree_sitter_go::QUANTA_COMPATIBILITY_PATCH_ID;
-const _: &str = tree_sitter_rust::QUANTA_GRAMMAR_BUILD_ID;
-const _: &str = tree_sitter_python::QUANTA_GRAMMAR_BUILD_ID;
 const _: &str = tree_sitter_javascript::QUANTA_GRAMMAR_BUILD_ID;
 
 /// Producer identity for batch digests.
@@ -609,11 +607,19 @@ fn parse_tree(
     source: &str,
     control: Option<&ExtractionControl<'_>>,
 ) -> Result<tree_sitter::Tree, SymbolExtractError> {
+    parse_tree_with_grammar(language.grammar(), path, source, control)
+}
+
+fn parse_tree_with_grammar(
+    grammar: Language,
+    path: &str,
+    source: &str,
+    control: Option<&ExtractionControl<'_>>,
+) -> Result<tree_sitter::Tree, SymbolExtractError> {
     if let Some(control) = control {
         control.check()?;
     }
     let mut parser = Parser::new();
-    let grammar = language.grammar();
     parser
         .set_language(&grammar)
         .map_err(|error| SymbolExtractError::ProducerDefect {
@@ -645,6 +651,16 @@ fn query_definitions(
         control.check()?;
     }
     let query = definition_query::compiled(language)?;
+    query_definitions_with_query(language, tree, source, control, query)
+}
+
+fn query_definitions_with_query(
+    language: SymbolLanguage,
+    tree: &tree_sitter::Tree,
+    source: &str,
+    control: Option<&ExtractionControl<'_>>,
+    query: &tree_sitter::Query,
+) -> Result<Vec<RawDefinition>, SymbolExtractError> {
     if let Some(control) = control {
         control.check()?;
     }
@@ -871,7 +887,110 @@ pub fn extract_symbols(path: &str, source: &str) -> Result<Vec<SymbolRecord>, Sy
         });
     };
     let tree = parse(language, path, source)?;
-    Ok(extract_parsed_symbols(language, path, source, &tree, None)?.records)
+    Ok(extract_parsed_symbols(language, path, source, &tree, None, None)?.records)
+}
+
+/// A Go helper result supplied explicitly for released-grammar evaluation.
+/// It is never selected by the default symbol producer.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct GoCandidateEdit {
+    pub start: usize,
+    pub end: usize,
+    pub replacement: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct GoCandidateProjection {
+    pub projected: String,
+    pub source_sha256: String,
+    pub projected_sha256: String,
+    pub helper_binary_sha256: String,
+    pub edits: Vec<GoCandidateEdit>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GoCandidateSymbols {
+    pub records: Vec<SymbolRecord>,
+    pub source_sha256: String,
+    pub projected_sha256: String,
+    pub helper_binary_sha256: String,
+    pub edits_sha256: String,
+}
+
+/// Evaluate a validated projection with an explicitly supplied Go grammar.
+/// The caller must bind the grammar binary and helper binary to a distribution;
+/// this API only verifies the projected bytes and source-bound symbol spans.
+pub fn extract_go_candidate_symbols(
+    path: &str,
+    source: &str,
+    projection: &GoCandidateProjection,
+    grammar: Language,
+) -> Result<GoCandidateSymbols, SymbolExtractError> {
+    if SymbolLanguage::from_path(path) != Some(SymbolLanguage::Go) {
+        return Err(SymbolExtractError::Unsupported { path: path.into() });
+    }
+    if source.len() > 1 << 20 || projection.edits.len() > 1 << 16 {
+        return Err(SymbolExtractError::ResourceLimit { path: path.into() });
+    }
+    let defect = || SymbolExtractError::ProducerDefect {
+        detail: format!("invalid Go candidate projection: {path}"),
+    };
+    if source.len() != projection.projected.len()
+        || sha256_hex(source.as_bytes()) != projection.source_sha256
+        || sha256_hex(projection.projected.as_bytes()) != projection.projected_sha256
+        || projection.helper_binary_sha256.len() != 64
+        || !projection
+            .helper_binary_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(defect());
+    }
+    let mut rebuilt = source.as_bytes().to_vec();
+    let mut previous_end = 0;
+    for edit in &projection.edits {
+        if edit.start < previous_end || edit.start >= edit.end || edit.end > source.len() {
+            return Err(defect());
+        }
+        let old = &source.as_bytes()[edit.start..edit.end];
+        let replacement = edit.replacement.as_bytes();
+        if !((old == b"new" && replacement == b"foo") || (old == b"make" && replacement == b"fooo"))
+        {
+            return Err(defect());
+        }
+        rebuilt[edit.start..edit.end].copy_from_slice(replacement);
+        previous_end = edit.end;
+    }
+    if rebuilt != projection.projected.as_bytes() {
+        return Err(defect());
+    }
+    let tree = parse_tree_with_grammar(grammar.clone(), path, &projection.projected, None)?;
+    if tree.root_node().has_error() {
+        return Err(SymbolExtractError::ParseFailure { path: path.into() });
+    }
+    let query = tree_sitter::Query::new(&grammar, SymbolLanguage::Go.query()).map_err(|error| {
+        SymbolExtractError::ProducerDefect {
+            detail: format!("candidate Go grammar/query mismatch for {path}: {error}"),
+        }
+    })?;
+    let extracted =
+        extract_parsed_symbols(SymbolLanguage::Go, path, source, &tree, None, Some(&query))?;
+    if extracted.names.values().any(|name| {
+        projection
+            .edits
+            .iter()
+            .any(|edit| edit.start < name.end_byte && name.start_byte < edit.end)
+    }) {
+        return Err(defect());
+    }
+    let edit_bytes = serde_json::to_vec(&projection.edits).map_err(|_| defect())?;
+    Ok(GoCandidateSymbols {
+        records: extracted.records,
+        source_sha256: projection.source_sha256.clone(),
+        projected_sha256: projection.projected_sha256.clone(),
+        helper_binary_sha256: projection.helper_binary_sha256.clone(),
+        edits_sha256: sha256_hex(&edit_bytes),
+    })
 }
 
 fn extract_parsed_symbols(
@@ -880,8 +999,13 @@ fn extract_parsed_symbols(
     source: &str,
     tree: &tree_sitter::Tree,
     control: Option<&ExtractionControl<'_>>,
+    query: Option<&tree_sitter::Query>,
 ) -> Result<ExtractedSymbols, SymbolExtractError> {
-    let definitions = query_definitions(language, tree, source, control)?;
+    let definitions = if let Some(query) = query {
+        query_definitions_with_query(language, tree, source, control, query)?
+    } else {
+        query_definitions(language, tree, source, control)?
+    };
     let line_index = LineIndex::new(source);
     let language_code = LanguageCode::from_code_str(language.language_code()).ok_or_else(|| {
         SymbolExtractError::Unsupported {
@@ -1040,11 +1164,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn explicit_go_candidate_keeps_original_symbol_records() {
+        let source = "package p\n// café\ntype Rect struct{W float64}\n\
+                      type Shape interface{ Area() float64 }\n\
+                      func (r *Rect) Area() float64 { return r.W }\n\
+                      func Run(){_=new(1);_=make([]int,2)}\n";
+        let start = source.find("new(1)").expect("callee");
+        let projected = source.replacen("new(1)", "foo(1)", 1);
+        let projection = GoCandidateProjection {
+            projected_sha256: sha256_hex(projected.as_bytes()),
+            source_sha256: sha256_hex(source.as_bytes()),
+            helper_binary_sha256: "a".repeat(64),
+            edits: vec![GoCandidateEdit {
+                start,
+                end: start + 3,
+                replacement: "foo".into(),
+            }],
+            projected,
+        };
+        let candidate = extract_go_candidate_symbols(
+            "p.go",
+            source,
+            &projection,
+            tree_sitter_go_official::LANGUAGE.into(),
+        )
+        .expect("explicit candidate");
+        assert_eq!(
+            candidate.records,
+            extract_symbols("p.go", source).expect("vendor baseline")
+        );
+        assert_eq!(candidate.source_sha256, sha256_hex(source.as_bytes()));
+        assert_eq!(candidate.projected_sha256, projection.projected_sha256);
+        assert_eq!(candidate.edits_sha256.len(), 64);
+
+        let mut malformed = projection.clone();
+        malformed.projected.push('x');
+        assert!(matches!(
+            extract_go_candidate_symbols(
+                "p.go",
+                source,
+                &malformed,
+                tree_sitter_go_official::LANGUAGE.into()
+            ),
+            Err(SymbolExtractError::ProducerDefect { .. })
+        ));
+    }
+
+    #[test]
     fn local_name_capture_distinguishes_same_line_declarations_and_usage() {
         let source = "package p\nfunc Pick() { Pick() }; func Other() {}\n";
         let language = SymbolLanguage::Go;
         let tree = parse(language, "same.go", source).expect("valid Go fixture");
-        let extracted = extract_parsed_symbols(language, "same.go", source, &tree, None)
+        let extracted = extract_parsed_symbols(language, "same.go", source, &tree, None, None)
             .expect("source extraction");
         let pick = find(&extracted.records, "Pick");
         let name = extracted
@@ -1078,7 +1249,7 @@ mod tests {
         ] {
             let language = SymbolLanguage::from_path(path).expect("language");
             let tree = parse(language, path, source).expect("valid source");
-            let extracted = extract_parsed_symbols(language, path, source, &tree, None)
+            let extracted = extract_parsed_symbols(language, path, source, &tree, None, None)
                 .expect("source extraction");
             let record = find(&extracted.records, local_name);
             assert_eq!(

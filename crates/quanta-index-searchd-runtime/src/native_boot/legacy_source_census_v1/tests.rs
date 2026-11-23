@@ -34,8 +34,9 @@ use quanta_index_core::{
 use quanta_index_search_plane::{
     SearchCorpusLifecycleOwner,
     readiness::{
-        PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1,
+        ActivationReadFailureV1, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1,
         SearchCorpusHistoryRetentionPolicyV1, SearchCorpusIndexBytesPort,
+        inspect_existing_activation_repository_v1,
     },
 };
 use quanta_index_searchd::app::runtime::StateRootLease;
@@ -136,8 +137,12 @@ fn roots() -> SemanticContentRootsV1 {
 }
 
 fn identity(generation: u64) -> TestResult<SearchCorpusGenerationV1> {
+    identity_for(REVISION, generation)
+}
+
+fn identity_for(revision: &str, generation: u64) -> TestResult<SearchCorpusGenerationV1> {
     let repo = RepoId::new(REPO)?;
-    let revision = RevisionId::new(REVISION)?;
+    let revision = RevisionId::new(revision)?;
     let snapshot = |track| GenerationSnapshot {
         repo_id: repo.clone(),
         revision_id: revision.clone(),
@@ -195,6 +200,19 @@ fn commit_with_raw_receipt(
 fn actual_census(
     root: &Path,
 ) -> TestResult<std::result::Result<ActiveSourceCensusV1, anyhow::Error>> {
+    with_source_read_authority(root, collect_active_source_heads_v1)
+}
+
+fn with_source_read_authority<T>(
+    root: &Path,
+    read: impl FnOnce(
+        &Path,
+        &dyn CatalogReadOnlyIoAdmission,
+        &dyn ObjectReadIoPort,
+        &dyn ExistingTreeMetadataIoPortV1,
+        &mut WorkBudget,
+    ) -> anyhow::Result<T>,
+) -> TestResult<anyhow::Result<T>> {
     let lease = StateRootLease::acquire(root)?;
     let root = lease.state_root_identity_v1().to_path_buf();
     let authority = seed_publication_capacity(
@@ -219,8 +237,7 @@ fn actual_census(
     )?;
     let objects = NativeObjectReadIo::new(Arc::clone(&common));
     let metadata = common.existing_tree_read_io_v1();
-    let result =
-        collect_active_source_heads_v1(&root, &vfs, &objects, &metadata, &mut read_budget());
+    let result = read(&root, &vfs, &objects, &metadata, &mut read_budget());
     vfs.drain_retirements()?;
     Ok(result)
 }
@@ -274,6 +291,54 @@ fn source_high_water_accepts_only_the_latest_matching_actual_ack() -> TestResult
             .map(|ack| ack.durable_sequence),
         sequences.get(1).copied()
     );
+    Ok(())
+}
+
+#[test]
+fn single_scope_recovery_refuses_a_physical_active_sibling() -> TestResult {
+    let (directory, _) = fixture(&[], true)?;
+    let primary = identity(7)?.to_contract_v1();
+    let inspect = || {
+        with_source_read_authority(directory.path(), |root, _, objects, metadata, budget| {
+            inspect_existing_activation_repository_v1(
+                &root.join("activations"),
+                &primary.lexical.repo_id,
+                &primary.lexical.revision_id,
+                objects,
+                metadata,
+                budget,
+            )
+            .map_err(Into::into)
+        })
+    };
+    let before = inspect()??;
+    assert_eq!(
+        before.head_v1().map(|head| &head.generation),
+        Some(&primary)
+    );
+    drop(before);
+
+    let owner = SearchCorpusLifecycleOwner::open(
+        directory.path(),
+        SearchCorpusHistoryRetentionPolicyV1::new(2, 1024 * 1024, 8, 8 * 1024 * 1024)?,
+        Arc::new(FixtureIndexBytes),
+    )?;
+    let sibling = identity_for("sibling", 7)?;
+    let prepared = PreparedSearchCorpusGenerationV1::new(sibling, None)?;
+    let _activated = owner
+        .activation_catalog()
+        .activate_prepared_search_corpus_generation_v1(&prepared)?;
+    drop(owner);
+    let rejected = inspect()?;
+    assert!(matches!(
+        rejected
+            .as_ref()
+            .err()
+            .and_then(|error| error.downcast_ref::<ActivationReadFailureV1>()),
+        Some(ActivationReadFailureV1::AdmissionOrIo(
+            IndexError::DigestConflict
+        ))
+    ));
     Ok(())
 }
 

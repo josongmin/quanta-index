@@ -10,7 +10,7 @@ use quanta_index_core::index::{
 };
 use quanta_index_core::{
     DiagnosticAnnIndexKindV1, DiagnosticAnnRegionObservationV1, DiagnosticAnnRegionPhaseV1,
-    DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1,
+    DiagnosticCounterV1, DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1,
 };
 
 use super::native_graph;
@@ -29,7 +29,7 @@ use crate::native::{
     ann_store::AnnStoreLimits,
 };
 
-const MAX_ROUTED_REGIONS: usize = 8;
+const MAX_ROUTED_GRAPH_REGIONS: usize = 8;
 const MAX_CACHED_ARTIFACT_BYTES: usize = 512 * 1024;
 const MAX_CACHED_MEMBERS: usize = 8;
 
@@ -65,6 +65,39 @@ struct RoutedRegion {
     score: f64,
     ordinal: u64,
     object: StoredObject,
+}
+
+struct RankedLanceRegions {
+    entries: Vec<RankedLanceRegion>,
+    _memory: Option<MemoryLease>,
+}
+
+struct RankedLanceRegion {
+    score: f64,
+    ordinal: u64,
+    projection: LanceRegionProjection,
+}
+
+#[derive(Clone, Copy)]
+struct LanceRegionProjection {
+    reference: ObjectRef,
+    fileset: ObjectRef,
+    members: MapRoot,
+    rows: u32,
+}
+
+struct LanceRegionWindow {
+    owner_slots: usize,
+    candidate_cap: usize,
+    minimum_prefix: Option<usize>,
+}
+
+struct DeferredLanceRegion {
+    ordinal: u64,
+    projection: LanceRegionProjection,
+    candidate_cap: usize,
+    minimum_prefix: usize,
+    hydration_work: WorkUsage,
 }
 
 struct SeenOwner {
@@ -310,33 +343,98 @@ impl ExactDeltaMembers {
     }
 }
 
-fn insert_seen<'a>(
-    seen: &'a mut Vec<SeenOwner>,
-    owner: OwnerKey,
-    stale: bool,
+struct SeenOwners {
+    entries: Vec<SeenOwner>,
+    memory: Option<MemoryLease>,
     limit: usize,
-    capped: &mut bool,
-) -> Result<Option<&'a mut SeenOwner>, IndexError> {
-    match seen.binary_search_by_key(&owner, |entry| entry.owner) {
-        Ok(index) => Ok(seen.get_mut(index)),
-        Err(_index) if seen.len() >= limit => {
-            *capped = true;
-            Ok(None)
-        }
-        Err(index) => {
-            if seen.len() == seen.capacity() {
-                return Err(IndexError::ResourceLimited);
+}
+
+impl SeenOwners {
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn admit(
+        &mut self,
+        owner: OwnerKey,
+        stale: bool,
+        limit: usize,
+        capped: &mut bool,
+        budget: &quanta_index_core::index::WorkBudget,
+    ) -> Result<Option<&mut SeenOwner>, IndexError> {
+        match self
+            .entries
+            .binary_search_by_key(&owner, |entry| entry.owner)
+        {
+            Ok(index) => Ok(self.entries.get_mut(index)),
+            Err(_index) if self.len() >= limit => {
+                *capped = true;
+                Ok(None)
             }
-            seen.insert(
-                index,
-                SeenOwner {
-                    owner,
-                    stale,
-                    member: None,
-                },
-            );
-            Ok(seen.get_mut(index))
+            Err(index) => {
+                if self.len() == self.entries.capacity() {
+                    self.grow(budget)?;
+                }
+                self.entries.insert(
+                    index,
+                    SeenOwner {
+                        owner,
+                        stale,
+                        member: None,
+                    },
+                );
+                Ok(self.entries.get_mut(index))
+            }
         }
+    }
+
+    fn bytes(capacity: usize) -> Result<u64, IndexError> {
+        capacity
+            .checked_mul(std::mem::size_of::<SeenOwner>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(IndexError::ResourceLimited)
+    }
+
+    fn grow(&mut self, budget: &quanta_index_core::index::WorkBudget) -> Result<(), IndexError> {
+        let needed = self
+            .len()
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        if needed > self.limit {
+            return Err(IndexError::ResourceLimited);
+        }
+        let preferred = needed
+            .checked_next_power_of_two()
+            .ok_or(IndexError::ResourceLimited)?
+            .min(self.limit);
+        if preferred > needed
+            && let Some(memory) = budget
+                .try_reserve_spare_memory(Self::bytes(preferred)?, MemoryLifetime::Temporary)?
+        {
+            return self.replace_allocation(preferred, Some(memory));
+        }
+        let memory = budget.reserve_memory(Self::bytes(needed)?, MemoryLifetime::Temporary)?;
+        let capacity = if memory.is_some() { needed } else { preferred };
+        self.replace_allocation(capacity, memory)
+    }
+
+    fn replace_allocation(
+        &mut self,
+        capacity: usize,
+        memory: Option<MemoryLease>,
+    ) -> Result<(), IndexError> {
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(capacity)
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        if entries.capacity() != capacity {
+            return Err(IndexError::ResourceLimited);
+        }
+        // Both allocations are live until the old backing has been freed.
+        entries.append(&mut self.entries);
+        self.entries = entries;
+        self.memory = memory;
+        Ok(())
     }
 }
 
@@ -389,7 +487,7 @@ fn rank_selected(
     query: &SearchQuery<'_>,
     query_norm: f64,
     heap: &mut RankedHits,
-    seen: &mut Vec<SeenOwner>,
+    seen: &mut SeenOwners,
     durable_limit: usize,
     capped: &mut bool,
     mut cached: Option<&mut RegionArtifactCache<'_>>,
@@ -446,7 +544,7 @@ fn rank_selected(
         None
     };
     let stale = coverage.covered != Some(coverage.desired) || coverage.searchable.is_none();
-    let Some(seen_owner) = insert_seen(seen, owner, stale, durable_limit, capped)? else {
+    let Some(seen_owner) = seen.admit(owner, stale, durable_limit, capped, context.budget)? else {
         return Ok(None);
     };
     if stale {
@@ -640,19 +738,56 @@ fn rank_selected(
 )]
 fn query_lance_region(
     directory: &AnnDirectory,
-    descriptor: &LoadedRegionDescriptor,
+    descriptor: &LanceRegionProjection,
     ordinal: u64,
     query: &SearchQuery<'_>,
     query_norm: f64,
     top_k: usize,
     heap: &mut RankedHits,
-    seen: &mut Vec<SeenOwner>,
-    durable_limit: usize,
+    seen: &mut SeenOwners,
+    window: LanceRegionWindow,
     capped: &mut bool,
     context: &mut ReadContext<'_>,
     runtime: &tokio::runtime::Runtime,
     span: Option<&DiagnosticSpanGuardV1>,
-) -> Result<NativeSemanticTraversal, IndexError> {
+) -> Result<Option<(ann_lance::RegionPage, WorkUsage)>, IndexError> {
+    let LanceRegionWindow {
+        owner_slots,
+        candidate_cap,
+        minimum_prefix,
+    } = window;
+    let owner_limit = seen
+        .len()
+        .checked_add(owner_slots)
+        .ok_or(IndexError::ResourceLimited)?;
+    let rows = usize::try_from(descriptor.rows).map_err(|_error| IndexError::ResourceLimited)?;
+    let vectors_per_owner =
+        usize::try_from(query.recipe.max_vectors).map_err(|_error| IndexError::ResourceLimited)?;
+    // An owner slot can cover several vector rows. These rows can still
+    // improve the results after the region stops admitting new owners.
+    let prefix_limit = owner_slots
+        .saturating_mul(vectors_per_owner)
+        .min(rows)
+        .min(candidate_cap);
+    let result_limit = if minimum_prefix.is_some() {
+        // A replayed prefix also contains already-ranked files. Filling the
+        // small residual owner window with those files is not progress.
+        rows.min(candidate_cap)
+    } else if query.source_files {
+        owner_slots.min(prefix_limit)
+    } else {
+        prefix_limit
+    };
+    let region_top_k = top_k.min(result_limit);
+    let stop_refill =
+        (vectors_per_owner == 1).then_some(ann_lance::RefillProgress::OwnerLimitReached);
+    let initial_candidates = top_k
+        .checked_mul(4)
+        .ok_or(IndexError::ResourceLimited)?
+        .max(64)
+        .min(prefix_limit)
+        .max(minimum_prefix.unwrap_or_default())
+        .max(region_top_k);
     let diagnostic = context
         .budget
         .request()
@@ -663,42 +798,72 @@ fn query_lance_region(
         diagnostic.as_ref(),
         DiagnosticStageV1::QueryAnnFileSet,
     );
-    let fileset_result = (|| {
-        let fileset = ann_files::load_fileset(
-            context.objects,
-            descriptor.descriptor.fileset,
-            context.budget,
-        )?;
-        if fileset.seal.recipe != directory.recipe
-            || fileset.seal.generation
-                != ordinal.checked_add(1).ok_or(IndexError::ResourceLimited)?
-            || fileset.seal.rows != descriptor.descriptor.rows
-            || usize::try_from(fileset.seal.dimension)
-                .map_err(|_error| IndexError::ResourceLimited)?
-                != descriptor.descriptor.center.len()
-        {
-            return Err(IndexError::CorruptObject(
-                "ANN selected region seal differs from directory".into(),
-            ));
-        }
-        Ok::<_, IndexError>(fileset)
-    })();
+    let fileset_result = ann_files::load_fileset_if_admitted(
+        context.objects,
+        descriptor.fileset,
+        context.budget,
+        |seal, total_length, file_count, budget| {
+            if seal.recipe != directory.recipe
+                || seal.generation != ordinal.checked_add(1).ok_or(IndexError::ResourceLimited)?
+                || seal.rows != descriptor.rows
+                || usize::try_from(seal.dimension).map_err(|_error| IndexError::ResourceLimited)?
+                    != query.vector.len()
+            {
+                return Err(IndexError::CorruptObject(
+                    "ANN selected region seal differs from directory".into(),
+                ));
+            }
+            let max_read_bytes = total_length
+                .checked_mul(8)
+                .and_then(|bytes| bytes.checked_add(1_048_576))
+                .ok_or(IndexError::ResourceLimited)?
+                .min(64 * 1024 * 1024);
+            let limits = AnnStoreLimits {
+                max_write_bytes: total_length.max(1),
+                max_read_bytes,
+                ..AnnStoreLimits::default()
+            };
+            let hydration_work = limits.hydration_work(file_count)?;
+            let prefix_work = ann_lance::prefix_work(initial_candidates)?;
+            let opening_work = WorkUsage {
+                reads: hydration_work
+                    .reads
+                    .checked_add(ann_lance::OPEN_REGION_WORK.reads)
+                    .and_then(|reads| reads.checked_add(prefix_work.reads))
+                    .ok_or(IndexError::ResourceLimited)?,
+                bytes: hydration_work
+                    .bytes
+                    .checked_add(prefix_work.bytes)
+                    .ok_or(IndexError::ResourceLimited)?,
+                ..hydration_work
+            };
+            let known_work = WorkUsage {
+                // Verification charges file bytes independently of the store envelope.
+                bytes: opening_work
+                    .bytes
+                    .checked_add(total_length)
+                    .ok_or(IndexError::ResourceLimited)?,
+                ..opening_work
+            };
+            budget.checkpoint()?;
+            Ok(budget
+                .can_charge(known_work)
+                .then_some((limits, hydration_work, opening_work)))
+        },
+    );
     finish_lance_query_stage(fileset_span, &fileset_result);
-    let fileset = fileset_result?;
-    let max_read_bytes = fileset
-        .total_length
-        .checked_mul(8)
-        .and_then(|bytes| bytes.checked_add(1_048_576))
-        .ok_or(IndexError::ResourceLimited)?
-        .min(64 * 1024 * 1024);
-    let limits = AnnStoreLimits {
-        max_write_bytes: fileset.total_length.max(1),
-        max_read_bytes,
-        ..AnnStoreLimits::default()
+    let Some((fileset, (limits, hydration_work, opening_work))) = fileset_result? else {
+        return Ok(None);
     };
+    // Object ports account for their own chunk reads. Recheck the known
+    // cost against the current budget before paying for a private session.
+    context.budget.checkpoint()?;
+    if !context.budget.can_charge(opening_work) {
+        return Ok(None);
+    }
     let objects = context.objects;
     let maps = context.maps;
-    let members = descriptor.descriptor.members;
+    let members = descriptor.members;
     let budget = &mut *context.budget;
     let cache_memory = budget.try_reserve_memory_for_optimization(
         u64::try_from(std::mem::size_of::<LanceArtifactCache>())
@@ -734,13 +899,7 @@ fn query_lance_region(
             }
             .await;
             finish_lance_query_stage(open_span, &region_result);
-            let region = region_result?;
-            let region_top_k = top_k.min(ann_lance::MAX_REGION_CANDIDATES);
-            let initial_candidates = region_top_k
-                .checked_mul(4)
-                .ok_or(IndexError::ResourceLimited)?
-                .max(64)
-                .min(ann_lance::MAX_REGION_CANDIDATES);
+            let region = region_result?.with_read_store(session.read_store());
             let candidate_span = crate::build_diagnostic::begin_build_stage(
                 diagnostic.as_ref(),
                 DiagnosticStageV1::QueryAnnCandidate,
@@ -750,9 +909,18 @@ fn query_lance_region(
                 query.vector,
                 region_top_k,
                 initial_candidates,
-                ann_lance::MAX_REGION_CANDIDATES,
+                candidate_cap,
                 budget,
                 |candidate, budget| {
+                    if seen.len() == owner_limit
+                        && seen
+                            .entries
+                            .binary_search_by_key(&candidate.owner, |entry| entry.owner)
+                            .is_err()
+                    {
+                        *capped = true;
+                        return Ok(stop_refill);
+                    }
                     let mut read = ReadContext {
                         objects,
                         maps,
@@ -775,11 +943,14 @@ fn query_lance_region(
                         query_norm,
                         heap,
                         seen,
-                        durable_limit,
+                        owner_limit,
                         capped,
                         None,
                         &mut read,
                     )?;
+                    if seen.len() == owner_limit && stop_refill.is_some() {
+                        return Ok(stop_refill);
+                    }
                     Ok(scored.map(|owner| {
                         if query.source_files {
                             ann_lance::RefillProgress::SourceFile(owner)
@@ -790,12 +961,11 @@ fn query_lance_region(
                 },
             )
             .await;
-            let page = session.resolve(page);
             finish_lance_query_stage(candidate_span, &page);
-            Ok::<_, IndexError>(page?.traversal)
+            page
         })
     };
-    let traversal = if let Some(memory) = cache_memory {
+    let page = if let Some(memory) = cache_memory {
         let (result, _cache) =
             budget.with_discardable_memory(Box::new(LanceArtifactCache::new(memory)), run);
         result
@@ -817,8 +987,8 @@ fn query_lance_region(
             span,
             DiagnosticAnnRegionObservationV1 {
                 phase: DiagnosticAnnRegionPhaseV1::SelectedQuery,
-                fileset_ref: descriptor.descriptor.fileset.0.0,
-                descriptor_ref: Some(descriptor.reference().0.0),
+                fileset_ref: descriptor.fileset.0.0,
+                descriptor_ref: Some(descriptor.reference.0.0),
                 ordinal,
                 rows: fileset.seal.rows,
                 index_kind: ann_files::diagnostic_index_kind(&fileset.seal)?,
@@ -827,10 +997,57 @@ fn query_lance_region(
             },
         );
     }
-    Ok(traversal)
+    Ok(Some((page, hydration_work)))
 }
 
-fn route_regions(
+fn visit_region_descriptors(
+    directory: &AnnDirectory,
+    dimension: usize,
+    context: &mut ReadContext<'_>,
+    mut visit: impl FnMut(
+        u64,
+        LoadedRegionDescriptor,
+        usize,
+        &mut ReadContext<'_>,
+    ) -> Result<(), IndexError>,
+) -> Result<(), IndexError> {
+    let mut after = None;
+    let mut remaining =
+        usize::try_from(directory.region_count).map_err(|_error| IndexError::ResourceLimited)?;
+    loop {
+        let page = directory.region_page(after, 64, after.is_some(), context)?;
+        for (key, reference) in &page.entries {
+            let reference = *reference.as_object_ref()?;
+            let ordinal = u64::from_be_bytes(key.as_slice().try_into().map_err(|_error| {
+                IndexError::CorruptObject("ANN region key width differs".into())
+            })?);
+            let remaining_after = remaining
+                .checked_sub(1)
+                .ok_or_else(|| IndexError::CorruptObject("ANN region map count exceeded".into()))?;
+            context.budget.checkpoint()?;
+            let descriptor = directory.region_from_page(ordinal, reference, context)?;
+            if descriptor.descriptor.center.len() != dimension {
+                return Err(IndexError::CorruptObject(
+                    "ANN region center dimension differs from query recipe".into(),
+                ));
+            }
+            visit(ordinal, descriptor, remaining, context)?;
+            remaining = remaining_after;
+            after = Some(ordinal);
+        }
+        if !page.has_more {
+            break;
+        }
+    }
+    if remaining != 0 {
+        return Err(IndexError::CorruptObject(
+            "ANN region map count differs".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn route_graph_regions(
     directory: &AnnDirectory,
     route_limit: usize,
     query: &SearchQuery<'_>,
@@ -855,28 +1072,11 @@ fn route_regions(
     if routes.capacity() > route_limit {
         return Err(IndexError::ResourceLimited);
     }
-    let mut after = None;
-    let mut count = 0u32;
-    loop {
-        let page = directory.region_page(after, 64, after.is_some(), context)?;
-        for (key, reference) in &page.entries {
-            let reference = *reference.as_object_ref()?;
-            let ordinal = u64::from_be_bytes(key.as_slice().try_into().map_err(|_error| {
-                IndexError::CorruptObject("ANN region key width differs".into())
-            })?);
-            count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-            if count > directory.region_count {
-                return Err(IndexError::CorruptObject(
-                    "ANN region map count exceeded".into(),
-                ));
-            }
-            context.budget.checkpoint()?;
-            let descriptor = directory.region_from_page(ordinal, reference, context)?;
-            if descriptor.descriptor.center.len() != query.vector.len() {
-                return Err(IndexError::CorruptObject(
-                    "ANN region center dimension differs from query recipe".into(),
-                ));
-            }
+    visit_region_descriptors(
+        directory,
+        query.vector.len(),
+        context,
+        |ordinal, descriptor, _, _| {
             let score = cosine(query.vector, query_norm, &descriptor.descriptor.center)?;
             let object = descriptor.into_stored_object();
             if routes.len() < route_limit {
@@ -904,29 +1104,84 @@ fn route_regions(
                     .total_cmp(&left.score)
                     .then_with(|| left.ordinal.cmp(&right.ordinal))
             });
-            after = Some(ordinal);
-        }
-        if !page.has_more {
-            break;
-        }
-    }
-    if count != directory.region_count {
-        return Err(IndexError::CorruptObject(
-            "ANN region map count differs".into(),
-        ));
-    }
+            Ok(())
+        },
+    )?;
     Ok(RoutedRegions {
         entries: routes,
         _memory: memory,
     })
 }
 
+fn rank_lance_regions(
+    directory: &AnnDirectory,
+    query: &SearchQuery<'_>,
+    query_norm: f64,
+    context: &mut ReadContext<'_>,
+) -> Result<RankedLanceRegions, IndexError> {
+    let count =
+        usize::try_from(directory.region_count).map_err(|_error| IndexError::ResourceLimited)?;
+    let bytes = count
+        .checked_mul(std::mem::size_of::<RankedLanceRegion>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(IndexError::ResourceLimited)?;
+    let memory = if bytes == 0 {
+        None
+    } else {
+        context
+            .budget
+            .reserve_memory(bytes, MemoryLifetime::Temporary)?
+    };
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(count)
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    if entries.capacity() != count {
+        return Err(IndexError::ResourceLimited);
+    }
+    visit_region_descriptors(
+        directory,
+        query.vector.len(),
+        context,
+        |ordinal, descriptor, _, _| {
+            let score = cosine(query.vector, query_norm, &descriptor.descriptor.center)?;
+            entries.push(RankedLanceRegion {
+                score,
+                ordinal,
+                projection: LanceRegionProjection {
+                    reference: descriptor.reference(),
+                    fileset: descriptor.descriptor.fileset,
+                    members: descriptor.descriptor.members,
+                    rows: descriptor.descriptor.rows,
+                },
+            });
+            Ok(())
+        },
+    )?;
+    // Ordering changes which regions receive a bounded owner window. It does
+    // not discard a region: every descriptor has already been authenticated.
+    entries.sort_unstable_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.ordinal.cmp(&right.ordinal))
+    });
+    Ok(RankedLanceRegions {
+        entries,
+        _memory: memory,
+    })
+}
+
 fn candidate_capacity(
+    backend: AnnBackend,
     region_count: usize,
     candidate_cap: usize,
     delta_owners: usize,
 ) -> Result<(usize, usize), IndexError> {
-    let route_limit = region_count.min(MAX_ROUTED_REGIONS);
+    let route_limit = match backend {
+        AnnBackend::Graph => region_count.min(MAX_ROUTED_GRAPH_REGIONS),
+        AnnBackend::LanceDb => region_count,
+    };
     let owners = route_limit
         .checked_mul(candidate_cap)
         .and_then(|count| count.checked_add(delta_owners))
@@ -990,6 +1245,208 @@ fn visit_delta_members(
             "ANN delta map count differs from directory".into(),
         ));
     }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "share the request's ranking and budget across visited regions"
+)]
+fn search_lance_regions(
+    directory: &AnnDirectory,
+    query: &SearchQuery<'_>,
+    query_norm: f64,
+    top_k: usize,
+    heap: &mut RankedHits,
+    seen: &mut SeenOwners,
+    durable_limit: usize,
+    capped: &mut bool,
+    context: &mut ReadContext<'_>,
+    runtime: Option<&tokio::runtime::Runtime>,
+) -> Result<(), IndexError> {
+    let query_region = |ordinal,
+                        descriptor: &LanceRegionProjection,
+                        window,
+                        heap: &mut RankedHits,
+                        seen: &mut SeenOwners,
+                        context: &mut ReadContext<'_>| {
+        let runtime = runtime.ok_or_else(|| {
+            IndexError::BackendViolation("ANN Lance runtime is unavailable".into())
+        })?;
+        let span = crate::build_diagnostic::begin_build_stage(
+            context.budget.request().diagnostic_context(),
+            DiagnosticStageV1::QueryCandidate,
+        );
+        let before = context.budget.usage();
+        let mut owner_capped = false;
+        let region_result = query_lance_region(
+            directory,
+            descriptor,
+            ordinal,
+            query,
+            query_norm,
+            top_k,
+            heap,
+            seen,
+            window,
+            &mut owner_capped,
+            context,
+            runtime,
+            span.as_ref(),
+        );
+        if let Some(span) = span.as_ref() {
+            context.budget.record_diagnostic_usage_delta(before, span);
+        }
+        if matches!(&region_result, Ok(None))
+            && let (Some(diagnostic), Some(span)) =
+                (context.budget.request().diagnostic_context(), span.as_ref())
+        {
+            diagnostic.counter(span, DiagnosticCounterV1::RejectedAtGuard, 1);
+        }
+        finish_lance_query_stage(span, &region_result);
+        region_result.map(|region| region.map(|(page, work)| (page, work, owner_capped)))
+    };
+
+    let mut deferred = Vec::new();
+    let mut deferred_memory = None;
+    let ranked = rank_lance_regions(directory, query, query_norm, context)?;
+    let region_count = ranked.entries.len();
+    for (index, region) in ranked.entries.iter().enumerate() {
+        let ordinal = region.ordinal;
+        let remaining_regions = region_count
+            .checked_sub(index)
+            .ok_or(IndexError::ResourceLimited)?;
+        let seen_before = seen.len();
+        let slots = durable_limit
+            .checked_sub(seen_before)
+            .ok_or(IndexError::ResourceLimited)?;
+        if slots == 0 {
+            // Every descriptor was authenticated during ranking. Do not open
+            // a fileset when no selected owner slot remains.
+            *capped = true;
+            let diagnostic = context.budget.request().diagnostic_context();
+            let span = crate::build_diagnostic::begin_build_stage(
+                diagnostic,
+                DiagnosticStageV1::QueryCandidate,
+            );
+            if let (Some(diagnostic), Some(span)) = (diagnostic, span.as_ref()) {
+                diagnostic.counter(span, DiagnosticCounterV1::RejectedAtGuard, 1);
+            }
+            crate::build_diagnostic::finish_build_stage(span, true);
+            continue;
+        }
+        // Reserve part of the remaining owner window for subsequent
+        // regions. Unused slots carry forward; only a new seen owner
+        // consumes a slot, including stale owners.
+        let owner_slots = slots
+            .checked_div(remaining_regions)
+            .ok_or(IndexError::ResourceLimited)?
+            .max(1);
+        let Some((page, hydration_work, owner_capped)) = query_region(
+            ordinal,
+            &region.projection,
+            LanceRegionWindow {
+                owner_slots,
+                candidate_cap: ann_lance::MAX_REGION_CANDIDATES,
+                minimum_prefix: None,
+            },
+            heap,
+            seen,
+            context,
+        )?
+        else {
+            *capped = true;
+            continue;
+        };
+        if !owner_capped && !region_was_capped(page.traversal) {
+            continue;
+        }
+        let candidate_cap = ann_lance::MAX_REGION_CANDIDATES
+            .checked_sub(page.requested)
+            .ok_or(IndexError::ResourceLimited)?;
+        let rows = usize::try_from(region.projection.rows)
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        let minimum_prefix = page
+            .last_prefix
+            .saturating_mul(2)
+            .min(rows)
+            .min(candidate_cap);
+        // Retry only when the reserved owner window could have hidden a
+        // result. Repeating the same prefix only helps when an owner
+        // was refused inside it.
+        if remaining_regions > 1
+            && seen.len().checked_sub(seen_before) == Some(owner_slots)
+            && (minimum_prefix > page.last_prefix
+                || owner_capped && minimum_prefix == page.last_prefix)
+        {
+            if deferred.capacity() == 0 {
+                let capacity = usize::try_from(directory.region_count)
+                    .map_err(|_error| IndexError::ResourceLimited)?
+                    .min(durable_limit);
+                let bytes = capacity
+                    .checked_mul(std::mem::size_of::<DeferredLanceRegion>())
+                    .and_then(|bytes| u64::try_from(bytes).ok())
+                    .ok_or(IndexError::ResourceLimited)?;
+                deferred_memory = context
+                    .budget
+                    .reserve_memory(bytes, MemoryLifetime::Temporary)?;
+                deferred
+                    .try_reserve_exact(capacity)
+                    .map_err(|_error| IndexError::ResourceLimited)?;
+                if deferred.capacity() != capacity {
+                    return Err(IndexError::ResourceLimited);
+                }
+            }
+            if deferred.len() == deferred.capacity() {
+                return Err(IndexError::ResourceLimited);
+            }
+            deferred.push(DeferredLanceRegion {
+                ordinal,
+                projection: region.projection,
+                candidate_cap,
+                minimum_prefix,
+                hydration_work,
+            });
+        } else {
+            *capped = true;
+        }
+    }
+    drop(ranked);
+
+    // Spend unused owner slots even when the heap is full: previously
+    // deferred owners may outrank it. Earlier filesets are already released.
+    for region in deferred {
+        context.budget.checkpoint()?;
+        let owner_slots = durable_limit
+            .checked_sub(seen.len())
+            .ok_or(IndexError::ResourceLimited)?;
+        if owner_slots == 0 {
+            *capped = true;
+            break;
+        }
+        if !context.budget.can_charge(region.hydration_work) {
+            *capped = true;
+            continue;
+        }
+        let Some((page, _hydration_work, owner_capped)) = query_region(
+            region.ordinal,
+            &region.projection,
+            LanceRegionWindow {
+                owner_slots,
+                candidate_cap: region.candidate_cap,
+                minimum_prefix: Some(region.minimum_prefix),
+            },
+            heap,
+            seen,
+            context,
+        )?
+        else {
+            *capped = true;
+            continue;
+        };
+        *capped |= owner_capped || region_was_capped(page.traversal);
+    }
+    drop(deferred_memory);
     Ok(())
 }
 
@@ -1076,25 +1533,20 @@ pub(super) fn search_loaded(
     let region_count =
         usize::try_from(directory.region_count).map_err(|_error| IndexError::ResourceLimited)?;
     let (route_limit, max_candidates) =
-        candidate_capacity(region_count, candidate_cap, delta_owners)?;
+        candidate_capacity(backend, region_count, candidate_cap, delta_owners)?;
     let seen_capacity = durable_limit.min(max_candidates);
-    let seen_bytes = seen_capacity
-        .checked_mul(std::mem::size_of::<SeenOwner>())
-        .ok_or(IndexError::ResourceLimited)?;
-    // Empty populations and overlay-only capacity allocate no owner table.
-    // A live memory authority deliberately rejects zero-byte reservations.
-    context.budget.checkpoint()?;
-    let seen_memory = if seen_bytes == 0 {
-        None
-    } else {
-        context.budget.reserve_memory(
-            u64::try_from(seen_bytes).map_err(|_error| IndexError::ResourceLimited)?,
-            MemoryLifetime::Temporary,
-        )?
+    let mut seen = SeenOwners {
+        entries: Vec::new(),
+        memory: None,
+        limit: seen_capacity,
     };
-    let mut seen = Vec::new();
-    seen.try_reserve_exact(seen_capacity)
-        .map_err(|_error| IndexError::ResourceLimited)?;
+    context.budget.checkpoint()?;
+    if matches!(backend, AnnBackend::Graph) && seen_capacity != 0 {
+        let memory = context
+            .budget
+            .reserve_memory(SeenOwners::bytes(seen_capacity)?, MemoryLifetime::Temporary)?;
+        seen.replace_allocation(seen_capacity, memory)?;
+    }
     let mut heap = RankedHits::for_query(query, context.budget)?;
     let mut capped = top_k > candidate_cap || region_count > route_limit;
 
@@ -1120,10 +1572,69 @@ pub(super) fn search_loaded(
         },
     )?;
 
+    match backend {
+        AnnBackend::Graph => search_graph_regions(
+            directory,
+            route_limit,
+            query,
+            query_norm,
+            top_k,
+            &mut heap,
+            &mut seen,
+            durable_limit,
+            &mut capped,
+            context,
+        )?,
+        AnnBackend::LanceDb => search_lance_regions(
+            directory,
+            query,
+            query_norm,
+            top_k,
+            &mut heap,
+            &mut seen,
+            durable_limit,
+            &mut capped,
+            context,
+            runtime,
+        )?,
+    }
+    let scanned_owners = u32::try_from(seen.len()).map_err(|_error| IndexError::ResourceLimited)?;
+    let skipped_stale = u32::try_from(seen.entries.iter().filter(|entry| entry.stale).count())
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    // The owner table is complete at this boundary. Overlay embedding and
+    // final result custody must be able to use its execution memory.
+    drop(seen);
+    finish_ranked(
+        query,
+        query_norm,
+        heap,
+        scanned_owners,
+        skipped_stale,
+        NativeSemanticTraversal::Approximate { capped },
+        context,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "share the request's ranking and budget across visited regions"
+)]
+fn search_graph_regions(
+    directory: &AnnDirectory,
+    route_limit: usize,
+    query: &SearchQuery<'_>,
+    query_norm: f64,
+    top_k: usize,
+    heap: &mut RankedHits,
+    seen: &mut SeenOwners,
+    durable_limit: usize,
+    capped: &mut bool,
+    context: &mut ReadContext<'_>,
+) -> Result<(), IndexError> {
     let RoutedRegions {
         entries,
         _memory: route_memory,
-    } = route_regions(directory, route_limit, query, query_norm, context)?;
+    } = route_graph_regions(directory, route_limit, query, query_norm, context)?;
     for routed in entries {
         let span = crate::build_diagnostic::begin_build_stage(
             context.budget.request().diagnostic_context(),
@@ -1133,26 +1644,6 @@ pub(super) fn search_loaded(
             context.budget.checkpoint()?;
             let ordinal = routed.ordinal;
             let descriptor = directory.region_from_retained(ordinal, routed.object, context)?;
-            if matches!(backend, AnnBackend::LanceDb) {
-                let runtime = runtime.ok_or_else(|| {
-                    IndexError::BackendViolation("ANN Lance runtime is unavailable".into())
-                })?;
-                return query_lance_region(
-                    directory,
-                    &descriptor,
-                    ordinal,
-                    query,
-                    query_norm,
-                    top_k,
-                    &mut heap,
-                    &mut seen,
-                    durable_limit,
-                    &mut capped,
-                    context,
-                    runtime,
-                    span.as_ref(),
-                );
-            }
             let graph = native_graph::load(
                 context.objects,
                 descriptor.descriptor.fileset,
@@ -1214,10 +1705,10 @@ pub(super) fn search_loaded(
                     Candidate::Region(candidate),
                     query,
                     query_norm,
-                    &mut heap,
-                    &mut seen,
+                    heap,
+                    seen,
                     durable_limit,
-                    &mut capped,
+                    capped,
                     Some(&mut cached),
                     context,
                 )?;
@@ -1248,37 +1739,32 @@ pub(super) fn search_loaded(
         })();
         crate::build_diagnostic::finish_build_stage(span, region_result.is_ok());
         if region_was_capped(region_result?) {
-            capped = true;
+            *capped = true;
         }
     }
     drop(route_memory);
-    let scanned_owners = u32::try_from(seen.len()).map_err(|_error| IndexError::ResourceLimited)?;
-    let skipped_stale = u32::try_from(seen.iter().filter(|entry| entry.stale).count())
-        .map_err(|_error| IndexError::ResourceLimited)?;
-    // The owner table is complete at this boundary. Overlay embedding and
-    // final result custody must be able to use its execution memory.
-    drop(seen);
-    drop(seen_memory);
-    finish_ranked(
-        query,
-        query_norm,
-        heap,
-        scanned_owners,
-        skipped_stale,
-        NativeSemanticTraversal::Approximate { capped },
-        context,
-    )
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{NativeSemanticTraversal, candidate_capacity, region_was_capped};
+    use super::{AnnBackend, NativeSemanticTraversal, candidate_capacity, region_was_capped};
 
     #[test]
     fn ann_candidate_capacity_tracks_only_routable_regions() -> Result<(), super::IndexError> {
-        assert_eq!(candidate_capacity(0, 1024, 1)?, (0, 1));
-        assert_eq!(candidate_capacity(1, 1024, 1)?, (1, 1025));
-        assert_eq!(candidate_capacity(9, 1024, 1)?, (8, 8193));
+        assert_eq!(candidate_capacity(AnnBackend::Graph, 0, 1024, 1)?, (0, 1));
+        assert_eq!(
+            candidate_capacity(AnnBackend::Graph, 1, 1024, 1)?,
+            (1, 1025)
+        );
+        assert_eq!(
+            candidate_capacity(AnnBackend::Graph, 9, 1024, 1)?,
+            (8, 8193)
+        );
+        assert_eq!(
+            candidate_capacity(AnnBackend::LanceDb, 9, 1024, 1)?,
+            (9, 9217)
+        );
         Ok(())
     }
 

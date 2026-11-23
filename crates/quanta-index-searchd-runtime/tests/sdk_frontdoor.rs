@@ -14,22 +14,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use quanta_index_contract::lex::{
-    LanguageCode, LexicalErrorCode, SymbolKindCode, SymbolKindFamily, SymbolRecord,
+    LanguageCode, LexicalErrorCode, SymbolKindFamily, SymbolRecord,
     compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin, GenerationSelector,
     HistoryOrderV1, HistoryQueryRequest, HybridSeedQueryRequest, ManifestGeneration, RepoId,
-    RepoMapActivateGenerationRequestV2, RepoMapChunkExactness, RepoMapChunkNode,
-    RepoMapContainsEdge, RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary, RepoMapFileNode,
-    RepoMapFocusSubjectDto, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
-    RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge,
-    RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
-    RepoMapSymbolNode, RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord,
+    RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord,
     RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest,
     RuntimeSnapshotRecord, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
     SearchPlaneErrorCodeV2, SearchPlaneTrackKind, SemanticQueryRequest, SourceFileKey,
-    SourcePublicationEvent, StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest,
+    SourcePublicationEvent, StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
     TextQuerySyntax,
 };
 use quanta_index_core::IntegrityScrubPolicyV1;
@@ -496,160 +491,6 @@ fn dirty_batch() -> DirtyBatch {
         .delete(ChunkId::new("chunk-evict"))
 }
 
-fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
-    let symbol_kind = SymbolKindCode::new("struct").map_err(|err| -> Box<dyn Error> {
-        format!("invalid repo-map symbol kind: {err}").into()
-    })?;
-    Ok(RepoMapSourceBundle::new(
-        repo(),
-        revision(),
-        generation(),
-        "2".repeat(64),
-        "repomap-snapshot-sdk",
-        1,
-        "e".repeat(64),
-        RepoMapGraphCoverage {
-            item_index_availability: RepoMapItemIndexAvailability::Available,
-            graph_coverage_class: RepoMapGraphCoverageClass::Complete,
-        },
-        RepoMapExactnessSummary::Exact,
-        RepoMapRedactionState::Unredacted,
-    )
-    .with_node(RepoMapNode::File(RepoMapFileNode {
-        file_id: quanta_index_contract::FileId::new("file://src/lib.rs"),
-        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        line_count: 110,
-    }))
-    .with_node(RepoMapNode::File(RepoMapFileNode {
-        file_id: quanta_index_contract::FileId::new("file://src/service/mod.rs"),
-        repo_relative_path: RepoRelativePath::new("src/service/mod.rs"),
-        line_count: 170,
-    }))
-    .with_node(RepoMapNode::File(RepoMapFileNode {
-        file_id: quanta_index_contract::FileId::new("file://tests/repo_map.rs"),
-        repo_relative_path: RepoRelativePath::new("tests/repo_map.rs"),
-        line_count: 70,
-    }))
-    .with_node(RepoMapNode::Symbol(RepoMapSymbolNode {
-        symbol_id: SymbolId::new("symbol://alpha"),
-        owner_path: RepoRelativePath::new("src/lib.rs"),
-        local_name: "Alpha".to_string(),
-        qualified_name: "src::lib::Alpha".to_string(),
-        symbol_kind: symbol_kind.clone(),
-    }))
-    .with_node(RepoMapNode::Symbol(RepoMapSymbolNode {
-        symbol_id: SymbolId::new("symbol://beta"),
-        owner_path: RepoRelativePath::new("src/service/mod.rs"),
-        local_name: "Beta".to_string(),
-        qualified_name: "src::service::Beta".to_string(),
-        symbol_kind: symbol_kind.clone(),
-    }))
-    .with_node(RepoMapNode::Symbol(RepoMapSymbolNode {
-        symbol_id: SymbolId::new("symbol://gamma"),
-        owner_path: RepoRelativePath::new("tests/repo_map.rs"),
-        local_name: "Gamma".to_string(),
-        qualified_name: "tests::repo_map::Gamma".to_string(),
-        symbol_kind,
-    }))
-    .with_node(RepoMapNode::Chunk(RepoMapChunkNode {
-        chunk_id: ChunkId::new("chunk://alpha"),
-        owner_path: RepoRelativePath::new("src/lib.rs"),
-        language: rust_language()?,
-        start_byte: 0,
-        end_byte: 128,
-        start_line: 1,
-        end_line: 12,
-        token_count: 64,
-        preview_text: "Alpha library owner index".to_string(),
-        exactness: RepoMapChunkExactness::Exact,
-    }))
-    .with_node(RepoMapNode::Chunk(RepoMapChunkNode {
-        chunk_id: ChunkId::new("chunk://beta"),
-        owner_path: RepoRelativePath::new("src/service/mod.rs"),
-        language: rust_language()?,
-        start_byte: 129,
-        end_byte: 256,
-        start_line: 13,
-        end_line: 28,
-        token_count: 96,
-        preview_text: "Beta service owner query entrypoint".to_string(),
-        exactness: RepoMapChunkExactness::Exact,
-    }))
-    .with_node(RepoMapNode::Chunk(RepoMapChunkNode {
-        chunk_id: ChunkId::new("chunk://repomap-test"),
-        owner_path: RepoRelativePath::new("tests/repo_map.rs"),
-        language: rust_language()?,
-        start_byte: 257,
-        end_byte: 320,
-        start_line: 29,
-        end_line: 35,
-        token_count: 40,
-        preview_text: "repo map integration test".to_string(),
-        exactness: RepoMapChunkExactness::Approximate,
-    }))
-    .with_edge(RepoMapEdge::Contains(RepoMapContainsEdge {
-        container: RepoMapNodeRef::File(quanta_index_contract::FileId::new("file://src/lib.rs")),
-        contained: RepoMapNodeRef::Symbol(SymbolId::new("symbol://alpha")),
-    }))
-    .with_edge(RepoMapEdge::Contains(RepoMapContainsEdge {
-        container: RepoMapNodeRef::File(quanta_index_contract::FileId::new(
-            "file://src/service/mod.rs",
-        )),
-        contained: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
-    }))
-    .with_edge(RepoMapEdge::Call(quanta_index_contract::RepoMapCallEdge {
-        caller: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
-        callee: RepoMapNodeRef::Symbol(SymbolId::new("symbol://alpha")),
-    }))
-    .with_edge(RepoMapEdge::Call(quanta_index_contract::RepoMapCallEdge {
-        caller: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
-        callee: RepoMapNodeRef::Symbol(SymbolId::new("symbol://gamma")),
-    }))
-    .with_edge(RepoMapEdge::Import(
-        quanta_index_contract::RepoMapImportEdge {
-            importer: RepoMapNodeRef::File(quanta_index_contract::FileId::new(
-                "file://src/service/mod.rs",
-            )),
-            imported: RepoMapNodeRef::File(quanta_index_contract::FileId::new("file://src/lib.rs")),
-        },
-    ))
-    .with_edge(RepoMapEdge::OwnsChunk(RepoMapOwnsChunkEdge {
-        owner: RepoMapNodeRef::Symbol(SymbolId::new("symbol://alpha")),
-        chunk: RepoMapNodeRef::Chunk(ChunkId::new("chunk://alpha")),
-    }))
-    .with_edge(RepoMapEdge::OwnsChunk(RepoMapOwnsChunkEdge {
-        owner: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
-        chunk: RepoMapNodeRef::Chunk(ChunkId::new("chunk://beta")),
-    }))
-    .with_edge(RepoMapEdge::OwnsChunk(RepoMapOwnsChunkEdge {
-        owner: RepoMapNodeRef::File(quanta_index_contract::FileId::new(
-            "file://tests/repo_map.rs",
-        )),
-        chunk: RepoMapNodeRef::Chunk(ChunkId::new("chunk://repomap-test")),
-    })))
-}
-
-fn repo_map_activate_request() -> Result<RepoMapActivateGenerationRequestV2, Box<dyn Error>> {
-    Ok(RepoMapActivateGenerationRequestV2::for_bundle(
-        &repo_map_bundle()?,
-    )?)
-}
-
-fn repo_map_query_request() -> RepoMapQueryRequest {
-    RepoMapQueryRequest {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: generation(),
-        query_text: "service owner".to_string(),
-        top_k: 1,
-        token_budget: 90,
-        focus_subjects: vec![RepoMapFocusSubjectDto {
-            subject_identity: "symbol://beta".to_string(),
-            subject_doc_type: RepoMapDocType::Symbol,
-        }],
-    }
-}
-
 fn structural_batch_with_chunk(chunk_id: ChunkId) -> Result<StructuralBatch, Box<dyn Error>> {
     Ok(
         StructuralBatch::replace_generation(
@@ -1083,56 +924,6 @@ fn assert_single_symbol_candidate(
         || symbol_candidate.symbol_kind_family != Some(SymbolKindFamily::Callable)
     {
         return Err(format!("unexpected symbol candidate: {symbol_candidate:?}").into());
-    }
-    Ok(())
-}
-
-fn assert_repo_map_happy_path(
-    response: &quanta_index_contract::RepoMapQueryResponse,
-) -> TestResult {
-    if response.repo_id != repo()
-        || response.revision_id != revision()
-        || response.manifest_generation != generation()
-        || response.snapshot_meta.snapshot_id != "repomap-snapshot-sdk"
-    {
-        return Err(format!("unexpected repo-map response envelope: {response:?}").into());
-    }
-    let entry = response
-        .entries
-        .first()
-        .ok_or_else(|| "missing repo-map entry".to_string())?;
-    if entry.subject_identity != "symbol://beta"
-        || entry.owner_path != "src/service/mod.rs"
-        || entry.subject_doc_type != RepoMapDocType::Symbol
-        || entry.projection_evidence_kind != "CompiledRepoMapCandidateV1"
-    {
-        return Err(format!("unexpected repo-map entry: {entry:?}").into());
-    }
-    // Only included rows come back (QI-BB-008); the rest is a count.
-    if response.entries.len() != 1 || response.dropped_entries_count == 0 {
-        return Err(format!("unexpected repo-map inclusion set: {response:?}").into());
-    }
-    // The legacy per-chunk token hint (and the budget-floor degradation it
-    // could trigger) was replaced by P02A's compiled envelope: the entry
-    // records the compiled-projection evidence and the page reports its
-    // drops explicitly instead of inferring them from a hint. Assert the
-    // honest drop accounting rather than the removed heuristic.
-    if !response
-        .drop_reason_codes
-        .iter()
-        .any(|code| code == "top_k_exhausted")
-    {
-        return Err(format!("missing repo-map drop reason: {response:?}").into());
-    }
-    if response
-        .degraded_reason_codes
-        .iter()
-        .any(|code| code == "token_budget_floor_applied" || code == "focus_subjects_unresolved")
-    {
-        return Err(format!(
-            "a strict compiled projection must not report retired degraded reasons: {response:?}"
-        )
-        .into());
     }
     Ok(())
 }

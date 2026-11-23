@@ -47,19 +47,19 @@ struct ChunkStatsV1<'a> {
 }
 
 #[derive(Clone, Debug)]
-struct FileEntryInput {
+struct FileEntryInput<'a> {
     subject: RepoMapNodeRef,
-    owner_path: RepoRelativePath,
+    owner_path: &'a RepoRelativePath,
     line_count: u32,
 }
 
 #[derive(Clone, Debug)]
-struct SymbolEntryInput {
+struct SymbolEntryInput<'a> {
     subject: RepoMapNodeRef,
-    owner_path: RepoRelativePath,
-    local_name: String,
-    qualified_name: String,
-    symbol_kind: String,
+    owner_path: &'a RepoRelativePath,
+    local_name: &'a str,
+    qualified_name: &'a str,
+    symbol_kind: &'a str,
 }
 
 impl RepoMapGraphCompiler {
@@ -362,7 +362,7 @@ impl RepoMapGraphCompiler {
                     line_count,
                 }) => files.push(FileEntryInput {
                     subject: RepoMapNodeRef::File(file_id.clone()),
-                    owner_path: repo_relative_path.clone(),
+                    owner_path: repo_relative_path,
                     line_count: *line_count,
                 }),
                 RepoMapNode::Symbol(RepoMapSymbolNode {
@@ -373,10 +373,10 @@ impl RepoMapGraphCompiler {
                     symbol_kind,
                 }) => symbols.push(SymbolEntryInput {
                     subject: RepoMapNodeRef::Symbol(symbol_id.clone()),
-                    owner_path: owner_path.clone(),
-                    local_name: local_name.clone(),
-                    qualified_name: qualified_name.clone(),
-                    symbol_kind: symbol_kind.as_str().to_string(),
+                    owner_path,
+                    local_name,
+                    qualified_name,
+                    symbol_kind: symbol_kind.as_str(),
                 }),
                 RepoMapNode::Module(_) | RepoMapNode::Chunk(_) => {}
             }
@@ -405,13 +405,13 @@ impl RepoMapGraphCompiler {
             let chunks = chunk_stats.0.get(file.owner_path.as_str());
             let search_text_len = rank_search_text_len(&prefix, chunks)?;
             charge_preview(search_text_len)?;
-            if selected_paths.is_some_and(|selected| !selected.contains(&file.owner_path)) {
+            if selected_paths.is_some_and(|selected| !selected.contains(file.owner_path)) {
                 native_rank_valid &=
-                    native_rank_shape_valid(&file.subject, &file.owner_path, search_text_len);
+                    native_rank_shape_valid(&file.subject, file.owner_path, search_text_len);
                 let row_bytes = omitted_rank_row_bytes(
                     &file.subject,
                     RepoMapDocType::File,
-                    &file.owner_path,
+                    file.owner_path,
                     search_text_len,
                 )
                 .ok();
@@ -426,7 +426,7 @@ impl RepoMapGraphCompiler {
             projection.push(CompiledRepoMapProjectionEntryV1 {
                 subject: file.subject.clone(),
                 doc_type: RepoMapDocType::File,
-                owner_path: file.owner_path.clone(),
+                owner_path: file.owner_path.to_owned(),
                 search_text,
                 final_score_millis: i64::from(final_score_millis),
             });
@@ -435,21 +435,21 @@ impl RepoMapGraphCompiler {
             let identity = node_ref_key(&symbol.subject);
             let prefix = [
                 identity.as_str(),
-                symbol.local_name.as_str(),
-                symbol.qualified_name.as_str(),
-                symbol.symbol_kind.as_str(),
+                symbol.local_name,
+                symbol.qualified_name,
+                symbol.symbol_kind,
                 symbol.owner_path.as_str(),
             ];
             let chunks = chunk_stats.1.get(&symbol.subject);
             let search_text_len = rank_search_text_len(&prefix, chunks)?;
             charge_preview(search_text_len)?;
-            if selected_paths.is_some_and(|selected| !selected.contains(&symbol.owner_path)) {
+            if selected_paths.is_some_and(|selected| !selected.contains(symbol.owner_path)) {
                 native_rank_valid &=
-                    native_rank_shape_valid(&symbol.subject, &symbol.owner_path, search_text_len);
+                    native_rank_shape_valid(&symbol.subject, symbol.owner_path, search_text_len);
                 let row_bytes = omitted_rank_row_bytes(
                     &symbol.subject,
                     RepoMapDocType::Symbol,
-                    &symbol.owner_path,
+                    symbol.owner_path,
                     search_text_len,
                 )
                 .ok();
@@ -464,7 +464,7 @@ impl RepoMapGraphCompiler {
             projection.push(CompiledRepoMapProjectionEntryV1 {
                 subject: symbol.subject.clone(),
                 doc_type: RepoMapDocType::Symbol,
-                owner_path: symbol.owner_path.clone(),
+                owner_path: symbol.owner_path.to_owned(),
                 search_text,
                 final_score_millis: i64::from(final_score_millis),
             });
@@ -803,7 +803,7 @@ fn omitted_rank_row_bytes(
 }
 
 fn file_score_millis(
-    file: &FileEntryInput,
+    file: &FileEntryInput<'_>,
     owner_chunks: &BTreeMap<&str, ChunkStatsV1<'_>>,
     graph_degree: u32,
 ) -> u32 {
@@ -822,7 +822,7 @@ fn file_score_millis(
 }
 
 fn symbol_score_millis(
-    symbol: &SymbolEntryInput,
+    symbol: &SymbolEntryInput<'_>,
     subject_chunks: &BTreeMap<&RepoMapNodeRef, ChunkStatsV1<'_>>,
     graph_degree: u32,
 ) -> u32 {

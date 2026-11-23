@@ -288,15 +288,6 @@ impl RuntimeMetadataIngestPort for UnusedPublicationRoute {
     }
 }
 
-impl quanta_index_core::RepoMapBundleIngestPort for UnusedPublicationRoute {
-    fn ingest_bundle(
-        &self,
-        _request: &quanta_index_contract::RepoMapPublishBundleRequestV2,
-    ) -> Result<quanta_index_contract::RepoMapTerminalReceiptV2, CoreError> {
-        Err(unused_publication_route())
-    }
-}
-
 fn publication_dispatcher(
     case: PublicationAdmissionCase,
     admission: Arc<ScriptedPublicationAdmission>,
@@ -313,7 +304,6 @@ fn publication_dispatcher(
         unused.clone(),
         unused.clone(),
         unused.clone(),
-        unused,
         case.idempotency,
         case.source_catalog,
         case.authority,

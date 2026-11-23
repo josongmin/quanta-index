@@ -331,7 +331,7 @@ fn quarantine_parses_list_and_exact_discard_targets_only() {
             }
         ))
     );
-    let repo_map = ParsedCommand::parse([
+    let retired = ParsedCommand::parse([
         "quarantine",
         "discard",
         "--repomap-file",
@@ -339,19 +339,7 @@ fn quarantine_parses_list_and_exact_discard_targets_only() {
         "--reason",
         "snapshot does not decode",
     ]);
-    assert!(repo_map.is_ok(), "{repo_map:?}");
-    let Ok(repo_map) = repo_map else {
-        return;
-    };
-    assert_eq!(
-        repo_map.request,
-        CliRequest::QuarantineDiscard(QuarantineTargetV1::RepoMapFile(
-            QuarantinedRepoMapFileEntryV1 {
-                file_name: "stale--marker.json".to_string(),
-                reason: "snapshot does not decode".to_string(),
-            }
-        ))
-    );
+    assert!(retired.is_err());
 
     for (args, needle) in [
         (vec!["quarantine"], "requires `list` or `discard`"),
@@ -405,7 +393,7 @@ fn quarantine_parses_list_and_exact_discard_targets_only() {
         ),
         (
             vec!["quarantine", "discard", "--repomap-file", "x.json"],
-            "--repomap-file requires --reason",
+            "unknown quarantine discard flag `--repomap-file`",
         ),
         (
             vec![
@@ -418,7 +406,7 @@ fn quarantine_parses_list_and_exact_discard_targets_only() {
                 "--reason",
                 "R",
             ],
-            "cannot be combined",
+            "unknown quarantine discard flag `--repomap-file`",
         ),
         (
             vec!["quarantine", "discard", "--force"],
@@ -455,10 +443,6 @@ fn render_quarantine_prints_discardable_lines_and_the_ack() {
             detail: "identity file does not decode".to_string(),
         }],
         semantic: Vec::new(),
-        repo_map: vec![QuarantinedRepoMapFileEntryV1 {
-            file_name: "stale--marker.json".to_string(),
-            reason: "snapshot does not decode".to_string(),
-        }],
     };
     let pretty = render_quarantine_inventory(&inventory, OutputMode::Pretty);
     let Ok(pretty) = pretty else {
@@ -469,8 +453,6 @@ fn render_quarantine_prints_discardable_lines_and_the_ack() {
             "lexical: 1",
             r#"  --track lexical --path /state/indexes/lexical/repo/rev/g9 --reason GENERATION_QUARANTINE_IDENTITY_UNREADABLE --detail "identity file does not decode""#,
             "semantic: 0",
-            "repo_map: 1",
-            r#"  --repomap-file stale--marker.json --reason "snapshot does not decode""#,
             "",
         ]
         .join("\n");
@@ -490,10 +472,7 @@ fn render_quarantine_prints_discardable_lines_and_the_ack() {
     assert_eq!(error.exit_code, EXIT_USAGE);
 
     let ack = QuarantineDiscardAck {
-        target: QuarantineTargetV1::RepoMapFile(QuarantinedRepoMapFileEntryV1 {
-            file_name: "stale--marker.json".to_string(),
-            reason: "snapshot does not decode".to_string(),
-        }),
+        target: QuarantineTargetV1::Generation(inventory.lexical[0].clone()),
         outcome: QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 15 },
     };
     let pretty = render_quarantine_discard(&ack, OutputMode::Pretty);
@@ -502,7 +481,7 @@ fn render_quarantine_prints_discardable_lines_and_the_ack() {
     };
     assert_eq!(
         pretty,
-        "kind: quarantine-discard\ntarget: repo_map stale--marker.json\noutcome: discarded bytes=15\n"
+        "kind: quarantine-discard\ntarget: lexical /state/indexes/lexical/repo/rev/g9\noutcome: discarded bytes=15\n"
     );
     let absent = QuarantineDiscardAck {
         target: QuarantineTargetV1::Generation(QuarantinedGenerationEntryV1 {

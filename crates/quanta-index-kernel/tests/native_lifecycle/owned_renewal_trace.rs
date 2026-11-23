@@ -3,9 +3,9 @@ use super::*;
 #[test]
 fn owned_renewal_binds_catalog_trace_and_restores_outer_scope() -> TestResult {
     use quanta_index_core::diagnostic_trace::{
-        DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticCounterV1,
-        DiagnosticEmitV1, DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1,
-        DiagnosticRootKindV1, DiagnosticStageV1, DiagnosticTerminalV1,
+        DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticEmitV1,
+        DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1,
+        DiagnosticStageV1, DiagnosticTerminalV1,
     };
     use quanta_index_core::index::ports::{CatalogDiagnosticPort, WorkClaimPort};
     use std::sync::{
@@ -115,24 +115,8 @@ fn owned_renewal_binds_catalog_trace_and_restores_outer_scope() -> TestResult {
     assert!(lock_holds.iter().any(|(_, parent)| *parent == success_id));
     assert!(lock_holds.iter().any(|(_, parent)| *parent == failure_id));
     assert!(lock_holds.iter().any(|(_, parent)| *parent == outer_id));
-    for (hold, parent) in lock_holds {
-        if parent != success_id && parent != failure_id {
-            continue;
-        }
-        let counter_at = rows.iter().position(|row| {
-            matches!(row.kind,
-            DiagnosticEventKindV1::Counter {
-                span_id, key: DiagnosticCounterV1::SqliteCacheHits, ..
-            } if span_id == hold)
-        });
-        let ended_at = rows.iter().position(|row| {
-            matches!(row.kind,
-            DiagnosticEventKindV1::SpanEnd { span_id, .. } if span_id == hold)
-        });
-        assert!(
-            matches!((counter_at, ended_at), (Some(counter), Some(end)) if counter < end),
-            "Catalog pager counter must precede lock-hold end"
-        );
-    }
+    assert!(lock_holds.iter().all(|(hold, _)| rows.iter().any(|row| {
+        matches!(row.kind, DiagnosticEventKindV1::SpanEnd { span_id, .. } if span_id == *hold)
+    })));
     Ok(())
 }

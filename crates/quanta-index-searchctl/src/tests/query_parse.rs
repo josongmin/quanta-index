@@ -26,17 +26,6 @@ fn rejects_missing_scope_syntax() {
 }
 
 #[test]
-fn parses_repomap_focus_subject() {
-    let parsed = parse_focus_subject("subject-1:file");
-    assert!(parsed.is_ok());
-    let Ok(focus) = parsed else {
-        return;
-    };
-    assert_eq!(focus.subject_identity, "subject-1");
-    assert_eq!(focus.subject_doc_type, RepoMapDocType::File);
-}
-
-#[test]
 fn parses_semantic_query_text() {
     let parsed = ParsedCommand::parse([
         "semantic",

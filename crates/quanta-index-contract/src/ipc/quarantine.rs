@@ -83,26 +83,17 @@ pub struct QuarantinedGenerationEntryV1 {
     pub detail: String,
 }
 
-/// One `RepoMap` quarantine incident, named by an opaque single-segment token.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct QuarantinedRepoMapFileEntryV1 {
-    pub file_name: String,
-    pub reason: String,
-}
-
 /// Everything quarantined right now, per authority.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct QuarantineInventoryV1 {
     pub lexical: Vec<QuarantinedGenerationEntryV1>,
     pub semantic: Vec<QuarantinedGenerationEntryV1>,
-    pub repo_map: Vec<QuarantinedRepoMapFileEntryV1>,
 }
 
 /// What to discard: exactly one entry as the inventory reported it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum QuarantineTargetV1 {
     Generation(QuarantinedGenerationEntryV1),
-    RepoMapFile(QuarantinedRepoMapFileEntryV1),
 }
 
 /// Discard one quarantined entry.
@@ -222,19 +213,12 @@ quarantine_struct_serde!(
     [track: SearchPlaneTrackKind, path: String, reason: String, detail: String]
 );
 quarantine_struct_serde!(
-    QuarantinedRepoMapFileEntryV1,
-    QuarantinedRepoMapFileEntryVisitor,
-    QUARANTINED_REPO_MAP_FILE_ENTRY_FIELDS,
-    [file_name: String, reason: String]
-);
-quarantine_struct_serde!(
     QuarantineInventoryV1,
     QuarantineInventoryVisitor,
     QUARANTINE_INVENTORY_FIELDS,
     [
         lexical: Vec<QuarantinedGenerationEntryV1>,
         semantic: Vec<QuarantinedGenerationEntryV1>,
-        repo_map: Vec<QuarantinedRepoMapFileEntryV1>
     ]
 );
 quarantine_struct_serde!(
@@ -259,20 +243,6 @@ impl QuarantinedGenerationEntryV1 {
     }
 }
 
-impl QuarantinedRepoMapFileEntryV1 {
-    fn validate_wire<E: de::Error>(&self) -> Result<(), E> {
-        reject_empty("file_name", &self.file_name)?;
-        // The incident token is one path segment; adapter-local paths must
-        // never cross this control boundary.
-        if self.file_name == "." || self.file_name == ".." || self.file_name.contains('/') {
-            return Err(E::custom(format!(
-                "`file_name` `{}` is not a single path segment",
-                self.file_name
-            )));
-        }
-        Ok(())
-    }
-}
 
 impl QuarantineInventoryV1 {
     fn validate_wire<E: de::Error>(&self) -> Result<(), E> {
@@ -297,7 +267,7 @@ impl QuarantineInventoryV1 {
 }
 
 const QUARANTINE_TARGET_FIELDS: &[&str] = &["kind", "payload"];
-const QUARANTINE_TARGET_VARIANTS: &[&str] = &["Generation", "RepoMapFile"];
+const QUARANTINE_TARGET_VARIANTS: &[&str] = &["Generation"];
 
 impl Serialize for QuarantineTargetV1 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -308,10 +278,6 @@ impl Serialize for QuarantineTargetV1 {
         match self {
             Self::Generation(entry) => {
                 state.serialize_field("kind", "Generation")?;
-                state.serialize_field("payload", entry)?;
-            }
-            Self::RepoMapFile(entry) => {
-                state.serialize_field("kind", "RepoMapFile")?;
                 state.serialize_field("payload", entry)?;
             }
         }
@@ -351,7 +317,6 @@ impl<'de> Visitor<'de> for QuarantineTargetVisitor {
                         .ok_or_else(|| de::Error::custom("`payload` must follow `kind`"))?;
                     payload = Some(match kind {
                         "Generation" => QuarantineTargetV1::Generation(map.next_value()?),
-                        "RepoMapFile" => QuarantineTargetV1::RepoMapFile(map.next_value()?),
                         other => {
                             return Err(de::Error::unknown_variant(
                                 other,

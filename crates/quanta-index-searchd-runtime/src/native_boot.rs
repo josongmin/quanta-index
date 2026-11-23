@@ -5,6 +5,8 @@
 mod catalog_digest;
 #[path = "native_boot/receipt.rs"]
 mod receipt;
+#[path = "native_boot/retired_policy_profile_v1.rs"]
+pub(crate) mod retired_policy_profile_v1;
 #[path = "native_boot/restore_forward.rs"]
 mod restore_forward;
 #[path = "native_boot/settle_published_v1.rs"]
@@ -17,6 +19,11 @@ pub(crate) use settle_published_v1::with_verified_settlement_root_v1;
 use std::{fs, sync::Arc};
 
 use anyhow::{Result, anyhow, bail};
+use quanta_index_contract::index::{
+    RetiredProjectionPolicyErrorV1, decode_retired_projection_policy_v1,
+    preflight_retired_projection_policy_v1,
+};
+use sha2::{Digest as _, Sha256};
 use quanta_index_catalog::{
     NativeBootManifest, SqliteCatalog, verify_native_boot_candidate, verify_native_boot_catalog,
     verify_native_boot_current_candidate, verify_native_legacy_history_recovery_publications_v1,
@@ -28,7 +35,8 @@ use quanta_index_contract::native_cutover_evidence_v1::{
 use quanta_index_core::{
     RequestBudgetV1,
     index::{
-        IndexError, MemoryLease, ObjectReadIoPort, ObjectRef, RegisteredObject, WorkBudget,
+        IndexError, IndexInstanceId, MemoryLease, MemoryLifetime, ObjectReadIoPort, ObjectRef,
+        RegisteredObject, WorkBudget,
         effort::ReservationGuard,
     },
 };
@@ -59,6 +67,7 @@ fn identity(nonce: [u8; 32], manifest: &NativeBootManifest) -> Result<NativeBoot
         manifest_object: manifest.operation.request,
         source_cut_digest: manifest.source_cut_digest()?,
         protected_source_routes: manifest.protected_source_routes.map(|routes| routes.object),
+        retired_projection_policy: manifest.retired_projection_policy,
     })
 }
 
@@ -182,6 +191,7 @@ fn authenticate(
     maximum: u64,
     recovery: Option<&RecoveryCapture<'_, '_>>,
     require_current_routes: bool,
+    candidate_profile: bool,
     budget: &mut WorkBudget,
 ) -> Result<()> {
     authenticate_with_legacy_history_v1(
@@ -198,6 +208,7 @@ fn authenticate(
         } else {
             ProtectedRouteCheckV1::Retained
         },
+        candidate_profile,
         budget,
     )
     .map(|_| ())
@@ -213,6 +224,7 @@ fn authenticate_with_legacy_history_v1(
     legacy_history: Option<LegacyHistoryRecoveryV1<'_>>,
     native_history: Option<&[FundedNativeRestoreInputV1]>,
     route_check: ProtectedRouteCheckV1,
+    candidate_profile: bool,
     budget: &mut WorkBudget,
 ) -> Result<Option<FundedInstalledHistoryV1>> {
     let root = authority.lease.state_root_identity_v1();
@@ -238,7 +250,7 @@ fn authenticate_with_legacy_history_v1(
     if snapshot.namespace != Some(reader.namespace_binding()?) {
         return Err(IndexError::DigestConflict.into());
     }
-    let mut roots = [manifest.operation.request; 6];
+    let mut roots = [manifest.operation.request; 7];
     let mut count = 0usize;
     for root in manifest.all_protected_roots() {
         *roots.get_mut(count).ok_or(IndexError::ResourceLimited)? = root;
@@ -253,6 +265,42 @@ fn authenticate_with_legacy_history_v1(
         maximum,
         budget,
     )?;
+    if let Some(policy) = manifest.retired_projection_policy {
+        let stored = reader.get(policy.object, budget)?;
+        if !stored.registration.children.is_empty() {
+            return Err(IndexError::DigestConflict.into());
+        }
+        let count = preflight_retired_projection_policy_v1(&stored.payload)
+            .map_err(|_| IndexError::DigestConflict)?;
+        let scratch_bytes = count
+            .checked_mul(std::mem::size_of::<IndexInstanceId>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(IndexError::ResourceLimited)?;
+        let _scratch_lease = budget
+            .reserve_memory(scratch_bytes.max(1), MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut scratch = vec![IndexInstanceId([0; 16]); count];
+        let view = decode_retired_projection_policy_v1(
+            &stored.payload,
+            &mut scratch,
+            &mut || budget.checkpoint(),
+        )
+        .map_err(|error| match error {
+            RetiredProjectionPolicyErrorV1::Admission(error) => error,
+            _ => IndexError::DigestConflict,
+        })?;
+        if view.len_v1() != policy.identity_count as usize
+            || quanta_index_core::index::Digest(Sha256::digest(&stored.payload).into())
+                != policy.sha256
+            || view.header_v1().candidate_root_nonce.0 != snapshot.root_nonce
+            || view.header_v1().candidate_profile_ref != manifest.publication.profile
+        {
+            return Err(IndexError::DigestConflict.into());
+        }
+        retired_policy_profile_v1::reject_candidate_profile_overlap_v1(
+            &view, &profile.payload, budget,
+        )?;
+    }
     if let Some(route) = manifest.protected_source_routes {
         let stored = reader.get(route.object, budget)?;
         quanta_index_core::index::with_native_protected_source_routes_v1(
@@ -291,14 +339,25 @@ fn authenticate_with_legacy_history_v1(
             },
         )?;
     }
-    verify_native_boot_inputs(
-        &manifest.operation,
-        &manifest.publication,
-        &request,
-        &profile,
-        registry,
-        budget,
-    )?;
+    if candidate_profile {
+        quanta_index_kernel::verify_native_boot_candidate_inputs(
+            &manifest.operation,
+            &manifest.publication,
+            &request,
+            &profile,
+            registry,
+            budget,
+        )?;
+    } else {
+        verify_native_boot_inputs(
+            &manifest.operation,
+            &manifest.publication,
+            &request,
+            &profile,
+            registry,
+            budget,
+        )?;
+    }
     let installed_history = if let Some(capture) = recovery {
         authenticate_recovery_capture(
             &reader,
@@ -977,10 +1036,12 @@ pub(super) fn require_candidate_start_v1(
             verify_existing_native_format(authority, &config.socket_path, budget)?;
             let snapshot = verify_native_boot_catalog(root, authority.io.as_ref(), budget)?;
             if let Some(selected) = snapshot.selected.as_ref() {
-                // The pinned config names this exact candidate root. A selected
-                // BOOT without protected routes is an installed-root boundary,
-                // never a resumable candidate publication.
-                if selected.protected_source_routes.is_none() {
+                // A policy-only V2 BOOT is the map-only predecessor case: it
+                // has no candidate Source route to protect, but is still a
+                // resumable candidate after physical policy authentication.
+                if selected.protected_source_routes.is_none()
+                    && selected.retired_projection_policy.is_none()
+                {
                     return Err(IndexError::Conflict.into());
                 }
                 let _installed_history = authenticate_with_legacy_history_v1(
@@ -993,6 +1054,7 @@ pub(super) fn require_candidate_start_v1(
                     None,
                     None,
                     ProtectedRouteCheckV1::CandidateResume,
+                    true,
                     budget,
                 )?;
                 let after = verify_native_boot_catalog(root, authority.io.as_ref(), budget)?;
@@ -1091,17 +1153,28 @@ pub(super) fn execute(
                         }
                         _ => None,
                     };
-                    let manifest = presealed.as_ref().unwrap_or_else(|| candidate.manifest());
+                    let mut proposed_manifest = candidate.manifest().clone();
+                    if let NativeCommandModeV1::SelectCandidate {
+                        protected_source_routes: None,
+                        retired_projection_policy: Some(policy),
+                        ..
+                    } = command.mode {
+                        proposed_manifest.format_version = NativeBootManifest::FORMAT_VERSION_V2;
+                        proposed_manifest.retired_projection_policy = Some(policy);
+                    }
+                    let manifest = presealed.as_ref().unwrap_or(&proposed_manifest);
                     let expected = identity(candidate.snapshot().root_nonce, manifest)?;
                     if let NativeCommandModeV1::SelectCandidate {
                         root_nonce,
                         source_cut_digest,
                         protected_source_routes,
+                        retired_projection_policy,
                     } = command.mode
                     {
                         if expected.root_nonce != root_nonce
                             || expected.source_cut_digest != source_cut_digest
                             || expected.protected_source_routes != protected_source_routes
+                            || expected.retired_projection_policy != retired_projection_policy
                         {
                             return Err(IndexError::DigestConflict.into());
                         }
@@ -1129,6 +1202,7 @@ pub(super) fn execute(
                             maximum,
                             None,
                             false,
+                            true,
                             &mut budget,
                         )?;
                     }
@@ -1152,14 +1226,16 @@ pub(super) fn execute(
                                 &observation,
                             );
                         }
-                        let selected = if matches!(
-                            command.mode,
-                            NativeCommandModeV1::SelectCandidate { .. }
-                        ) {
-                            catalog
-                                .select_native_boot_manifest_if_current(operation, &mut budget)?
-                        } else {
-                            catalog.select_native_boot_manifest(operation, &mut budget)?
+                        let selected = match command.mode {
+                            NativeCommandModeV1::SelectCandidate {
+                                retired_projection_policy: Some(policy),
+                                ..
+                            } => catalog.select_native_boot_manifest_with_retired_policy_if_current(
+                                operation, policy, &mut budget,
+                            )?,
+                            NativeCommandModeV1::SelectCandidate { .. } => catalog
+                                .select_native_boot_manifest_if_current(operation, &mut budget)?,
+                            _ => catalog.select_native_boot_manifest(operation, &mut budget)?,
                         };
                         if identity(catalog.native_root_nonce(&mut budget)?, &selected)? != expected
                         {
@@ -1185,6 +1261,7 @@ pub(super) fn execute(
                         maximum,
                         None,
                         presealed.is_some(),
+                        true,
                         &mut budget,
                     )?;
                     let io = NativeObjectReadIo::new(Arc::clone(&authority.physical));
@@ -1245,6 +1322,7 @@ pub(super) fn execute(
                     maximum,
                     None,
                     verify_current,
+                    true,
                     &mut budget,
                 )?;
                 if let Some(expected) = command.install_catalog_digest {
@@ -1408,6 +1486,7 @@ fn verify_recovery_candidate_with_legacy_history_v1(
         legacy_history,
         native_history,
         ProtectedRouteCheckV1::Retained,
+        false,
         budget,
     )?;
     require_retired(authority)?;

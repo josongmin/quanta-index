@@ -1139,6 +1139,88 @@ fn in_process_fast_auto_unknown_and_deep_use_real_old_view() -> TestResult {
 }
 
 #[test]
+fn in_process_scoped_semantic_and_distinct_effort_scope_renew_control_without_pin_leaks()
+-> TestResult {
+    let root = tempfile::tempdir()?;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
+    let socket = root.path().join("native.sock");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (service, semantic) = service(root.path(), &socket, Arc::clone(&calls))?;
+    let resources = service.resource_observation();
+    let handle = service.effort_handle();
+    let running = RunningService::start(service);
+    let client = NativeUdsClient::new(socket);
+    let (view, _) = setup(&client, semantic)?;
+    let catalog = catalog_path(root.path());
+    let baseline_pins = pin_count(&catalog)?;
+
+    // Each direct request crosses Text and Semantic preparation under one
+    // selected ticket. The prior control grant has ended at both handoffs.
+    let mut scoped = semantic_request();
+    scoped.lexical_scope = Some(text_request());
+    let hit = client.search_semantic(
+        ViewSelection::Exact(view),
+        SEMANTIC_INSTANCE,
+        scoped.clone(),
+        &budget(),
+    )?;
+    assert_eq!(hit.view, view);
+    assert_eq!(hit.hits.len(), 1);
+    assert_eq!(hit.hits.first().ok_or("scoped hit absent")?.owner, owner());
+    assert_eq!(pin_count(&catalog)?, baseline_pins);
+
+    let mut empty = scoped.clone();
+    empty
+        .lexical_scope
+        .as_mut()
+        .ok_or("scope absent")?
+        .query_text = "beta".into();
+    let before_empty = calls.load(Ordering::SeqCst);
+    let zero = client.search_semantic(
+        ViewSelection::Exact(view),
+        SEMANTIC_INSTANCE,
+        empty,
+        &budget(),
+    )?;
+    assert_eq!(zero.view, view);
+    assert!(zero.hits.is_empty());
+    assert!(zero.exhaustive);
+    assert_eq!(calls.load(Ordering::SeqCst), before_empty);
+    assert_eq!(pin_count(&catalog)?, baseline_pins);
+
+    // Fast's empty beta set cannot be reused for Deep's alpha scope. Deep
+    // must acquire fresh control before its second Text and Semantic stages.
+    let mut deep_request = request(view, EffortPreference::Deep);
+    deep_request.text_query.query_text = "beta".into();
+    deep_request.semantic_query.lexical_scope = Some(text_request());
+    let policy = policy()?;
+    let estimator = DeclaredCostEstimator;
+    let signals = UnknownSignals;
+    let mut work = WorkBudget::with_request(limits(), budget());
+    let result = handle.query_effort(
+        deep_request,
+        NativeEffortControl {
+            policy: &policy,
+            estimator: &estimator,
+            signals: &signals,
+            clock: None,
+            history: None,
+        },
+        &mut work,
+    )?;
+    assert!(result.fast.durable()?.hits.is_empty());
+    let deep = result.deep.ok_or("Deep result absent")?.into_durable()?;
+    assert_eq!(deep.view, view);
+    assert_eq!(deep.hits.len(), 1);
+    assert_eq!(deep.hits.first().ok_or("Deep hit absent")?.owner, owner());
+    assert_eq!(pin_count(&catalog)?, baseline_pins);
+    assert_eq!(resources.observe()?.reserved, ResourceNeed::default());
+    drop(handle);
+    running.stop()?;
+    Ok(())
+}
+
+#[test]
 fn fast_deep_folded_content_keeps_exact_path_and_selected_old_view() -> TestResult {
     let root = tempfile::tempdir()?;
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
@@ -2386,6 +2468,91 @@ fn effort_terminal_callback_runs_once_before_selected_pin_release() -> TestResul
     assert_eq!(summary.deep_delivered, result.deep.is_some());
     assert_eq!(observer.stages, vec![1, 2]);
     assert_eq!(pin_count(&catalog_path)?, original_pins);
+    drop(handle);
+    running.stop()?;
+    Ok(())
+}
+
+#[test]
+fn terminal_observer_failure_releases_pin_and_allows_next_deep_query() -> TestResult {
+    struct FailOnFinish<'a>(TerminalCustodyObserver<'a>);
+
+    impl NativeEffortObserver for FailOnFinish<'_> {
+        fn observe(&mut self, stage: NativeEffortStage<'_>) -> Result<(), IndexError> {
+            self.0.observe(stage)
+        }
+
+        fn finish(&mut self, summary: NativeEffortSummary<'_>) -> Result<(), IndexError> {
+            self.0.finish(summary)?;
+            Err(IndexError::Storage("terminal observer failed".into()))
+        }
+    }
+
+    let root = tempfile::tempdir()?;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
+    let socket = root.path().join("native.sock");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (service, semantic) = service(root.path(), &socket, Arc::clone(&calls))?;
+    let resources = service.resource_observation();
+    let handle = service.effort_handle();
+    let running = RunningService::start(service);
+    let client = NativeUdsClient::new(socket);
+    let (view, _) = setup(&client, semantic)?;
+    let catalog = catalog_path(root.path());
+    let baseline_pins = pin_count(&catalog)?;
+    let expected_pins = baseline_pins.checked_add(1).ok_or("pin count overflow")?;
+    let policy = policy()?;
+    let mut observer = FailOnFinish(TerminalCustodyObserver {
+        catalog: &catalog,
+        expected_pins,
+        view,
+        stages: Vec::new(),
+        terminal: None,
+    });
+    let mut work = WorkBudget::with_request(limits(), budget());
+    let failed = handle.query_effort_with_observer(
+        request(view, EffortPreference::Deep),
+        NativeEffortControl {
+            policy: &policy,
+            estimator: &DeclaredCostEstimator,
+            signals: &UnknownSignals,
+            clock: None,
+            history: None,
+        },
+        &mut work,
+        &mut observer,
+    );
+    assert_eq!(
+        failed.err(),
+        Some(IndexError::Storage("terminal observer failed".into()))
+    );
+    assert_eq!(observer.0.stages, vec![1, 2]);
+    assert!(observer.0.terminal.is_some());
+    assert_eq!(pin_count(&catalog)?, baseline_pins);
+    assert_eq!(resources.observe()?.reserved, ResourceNeed::default());
+    let calls_after_failure = calls.load(Ordering::SeqCst);
+
+    let mut next_work = WorkBudget::with_request(limits(), budget());
+    let next = handle.query_effort(
+        request(view, EffortPreference::Deep),
+        NativeEffortControl {
+            policy: &policy,
+            estimator: &DeclaredCostEstimator,
+            signals: &UnknownSignals,
+            clock: None,
+            history: None,
+        },
+        &mut next_work,
+    )?;
+    assert_eq!(next.view, view);
+    assert_eq!(next.fast.durable()?.view, view);
+    assert_eq!(
+        next.deep.ok_or("next Deep absent")?.into_durable()?.view,
+        view
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), calls_after_failure + 1);
+    assert_eq!(pin_count(&catalog)?, baseline_pins);
+    assert_eq!(resources.observe()?.reserved, ResourceNeed::default());
     drop(handle);
     running.stop()?;
     Ok(())

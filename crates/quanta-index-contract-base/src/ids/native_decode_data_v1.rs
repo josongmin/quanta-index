@@ -1,7 +1,7 @@
 //! External physical state for one canonical identity decode occurrence.
 
 use super::{NativeIdentityConstructionErrorV1, NativeIdentityCopyDataV1};
-use unicode_normalization::NativeNormalizationDataV1;
+use quanta_index_unicode::NativeNormalizationDataV1;
 
 /// Status only. Full original construction failures remain in external DATA.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -209,12 +209,12 @@ impl<T, E> NativeIdentityDecodeRunnerV1<'_, '_, T, E> {
         self.state.construction_attempted = true;
         let Some(cause) = cause.take() else {
             self.state.failure = Some(NativeIdentityConstructionErrorV1::Normalization(
-                unicode_normalization::NativeNormalizationErrorV1::InvalidNativeProducer,
+                quanta_index_unicode::NativeNormalizationErrorV1::InvalidNativeProducer,
             ));
             return Err(NativeIdentityDecodeDataRefusalV1::InvalidNativeProducer);
         };
         self.state.failure = Some(NativeIdentityConstructionErrorV1::Normalization(
-            unicode_normalization::NativeNormalizationErrorV1::Admission(cause),
+            quanta_index_unicode::NativeNormalizationErrorV1::Admission(cause),
         ));
         Err(NativeIdentityDecodeDataRefusalV1::OperationRefused)
     }
@@ -299,7 +299,7 @@ mod tests {
         assert!(!invoked);
         assert_eq!(extra.as_deref(), Some(&89));
         let Some(NativeIdentityConstructionErrorV1::Normalization(
-            unicode_normalization::NativeNormalizationErrorV1::Admission(cause),
+            quanta_index_unicode::NativeNormalizationErrorV1::Admission(cause),
         )) = data.failure_v1()
         else {
             assert!(false, "full cause missing");
@@ -328,7 +328,7 @@ mod tests {
         assert!(matches!(
             data.failure_v1(),
             Some(NativeIdentityConstructionErrorV1::Normalization(
-                unicode_normalization::NativeNormalizationErrorV1::InvalidNativeProducer
+                quanta_index_unicode::NativeNormalizationErrorV1::InvalidNativeProducer
             ))
         ));
     }

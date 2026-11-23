@@ -1145,6 +1145,10 @@ fn owned_shutdown_keeps_resources_and_root_until_provider_quiescence_then_resume
     database.close().map_err(|(_connection, error)| error)?;
     assert_eq!(before.dispatches, 1);
     let key = before.request.operation;
+    assert!(matches!(
+        client.status(key, &budget())?,
+        OperationStatus::Pending(_)
+    ));
     guard.shutdown.trigger();
     // Cancellation cannot release the reservation or namespace while this
     // deliberately uncooperative provider still owns preparation handles.

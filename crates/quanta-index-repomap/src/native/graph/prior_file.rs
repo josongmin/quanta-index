@@ -1,11 +1,13 @@
 //! Exact, bounded prior RepoMap facts for one Source-owned file contribution.
 
+use std::collections::BTreeSet;
+
 use quanta_index_contract::{
-    RepoMapNodeRef,
+    RepoMapNode, RepoMapNodeRef,
     index::{MemberBinding, OwnerKey},
     native_protocol::{
         MAX_NATIVE_GRAPH_ITEMS, NativeRepoMapPriorFileV1, NativeRepoMapPriorNodeDegreeV1,
-        native_repomap_rank_policy,
+        MAX_NATIVE_REPOMAP_ENDPOINT_OWNERS_V2, native_repomap_rank_policy,
     },
 };
 use quanta_index_core::index::{
@@ -25,6 +27,216 @@ use super::contribution::{
     validate_rank_coverage, validate_source_owned_facts,
 };
 use super::query::{NativeGraphReader, scan_prefix};
+
+/// One file contributor of a node in the selected predecessor Graph. The
+/// retained prior context carries its authenticated Source, facts and degrees;
+/// `rank_leaf` is the exact leaf already checked against the indexed support.
+pub struct NativeRepoMapPriorEndpointOwnerV1 {
+    pub owner: OwnerKey,
+    pub rank_leaf: Option<quanta_index_core::index::ObjectRef>,
+    pub prior: NativeRepoMapPriorFileContextV1,
+}
+
+/// Endpoint-local predecessor ownership. No owner-map or whole-Graph scan.
+pub struct NativeRepoMapPriorEndpointOwnersV1 {
+    pub owners: Vec<NativeRepoMapPriorEndpointOwnerV1>,
+    _owners_memory: Option<MemoryLease>,
+}
+
+/// Exact-ticket adapter for predecessor endpoint owner and old file inputs.
+pub struct NativeRepoMapPriorEndpointReaderV1 {
+    need: ResourceNeed,
+}
+
+impl NativeRepoMapPriorEndpointReaderV1 {
+    pub fn new(need: ResourceNeed) -> Result<Self, IndexError> {
+        if need.cpu_units == 0
+            || need.io_bytes == 0
+            || need.memory_bytes == 0
+            || need.provider_units != 0
+        {
+            return Err(IndexError::InvalidInput(
+                "prior RepoMap endpoint read reservation is invalid".into(),
+            ));
+        }
+        Ok(Self { need })
+    }
+}
+
+impl IndexQueryPort<RepoMapNodeRef, NativeRepoMapPriorEndpointOwnersV1>
+    for NativeRepoMapPriorEndpointReaderV1
+{
+    fn validate_instance(
+        &self,
+        instance: &quanta_index_core::index::InstanceSpec,
+    ) -> Result<(), IndexError> {
+        quanta_index_core::index::ports::IndexProjectionBuildPort::validate_instance(
+            &NativeGraph,
+            instance,
+        )?;
+        if instance.policy != native_repomap_rank_policy() {
+            return Err(IndexError::InvalidInput(
+                "prior RepoMap endpoint requires rank policy".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn reservation(&self, _request: &RepoMapNodeRef) -> Result<ResourceNeed, IndexError> {
+        Ok(self.need)
+    }
+
+    fn query(
+        &self,
+        request: &RepoMapNodeRef,
+        context: &mut QueryReadContext<'_>,
+    ) -> Result<QueryOutcome<NativeRepoMapPriorEndpointOwnersV1>, IndexError> {
+        self.validate_instance(context.instance)?;
+        let _need = self.reservation(request)?;
+        context.budget.checkpoint()?;
+        let member = NativeGraphReader::pinned_member(context)?;
+        let result = NativeGraph.read_prior_endpoint_owners_v1(
+            &member,
+            request,
+            context.maps,
+            context.objects,
+            context.budget,
+        )?;
+        QueryOutcome::core_scanned(context.ticket, context.instance, true, result)
+    }
+}
+
+impl NativeGraph {
+    /// Resolve every supporter of one exact predecessor node, then reopen its
+    /// file through the same selected member and Source cut. The caller must
+    /// supply a member pinned by `NativeGraphReader::pinned_member`.
+    pub(super) fn read_prior_endpoint_owners_v1(
+        &self,
+        member: &quanta_index_contract::index::MemberBinding,
+        endpoint: &RepoMapNodeRef,
+        maps: &dyn PersistentMapPort,
+        objects: &dyn ImmutableObjectPort,
+        budget: &mut WorkBudget,
+    ) -> Result<NativeRepoMapPriorEndpointOwnersV1, IndexError> {
+        let root = read_root_for_query(member, objects, budget)?;
+        if root.projection.producer_policy != native_repomap_rank_policy() {
+            return Err(IndexError::InvalidInput(
+                "prior RepoMap endpoint requires rank policy".into(),
+            ));
+        }
+        let supports =
+            scan_prior_endpoint_supports_v1(root.nodes, endpoint, maps, objects, budget)?;
+        let bytes = supports
+            .owners
+            .len()
+            .checked_mul(std::mem::size_of::<NativeRepoMapPriorEndpointOwnerV1>() * 2)
+            .ok_or(IndexError::ResourceLimited)?;
+        let owners_memory = budget.reserve_memory(
+            u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+            MemoryLifetime::Retained,
+        )?;
+        let mut owners = Vec::new();
+        owners
+            .try_reserve_exact(supports.owners.len())
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        let _support_memory = supports._memory;
+        for (owner, rank_leaf) in supports.owners {
+            let prior = self
+                .read_prior_file_context_from_root_v1(&root, owner, maps, objects, budget)?
+                .ok_or(IndexError::CorruptObject(
+                    "prior RepoMap endpoint has no file contributor".into(),
+                ))?;
+            if !prior.wire().facts.nodes.iter().any(|node| match (endpoint, node) {
+                (RepoMapNodeRef::File(id), RepoMapNode::File(file)) => id == &file.file_id,
+                (RepoMapNodeRef::Module(id), RepoMapNode::Module(module)) => id == &module.module_id,
+                (RepoMapNodeRef::Symbol(id), RepoMapNode::Symbol(symbol)) => id == &symbol.symbol_id,
+                (RepoMapNodeRef::Chunk(id), RepoMapNode::Chunk(chunk)) => id == &chunk.chunk_id,
+                _ => false,
+            }) {
+                return Err(IndexError::CorruptObject(
+                    "prior RepoMap endpoint differs from owner facts".into(),
+                ));
+            }
+            owners.push(NativeRepoMapPriorEndpointOwnerV1 {
+                owner,
+                rank_leaf,
+                prior,
+            });
+        }
+        Ok(NativeRepoMapPriorEndpointOwnersV1 {
+            owners,
+            _owners_memory: owners_memory,
+        })
+    }
+}
+
+pub(super) struct ScannedEndpointSupportsV1 {
+    pub(super) owners: Vec<(OwnerKey, Option<quanta_index_core::index::ObjectRef>)>,
+    _memory: Option<MemoryLease>,
+}
+
+pub(super) fn scan_prior_endpoint_supports_v1(
+    root: quanta_index_core::index::MapRoot,
+    endpoint: &RepoMapNodeRef,
+    maps: &dyn PersistentMapPort,
+    objects: &dyn ImmutableObjectPort,
+    budget: &mut WorkBudget,
+) -> Result<ScannedEndpointSupportsV1, IndexError> {
+    let prefix = super::affected::node_prefix(endpoint)?;
+    let refs = scan_prefix(
+        root,
+        &prefix,
+        u32::try_from(MAX_NATIVE_REPOMAP_ENDPOINT_OWNERS_V2 + 1)
+            .map_err(|_error| IndexError::ResourceLimited)?,
+        maps,
+        budget,
+    )?;
+    if refs.entries.len() > MAX_NATIVE_REPOMAP_ENDPOINT_OWNERS_V2 {
+        return Err(IndexError::ResourceLimited);
+    }
+    let bytes = refs
+        .entries
+        .len()
+        .checked_mul(
+            std::mem::size_of::<(OwnerKey, Option<quanta_index_core::index::ObjectRef>)>()
+                .saturating_add(96),
+        )
+        .ok_or(IndexError::ResourceLimited)?;
+    let memory = budget.reserve_memory(
+        u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+        MemoryLifetime::Temporary,
+    )?;
+    let mut owners = Vec::new();
+    owners
+        .try_reserve_exact(refs.entries.len())
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    let mut seen = BTreeSet::new();
+    let mut digest = None;
+    for (key, reference) in &refs.entries {
+        let support = load_support(*reference, objects, budget)?.support;
+        let GraphElement::Node(node) = support.element else {
+            return Err(IndexError::CorruptObject(
+                "prior RepoMap endpoint index contains edge".into(),
+            ));
+        };
+        if key != &super::affected::node_key(&node.identity, support.owner)?
+            || &node.identity != endpoint
+            || digest.is_some_and(|prior| prior != node.payload_digest)
+            || !seen.insert(support.owner)
+        {
+            return Err(IndexError::CorruptObject(
+                "prior RepoMap endpoint supporter differs".into(),
+            ));
+        }
+        digest = Some(node.payload_digest);
+        owners.push((support.owner, support.projection));
+    }
+    owners.sort_unstable_by_key(|(owner, _rank_leaf)| *owner);
+    Ok(ScannedEndpointSupportsV1 {
+        owners,
+        _memory: memory,
+    })
+}
 
 /// Owns the decoded fact/edge backing and its original WorkBudget leases until
 /// the caller has finished emitting the borrowed response.
@@ -121,6 +333,17 @@ impl NativeGraph {
         budget: &mut WorkBudget,
     ) -> Result<Option<NativeRepoMapPriorFileContextV1>, IndexError> {
         let root = read_root_for_query(member, objects, budget)?;
+        self.read_prior_file_context_from_root_v1(&root, owner, maps, objects, budget)
+    }
+
+    fn read_prior_file_context_from_root_v1(
+        &self,
+        root: &super::GraphRoot,
+        owner: OwnerKey,
+        maps: &dyn PersistentMapPort,
+        objects: &dyn ImmutableObjectPort,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<NativeRepoMapPriorFileContextV1>, IndexError> {
         if root.projection.producer_policy != native_repomap_rank_policy()
             || owner.producer != root.projection.producer
             || root.input.schema != root.projection.schema
@@ -176,14 +399,8 @@ impl NativeGraph {
         let loaded = load_output_retained(output_ref, objects, budget)?;
         validate_source_owned_facts(&loaded, &contribution, objects, budget)?;
         validate_rank_coverage(&loaded.output, root.projection.producer_policy)?;
-        validate_indexed_supports(&root, owner, &loaded, maps, objects, budget)?;
-        let (degrees, degrees_memory) = incident_degrees(
-            &root,
-            &loaded,
-            maps,
-            objects,
-            budget,
-        )?;
+        validate_indexed_supports(root, owner, &loaded, maps, objects, budget)?;
+        let (degrees, degrees_memory) = incident_degrees(root, &loaded, maps, objects, budget)?;
         let (output, facts, output_memory, facts_memory) = loaded.into_prior_parts()?;
         Ok(Some(NativeRepoMapPriorFileContextV1 {
             owner,

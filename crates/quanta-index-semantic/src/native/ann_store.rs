@@ -4,8 +4,9 @@
 use std::{
     collections::BTreeSet,
     fmt,
+    future::Future,
     ops::Range,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
 use async_trait::async_trait;
@@ -22,7 +23,80 @@ use quanta_index_core::{
 };
 use tokio::sync::RwLock;
 
+mod read_scope;
 mod selected;
+
+use read_scope::AnnReadScope;
+
+#[cfg(test)]
+mod read_gate {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    use tokio::sync::{Notify, oneshot};
+
+    /// A single selected-store read held after physical I/O and before return.
+    /// It is armed only after the fixture has built and opened its table.
+    pub(in crate::native) struct TestReadGate {
+        armed: AtomicBool,
+        active: AtomicUsize,
+        started: Mutex<Option<oneshot::Sender<()>>>,
+        release: Notify,
+    }
+
+    struct ActiveRead<'a>(&'a TestReadGate);
+
+    impl Drop for ActiveRead<'_> {
+        fn drop(&mut self) {
+            let _previous = self.0.active.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    impl TestReadGate {
+        pub(in crate::native) fn new() -> (Arc<Self>, oneshot::Receiver<()>) {
+            let (started, receiver) = oneshot::channel();
+            (
+                Arc::new(Self {
+                    armed: AtomicBool::new(true),
+                    active: AtomicUsize::new(0),
+                    started: Mutex::new(Some(started)),
+                    release: Notify::new(),
+                }),
+                receiver,
+            )
+        }
+
+        pub(in crate::native) fn release(&self) {
+            self.release.notify_one();
+        }
+
+        pub(in crate::native) fn active(&self) -> usize {
+            self.active.load(Ordering::SeqCst)
+        }
+
+        pub(super) async fn wait_once(&self) {
+            if !self.armed.swap(false, Ordering::AcqRel) {
+                return;
+            }
+            let _previous = self.active.fetch_add(1, Ordering::SeqCst);
+            let _active = ActiveRead(self);
+            if let Some(started) = self
+                .started
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            {
+                let _sent = started.send(());
+            }
+            self.release.notified().await;
+        }
+    }
+}
+
+#[cfg(test)]
+pub(in crate::native) use read_gate::TestReadGate;
 
 const MIB: u64 = 1024 * 1024;
 
@@ -55,6 +129,32 @@ impl Default for AnnStoreLimits {
 }
 
 impl AnnStoreLimits {
+    pub(super) fn hydration_work(self, file_count: usize) -> Result<WorkUsage, IndexError> {
+        let writes = u64::try_from(file_count).map_err(|_error| IndexError::ResourceLimited)?;
+        if writes > u64::from(self.max_files) {
+            return Err(IndexError::ResourceLimited);
+        }
+        let reads = self
+            .max_ops
+            .checked_sub(writes)
+            .ok_or(IndexError::ResourceLimited)?;
+        self.prepaid_work(reads, writes)
+    }
+
+    fn prepaid_work(self, reads: u64, writes: u64) -> Result<WorkUsage, IndexError> {
+        self.validate()?;
+        let bytes = self
+            .max_write_bytes
+            .checked_add(self.max_read_bytes)
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok(WorkUsage {
+            reads,
+            writes,
+            bytes,
+            mutations: writes,
+        })
+    }
+
     fn validate(self) -> Result<(), IndexError> {
         if self.max_write_bytes == 0
             || self.max_read_bytes == 0
@@ -87,10 +187,18 @@ impl AnnStoreLimits {
         let path_metadata = u64::from(self.max_files)
             .checked_mul(path_capacity)
             .ok_or(IndexError::ResourceLimited)?;
+        let read_scope = u64::try_from(
+            MemoryLease::shared_allocation_backing_layout(std::alloc::Layout::new::<
+                OnceLock<AnnReadScope>,
+            >())?
+            .size(),
+        )
+        .map_err(|_error| IndexError::ResourceLimited)?;
         self.max_write_bytes
             .checked_mul(2)
             .and_then(|bytes| bytes.checked_add(path_metadata))
             .and_then(|bytes| bytes.checked_add(self.max_ops.checked_mul(256)?))
+            .and_then(|bytes| bytes.checked_add(read_scope))
             .ok_or(IndexError::ResourceLimited)
     }
 }
@@ -256,6 +364,9 @@ struct Shared {
     limits: AnnStoreLimits,
     backing: Option<MemoryLease>,
     first_denial: Arc<Mutex<Option<IndexError>>>,
+    read_scope: Arc<OnceLock<AnnReadScope>>,
+    #[cfg(test)]
+    test_read_gate: Arc<Mutex<Option<Arc<TestReadGate>>>>,
 }
 
 impl Shared {
@@ -311,7 +422,22 @@ impl Shared {
     }
 
     fn checkpoint(&self) -> object_store::Result<()> {
+        if self.read_scope.get().is_some_and(AnnReadScope::is_stopped) {
+            // A query's own refusal is already recorded by its consumer.
+            // Do not let this secondary error replace it during settlement.
+            return Err(object_error(IndexError::Cancelled, "ANN read stopped"));
+        }
         checkpoint(&self.request).map_err(|error| self.remember(error))
+    }
+
+    async fn run_read<T>(
+        &self,
+        work: impl Future<Output = object_store::Result<T>>,
+    ) -> object_store::Result<T> {
+        match self.read_scope.get() {
+            Some(scope) => scope.run_read(work).await,
+            None => work.await,
+        }
     }
 
     fn check_path(&self, path: &Path) -> object_store::Result<()> {
@@ -385,26 +511,19 @@ impl AnnMemoryStore {
         limits: AnnStoreLimits,
         budget: &mut WorkBudget,
     ) -> Result<Arc<Self>, IndexError> {
-        Self::admit(limits, limits.max_ops, limits.max_ops, budget)
+        Self::admit(
+            limits,
+            limits.prepaid_work(limits.max_ops, limits.max_ops)?,
+            budget,
+        )
     }
 
     fn admit(
         limits: AnnStoreLimits,
-        read_ops: u64,
-        write_ops: u64,
+        work: WorkUsage,
         budget: &mut WorkBudget,
     ) -> Result<Arc<Self>, IndexError> {
-        limits.validate()?;
-        let bytes = limits
-            .max_write_bytes
-            .checked_add(limits.max_read_bytes)
-            .ok_or(IndexError::ResourceLimited)?;
-        budget.charge(WorkUsage {
-            reads: read_ops,
-            writes: write_ops,
-            bytes,
-            mutations: write_ops,
-        })?;
+        budget.charge(work)?;
         let backing = budget.reserve_memory(limits.admitted_memory()?, MemoryLifetime::Retained)?;
         Ok(Arc::new(Self {
             inner: InMemory::new(),
@@ -422,8 +541,33 @@ impl AnnMemoryStore {
                 limits,
                 backing,
                 first_denial: Arc::new(Mutex::new(None)),
+                read_scope: Arc::new(OnceLock::new()),
+                #[cfg(test)]
+                test_read_gate: Arc::new(Mutex::new(None)),
             },
         }))
+    }
+
+    #[cfg(test)]
+    pub(in crate::native) fn arm_test_read_gate(&self, gate: Arc<TestReadGate>) {
+        *self
+            .shared
+            .test_read_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+    }
+
+    #[cfg(test)]
+    async fn wait_for_test_read(&self) {
+        let gate = self
+            .shared
+            .test_read_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(gate) = gate {
+            gate.wait_once().await;
+        }
     }
 
     /// Consume the first facade refusal when its serial vendor operation settles.
@@ -433,6 +577,29 @@ impl AnnMemoryStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
+    }
+
+    pub(super) fn enable_read_scope(&self) {
+        let _scope = self.shared.read_scope.get_or_init(AnnReadScope::new);
+    }
+
+    pub(super) fn stop_reads(&self) {
+        if let Some(scope) = self.shared.read_scope.get() {
+            scope.stop();
+        }
+    }
+
+    pub(super) fn reads_stopped(&self) -> bool {
+        self.shared
+            .read_scope
+            .get()
+            .is_some_and(AnnReadScope::is_stopped)
+    }
+
+    pub(super) async fn wait_for_stopped_reads(&self) {
+        if let Some(scope) = self.shared.read_scope.get() {
+            scope.wait_quiescent().await;
+        }
     }
 
     /// Wait for in-flight mutations before sealing the file inventory.
@@ -555,35 +722,45 @@ impl ObjectStore for AnnMemoryStore {
         self.shared.check_path(location)?;
         self.shared.charge(Some(location), 0, 0, false)?;
         let head_only = options.head;
-        let mut result = self.inner.get_opts(location, options).await?;
-        let read_bytes = if head_only {
-            0
-        } else {
-            result
-                .range
-                .end
-                .checked_sub(result.range.start)
-                .ok_or_else(|| self.shared.denied("ANN read range invalid"))?
-        };
-        self.shared.charge_bytes(None, 0, read_bytes, false)?;
-        if head_only {
-            result.range = 0..0;
-            result.payload = GetResultPayload::Stream(futures::stream::empty().boxed());
-            return Ok(result);
-        }
-        let GetResultPayload::Stream(stream) = result.payload else {
-            return Err(self.shared.remember(object_error(
-                IndexError::BackendViolation("ANN memory backend returned a file handle".into()),
-                "ANN read",
-            )));
-        };
-        let backing = self.shared.backing.clone();
-        result.payload = GetResultPayload::Stream(
-            stream
-                .map(move |item| item.map(|data| owned_bytes(data, backing.clone())))
-                .boxed(),
-        );
-        Ok(result)
+        self.shared
+            .run_read(async {
+                let mut result = self.inner.get_opts(location, options).await?;
+                #[cfg(test)]
+                self.wait_for_test_read().await;
+                let read_bytes = if head_only {
+                    0
+                } else {
+                    result
+                        .range
+                        .end
+                        .checked_sub(result.range.start)
+                        .ok_or_else(|| self.shared.denied("ANN read range invalid"))?
+                };
+                self.shared.charge_bytes(None, 0, read_bytes, false)?;
+                if head_only {
+                    result.range = 0..0;
+                    result.payload = GetResultPayload::Stream(futures::stream::empty().boxed());
+                    return Ok(result);
+                }
+                let GetResultPayload::Stream(stream) = result.payload else {
+                    return Err(self.shared.remember(object_error(
+                        IndexError::BackendViolation(
+                            "ANN memory backend returned a file handle".into(),
+                        ),
+                        "ANN read",
+                    )));
+                };
+                // InMemory's payload consists of already owned bytes. Keep
+                // their backing charged after the read future settles.
+                let backing = self.shared.backing.clone();
+                result.payload = GetResultPayload::Stream(
+                    stream
+                        .map(move |item| item.map(|data| owned_bytes(data, backing.clone())))
+                        .boxed(),
+                );
+                Ok(result)
+            })
+            .await
     }
 
     async fn get_ranges(
@@ -612,20 +789,26 @@ impl ObjectStore for AnnMemoryStore {
         }
         // InMemory returns shared slices and clips each request at EOF. Charge
         // all delivered slices (including overlaps) before exposing any of them.
-        let slices = self.inner.get_ranges(location, ranges).await?;
-        let bytes = slices.iter().try_fold(0u64, |total, slice| {
-            let length = u64::try_from(slice.len())
-                .map_err(|_error| self.shared.denied("ANN range size"))?;
-            total
-                .checked_add(length)
-                .ok_or_else(|| self.shared.denied("ANN range bytes overflow"))
-        })?;
-        self.shared.charge_bytes(None, 0, bytes, false)?;
-        let backing = self.shared.backing.clone();
-        Ok(slices
-            .into_iter()
-            .map(|data| owned_bytes(data, backing.clone()))
-            .collect())
+        self.shared
+            .run_read(async {
+                let slices = self.inner.get_ranges(location, ranges).await?;
+                #[cfg(test)]
+                self.wait_for_test_read().await;
+                let bytes = slices.iter().try_fold(0u64, |total, slice| {
+                    let length = u64::try_from(slice.len())
+                        .map_err(|_error| self.shared.denied("ANN range size"))?;
+                    total
+                        .checked_add(length)
+                        .ok_or_else(|| self.shared.denied("ANN range bytes overflow"))
+                })?;
+                self.shared.charge_bytes(None, 0, bytes, false)?;
+                let backing = self.shared.backing.clone();
+                Ok(slices
+                    .into_iter()
+                    .map(|data| owned_bytes(data, backing.clone()))
+                    .collect())
+            })
+            .await
     }
 
     fn delete_stream(

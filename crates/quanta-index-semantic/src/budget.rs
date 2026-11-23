@@ -259,9 +259,12 @@ impl<'a> RowBudgetProbe<'a> {
 }
 
 /// The typed interruption for `lane`, once the budget reports one.
-async fn watch_budget(budget: &RequestBudgetV1, lane: DenseLaneKindV1) -> CoreError {
+pub(crate) async fn wait_for_request_interruption(
+    budget: &RequestBudgetV1,
+    checkpoint: &'static str,
+) -> CoreError {
     loop {
-        if let Some(interruption) = budget.interrupted_at(lane.checkpoint()) {
+        if let Some(interruption) = budget.interrupted_at(checkpoint) {
             return interruption;
         }
         tokio::time::sleep(budget.remaining().min(SEMANTIC_BUDGET_POLL_INTERVAL)).await;
@@ -287,7 +290,7 @@ where
 {
     tokio::select! {
         biased;
-        interruption = watch_budget(watch.budget, lane) => {
+        interruption = wait_for_request_interruption(watch.budget, lane.checkpoint()) => {
             watch.tallies.count_interruption(lane);
             Err(interruption)
         }

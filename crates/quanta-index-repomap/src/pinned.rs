@@ -1,26 +1,18 @@
-//! The pinned `RepoMap` snapshot executor and its RAII pin lease (S21-05).
+//! The retired `RepoMap` store's pinned snapshot and RAII lease (S21-05).
 //!
 //! One handle is created inside the store's acquisition critical
 //! section and holds exactly three things: the `Arc` to the immutable
-//! indexed snapshot, the evidence of what was pinned, and the RAII pin
-//! lease that keeps the physical artifact alive. Executing a query
-//! touches only the `Arc`; the handle has no store, registry or ledger
-//! reference, so a store re-lookup during execution is structurally
-//! impossible. Dropping the handle — by return, cancellation or panic
-//! unwind — returns the pin.
-//!
-//! This module is the lower layer both `store` (which mints the handle)
-//! and `reader` (which re-exports it) depend on; keeping the lease and
-//! the handle here is what makes the module graph acyclic.
+//! snapshot, the evidence of what was pinned, and the RAII pin lease
+//! that keeps the physical artifact alive. It has no query method.
+//! Dropping the handle by return, cancellation or panic unwind returns
+//! the pin so physical retirement may proceed.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use quanta_index_contract::{RepoMapQueryRequest, RepoMapQueryResponse};
 use quanta_index_core::{CoreError, PinnedRepoMapSnapshot, RepoMapSnapshotEvidenceV1};
 
-use crate::model::RepoMapIndexedSnapshot;
-use crate::query::RepoMapQueryEngine;
+use crate::model::RepoMapSnapshot;
 
 /// The store's logical snapshot key: repo, revision and generation.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -91,19 +83,19 @@ impl Drop for RepoMapPinLease {
 /// A pinned, immutable `RepoMap` snapshot (see the module docs).
 #[derive(Debug)]
 pub struct PinnedRepoMapSnapshotV1 {
-    snapshot: Arc<RepoMapIndexedSnapshot>,
+    _snapshot: Arc<RepoMapSnapshot>,
     evidence: RepoMapSnapshotEvidenceV1,
     _pin: RepoMapPinLease,
 }
 
 impl PinnedRepoMapSnapshotV1 {
     pub(crate) fn new(
-        snapshot: Arc<RepoMapIndexedSnapshot>,
+        snapshot: Arc<RepoMapSnapshot>,
         evidence: RepoMapSnapshotEvidenceV1,
         pin: RepoMapPinLease,
     ) -> Self {
         Self {
-            snapshot,
+            _snapshot: snapshot,
             evidence,
             _pin: pin,
         }
@@ -111,10 +103,6 @@ impl PinnedRepoMapSnapshotV1 {
 }
 
 impl PinnedRepoMapSnapshot for PinnedRepoMapSnapshotV1 {
-    fn query(&self, request: RepoMapQueryRequest) -> Result<RepoMapQueryResponse, CoreError> {
-        RepoMapQueryEngine::query(&self.snapshot, &request)
-    }
-
     fn evidence(&self) -> &RepoMapSnapshotEvidenceV1 {
         &self.evidence
     }

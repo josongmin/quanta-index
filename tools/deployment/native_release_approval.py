@@ -9,8 +9,14 @@ from pathlib import Path
 
 SCHEMA = "semantica-installed-native-q-approval/v1"
 DOMAIN = b"semantica.installed-native-q-approval.v1\n"
+RETIREMENT_SCHEMA = "semantica-installed-native-q-approval/v2"
+RETIREMENT_DOMAIN = b"semantica.installed-native-q-approval.v2\n"
 PRODUCT_ACTIVE_SCHEMA = "semantica-installed-product-active/v1"
 PRODUCT_ACTIVE_DOMAIN = b"semantica.installed-product-active.v1\n"
+PRODUCT_ACTIVE_SCHEMA_V2 = "semantica-installed-product-active/v2"
+PRODUCT_ACTIVE_DOMAIN_V2 = b"semantica.installed-product-active.v2\n"
+PRODUCT_ACTIVE_SCHEMA_V3 = "semantica-installed-product-active/v3"
+PRODUCT_ACTIVE_DOMAIN_V3 = b"semantica.installed-product-active.v3\n"
 PRODUCT_ACTIVE_MAX_BYTES = 8 * 1024
 TRUST = Path("/etc/semantica-codegraph-v2/trust")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -19,6 +25,7 @@ PRODUCT_ACTIVE_DIGESTS = frozenset({
     "ag5_active_record_sha256", "release_manifest_sha256", "cli_sha256", "server_sha256",
     "sql_rulepack_worker_sha256", "parser_native_worker_sha256",
 })
+PRODUCT_ACTIVE_FIELDS = PRODUCT_ACTIVE_DIGESTS | {"schema_version", "install_root", "generation"}
 REQUEST_FIELDS = {
     "deployment_root", "selection_path", "selection_sha256",
     "decision_policy_path", "decision_policy_sha256",
@@ -32,7 +39,51 @@ def _canonical_bytes(value: object) -> bytes:
 
 
 def signing_bytes(payload: dict) -> bytes:
-    return DOMAIN + _canonical_bytes(payload)
+    schema = payload.get("schema_version")
+    if schema == SCHEMA:
+        domain = DOMAIN
+    elif schema == RETIREMENT_SCHEMA:
+        domain = RETIREMENT_DOMAIN
+    else:
+        raise ValueError("Native release approval schema differs")
+    return domain + _canonical_bytes(payload)
+
+
+def _valid_repository_root(root: object) -> bool:
+    return (
+        isinstance(root, str) and root.isascii() and root.startswith("/")
+        and all(32 <= ord(character) < 127 for character in root)
+        and all(part not in {"", ".", ".."} for part in root.split("/")[1:])
+    )
+
+
+def _valid_native_q_digests(value: dict) -> bool:
+    return all(
+        isinstance(value[name], str) and SHA256.fullmatch(value[name]) is not None
+        and value[name] != "0" * 64
+        for name in ("q_image_sha256", "q_config_sha256")
+    )
+
+
+def _valid_native_recovery(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {
+            "analysis_family", "repository_root", "q_image_sha256", "q_config_sha256",
+        }
+        and value["analysis_family"] == "taint_rows_ifds"
+        and _valid_repository_root(value["repository_root"])
+        and _valid_native_q_digests(value)
+    )
+
+
+def _valid_native_facts_publication(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"repository_root", "q_image_sha256", "q_config_sha256"}
+        and _valid_repository_root(value["repository_root"])
+        and _valid_native_q_digests(value)
+    )
 
 
 def verify_installed_product_generation(raw: bytes, key: bytes) -> dict:
@@ -48,11 +99,23 @@ def verify_installed_product_generation(raw: bytes, key: bytes) -> dict:
     payload, signature = envelope["payload"], envelope["signature_hex"]
     if not isinstance(signature, str) or SIGNATURE_HEX.fullmatch(signature) is None:
         raise ValueError("installed Product generation signature is malformed")
+    if not isinstance(payload, dict):
+        raise ValueError("installed Product generation payload differs")
+    schema = payload.get("schema_version")
+    if schema == PRODUCT_ACTIVE_SCHEMA and set(payload) == PRODUCT_ACTIVE_FIELDS:
+        domain = PRODUCT_ACTIVE_DOMAIN
+    elif (schema == PRODUCT_ACTIVE_SCHEMA_V2
+          and set(payload) == PRODUCT_ACTIVE_FIELDS | {"native_recovery"}
+          and _valid_native_recovery(payload["native_recovery"])):
+        domain = PRODUCT_ACTIVE_DOMAIN_V2
+    elif (schema == PRODUCT_ACTIVE_SCHEMA_V3
+          and set(payload) == PRODUCT_ACTIVE_FIELDS | {"native_facts_publication"}
+          and _valid_native_facts_publication(payload["native_facts_publication"])):
+        domain = PRODUCT_ACTIVE_DOMAIN_V3
+    else:
+        raise ValueError("installed Product generation payload differs")
     if (
-        not isinstance(payload, dict)
-        or set(payload) != PRODUCT_ACTIVE_DIGESTS | {"schema_version", "install_root", "generation"}
-        or payload["schema_version"] != PRODUCT_ACTIVE_SCHEMA
-        or type(payload["generation"]) is not int or payload["generation"] < 0
+        type(payload["generation"]) is not int or payload["generation"] < 0
         or not isinstance(payload["install_root"], str) or not payload["install_root"].isascii()
         or any(not isinstance(payload[field], str) or SHA256.fullmatch(payload[field]) is None
                for field in PRODUCT_ACTIVE_DIGESTS)
@@ -61,11 +124,21 @@ def verify_installed_product_generation(raw: bytes, key: bytes) -> dict:
         raise ValueError("installed Product generation payload differs")
     try:
         Ed25519PublicKey.from_public_bytes(key).verify(
-            bytes.fromhex(signature), PRODUCT_ACTIVE_DOMAIN + _canonical_bytes(payload),
+            bytes.fromhex(signature), domain + _canonical_bytes(payload),
         )
     except (InvalidSignature, ValueError) as error:
         raise ValueError("installed Product generation signature differs") from error
     return payload
+
+
+def require_matching_installed_recovery(active, q_image_sha256, q_config_sha256):
+    for field in ("native_recovery", "native_facts_publication"):
+        approval = active.get(field)
+        if approval is not None and (
+            approval["q_image_sha256"] != q_image_sha256
+            or approval["q_config_sha256"] != q_config_sha256
+        ):
+            raise ValueError("Native release selection differs from installed recovery approval")
 
 
 def binding(selection, selection_sha256, policy_sha256, active_sha256, manifest_sha256):
@@ -75,8 +148,11 @@ def binding(selection, selection_sha256, policy_sha256, active_sha256, manifest_
                selection.binary_sha256, selection.native_config_sha256)
     if any(not isinstance(value, str) or SHA256.fullmatch(value) is None for value in digests):
         raise ValueError("Native release approval digest differs")
-    return {
-        "schema_version": SCHEMA,
+    retirement = selection.native_boot_receipt.retired_policy_object_hex is not None
+    if retirement and selection.to_wire().get("schema_version") != 3:
+        raise ValueError("Native retirement approval requires schema-3 selection")
+    payload = {
+        "schema_version": RETIREMENT_SCHEMA if retirement else SCHEMA,
         "active_generation_sha256": active_sha256,
         "release_manifest_sha256": manifest_sha256,
         "q_elf_sha256": selection.binary_sha256,
@@ -86,6 +162,14 @@ def binding(selection, selection_sha256, policy_sha256, active_sha256, manifest_
         "config_sha256": selection.native_config_sha256,
         "decision_policy_sha256": policy_sha256,
     }
+    if retirement:
+        receipt = selection.native_boot_receipt
+        payload["retired_projection_policy"] = {
+            "object_hex": receipt.retired_policy_object_hex,
+            "sha256_hex": receipt.retired_policy_sha256_hex,
+            "identity_count": receipt.retired_policy_identity_count,
+        }
+    return payload
 
 
 def _under_root(path, root):
@@ -201,6 +285,9 @@ def verify_installed_approval(receipt, selection, selection_sha256, policy_sha25
     active = _installed_bytes(TRUST / "active-generation.json", PRODUCT_ACTIVE_MAX_BYTES)
     key = _installed_bytes(TRUST / "deployment-public-key.bin", 32)
     payload = verify_installed_product_generation(active, key)
+    require_matching_installed_recovery(
+        payload, selection.binary_sha256, selection.native_config_sha256,
+    )
     manifest_sha = payload["release_manifest_sha256"]
     expected = binding(selection, selection_sha256, policy_sha256,
                        hashlib.sha256(active).hexdigest(), manifest_sha)

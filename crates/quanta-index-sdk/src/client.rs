@@ -5,7 +5,6 @@ use std::sync::{
 
 use quanta_index_contract::{
     BorrowedAuxiliaryIngestIpcRequestEnvelopeV1, BorrowedAuxiliaryIngestIpcRequestV1,
-    BorrowedRepoMapActivateControlIpcRequestEnvelopeV3, BorrowedRepoMapActivateControlIpcRequestV3,
     DiagnosticAttemptFieldV1, GenerationPin, GenerationSelector, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
@@ -21,7 +20,7 @@ use crate::binding::{
 };
 use crate::{
     ClientProfile, ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace,
-    ObservabilityNamespace, QuarantineNamespace, QueryTransport, RepoMapNamespace,
+    ObservabilityNamespace, QuarantineNamespace, QueryTransport,
     RuntimeNamespace, SdkError, SearchCorpusNamespace, SearchNamespace, SemanticNamespace,
     StructuralNamespace, SymbolNamespace, UdsControlTransport, UdsIngestTransport,
     UdsQueryTransport,
@@ -137,7 +136,7 @@ impl ClientQueryRpcKindV1 {
             | SearchPlaneQueryIpcRequest::History(_)
             | SearchPlaneQueryIpcRequest::RuntimeMetadata(_)
             | SearchPlaneQueryIpcRequest::Structural(_)
-            | SearchPlaneQueryIpcRequest::RepoMapQuery(_)
+
             | SearchPlaneQueryIpcRequest::Explain(_)
             | SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => Err(SdkError::Protocol(
                 "lexical client observation reached a non-lexical RPC".to_string(),
@@ -282,11 +281,6 @@ impl QuantaIndex {
     }
 
     #[must_use]
-    pub fn repomap(&self) -> RepoMapNamespace<'_> {
-        self.inner.repomap()
-    }
-
-    #[must_use]
     pub fn generations(&self) -> GenerationNamespace<'_> {
         self.inner.generations()
     }
@@ -404,11 +398,6 @@ impl QuantaIndexClientPayloadV1 {
     #[must_use]
     pub fn structural(&self) -> StructuralNamespace<'_> {
         StructuralNamespace::new(self)
-    }
-
-    #[must_use]
-    pub fn repomap(&self) -> RepoMapNamespace<'_> {
-        RepoMapNamespace::new(self)
     }
 
     #[must_use]
@@ -553,7 +542,7 @@ impl QuantaIndexClientPayloadV1 {
             | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Ok(payload),
@@ -621,7 +610,7 @@ impl QuantaIndexClientPayloadV1 {
             | SearchPlaneQueryIpcRequest::History(_)
             | SearchPlaneQueryIpcRequest::RuntimeMetadata(_)
             | SearchPlaneQueryIpcRequest::Structural(_)
-            | SearchPlaneQueryIpcRequest::RepoMapQuery(_)
+
             | SearchPlaneQueryIpcRequest::Explain(_)
             | SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => Ok(()),
         }
@@ -660,8 +649,8 @@ impl QuantaIndexClientPayloadV1 {
             payload @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+
+
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -700,11 +689,6 @@ impl QuantaIndexClientPayloadV1 {
         &self,
         payload: BorrowedAuxiliaryIngestIpcRequestV1<'_>,
     ) -> Result<SearchPlaneIngestIpcResponse, SdkError> {
-        if matches!(payload, BorrowedAuxiliaryIngestIpcRequestV1::RepoMap(_)) {
-            return Err(SdkError::Protocol(
-                "RepoMap requires the exact borrowed receipt binding route".to_string(),
-            ));
-        }
         let binding = IngestCallBinding::from_borrowed_auxiliary_v1(&payload);
         let ingest_transport = self
             .transports
@@ -750,33 +734,6 @@ impl QuantaIndexClientPayloadV1 {
         Ok((request_id, body))
     }
 
-    pub(super) fn dispatch_borrowed_repo_map_activate_admitted_v3(
-        &self,
-        request: &quanta_index_contract::RepoMapActivateGenerationRequestV2,
-        budget: &quanta_index_ipc::RequestBudgetV1,
-        memory: &quanta_index_ipc::MemoryScope,
-        work: &mut dyn FnMut(usize) -> Result<(), quanta_index_ipc::IpcError>,
-    ) -> Result<(u64, quanta_index_ipc::AdmittedClientResponseBody), SdkError> {
-        let control_transport = self
-            .transports
-            .control()
-            .ok_or(SdkError::PlaneUnavailable { plane: "control" })?;
-        let request_id = self.next_request_id();
-        let envelope = BorrowedRepoMapActivateControlIpcRequestEnvelopeV3 {
-            request_id,
-            payload: BorrowedRepoMapActivateControlIpcRequestV3(request),
-            diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
-        };
-        let body = control_transport.send_borrowed_repo_map_admitted_v3(
-            envelope,
-            self.diagnostic_attempt_source.as_deref(),
-            budget,
-            memory,
-            work,
-        )?;
-        Ok((request_id, body))
-    }
-
     fn complete_ingest_v1(
         binding: &IngestCallBinding,
         request_id: u64,
@@ -798,7 +755,7 @@ impl QuantaIndexClientPayloadV1 {
             }),
             payload @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
-            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
             | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(
                 _,
@@ -848,7 +805,6 @@ impl QuantaIndexClientPayloadV1 {
             SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => "go_test_trace_file_v1",
             SearchPlaneQueryIpcResponse::History(_) => "history",
             SearchPlaneQueryIpcResponse::Structural(_) => "structural",
-            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "repomap",
             SearchPlaneQueryIpcResponse::Explain(_) => "explain",
             SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
                 "cluster_membership_batch_read"
@@ -871,10 +827,6 @@ impl QuantaIndexClientPayloadV1 {
             SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_) => {
                 "search_corpus_rollback_cas_ack"
             }
-            SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_) => {
-                "repomap_terminal_receipt_v2"
-            }
-            SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_) => "repomap_active_head_v2",
             SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_) => {
                 "current_generation_snapshot"
             }
@@ -899,9 +851,6 @@ impl QuantaIndexClientPayloadV1 {
                 "source_publication_upload_ack"
             }
             SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_) => "search_corpus_receipt",
-            SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_) => {
-                "repomap_terminal_receipt_v2"
-            }
             SearchPlaneIngestIpcResponse::HistoryReceipt(_) => "history_receipt",
             SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_) => {
                 "repo_commit_recency_receipt"
@@ -1132,12 +1081,6 @@ impl<'a> ReaderClient<'a> {
         self.client.structural().query_request(request)
     }
 
-    pub fn repomap_query(
-        &self,
-        request: quanta_index_contract::RepoMapQueryRequest,
-    ) -> Result<quanta_index_contract::RepoMapQueryResponse, SdkError> {
-        self.client.repomap().query(request)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -1248,12 +1191,6 @@ impl<'a> ProducerClient<'a> {
         self.client.structural().publish(batch)
     }
 
-    pub fn publish_repomap(
-        &self,
-        request: &quanta_index_contract::RepoMapPublishBundleRequestV2,
-    ) -> Result<quanta_index_contract::RepoMapTerminalReceiptV2, SdkError> {
-        self.client.repomap().publish(request)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -1292,12 +1229,6 @@ impl<'a> ControlClient<'a> {
         self.client.generations().status(repo_id, revision_id)
     }
 
-    pub fn activate_repomap(
-        &self,
-        request: quanta_index_contract::RepoMapActivateGenerationRequestV2,
-    ) -> Result<quanta_index_contract::RepoMapTerminalReceiptV2, SdkError> {
-        self.client.repomap().activate(request)
-    }
 
     /// The daemon's metrics snapshot (QI-BB-015).
     pub fn metrics_snapshot(&self) -> Result<quanta_index_contract::MetricsSnapshotV1, SdkError> {

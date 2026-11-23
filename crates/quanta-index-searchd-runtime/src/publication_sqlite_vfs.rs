@@ -16,11 +16,10 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::catalog_lock_files::catalog_file_error;
 use quanta_index_catalog::{CatalogIoAdmission, CatalogIoScope, CatalogReadOnlyIoAdmission};
 use quanta_index_contract::SearchPlaneErrorCodeV2;
-use quanta_index_core::index::{
-    IndexError, ObjectReadFile, ObjectReadIoPort, WorkBudget, WorkLimits,
-};
+use quanta_index_core::index::{IndexError, ObjectReadFile, WorkBudget};
 use quanta_index_core::publication_admission::{
     CatalogPublicationFundingPort, CatalogPublicationFundingScope,
 };
@@ -1597,8 +1596,8 @@ impl CatalogIoAdmission for SqliteCapacityVfs {
         let common = self
             .common_for_scope()
             .map_err(|error| catalog_file_error(&error))?;
-        if create_new {
-            let parent = CURRENT_FUNDING.with(|slot| {
+        let parent = if create_new {
+            CURRENT_FUNDING.with(|slot| {
                 let funding = slot.borrow();
                 match funding.as_ref() {
                     Some(funding) if funding.scope == self.scope => {
@@ -1609,51 +1608,18 @@ impl CatalogIoAdmission for SqliteCapacityVfs {
                     )),
                     None => Ok(None),
                 }
-            })?;
-            common
-                .prepare_empty_lock_with_parent(path, true, parent)
-                .map_err(|error| catalog_file_error(&error))?;
-        }
-        // Session creation has no caller WorkBudget. Its process-lived owner
-        // is bounded by the common handle/registry ceilings, not an invented
-        // per-request memory grant or a claim of allocator/RSS enforcement.
-        let mut budget = WorkBudget::with_request(
-            WorkLimits {
-                reads: 0,
-                writes: 0,
-                bytes: 0,
-                mutations: 0,
-            },
-            RequestBudgetV1::unbounded(),
-        );
-        crate::native_object_read_io::NativeObjectReadIo::new(common).open(path, &mut budget)
+            })?
+        } else {
+            None
+        };
+        crate::catalog_lock_files::open(common, path, create_new, parent)
     }
+
     fn unlink_lock_file(&self, path: &Path, held: &File) -> Result<(), IndexError> {
-        use std::os::unix::fs::MetadataExt as _;
         let common = self
             .common_for_scope()
             .map_err(|error| catalog_file_error(&error))?;
-        let mut deletion = common
-            .begin_delete(path)
-            .map_err(|error| catalog_file_error(&error))?;
-        let (source, _parent) = deletion
-            .source_metadata()
-            .map_err(|error| catalog_file_error(&error))?;
-        let expected = held
-            .metadata()
-            .map_err(|error| IndexError::Storage(format!("Catalog held lock metadata: {error}")))?;
-        if source.dev() != expected.dev()
-            || source.ino() != expected.ino()
-            || source.len() != expected.len()
-            || source.nlink() != expected.nlink()
-        {
-            return Err(IndexError::Storage(
-                "Catalog delete source differs from held lock".into(),
-            ));
-        }
-        deletion
-            .perform_and_sync()
-            .map_err(|error| catalog_file_error(&error))
+        crate::catalog_lock_files::unlink(&common, path, held)
     }
 }
 
@@ -1698,20 +1664,6 @@ impl Drop for CatalogVerificationScope {
         CURRENT_VERIFICATION.with(|slot| {
             let _finished = slot.replace(self.previous.take());
         });
-    }
-}
-
-fn catalog_file_error(error: &CoreError) -> IndexError {
-    if matches!(
-        error,
-        CoreError::Typed {
-            code: SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
-            ..
-        }
-    ) {
-        IndexError::ResourceLimited
-    } else {
-        IndexError::Storage(format!("Catalog regular-file I/O: {error}"))
     }
 }
 

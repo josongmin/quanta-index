@@ -814,6 +814,8 @@ pub quanta_index_contract::index::HistorySnapshotExportFrameV1::NativeProtectedC
 pub quanta_index_contract::index::HistorySnapshotExportFrameV1::NativeProtectedComplete::source_root_nonce: quanta_index_contract_base::index_refs::Digest
 pub quanta_index_contract::index::HistorySnapshotExportFrameV1::NativeProtectedComplete::source_routes: quanta_index_contract_base::index_refs::ObjectRef
 pub quanta_index_contract::index::HistorySnapshotExportFrameV1::Page(quanta_index_contract::index::HistorySnapshotPageV1)
+impl quanta_index_contract::index::HistorySnapshotExportFrameV1
+pub fn quanta_index_contract::index::HistorySnapshotExportFrameV1::decode_json_v1(bytes: &[u8]) -> core::result::Result<Self, serde_json::error::Error>
 impl core::clone::Clone for quanta_index_contract::index::HistorySnapshotExportFrameV1
 pub fn quanta_index_contract::index::HistorySnapshotExportFrameV1::clone(&self) -> quanta_index_contract::index::HistorySnapshotExportFrameV1
 impl core::cmp::Eq for quanta_index_contract::index::HistorySnapshotExportFrameV1
@@ -9577,6 +9579,7 @@ pub quanta_index_contract::native_protocol::NativeIndexRequest::LookupProjection
 pub quanta_index_contract::native_protocol::NativeIndexRequest::LookupSourceOwners
 pub quanta_index_contract::native_protocol::NativeIndexRequest::LookupSourceOwners::owners: quanta_index_contract::native_protocol::NativeSourceOwnerKeys
 pub quanta_index_contract::native_protocol::NativeIndexRequest::LookupSourceOwners::selection: quanta_index_contract::index::ViewSelection
+pub quanta_index_contract::native_protocol::NativeIndexRequest::ObserveCandidateInstallationV1
 pub quanta_index_contract::native_protocol::NativeIndexRequest::ObserveRootView(quanta_index_contract::index::ViewSelection)
 pub quanta_index_contract::native_protocol::NativeIndexRequest::Overlay(quanta_index_contract::native_protocol::NativeOverlayRequest)
 pub quanta_index_contract::native_protocol::NativeIndexRequest::PublishedViewMetadata(quanta_index_contract_base::index_refs::OperationKey)
@@ -9717,6 +9720,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::Nativ
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeIndexRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeIndexRequest
 pub enum quanta_index_contract::native_protocol::NativeIndexResponse
+pub quanta_index_contract::native_protocol::NativeIndexResponse::CandidateInstallationV1(quanta_index_contract::native_protocol::NativeCandidateInstallationV1)
 pub quanta_index_contract::native_protocol::NativeIndexResponse::Claimed(quanta_index_contract::index::WorkClaim)
 pub quanta_index_contract::native_protocol::NativeIndexResponse::Created(quanta_index_contract_base::index_refs::ViewRef)
 pub quanta_index_contract::native_protocol::NativeIndexResponse::DslPageV1(quanta_index_contract::native_protocol::NativeDslPageV1)
@@ -10426,6 +10430,31 @@ impl core::marker::Unpin for quanta_index_contract::native_protocol::GraphProjec
 impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::GraphProjectionRow
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::GraphProjectionRow
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::GraphProjectionRow
+pub struct quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+pub quanta_index_contract::native_protocol::NativeCandidateInstallationV1::config_sha256: quanta_index_contract_base::index_refs::Digest
+pub quanta_index_contract::native_protocol::NativeCandidateInstallationV1::root_device: u64
+pub quanta_index_contract::native_protocol::NativeCandidateInstallationV1::root_inode: u64
+pub quanta_index_contract::native_protocol::NativeCandidateInstallationV1::root_nonce: quanta_index_contract_base::index_refs::Digest
+impl core::clone::Clone for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+pub fn quanta_index_contract::native_protocol::NativeCandidateInstallationV1::clone(&self) -> quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+impl core::cmp::Eq for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+impl core::cmp::PartialEq for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+pub fn quanta_index_contract::native_protocol::NativeCandidateInstallationV1::eq(&self, other: &quanta_index_contract::native_protocol::NativeCandidateInstallationV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+pub fn quanta_index_contract::native_protocol::NativeCandidateInstallationV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+pub fn quanta_index_contract::native_protocol::NativeCandidateInstallationV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+pub fn quanta_index_contract::native_protocol::NativeCandidateInstallationV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+impl core::marker::Send for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+impl core::marker::Sync for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+impl core::marker::Unpin for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::native_protocol::NativeCandidateInstallationV1
 pub struct quanta_index_contract::native_protocol::NativeDslCorpusV1
 pub quanta_index_contract::native_protocol::NativeDslCorpusV1::pin: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::native_protocol::NativeDslCorpusV1::source_producer: quanta_index_contract_base::index_refs::ProducerId

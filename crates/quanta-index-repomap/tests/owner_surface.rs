@@ -1,5 +1,5 @@
 //! S21-02/P03 — the `RepoMap` owner's port surface under SQLite-catalog
-//! authority: the bundle ingest / activation / query / quarantine ports
+//! authority: the bundle ingest / activation / pin / quarantine ports
 //! hang off one store, the quarantine is listed from the durable incident
 //! rows and discarded only as listed (journaled tombstone, payload-only
 //! reclaim), and a publish that names no nodes is refused before any
@@ -23,7 +23,7 @@ use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
     FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
     RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
-    RepoMapItemIndexAvailability, RepoMapNode, RepoMapPublishBundleRequestV2, RepoMapQueryRequest,
+    RepoMapItemIndexAvailability, RepoMapNode, RepoMapPublishBundleRequestV2,
     RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
 };
 use quanta_index_core::{
@@ -89,18 +89,6 @@ fn acquire_request(generation: u64) -> quanta_index_core::RepoMapSnapshotAcquire
     }
 }
 
-fn query_request(generation: u64) -> RepoMapQueryRequest {
-    RepoMapQueryRequest {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(generation),
-        query_text: "lib".to_string(),
-        top_k: 10,
-        token_budget: 1_000,
-        focus_subjects: Vec::new(),
-    }
-}
-
 #[expect(
     clippy::type_complexity,
     reason = "the five-port fixture tuple is the test's subject; factoring it would hide the surface under test"
@@ -159,8 +147,12 @@ fn the_four_ports_drive_one_store_end_to_end() -> TestResult {
     let activation =
         activate.activate_generation(&RepoMapActivateGenerationRequestV2::for_bundle(&source)?)?;
     assert_eq!(activation.mutation.activation_epoch, 1);
-    let response = query.acquire(acquire_request(1))?.query(query_request(1))?;
-    assert!(!response.entries.is_empty());
+    let pinned = query.acquire(acquire_request(1))?;
+    assert_eq!(pinned.evidence().manifest_generation, 1);
+    assert_eq!(
+        pinned.evidence().candidate_commitment,
+        receipt.mutation.new_candidate_commitment
+    );
     assert!(quarantine.quarantined_files()?.is_empty());
     Ok(())
 }

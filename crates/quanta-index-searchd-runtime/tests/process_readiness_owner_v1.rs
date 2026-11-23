@@ -136,8 +136,6 @@ mod offline_state_custody;
 mod offline_tree_inventory;
 #[path = "common/process_envelope_scrape.rs"]
 mod process_envelope_scrape;
-#[path = "repo_map_end_to_end.rs"]
-mod repo_map_end_to_end;
 #[path = "legacy_reference_process/scale_process_fixture.rs"]
 mod scale_process_fixture;
 #[path = "common/sdk_frontdoor_lexical_fixture.rs"]

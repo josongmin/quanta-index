@@ -1,7 +1,8 @@
-//! Schema-2 wire codec. Native recovery does not introduce another persisted IR.
+//! Schema-2 selection remains readable; schema-3 binds a candidate retirement
+//! policy reference. Neither selection format authenticates policy body alone.
 use super::{MAX_BYTES, charge, fingerprint, read_control};
 use anyhow::{Result, anyhow, ensure};
-use quanta_index_contract::index::{Digest, ObjectRef, OperationKey};
+use quanta_index_contract::index::{Digest, ObjectRef, OperationKey, RetiredProjectionPolicyRefV1};
 use quanta_index_core::index::WorkBudget;
 use quanta_index_searchd::cli::{NativeBootIdentityV1, NativeCommandModeV1, NativeStateCommandV1};
 use rustix::fs::{Mode, OFlags};
@@ -43,12 +44,13 @@ pub(crate) struct DeploymentSelectionDocumentV1 {
     binary: PathBuf,
     binary_digest: Digest,
     native: Option<NativeStateCommandV1>,
+    retired_projection_policy: Option<RetiredProjectionPolicyRefV1>,
 }
 impl DeploymentSelectionDocumentV1 {
     pub(super) fn payload_v1(&self) -> &[u8] {
         &self.payload
     }
-    pub(super) fn fingerprint_v1(&self) -> Digest {
+    pub(crate) fn fingerprint_v1(&self) -> Digest {
         self.fingerprint
     }
     pub(crate) fn state_root_v1(&self) -> &Path {
@@ -56,6 +58,9 @@ impl DeploymentSelectionDocumentV1 {
     }
     pub(crate) fn native_command_v1(&self) -> Option<&NativeStateCommandV1> {
         self.native.as_ref()
+    }
+    pub(crate) fn retired_projection_policy_ref_v1(&self) -> Option<RetiredProjectionPolicyRefV1> {
+        self.retired_projection_policy
     }
     pub(super) fn binary_v1(&self) -> &Path {
         &self.binary
@@ -126,15 +131,14 @@ pub(super) fn decode_document(
     payload: Vec<u8>,
     budget: &mut WorkBudget,
 ) -> Result<DeploymentSelectionDocumentV1> {
-    ensure!(
-        wire.get("schema_version").and_then(Value::as_u64) == Some(2),
-        "unsupported selection format"
-    );
+    let schema = wire.get("schema_version").and_then(Value::as_u64);
+    ensure!(matches!(schema, Some(2 | 3)), "unsupported selection format");
     let native = match text(wire, "mode")? {
         "native" => true,
         "legacy" => false,
         _ => return Err(anyhow!("unsupported selection mode")),
     };
+    ensure!(schema != Some(3) || native, "retirement selection requires Native mode");
     exact_fields(wire, COMMON, if native { NATIVE } else { &[] })?;
     let binary = canonical_path(text(wire, "binary")?, false, budget)?;
     let state_root = canonical_path(text(wire, "state_root")?, true, budget)?;
@@ -153,6 +157,7 @@ pub(super) fn decode_document(
             "invalid environment value"
         );
     }
+    let mut retired_projection_policy = None;
     let command = if native {
         let config = canonical_path(text(wire, "native_config")?, false, budget)?;
         let config_digest = hex(text(wire, "native_config_sha256")?)?;
@@ -169,21 +174,40 @@ pub(super) fn decode_document(
         let receipt = wire
             .get("native_boot_receipt")
             .ok_or_else(|| anyhow!("Native receipt missing"))?;
-        exact_fields(
-            receipt,
-            &[
+        const RECEIPT_FIELDS: &[&str] = &[
                 "root_nonce_hex",
                 "manifest_operation",
                 "manifest_object_hex",
                 "source_cut_digest_hex",
                 "install_catalog_digest_hex",
+        ];
+        let route = receipt.get("protected_source_routes_hex").is_some();
+        let extra: &[&str] = match (schema, route) {
+            (Some(2), false) => &[],
+            (Some(2), true) => &["protected_source_routes_hex"],
+            (Some(3), false) => &[
+                "retired_policy_object_hex", "retired_policy_sha256_hex",
+                "retired_policy_identity_count",
             ],
-            if receipt.get("protected_source_routes_hex").is_some() {
-                &["protected_source_routes_hex"]
-            } else {
-                &[]
-            },
-        )?;
+            (Some(3), true) => &[
+                "protected_source_routes_hex", "retired_policy_object_hex",
+                "retired_policy_sha256_hex", "retired_policy_identity_count",
+            ],
+            _ => return Err(anyhow!("unsupported selection format")),
+        };
+        exact_fields(receipt, RECEIPT_FIELDS, extra)?;
+        if schema == Some(3) {
+            let count = receipt.get("retired_policy_identity_count")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| anyhow!("retired policy identity count missing"))?;
+            let reference = RetiredProjectionPolicyRefV1 {
+                object: ObjectRef(hex(text(receipt, "retired_policy_object_hex")?)?),
+                sha256: hex(text(receipt, "retired_policy_sha256_hex")?)?,
+                identity_count: u32::try_from(count)?,
+            };
+            reference.validate_v1().map_err(|reason| anyhow!(reason))?;
+            retired_projection_policy = Some(reference);
+        }
         let nonce = hex(text(receipt, "root_nonce_hex")?)?;
         let source = hex(text(receipt, "source_cut_digest_hex")?)?;
         ensure!(
@@ -206,6 +230,7 @@ pub(super) fn decode_document(
                 protected_source_routes: receipt.get("protected_source_routes_hex")
                     .map(|_| text(receipt, "protected_source_routes_hex").and_then(hex).map(ObjectRef))
                     .transpose()?,
+                retired_projection_policy,
             }),
             config_digest: Some(config_digest),
             install_catalog_digest: Some(hex(text(receipt, "install_catalog_digest_hex")?)?),
@@ -222,6 +247,7 @@ pub(super) fn decode_document(
         binary,
         binary_digest,
         native: command,
+        retired_projection_policy,
     })
 }
 fn exact_fields(value: &Value, fields: &[&str], extra: &[&str]) -> Result<()> {

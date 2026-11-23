@@ -40,8 +40,7 @@ use quanta_index_core::{
     IntegrityScrubPort, L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort,
     MutationCoordinatorPort, ProcessMemoryProbePort, ProviderBudgetLedger,
     QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapOpenReportV1,
-    RepoMapQuarantinePort, RepoMapSnapshotAcquirePort, RepoMetaIngestPort, RepoTopicIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort,
     RequestBudgetV1, SealedGenerationIdentityProbePort, SealedGenerationReclaimPort,
     SealedGenerationScanPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
     SemanticContentRootsPort, SemanticEgressPolicyV1, SemanticIndexOpenPort, SemanticIngestPort,
@@ -180,11 +179,8 @@ pub struct SearchdRuntimeParts {
     pub semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     pub semantic_sealed_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     pub sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
-    pub repo_map_snapshot_port: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync>,
-    pub repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
-    pub repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
     /// The quarantine's destructive side (QI-BB-026): one discard port per
-    /// generation track, and the `RepoMap` store's own list-and-discard.
+    /// generation track.
     pub lexical_quarantine_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync>,
     pub semantic_quarantine_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync>,
     /// Where activation and rollback record a content defect a door
@@ -192,10 +188,6 @@ pub struct SearchdRuntimeParts {
     /// adapter re-proves it and writes the quarantine receipt.
     pub lexical_door_findings: Arc<dyn DoorFindingQuarantinePort + Send + Sync>,
     pub semantic_door_findings: Arc<dyn DoorFindingQuarantinePort + Send + Sync>,
-    pub repo_map_quarantine: Arc<dyn RepoMapQuarantinePort + Send + Sync>,
-    /// What the `RepoMap` store found on disk when the composition root
-    /// opened it (QI-BB-008); surfaced through the boot inventory.
-    pub repo_map_open_report: RepoMapOpenReportV1,
     pub search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
     /// Durable ingest operation journal (QI-BB-032, SEP-21 P02B).
     pub idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
@@ -1734,7 +1726,6 @@ pub struct SearchdRuntime {
     pub ingest_server: SearchPlaneIngestServer<
         dyn IpcDispatcher<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>,
     >,
-    pub repo_map_snapshot_port: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync>,
     pub query_obs_store: Arc<BoundedQueryObsStore>,
     /// The process-global provider work ledger (S21-08): reservations,
     /// spend accounting and the bounded audit ring the query boundary
@@ -1889,15 +1880,10 @@ impl SearchdRuntime {
             semantic_incomplete_discard,
             semantic_sealed_reclaim,
             sem_open_port,
-            repo_map_snapshot_port,
-            repo_map_bundle_ingest_port,
-            repo_map_generation_activate_port,
             lexical_quarantine_discard,
             semantic_quarantine_discard,
             lexical_door_findings,
             semantic_door_findings,
-            repo_map_quarantine,
-            repo_map_open_report,
             search_corpus_lifecycle,
             idempotency,
             mutation_coordinator,
@@ -2094,7 +2080,6 @@ impl SearchdRuntime {
             active_pairs_validated,
             half_sealed_pairs,
             auxiliary_rows_restored,
-            repo_map: repo_map_open_report,
             socket_access: config.socket_access_policies().clone(),
             semantic_profile_is_dev: profile.is_dev(),
         };
@@ -2265,8 +2250,7 @@ impl SearchdRuntime {
             SearchPlaneDispatcher::new_with_obs(
                 Arc::clone(&lex_open_port),
                 Arc::clone(&sem_open_port),
-                snapshots.clone(),
-                Arc::clone(&repo_map_snapshot_port),
+        snapshots.clone(),
                 Arc::new(LedgerStructuralProducer::new(Arc::clone(&ledger))),
                 Arc::clone(&ledger),
                 activation_catalog.clone(),
@@ -2286,7 +2270,6 @@ impl SearchdRuntime {
             semantic_discard: semantic_quarantine_discard,
             lexical_reclaim: Arc::clone(&lexical_sealed_reclaim),
             semantic_reclaim: Arc::clone(&semantic_sealed_reclaim),
-            repo_map: repo_map_quarantine,
             ledger: Arc::clone(&ledger),
             lifecycle: Arc::clone(&search_corpus_lifecycle),
             snapshots,
@@ -2324,7 +2307,6 @@ impl SearchdRuntime {
             ));
         let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(
             SearchPlaneControlDispatcherParts {
-                repo_map_activate: repo_map_generation_activate_port,
                 lifecycle: SearchCorpusLifecycleParts {
                     activation_catalog: Arc::clone(&activation_catalog),
                     idempotency: idempotency.clone(),
@@ -2357,7 +2339,6 @@ impl SearchdRuntime {
             repo_meta_ingest_port,
             direct_runtime_ingest_port,
             direct_structural_ingest_port,
-            repo_map_bundle_ingest_port,
             idempotency,
             activation_catalog,
             authority_inspect_port,
@@ -2450,7 +2431,6 @@ impl SearchdRuntime {
             query_server,
             control_server,
             ingest_server,
-            repo_map_snapshot_port,
             query_obs_store,
             provider_ledger,
             provider_attempt_pool,

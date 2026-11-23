@@ -13,9 +13,7 @@ use quanta_index_contract::{
     CapabilityStatusV1, ChunkId, ChunkRecord, ContinuationTokenV2, DiffHunkSide,
     ExactRepoRelativePathV1, GenerationSelector, GenerationSnapshot, HistoryQueryRequest,
     HybridSeedQueryResponse, ManifestGeneration, OwnerDocKind, PlannerStage, PlannerTraceEntry,
-    QueryResultWindowV2, RepoId, RepoMapChunkExactness, RepoMapExactnessSummary,
-    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapMutationAck,
-    RepoMapRedactionState, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
+    QueryResultWindowV2, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
     SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
     SearchExplanation, SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
     SearchPlaneErrorCodeV2, SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest,
@@ -104,7 +102,7 @@ impl StubQueryTransport {
             | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
             | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_) => {}
@@ -309,7 +307,6 @@ fn verified_request_digest(
         SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => verify(batch),
         SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(batch) => verify(batch),
         SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => verify(batch),
-        SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => Ok(None),
     }
 }
 
@@ -331,8 +328,7 @@ fn name_receipt_digest(payload: &mut SearchPlaneIngestIpcResponse, digest: &str)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt) => {
             receipt.batch_digest = digest.to_string();
         }
-        SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
-        | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
+        SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
         | SearchPlaneIngestIpcResponse::Error(_) => {}
     }
 }
@@ -783,75 +779,6 @@ fn sample_cluster_membership(
         cluster_record_id: source.record_id.clone(),
         authority_digest: source.authority_digest.clone(),
         members: vec![SymbolId::new(format!("symbol:member:{member_suffix}"))],
-    }
-}
-
-fn sample_repomap_focus_subject() -> quanta_index_contract::RepoMapFocusSubjectDto {
-    quanta_index_contract::RepoMapFocusSubjectDto {
-        subject_identity: "subject://repomap".to_string(),
-        subject_doc_type: quanta_index_contract::RepoMapDocType::Symbol,
-    }
-}
-
-fn sample_repomap_snapshot_meta() -> quanta_index_contract::RepoMapSnapshotMeta {
-    quanta_index_contract::RepoMapSnapshotMeta {
-        snapshot_id: "snap-1".to_string(),
-        projection_version: 7,
-        authority_digest: "blake3:deadbeef".to_string(),
-        item_index_availability: RepoMapItemIndexAvailability::Full,
-        graph_coverage_class: RepoMapGraphCoverageClass::Complete,
-        exactness_summary: RepoMapExactnessSummary::Exact,
-    }
-}
-
-fn sample_repomap_entry() -> quanta_index_contract::RepoMapEntryDto {
-    quanta_index_contract::RepoMapEntryDto {
-        subject_identity: "entry::ident".to_string(),
-        subject_doc_type: quanta_index_contract::RepoMapDocType::Symbol,
-        subject_kind: "function".to_string(),
-        owner_path: "src/lib.rs".to_string(),
-        score: 0.875,
-        final_score_millis: 875,
-        rank: 1,
-        importance_score_millis: 500,
-        utility_score_millis: 400,
-        freshness_score_millis: 300,
-        evidence_priority_millis: 200,
-        token_budget_hint: 1024,
-        contributing_signals: std::collections::BTreeMap::from([
-            ("centrality".to_string(), 100_i64),
-            ("recency".to_string(), -3_i64),
-        ]),
-        projection_evidence_kind: "authoritative".to_string(),
-        projection_authority_artifact_id: "art-1".to_string(),
-        projection_authority_digest: "blake3:cafebabe".to_string(),
-        projection_status: "ok".to_string(),
-        redaction_state: RepoMapRedactionState::Unredacted,
-    }
-}
-
-fn sample_repomap_query_request() -> quanta_index_contract::RepoMapQueryRequest {
-    quanta_index_contract::RepoMapQueryRequest {
-        repo_id: repo_id(),
-        revision_id: revision_id(),
-        manifest_generation: ManifestGeneration::new(7),
-        query_text: "repo map focus".to_string(),
-        top_k: 5,
-        token_budget: 2048,
-        focus_subjects: vec![sample_repomap_focus_subject()],
-    }
-}
-
-fn sample_repomap_query_response() -> quanta_index_contract::RepoMapQueryResponse {
-    quanta_index_contract::RepoMapQueryResponse {
-        repo_id: repo_id(),
-        revision_id: revision_id(),
-        manifest_generation: ManifestGeneration::new(7),
-        snapshot_meta: sample_repomap_snapshot_meta(),
-        entries: vec![sample_repomap_entry()],
-        dropped_entries_count: 1,
-        drop_reason_codes: vec!["token_budget".to_string()],
-        degraded_reason_codes: vec!["partial_authority".to_string()],
     }
 }
 

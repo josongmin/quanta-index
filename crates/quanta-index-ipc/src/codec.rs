@@ -925,7 +925,7 @@ pub fn decode_cbor_payload<T>(bytes: &[u8]) -> Result<T, IpcError>
 where
     T: serde::de::DeserializeOwned,
 {
-    let (decoded, consumed) = ciborium::de::from_slice_with_definite_scalars(bytes)
+    let (decoded, consumed) = quanta_index_cbor::from_slice_with_definite_scalars(bytes)
         .map_err(|err| IpcError::Decode(err.to_string()))?;
     if consumed != bytes.len() {
         return Err(IpcError::Decode(
@@ -1905,119 +1905,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn guarded_native_repomap_query_preserves_valid_text_across_reader_scratch_boundary() {
-        use quanta_index_contract::index::{
-            CollectionId, IndexInstanceId, SlotId, TenantId, ViewSelection, WorkspaceKey,
-            WorktreeId,
-        };
-        use quanta_index_contract::native_protocol::{
-            MAX_REPOMAP_RANK_QUERY_BYTES, NativeIndexRequest, NativeIndexRequestEnvelope,
-            NativeRepoMapQuery,
-        };
-
-        // A peer can send malformed wire without using the canonical serializer.
-        struct RawQuery<'a> {
-            query_text: &'a str,
-            focus_subjects: &'a [quanta_index_contract::RepoMapFocusSubjectDto],
-            top_k: u32,
-            token_budget: u32,
-        }
-        impl serde::Serialize for RawQuery<'_> {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                use serde::ser::SerializeStruct as _;
-
-                let mut state = serializer.serialize_struct("RawQuery", 4)?;
-                state.serialize_field("query_text", self.query_text)?;
-                state.serialize_field("focus_subjects", self.focus_subjects)?;
-                state.serialize_field("top_k", &self.top_k)?;
-                state.serialize_field("token_budget", &self.token_budget)?;
-                state.end()
-            }
-        }
-
-        let workspace = WorkspaceKey {
-            tenant: TenantId([1; 16]),
-            collection: CollectionId([2; 16]),
-            worktree: WorktreeId([3; 16]),
-            slot: SlotId([4; 16]),
-        };
-        for (request_id, size) in [
-            (71_000, 4_096),
-            (71_001, 4_097),
-            (71_002, MAX_REPOMAP_RANK_QUERY_BYTES),
-        ] {
-            let query_text = "q".repeat(size);
-            let query = NativeRepoMapQuery {
-                query_text: query_text.clone(),
-                focus_subjects: Vec::new(),
-                top_k: 1,
-                token_budget: 1,
-            };
-            assert!(
-                query.valid_native_rank_query(),
-                "id={request_id} len={size}"
-            );
-            let request = NativeIndexRequestEnvelope {
-                request_id,
-                payload: NativeIndexRequest::QueryRepoMap {
-                    selection: ViewSelection::Latest {
-                        workspace,
-                        epoch: 1,
-                    },
-                    instance: IndexInstanceId([5; 16]),
-                    query,
-                },
-            };
-            let frame = encode_request(&request)
-                .unwrap_or_else(|error| panic!("id={request_id} len={size} encode: {error}"));
-            let mut reader = Cursor::new(frame.as_slice());
-            let (decoded, charged): (NativeIndexRequestEnvelope, usize) =
-                decode_request_guarded(&mut reader, Ok, |held, additional| {
-                    *held = held.checked_add(additional).expect("bounded decode charge");
-                    if *held > 64 * 1024 {
-                        return Err(IpcError::IngressSaturated {
-                            bytes: 64 * 1024,
-                            requests: 1,
-                        });
-                    }
-                    Ok(())
-                })
-                .unwrap_or_else(|error| panic!("id={request_id} len={size} decode: {error}"));
-            assert_eq!(decoded, request, "id={request_id} len={size}");
-            assert_eq!(
-                reader.position(),
-                u64::try_from(frame.len()).expect("frame length")
-            );
-            assert!(charged <= 64 * 1024, "id={request_id} len={size}");
-            let NativeIndexRequest::QueryRepoMap { query, .. } = decoded.payload else {
-                panic!("id={request_id} len={size} changed opcode");
-            };
-            assert_eq!(query.query_text, query_text, "id={request_id} len={size}");
-        }
-        let oversized = NativeRepoMapQuery {
-            query_text: "q".repeat(MAX_REPOMAP_RANK_QUERY_BYTES + 1),
-            focus_subjects: Vec::new(),
-            top_k: 1,
-            token_budget: 1,
-        };
-        assert!(!oversized.valid_native_rank_query());
-        assert!(
-            matches!(encode_request(&oversized), Err(IpcError::Encode(message))
-            if message.contains("invalid native RepoMap rank query"))
-        );
-        let frame = encode_request(&RawQuery {
-            query_text: &oversized.query_text,
-            focus_subjects: &oversized.focus_subjects,
-            top_k: oversized.top_k,
-            token_budget: oversized.token_budget,
-        })
-        .expect("encode invalid length counterexample");
-        let rejected: Result<NativeRepoMapQuery, IpcError> =
-            decode_request(&mut Cursor::new(frame));
-        assert!(matches!(rejected, Err(IpcError::Decode(message))
-            if message.contains("native RepoMap text exceeds byte bound")));
-    }
 
     #[test]
     fn guarded_query_cursor_preserves_opaque_text_across_reader_scratch_boundary() {

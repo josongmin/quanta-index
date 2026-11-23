@@ -1,0 +1,146 @@
+"""Go release-grammar candidate keeps original syntax and byte custody."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+
+from tools.benchmark.retrieval import source_oracle
+from tools.benchmark.retrieval.declaration_parsers import (
+    get_parser,
+    get_released_go_candidate_parser,
+)
+from tools.benchmark.retrieval.go_projection import GoProjectionError, GoProjector
+
+ROOT = Path(__file__).resolve().parents[3]
+SOURCE = ROOT / "tools/benchmark/retrieval/go_projection/main.go"
+
+
+@pytest.fixture(scope="module")
+def projector_binary(tmp_path_factory):
+    if shutil.which("go") is None:
+        pytest.skip("Go toolchain unavailable")
+    version = subprocess.run(["go", "version"], check=True, capture_output=True, text=True).stdout
+    if "go1.25.4" not in version:
+        pytest.skip("pinned Go 1.25.4 toolchain unavailable")
+    target = tmp_path_factory.mktemp("go-projection") / "projector"
+    env = dict(os.environ, GOTOOLCHAIN="local", GOPROXY="off")
+    subprocess.run(
+        ["go", "build", "-trimpath", "-buildvcs=false", "-o", str(target), str(SOURCE)],
+        env=env,
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    return target, hashlib.sha256(target.read_bytes()).hexdigest()
+
+
+def test_valid_original_projects_only_call_callees(projector_binary):
+    from tree_sitter_language_pack import get_parser
+
+    binary, digest = projector_binary
+    source = (
+        "package p\r\n// café\r\ntype Shape interface { Area() float64 }\r\n"
+        "func Locate(){_=new(1);_=make([]int,2)}\r\n"
+    ).encode()
+    with GoProjector(binary, binary_sha256=digest) as projector:
+        result = projector.project(source, timeout_seconds=5)
+    assert result.source == source
+    assert len(result.projected) == len(source)
+    assert len(result.edits) == 1
+    assert source[result.edits[0].start : result.edits[0].end] == b"new"
+    assert result.projected[result.edits[0].start : result.edits[0].end] == b"foo"
+    assert not get_parser("go").parse(result.projected).root_node.has_error
+    name_start = source.index(b"Locate")
+    assert not result.overlaps_name(name_start, name_start + len(b"Locate"))
+
+
+def test_invalid_original_is_refused_before_tree_sitter(projector_binary):
+    binary, digest = projector_binary
+    with GoProjector(binary, binary_sha256=digest) as projector:
+        with pytest.raises(GoProjectionError) as raised:
+            projector.project(b"package p\nfunc Broken(){_=new(,2)}\n", timeout_seconds=5)
+    assert raised.value.kind == "parse_failure"
+
+
+def test_binary_digest_is_required_before_execution(projector_binary):
+    binary, _digest = projector_binary
+    with pytest.raises(GoProjectionError) as raised:
+        with GoProjector(binary, binary_sha256="0" * 64):
+            pass
+    assert raised.value.kind == "binary_identity"
+
+
+def test_cancelled_operation_never_starts_parser(projector_binary):
+    binary, digest = projector_binary
+    with GoProjector(binary, binary_sha256=digest) as projector:
+        with pytest.raises(GoProjectionError) as raised:
+            projector.project(b"package p\n", timeout_seconds=5, cancelled=lambda: True)
+    assert raised.value.kind == "cancelled"
+
+
+def test_corrupt_child_edit_is_rejected(tmp_path):
+    child = tmp_path / "invalid-projector"
+    child.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' '{\"schema\":\"quanta-go-grammar-projection-v1\","
+        "\"status\":\"ok\",\"go_version\":\"go1.25.4\","
+        "\"source_sha256\":\"bad\",\"edits\":[]}'\n"
+    )
+    child.chmod(0o700)
+    digest = hashlib.sha256(child.read_bytes()).hexdigest()
+    with GoProjector(child, binary_sha256=digest) as projector:
+        with pytest.raises(GoProjectionError) as raised:
+            projector.project(b"package p\n", timeout_seconds=5)
+    assert raised.value.kind == "producer_defect"
+
+
+def test_child_timeout_and_inflight_cancellation_kill_process(tmp_path):
+    child = tmp_path / "slow-projector"
+    child.write_text("#!/bin/sh\nsleep 5\n")
+    child.chmod(0o700)
+    digest = hashlib.sha256(child.read_bytes()).hexdigest()
+    with GoProjector(child, binary_sha256=digest) as projector:
+        with pytest.raises(GoProjectionError) as timed_out:
+            projector.project(b"package p\n", timeout_seconds=0.06)
+        started = time.monotonic()
+        with pytest.raises(GoProjectionError) as cancelled:
+            projector.project(
+                b"package p\n",
+                timeout_seconds=5,
+                cancelled=lambda: time.monotonic() - started > 0.06,
+            )
+    assert timed_out.value.kind == "timeout"
+    assert cancelled.value.kind == "cancelled"
+
+
+def test_released_go_candidate_census_preserves_original_spans(projector_binary):
+    binary, digest = projector_binary
+    source = (
+        "package p\r\n// café\r\ntype Shape interface { Area() float64 }\r\n"
+        "func Locate(){_=new(1);_=make([]int,2)}\r\n"
+    ).encode()
+    with GoProjector(binary, binary_sha256=digest) as projector:
+        rows, projection, extension_digest = source_oracle.candidate_go_declaration_census(
+            "pkg.go", source, projector, timeout_seconds=5
+        )
+    assert rows == source_oracle.declaration_census("go", "pkg.go", source)
+    assert projection.source == source
+    assert len(extension_digest) == 64
+    assert get_released_go_candidate_parser()[0].parse(projection.projected).root_node.has_error is False
+    assert get_parser("go").parse(source).root_node.has_error is False
+
+
+def test_released_go_candidate_census_propagates_syntax_failure(projector_binary):
+    binary, digest = projector_binary
+    with GoProjector(binary, binary_sha256=digest) as projector:
+        with pytest.raises(source_oracle.SourceOracleError, match="producer failure"):
+            source_oracle.candidate_go_declaration_census(
+                "bad.go", b"package p\nfunc broken( {\n", projector, timeout_seconds=5
+            )

@@ -2,6 +2,10 @@
 
 **목표**는 4,096개 파일을 한 번의 `SourceAdvance`로 게시하고, 같은 제품 프로필의 100만 논리 읽기·1,200초 안에 오버레이 종료와 두 번째 재시작까지 검증하는 것이다. 원 ANN4K의 필터별 검색 품질도 같은 후보에서 확인한다. **07.5의 B는 이 채팅**(`01a1cbf6-46b6-7590-8550-c818539e9f2d`)이다. [실패 RCA](../../bugbash/nov-20/findings.md#L121) · [공식 채팅 배정표](../nov-20-native-cutover-closeout/tickets/LANES.md#11월-21일-작업-채팅-배정) · [기존 제품 수용 티켓 07.5](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md#ann과-hybrid)
 
+## 현재 인계점
+
+초기 SourceAdvance의 4,096개 게시와 prefix 128개 완료를 확인했다. 이전 ANN4K는 1 PASS, 마지막 제품은 materialization watchdog에서 1 FAIL이다. Catalog 집중 회귀 7/7 이후 immutable operation 조회 기한을 연결했고 후기 trace에는 점유 전용 판독을 추가했다. 새 후기 Record 한 건은 admission 대기 중 디스크가 가득 차 본문 전에 종료됐다. [현재 상태와 코드 단위 검증](04-product-acceptance.md#현재-코드와-실행-판정). 02·03은 초기 게시 실패가 재현되고 경로 비용이 원인으로 확인될 때 다시 검토한다.
+
 ## 채팅별 실행권과 재사용 범위
 
 2026-11-21 KST에 동일 체크아웃에서 최근 갱신된 비보관 사용자 채팅 17개(이 채팅 포함)의 최근 작업 본문, 공식 담당표, 기존 controller 상태와 Text Large terminal을 대조했다. 아래의 조건부 작업은 새 채팅 배정이나 착수 통지가 아니다.

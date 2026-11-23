@@ -296,7 +296,7 @@ fn lane_flags(
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::Error(_) => {
             Err("execution truth covers the windowed and explain responses only".into())
@@ -1325,7 +1325,7 @@ fn one_correlation_reaches_every_route_explanation() -> TestResult {
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_) => {
                 Err(format!("expected an explanation-carrying response, got {response:?}").into())

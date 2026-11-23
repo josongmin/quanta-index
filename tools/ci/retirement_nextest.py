@@ -763,13 +763,22 @@ def capture_release_execution(
             require_capture_identity()
             if not os.path.samestat(evidence_identity, os.fstat(directory_fd)):
                 raise ValueError("retirement evidence directory changed during capture")
+            temporary_name = Path(output.name).name
             os.link(
-                Path(output.name).name, path.name,
+                temporary_name, path.name,
                 src_dir_fd=directory_fd, dst_dir_fd=directory_fd, follow_symlinks=False,
             )
             linked = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+            owns_link = os.path.samestat(linked, os.fstat(output.fileno()))
             try:
-                if not os.path.samestat(linked, os.fstat(output.fileno())):
+                if not owns_link:
+                    # A replaced temporary name can itself have been linked.
+                    # A destination with neither inode belongs to another writer.
+                    with suppress(FileNotFoundError):
+                        named_temporary = os.stat(
+                            temporary_name, dir_fd=directory_fd, follow_symlinks=False,
+                        )
+                        owns_link = os.path.samestat(linked, named_temporary)
                     raise ValueError("published retirement manifest differs from the prepared file")
                 require_capture_identity()
                 current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
@@ -778,10 +787,11 @@ def capture_release_execution(
             except BaseException:
                 # The run did not qualify. Remove only the name linked by this
                 # capture, even if its evidence directory has been moved.
-                with suppress(FileNotFoundError):
-                    current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
-                    if os.path.samestat(linked, current):
-                        os.unlink(path.name, dir_fd=directory_fd)
+                if owns_link:
+                    with suppress(FileNotFoundError):
+                        current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+                        if os.path.samestat(linked, current):
+                            os.unlink(path.name, dir_fd=directory_fd)
                 raise
         finally:
             os.close(directory_fd)

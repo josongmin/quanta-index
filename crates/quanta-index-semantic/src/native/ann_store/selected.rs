@@ -23,15 +23,7 @@ impl AnnMemoryStore {
         limits: AnnStoreLimits,
         budget: &mut WorkBudget,
     ) -> Result<Arc<Self>, IndexError> {
-        let writes = u64::try_from(files.len()).map_err(|_| IndexError::ResourceLimited)?;
-        if writes > u64::from(limits.max_files) {
-            return Err(IndexError::ResourceLimited);
-        }
-        let reads = limits
-            .max_ops
-            .checked_sub(writes)
-            .ok_or(IndexError::ResourceLimited)?;
-        let store = Self::admit(limits, reads, writes, budget)?;
+        let store = Self::admit(limits, limits.hydration_work(files.len())?, budget)?;
         for file in files {
             budget.checkpoint()?;
             let location = Path::parse(&file.path)

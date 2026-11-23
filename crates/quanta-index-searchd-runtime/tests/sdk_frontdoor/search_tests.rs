@@ -1,41 +1,12 @@
 use super::*;
 
 #[test]
-fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth() -> TestResult {
+fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_and_explain_truth() -> TestResult {
     let fixture = SdkFrontdoorRuntime::start()?;
     let client = &fixture.client;
 
     let corpus_batch = lexical_batch()?;
     let _corpus_active = publish_and_activate_sdk_search_corpus(client, &corpus_batch)?;
-    let repo_map_receipt = client
-        .repomap()
-        .publish(&RepoMapPublishBundleRequestV2::new(repo_map_bundle()?)?)?;
-    if repo_map_receipt.mutation.manifest_generation != generation() {
-        return Err(format!("unexpected repo-map publish ack: {repo_map_receipt:?}").into());
-    }
-
-    if client.repomap().active_head(repo(), revision())?.is_some() {
-        return Err("RepoMap publish activated a head without an activation request".into());
-    }
-
-    let repo_map_activation = client.repomap().activate(repo_map_activate_request()?)?;
-    if repo_map_activation.mutation.manifest_generation != generation() {
-        return Err(format!("unexpected repo-map activate ack: {repo_map_activation:?}").into());
-    }
-    let active = client
-        .repomap()
-        .active_head(repo(), revision())?
-        .ok_or("RepoMap activation did not expose a catalog head")?;
-    if active.epoch().get() != repo_map_activation.mutation.activation_epoch
-        || active.candidate_commitment().to_wire_string()
-            != repo_map_activation.mutation.new_candidate_commitment
-    {
-        return Err(format!(
-            "RepoMap active head does not match the activation receipt: {active:?}"
-        )
-        .into());
-    }
-
     let lexical = wait_for_sdk_observation(
         SOCKET_TIMEOUT,
         || {
@@ -306,13 +277,6 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
     {
         return Err(format!("unexpected hybrid explain response: {hybrid_explain:?}").into());
     }
-
-    let repo_map = wait_for_sdk_observation(
-        SOCKET_TIMEOUT,
-        || client.repomap().query(repo_map_query_request()),
-        |response| response.manifest_generation == generation() && !response.entries.is_empty(),
-    )?;
-    assert_repo_map_happy_path(&repo_map)?;
 
     fixture.stop()
 }

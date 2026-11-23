@@ -24,6 +24,14 @@ const ACTIVE_DOMAIN_V1: &[u8] = b"semantica.installed-product-active.v1\n";
 #[cfg(target_os = "linux")]
 const ACTIVE_SCHEMA_V1: &str = "semantica-installed-product-active/v1";
 #[cfg(target_os = "linux")]
+const ACTIVE_DOMAIN_V2: &[u8] = b"semantica.installed-product-active.v2\n";
+#[cfg(target_os = "linux")]
+const ACTIVE_SCHEMA_V2: &str = "semantica-installed-product-active/v2";
+#[cfg(target_os = "linux")]
+const ACTIVE_DOMAIN_V3: &[u8] = b"semantica.installed-product-active.v3\n";
+#[cfg(target_os = "linux")]
+const ACTIVE_SCHEMA_V3: &str = "semantica-installed-product-active/v3";
+#[cfg(target_os = "linux")]
 const MAX_ACTIVE_BYTES_V1: u64 = 8 * 1024;
 #[cfg(target_os = "linux")]
 const MAX_AG5_RECORD_BYTES_V1: u64 = 256 * 1024;
@@ -49,6 +57,25 @@ pub enum InstalledTrustErrorV1 {
     Io,
     AdmissionRefused,
 }
+
+/// Recovery authority issued only by a verified V2 active installation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledNativeRecoveryV2 {
+    repository_root_v2: String,
+    q_image_sha256_v2: [u8; 32],
+    q_config_sha256_v2: [u8; 32],
+}
+
+impl InstalledNativeRecoveryV2 {
+    pub fn repository_root_v2(&self) -> &str { &self.repository_root_v2 }
+    pub fn q_image_sha256_v2(&self) -> &[u8; 32] { &self.q_image_sha256_v2 }
+    pub fn q_config_sha256_v2(&self) -> &[u8; 32] { &self.q_config_sha256_v2 }
+}
+
+mod native_facts_publication_v3;
+pub use native_facts_publication_v3::InstalledNativeFactsPublicationV3;
+#[cfg(target_os = "linux")]
+use native_facts_publication_v3::{parse_native_facts_publication_v3, parse_native_install_axes_v3};
 
 impl std::fmt::Display for InstalledTrustErrorV1 {
     fn fmt(&self, formatter_v1: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -214,6 +241,8 @@ pub struct VerifiedInstalledArtifactsV2 {
     pub cli_image_v2: File,
     pub generation_v1: u64,
     pub release_manifest_sha256_v1: String,
+    pub native_recovery_v2: Option<InstalledNativeRecoveryV2>,
+    pub native_facts_publication_v3: Option<InstalledNativeFactsPublicationV3>,
     pub server_path_v1: PathBuf,
     pub server_sha256_v1: String,
     pub sql_worker_path_v1: PathBuf,
@@ -481,6 +510,34 @@ struct VerifiedSignedInstallV1 {
     generation_v1: u64,
     rotation_lock_v1: File,
     manifest_digest_v1: String,
+    native_recovery_v2: Option<InstalledNativeRecoveryV2>,
+    native_facts_publication_v3: Option<InstalledNativeFactsPublicationV3>,
+}
+
+#[cfg(target_os = "linux")]
+fn parse_native_recovery_v2<A: InstalledArtifactTrustAdmissionV1>(
+    context_v2: &mut VerifyContextV1<'_, A>,
+    payload_v2: &Value,
+) -> Result<InstalledNativeRecoveryV2, InstalledTrustErrorV1> {
+    let recovery_v2 = payload_v2.get("native_recovery")
+        .and_then(Value::as_object)
+        .filter(|fields_v2| fields_v2.len() == 4
+            && ["analysis_family", "repository_root", "q_image_sha256", "q_config_sha256"]
+                .iter().all(|name_v2| fields_v2.contains_key(*name_v2)))
+        .ok_or(InstalledTrustErrorV1::InvalidActiveGeneration)?;
+    let field_v2 = |name_v2| {
+        recovery_v2.get(name_v2).and_then(Value::as_str)
+            .ok_or(InstalledTrustErrorV1::InvalidActiveGeneration)
+    };
+    if field_v2("analysis_family")? != "taint_rows_ifds" {
+        return Err(InstalledTrustErrorV1::InvalidActiveGeneration);
+    }
+    let axes_v2 = parse_native_install_axes_v3(context_v2, recovery_v2)?;
+    Ok(InstalledNativeRecoveryV2 {
+        repository_root_v2: axes_v2.repository_root_v3,
+        q_image_sha256_v2: axes_v2.q_image_sha256_v3,
+        q_config_sha256_v2: axes_v2.q_config_sha256_v3,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -553,14 +610,20 @@ fn verify_signed_install_v1<A: InstalledArtifactTrustAdmissionV1>(
         "sql_rulepack_worker_sha256",
         "parser_native_worker_sha256",
     ];
-    if fields_v1.len() != expected_v1.len()
-        || expected_v1
-            .iter()
-            .any(|name_v1| !fields_v1.contains_key(*name_v1))
-        || field_v1(payload_v1, "schema_version")? != ACTIVE_SCHEMA_V1
-    {
-        return Err(InstalledTrustErrorV1::InvalidActiveGeneration);
-    }
+    let active_domain_v1 = match field_v1(payload_v1, "schema_version")? {
+        ACTIVE_SCHEMA_V1 if fields_v1.len() == expected_v1.len()
+            && expected_v1.iter().all(|name_v1| fields_v1.contains_key(*name_v1)) =>
+            ACTIVE_DOMAIN_V1,
+        ACTIVE_SCHEMA_V2 if fields_v1.len() == expected_v1.len() + 1
+            && expected_v1.iter().all(|name_v1| fields_v1.contains_key(*name_v1))
+            && fields_v1.contains_key("native_recovery") =>
+            ACTIVE_DOMAIN_V2,
+        ACTIVE_SCHEMA_V3 if fields_v1.len() == expected_v1.len() + 1
+            && expected_v1.iter().all(|name_v1| fields_v1.contains_key(*name_v1))
+            && fields_v1.contains_key("native_facts_publication") =>
+            ACTIVE_DOMAIN_V3,
+        _ => return Err(InstalledTrustErrorV1::InvalidActiveGeneration),
+    };
     let signature_v1 = hex_bytes_v1::<64>(
         envelope_v1
             .get("signature_hex")
@@ -570,12 +633,22 @@ fn verify_signed_install_v1<A: InstalledArtifactTrustAdmissionV1>(
     )?;
     let key_v1 = VerifyingKey::from_bytes(&key_bytes_v1)
         .map_err(|_| InstalledTrustErrorV1::InvalidSignature)?;
-    let mut signed_v1 = ACTIVE_DOMAIN_V1.to_vec();
+    let mut signed_v1 = active_domain_v1.to_vec();
     signed_v1.extend(context_v1.canonical_v1(payload_v1, MAX_ACTIVE_BYTES_V1 as usize)?);
     context_v1.hash_v1(signed_v1.len() as u64)?;
     key_v1
         .verify_strict(&signed_v1, &Signature::from_bytes(&signature_v1))
         .map_err(|_| InstalledTrustErrorV1::InvalidSignature)?;
+    let native_recovery_v2 = if active_domain_v1 == ACTIVE_DOMAIN_V2 {
+        Some(parse_native_recovery_v2(context_v1, payload_v1)?)
+    } else {
+        None
+    };
+    let native_facts_publication_v3 = if active_domain_v1 == ACTIVE_DOMAIN_V3 {
+        Some(parse_native_facts_publication_v3(context_v1, payload_v1)?)
+    } else {
+        None
+    };
     let generation_v1 = payload_v1
         .get("generation")
         .ok_or(InstalledTrustErrorV1::InvalidActiveGeneration)?
@@ -643,6 +716,8 @@ fn verify_signed_install_v1<A: InstalledArtifactTrustAdmissionV1>(
         generation_v1,
         rotation_lock_v1,
         manifest_digest_v1,
+        native_recovery_v2,
+        native_facts_publication_v3,
     })
 }
 
@@ -825,6 +900,8 @@ fn verify_at_v1(
     let generation_v1 = selected_v1.generation_v1;
     let rotation_lock_v1 = selected_v1.rotation_lock_v1;
     let manifest_digest_v1 = selected_v1.manifest_digest_v1;
+    let native_recovery_v2 = selected_v1.native_recovery_v2;
+    let native_facts_publication_v3 = selected_v1.native_facts_publication_v3;
     let z3_solver_v1 = if let Some(reference_v1) = manifest_payload_v1.get("z3_solver") {
         if manifest_payload_v1
             .get("schema_version")
@@ -931,6 +1008,8 @@ fn verify_at_v1(
         cli_image_v2,
         generation_v1,
         release_manifest_sha256_v1: manifest_digest_v1.to_owned(),
+        native_recovery_v2,
+        native_facts_publication_v3,
         server_path_v1,
         server_sha256_v1: field_v1(payload_v1, "server_sha256")?.to_owned(),
         sql_worker_path_v1,

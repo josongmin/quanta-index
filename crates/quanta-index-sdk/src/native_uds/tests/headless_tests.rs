@@ -935,3 +935,81 @@ fn native_text_refuses_unbounded_zero_and_forbidden_regex_before_connect()
     }
     Ok(())
 }
+
+#[test]
+fn admitted_graph_reply_binds_exact_reverse_adjacency() {
+    use quanta_index_contract::{
+        ChunkId, RepoMapEdgeKind, SymbolId,
+        native_protocol::{
+            GraphEdge, GraphNode, NativeGraphDirection, NativeGraphQuery, NativeGraphResult,
+            NativeGraphRow,
+        },
+    };
+
+    let view = graph_view();
+    let instance = IndexInstanceId([62; 16]);
+    let chunk = RepoMapNodeRef::Chunk(ChunkId::new("src/b.rs::chunk"));
+    let row = NativeGraphRow {
+        edge: GraphEdge {
+            kind: RepoMapEdgeKind::OwnsChunk,
+            source: RepoMapNodeRef::Symbol(SymbolId::new("src/a.rs::A")),
+            target: chunk.clone(),
+        },
+        supporters: 1,
+    };
+    let request = NativeIndexRequest::QueryGraph {
+        selection: ViewSelection::Exact(view),
+        instance,
+        query: NativeGraphQuery {
+            source: chunk.clone(),
+            direction: NativeGraphDirection::Incoming,
+            max_supporters: 4,
+            max_edges: 4,
+        },
+    };
+    let valid = NativeGraphResult {
+        view,
+        instance,
+        source: Some(GraphNode {
+            identity: chunk,
+            payload_digest: Digest([67; 32]),
+        }),
+        source_supporters: 1,
+        edges: vec![row.clone()],
+        exhaustive: true,
+    };
+    assert!(publication_response_matches_request(
+        &request,
+        &NativeIndexResponse::Graph(valid.clone()),
+    ));
+    for invalid in [
+        NativeGraphResult {
+            view: ViewRef {
+                sequence: 8,
+                ..view
+            },
+            ..valid.clone()
+        },
+        NativeGraphResult {
+            instance: IndexInstanceId([63; 16]),
+            ..valid.clone()
+        },
+        NativeGraphResult {
+            exhaustive: false,
+            ..valid.clone()
+        },
+        NativeGraphResult {
+            edges: vec![row.clone(), row],
+            ..valid.clone()
+        },
+        NativeGraphResult {
+            source: None,
+            ..valid
+        },
+    ] {
+        assert!(!publication_response_matches_request(
+            &request,
+            &NativeIndexResponse::Graph(invalid),
+        ));
+    }
+}

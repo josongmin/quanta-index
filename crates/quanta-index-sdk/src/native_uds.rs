@@ -55,8 +55,6 @@ pub use root_scoped_view::{
     AdmittedNativeCandidateInstallationReplyV1, AdmittedNativeRootScopedViewReplyV1,
 };
 mod read_session;
-mod repomap;
-pub use repomap::{AdmittedNativeRepoMapAdvanceV1, NativeRepoMapAdvanceV1};
 mod stub_reply;
 
 const MUTATION_PAGE_SIZE: usize = 128;
@@ -208,7 +206,7 @@ enum AdmittedWireRoute {
     DslCommit,
     StageProjectionOutput,
     ReadSession,
-    RepoMapPriorFile,
+    GraphQuery,
     Stub,
 }
 
@@ -375,11 +373,7 @@ fn observed_query_request_v1(request: &NativeIndexRequest) -> bool {
             | NativeIndexRequest::PublishedViewMetadata(_)
             | NativeIndexRequest::ObserveRootView(_)
             | NativeIndexRequest::ObserveCandidateInstallationV1
-            | NativeIndexRequest::ObserveRepoMapGraphInstallationV1(_)
-            | NativeIndexRequest::ObserveRepoMapEventFrontierV1 { .. }
             | NativeIndexRequest::ResolveProtectedSourceHead { .. }
-            | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
-            | NativeIndexRequest::ReadImportedRepoMapMember { .. }
             | NativeIndexRequest::SearchLiteral { .. }
             | NativeIndexRequest::QueryPaths { .. }
             | NativeIndexRequest::QueryRepositoryPaths { .. }
@@ -387,8 +381,6 @@ fn observed_query_request_v1(request: &NativeIndexRequest) -> bool {
             | NativeIndexRequest::SearchTextPreview { .. }
             | NativeIndexRequest::SearchSemantic { .. }
             | NativeIndexRequest::QueryGraph { .. }
-            | NativeIndexRequest::QueryImportedRepoMap { .. }
-            | NativeIndexRequest::QueryRepoMap { .. }
             | NativeIndexRequest::ReadProjection { .. }
             | NativeIndexRequest::LookupSourceOwners { .. }
             | NativeIndexRequest::ListProducerSourceOwners { .. }
@@ -608,10 +600,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 | NativeIndexResponse::PublishedViewMetadata(_)
                 | NativeIndexResponse::RootScopedView(_)
                 | NativeIndexResponse::CandidateInstallationV1(_)
-                | NativeIndexResponse::RepoMapGraphInstallationV1(_)
-                | NativeIndexResponse::RepoMapEventFrontierV1(_)
-                | NativeIndexResponse::ProtectedRepoMapHead(_)
-                | NativeIndexResponse::ImportedRepoMapMember(_)
                 | NativeIndexResponse::SemanticRanked(_)
                 | NativeIndexResponse::EffortDone(_)
                 | NativeIndexResponse::InteractionBegun(_)
@@ -622,9 +610,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 | NativeIndexResponse::Stub(_)
                 | NativeIndexResponse::Overlay(_)
                 | NativeIndexResponse::Graph(_)
-                | NativeIndexResponse::RepoMapPriorFileV1(_)
-                | NativeIndexResponse::ImportedRepoMap(_)
-                | NativeIndexResponse::RepoMapRanked(_)
                 | NativeIndexResponse::SourceOwners(_)
                 | NativeIndexResponse::ProjectionOwners(_)
                 | NativeIndexResponse::ProducerProjectionOwnersV1(_)
@@ -707,6 +692,23 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         budget: &RequestBudgetV1,
         memory: &MemoryScope,
     ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        if let NativeIndexRequest::QueryGraph {
+            selection, query, ..
+        } = &payload
+        {
+            if !matches!(selection, ViewSelection::Exact(_))
+                || query.max_edges == 0
+                || query.max_edges > quanta_index_contract::native_protocol::MAX_NATIVE_GRAPH_EDGES
+                || query.max_supporters == 0
+                || usize::try_from(query.max_supporters).map_or(true, |count| {
+                    count > quanta_index_contract::native_protocol::MAX_NATIVE_GRAPH_ITEMS
+                })
+            {
+                return Err(NativeUdsError::Protocol(
+                    "admitted Graph query needs an exact bounded predecessor".into(),
+                ));
+            }
+        }
         self.request_publication_admitted_ref(&payload, budget, memory)
     }
 
@@ -805,6 +807,8 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             payload,
             NativeIndexRequest::CreateWorkspace { .. }
                 | NativeIndexRequest::SealCandidateWithSourceRoutes { .. }
+                | NativeIndexRequest::SealCandidateWithSourceRoutesAndRetiredPolicyV1 { .. }
+                | NativeIndexRequest::SealCandidateWithRetiredPolicyOnlyV1 { .. }
                 | NativeIndexRequest::BeginInput(_)
                 | NativeIndexRequest::ReopenInputWithRootForSourceStageV1 { .. }
                 | NativeIndexRequest::StageSource { .. }
@@ -829,13 +833,9 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 | NativeIndexRequest::PublishedViewMetadata(_)
                 | NativeIndexRequest::ObserveRootView(_)
                 | NativeIndexRequest::ObserveCandidateInstallationV1
-                | NativeIndexRequest::ObserveRepoMapGraphInstallationV1(_)
-                | NativeIndexRequest::ObserveRepoMapEventFrontierV1 { .. }
                 | NativeIndexRequest::ResolveProtectedSourceHead { .. }
-                | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
-                | NativeIndexRequest::ReadImportedRepoMapMember { .. }
                 | NativeIndexRequest::ReadProjection { .. }
-                | NativeIndexRequest::ReadRepoMapPriorFileV1 { .. }
+                | NativeIndexRequest::QueryGraph { .. }
                 | NativeIndexRequest::LookupProjectionOwners { .. }
                 | NativeIndexRequest::ListProducerProjectionOwnersV1 { .. }
                 | NativeIndexRequest::DiffProjectionSourceOwners { .. }
@@ -855,12 +855,8 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                     | NativeIndexRequest::ListProducerProjectionOwnersV1 { .. }
                     | NativeIndexRequest::ObserveRootView(_)
                     | NativeIndexRequest::ObserveCandidateInstallationV1
-                    | NativeIndexRequest::ObserveRepoMapGraphInstallationV1(_)
-                    | NativeIndexRequest::ObserveRepoMapEventFrontierV1 { .. }
-                    | NativeIndexRequest::ReadRepoMapPriorFileV1 { .. }
+                    | NativeIndexRequest::QueryGraph { .. }
                     | NativeIndexRequest::ResolveProtectedSourceHead { .. }
-                    | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
-                    | NativeIndexRequest::ReadImportedRepoMapMember { .. }
             );
         if checkpointed_read {
             read_session::admitted_budget_checkpoint(budget)?;
@@ -884,9 +880,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         };
         let route = match payload {
             NativeIndexRequest::ReadSession(_) => AdmittedWireRoute::ReadSession,
-            NativeIndexRequest::ReadRepoMapPriorFileV1 { .. } => {
-                AdmittedWireRoute::RepoMapPriorFile
-            }
+            NativeIndexRequest::QueryGraph { .. } => AdmittedWireRoute::GraphQuery,
             _ if native_dsl_commit_request(payload) => AdmittedWireRoute::DslCommit,
             NativeIndexRequest::StageProjectionOutput { .. }
             | NativeIndexRequest::StageImmutableObject { .. } => {
@@ -1045,10 +1039,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::PublishedViewMetadata(_)
             | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::CandidateInstallationV1(_)
-            | NativeIndexResponse::RepoMapGraphInstallationV1(_)
-            | NativeIndexResponse::RepoMapEventFrontierV1(_)
-            | NativeIndexResponse::ProtectedRepoMapHead(_)
-            | NativeIndexResponse::ImportedRepoMapMember(_)
             | NativeIndexResponse::SemanticRanked(_)
             | NativeIndexResponse::EffortDone(_)
             | NativeIndexResponse::InteractionBegun(_)
@@ -1059,9 +1049,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::Stub(_)
             | NativeIndexResponse::Overlay(_)
             | NativeIndexResponse::Graph(_)
-            | NativeIndexResponse::RepoMapPriorFileV1(_)
-            | NativeIndexResponse::ImportedRepoMap(_)
-            | NativeIndexResponse::RepoMapRanked(_)
             | NativeIndexResponse::SourceOwners(_)
             | NativeIndexResponse::ProjectionOwners(_)
             | NativeIndexResponse::ProducerProjectionOwnersV1(_)
@@ -1147,10 +1134,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::PublishedViewMetadata(_)
             | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::CandidateInstallationV1(_)
-            | NativeIndexResponse::RepoMapGraphInstallationV1(_)
-            | NativeIndexResponse::RepoMapEventFrontierV1(_)
-            | NativeIndexResponse::ProtectedRepoMapHead(_)
-            | NativeIndexResponse::ImportedRepoMapMember(_)
             | NativeIndexResponse::SemanticRanked(_)
             | NativeIndexResponse::EffortDone(_)
             | NativeIndexResponse::InteractionBegun(_)
@@ -1161,9 +1144,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::Stub(_)
             | NativeIndexResponse::Overlay(_)
             | NativeIndexResponse::Graph(_)
-            | NativeIndexResponse::RepoMapPriorFileV1(_)
-            | NativeIndexResponse::ImportedRepoMap(_)
-            | NativeIndexResponse::RepoMapRanked(_)
             | NativeIndexResponse::SourceOwners(_)
             | NativeIndexResponse::ProjectionOwners(_)
             | NativeIndexResponse::ProducerProjectionOwnersV1(_)
@@ -1244,10 +1224,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::PublishedViewMetadata(_)
             | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::CandidateInstallationV1(_)
-            | NativeIndexResponse::RepoMapGraphInstallationV1(_)
-            | NativeIndexResponse::RepoMapEventFrontierV1(_)
-            | NativeIndexResponse::ProtectedRepoMapHead(_)
-            | NativeIndexResponse::ImportedRepoMapMember(_)
             | NativeIndexResponse::SemanticRanked(_)
             | NativeIndexResponse::EffortDone(_)
             | NativeIndexResponse::InteractionBegun(_)
@@ -1258,9 +1234,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::Stub(_)
             | NativeIndexResponse::Overlay(_)
             | NativeIndexResponse::Graph(_)
-            | NativeIndexResponse::RepoMapPriorFileV1(_)
-            | NativeIndexResponse::ImportedRepoMap(_)
-            | NativeIndexResponse::RepoMapRanked(_)
             | NativeIndexResponse::SourceOwners(_)
             | NativeIndexResponse::ProjectionOwners(_)
             | NativeIndexResponse::ProducerProjectionOwnersV1(_)
@@ -1305,15 +1278,17 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             ));
         }
         let body = match (route, self.bound_peer_v1.as_ref()) {
-            (AdmittedWireRoute::DslCommit | AdmittedWireRoute::RepoMapPriorFile, peer) => {
-                quanta_index_ipc::send_request_body_with_budget_admitted_deadline_v1(
-                    self.socket.as_ref(),
-                    envelope,
-                    budget,
-                    memory,
-                    peer,
-                )
-            }
+            (
+                AdmittedWireRoute::DslCommit
+                | AdmittedWireRoute::GraphQuery,
+                peer,
+            ) => quanta_index_ipc::send_request_body_with_budget_admitted_deadline_v1(
+                self.socket.as_ref(),
+                envelope,
+                budget,
+                memory,
+                peer,
+            ),
             (AdmittedWireRoute::StageProjectionOutput, Some(peer)) => {
                 quanta_index_ipc::send_request_body_with_budget_admitted_multiframe_bound_peer_v1(
                     self.socket.as_ref(),
@@ -1352,9 +1327,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             match route {
                 AdmittedWireRoute::Stub => admitted_reply_v1::ReplyMode::Stub,
                 AdmittedWireRoute::ReadSession => admitted_reply_v1::ReplyMode::ReadSession,
-                AdmittedWireRoute::RepoMapPriorFile => {
-                    admitted_reply_v1::ReplyMode::RepoMapPriorFile
-                }
+                AdmittedWireRoute::GraphQuery => admitted_reply_v1::ReplyMode::GraphQuery,
                 _ => admitted_reply_v1::ReplyMode::Publication,
             },
         )
@@ -1493,10 +1466,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::PublishedViewMetadata(_)
             | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::CandidateInstallationV1(_)
-            | NativeIndexResponse::RepoMapGraphInstallationV1(_)
-            | NativeIndexResponse::RepoMapEventFrontierV1(_)
-            | NativeIndexResponse::ProtectedRepoMapHead(_)
-            | NativeIndexResponse::ImportedRepoMapMember(_)
             | NativeIndexResponse::SemanticRanked(_)
             | NativeIndexResponse::InteractionBegun(_)
             | NativeIndexResponse::InteractionAccepted(_)
@@ -1506,9 +1475,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::Stub(_)
             | NativeIndexResponse::Overlay(_)
             | NativeIndexResponse::Graph(_)
-            | NativeIndexResponse::RepoMapPriorFileV1(_)
-            | NativeIndexResponse::ImportedRepoMap(_)
-            | NativeIndexResponse::RepoMapRanked(_)
             | NativeIndexResponse::SourceOwners(_)
             | NativeIndexResponse::ProjectionOwners(_)
             | NativeIndexResponse::ProducerProjectionOwnersV1(_)
@@ -2071,10 +2037,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::PublishedViewMetadata(_)
             | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::CandidateInstallationV1(_)
-            | NativeIndexResponse::RepoMapGraphInstallationV1(_)
-            | NativeIndexResponse::RepoMapEventFrontierV1(_)
-            | NativeIndexResponse::ProtectedRepoMapHead(_)
-            | NativeIndexResponse::ImportedRepoMapMember(_)
             | NativeIndexResponse::SemanticRanked(_)
             | NativeIndexResponse::Submitted(_)
             | NativeIndexResponse::View(_)
@@ -2082,9 +2044,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::Stub(_)
             | NativeIndexResponse::Overlay(_)
             | NativeIndexResponse::Graph(_)
-            | NativeIndexResponse::RepoMapPriorFileV1(_)
-            | NativeIndexResponse::ImportedRepoMap(_)
-            | NativeIndexResponse::RepoMapRanked(_)
             | NativeIndexResponse::SourceOwners(_)
             | NativeIndexResponse::ProjectionOwners(_)
             | NativeIndexResponse::ProducerProjectionOwnersV1(_)
@@ -2991,6 +2950,8 @@ fn publication_request_key(request: &NativeIndexRequest) -> Option<OperationKey>
         | NativeIndexRequest::StageProjectionOutput { ingress, .. }
         | NativeIndexRequest::StageImmutableObject { ingress, .. }
         | NativeIndexRequest::SealCandidateWithSourceRoutes { ingress, .. }
+        | NativeIndexRequest::SealCandidateWithSourceRoutesAndRetiredPolicyV1 { ingress, .. }
+        | NativeIndexRequest::SealCandidateWithRetiredPolicyOnlyV1 { ingress, .. }
         | NativeIndexRequest::StageProjectionOwner { ingress, .. }
         | NativeIndexRequest::StageProjectionCertificate { ingress, .. }
         | NativeIndexRequest::StageMutationPage { ingress, .. }
@@ -3004,11 +2965,7 @@ fn publication_request_key(request: &NativeIndexRequest) -> Option<OperationKey>
         | NativeIndexRequest::PublishedViewMetadata(_)
         | NativeIndexRequest::ObserveRootView(_)
         | NativeIndexRequest::ObserveCandidateInstallationV1
-        | NativeIndexRequest::ObserveRepoMapGraphInstallationV1(_)
-        | NativeIndexRequest::ObserveRepoMapEventFrontierV1 { .. }
         | NativeIndexRequest::ResolveProtectedSourceHead { .. }
-        | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
-        | NativeIndexRequest::ReadImportedRepoMapMember { .. }
         | NativeIndexRequest::ReadProjection { .. }
         | NativeIndexRequest::LookupProjectionOwners { .. }
         | NativeIndexRequest::ListProducerProjectionOwnersV1 { .. }
@@ -3018,9 +2975,6 @@ fn publication_request_key(request: &NativeIndexRequest) -> Option<OperationKey>
         | NativeIndexRequest::CompleteOverlaySave(_)
         | NativeIndexRequest::Overlay(_)
         | NativeIndexRequest::QueryGraph { .. }
-        | NativeIndexRequest::ReadRepoMapPriorFileV1 { .. }
-        | NativeIndexRequest::QueryImportedRepoMap { .. }
-        | NativeIndexRequest::QueryRepoMap { .. }
         | NativeIndexRequest::ReadyWork { .. }
         | NativeIndexRequest::ClaimWork { .. }
         | NativeIndexRequest::RenewWork { .. }
@@ -3141,26 +3095,6 @@ fn publication_response_matches_request(
             NativeIndexResponse::CandidateInstallationV1(observed),
         ) => root_scoped_view::validate_candidate_installation(observed).is_ok(),
         (
-            NativeIndexRequest::ObserveRepoMapGraphInstallationV1(selection),
-            NativeIndexResponse::RepoMapGraphInstallationV1(observed),
-        ) => root_scoped_view::validate_repomap_graph_installation(*selection, observed).is_ok(),
-        (
-            NativeIndexRequest::ObserveRepoMapEventFrontierV1 {
-                view,
-                producer,
-                stream,
-            },
-            NativeIndexResponse::RepoMapEventFrontierV1(observed),
-        ) => {
-            observed.view == *view
-                && observed.root_nonce.0 != [0; 32]
-                && observed.producer == *producer
-                && observed.stream == *stream
-                && observed
-                    .cursor
-                    .is_none_or(|(epoch, sequence)| epoch > 0 && sequence > 0)
-        }
-        (
             NativeIndexRequest::ResolveProtectedSourceHead { .. },
             NativeIndexResponse::RootScopedView(observed),
         ) => {
@@ -3168,24 +3102,36 @@ fn publication_response_matches_request(
                 .is_ok()
         }
         (
-            NativeIndexRequest::ResolveProtectedRepoMapHead { .. },
-            NativeIndexResponse::ProtectedRepoMapHead(resolved),
-        ) => root_scoped_view::validate_repomap_reply(resolved).is_ok(),
-        (
-            NativeIndexRequest::ReadRepoMapPriorFileV1 {
-                view,
+            NativeIndexRequest::QueryGraph {
+                selection,
                 instance,
-                owner,
+                query,
             },
-            NativeIndexResponse::RepoMapPriorFileV1(prior),
-        ) => prior.view == *view && prior.instance == *instance && prior.owner == *owner,
-        (
-            NativeIndexRequest::ReadImportedRepoMapMember { view, instance },
-            NativeIndexResponse::ImportedRepoMapMember(observed),
+            NativeIndexResponse::Graph(graph),
         ) => {
-            observed.view == *view
-                && observed.instance == *instance
-                && observed.member_binding.0 != quanta_index_contract::index::Digest([0; 32])
+            selection_matches(*selection, graph.view)
+                && graph.instance == *instance
+                && graph.exhaustive
+                && graph.source_supporters <= query.max_supporters
+                && graph.source.is_some() == (graph.source_supporters > 0)
+                && (graph.source.is_some() || graph.edges.is_empty())
+                && graph
+                    .source
+                    .as_ref()
+                    .is_none_or(|source| &source.identity == &query.source)
+                && graph.edges.len() <= query.max_edges as usize
+                && graph.edges.iter().all(|row| {
+                    row.supporters > 0
+                        && row.supporters <= query.max_supporters
+                        && query.direction.endpoint(&row.edge) == &query.source
+                })
+                && graph.edges.iter().enumerate().all(|(ordinal, row)| {
+                    graph
+                        .edges
+                        .iter()
+                        .take(ordinal)
+                        .all(|prior| prior.edge != row.edge)
+                })
         }
         (
             NativeIndexRequest::ReadProjection {
@@ -4128,8 +4074,6 @@ mod tests {
     mod projection_tests;
     #[path = "published_view_metadata_tests.rs"]
     mod published_view_metadata_tests;
-    #[path = "repomap_tests.rs"]
-    mod repomap_tests;
     #[path = "root_scoped_view_tests.rs"]
     mod root_scoped_view_tests;
     #[path = "stub_tests.rs"]
@@ -5458,12 +5402,16 @@ mod tests {
         let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
         let socket = directory.path().join("native-mutation-ack-loss.sock");
         let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| error.to_string())?;
         let operation = key(76);
         let ingress = IngressRef {
             operation,
             fence: 23,
         };
         let base = MapRoot(None);
+        let staged_root = MapRoot(Some(ObjectRef(Digest([9; 32]))));
         let mutation = OwnerMutation {
             owner: OwnerKey {
                 producer: operation.producer,
@@ -5474,27 +5422,77 @@ mod tests {
         };
         let expected_mutation = mutation.clone();
         let peer = std::thread::spawn(move || -> Result<(), String> {
-            let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
-            let request: NativeIndexRequestEnvelope =
-                quanta_index_ipc::decode_request(&mut stream).map_err(|error| error.to_string())?;
-            if request.payload
-                != (NativeIndexRequest::StageMutationPage {
-                    ingress,
-                    base,
-                    mutations: vec![expected_mutation],
-                })
-            {
-                return Err("borrowed mutation page changed the canonical request".into());
+            for attempt in 0..2 {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let (mut stream, _) = loop {
+                    match listener.accept() {
+                        Ok(accepted) => break accepted,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => return Err(format!("mutation request absent: {error}")),
+                    }
+                };
+                stream
+                    .set_nonblocking(false)
+                    .map_err(|error| error.to_string())?;
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .map_err(|error| error.to_string())?;
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .map_err(|error| error.to_string())?;
+                let request: NativeIndexRequestEnvelope =
+                    quanta_index_ipc::decode_request(&mut stream)
+                        .map_err(|error| error.to_string())?;
+                if request.payload
+                    != (NativeIndexRequest::StageMutationPage {
+                        ingress,
+                        base,
+                        mutations: vec![expected_mutation.clone()],
+                    })
+                {
+                    return Err("borrowed mutation page retry changed the canonical request".into());
+                }
+                let reply = NativeIndexResponseEnvelope {
+                    request_id: request.request_id,
+                    payload: NativeIndexResponse::MutationPageStaged(staged_root),
+                };
+                let frame =
+                    quanta_index_ipc::encode_response(&reply).map_err(|error| error.to_string())?;
+                let sent = if attempt == 0 {
+                    frame.len() - 1
+                } else {
+                    frame.len()
+                };
+                stream
+                    .write_all(&frame[..sent])
+                    .map_err(|error| error.to_string())?;
             }
             Ok(())
         });
         let (memory, active, _admissions) = publication_scope(false);
-        let budget = RequestBudgetV1::for_duration(Duration::from_secs(2));
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(10));
         let client = NativeUdsClient::new(socket);
-        let result = client.stage_mutation_page_borrowed_admitted(
+        let mutations = [mutation];
+        let first = client.stage_mutation_page_borrowed_admitted(
             ingress,
             base,
-            &[mutation],
+            &mutations,
+            &budget,
+            &memory,
+        );
+        let first_unknown =
+            matches!(&first, Err(NativeUdsError::Unknown(key)) if *key == operation);
+        let first_refunded = active.load(AtomicOrdering::SeqCst) == 0;
+        drop(first);
+        let retry = client.stage_mutation_page_borrowed_admitted(
+            ingress,
+            base,
+            &mutations,
             &budget,
             &memory,
         );
@@ -5502,10 +5500,16 @@ mod tests {
             Ok(result) => result?,
             Err(payload) => std::panic::resume_unwind(payload),
         }
-        if !matches!(result, Err(NativeUdsError::Unknown(key)) if key == operation)
-            || active.load(AtomicOrdering::SeqCst) != 0
-        {
-            return Err("mutation ACK loss lost original operation or memory charge".into());
+        if !first_unknown || !first_refunded {
+            return Err("partial mutation ACK lost original operation or memory charge".into());
+        }
+        let retry = retry.map_err(|error| error.to_string())?;
+        if retry.response() != &NativeIndexResponse::MutationPageStaged(staged_root) {
+            return Err("mutation page retry did not return the same root".into());
+        }
+        drop(retry);
+        if active.load(AtomicOrdering::SeqCst) != 0 {
+            return Err("mutation page retry retained original memory charge".into());
         }
         Ok(())
     }

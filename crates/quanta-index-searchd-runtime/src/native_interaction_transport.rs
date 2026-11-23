@@ -78,14 +78,14 @@ pub(super) fn dispatch(
         | NativeIndexRequest::BindOverlaySave(_)
         | NativeIndexRequest::CompleteOverlaySave(_)
         | NativeIndexRequest::QueryGraph { .. }
-        | NativeIndexRequest::ReadRepoMapPriorFileV1 { .. }
-        | NativeIndexRequest::QueryImportedRepoMap { .. }
-        | NativeIndexRequest::QueryRepoMap { .. }
+
         | NativeIndexRequest::LookupSourceOwners { .. }
         | NativeIndexRequest::ListProducerSourceOwners { .. }
         | NativeIndexRequest::DiffProjectionSourceOwners { .. }
         | NativeIndexRequest::CreateWorkspace { .. }
         | NativeIndexRequest::SealCandidateWithSourceRoutes { .. }
+        | NativeIndexRequest::SealCandidateWithSourceRoutesAndRetiredPolicyV1 { .. }
+        | NativeIndexRequest::SealCandidateWithRetiredPolicyOnlyV1 { .. }
         | NativeIndexRequest::BeginInput(_)
         | NativeIndexRequest::ReopenInputWithRootForSourceStageV1 { .. }
         | NativeIndexRequest::StageSource { .. }
@@ -116,11 +116,9 @@ pub(super) fn dispatch(
         | NativeIndexRequest::ReadView(_)
         | NativeIndexRequest::ObserveRootView(_)
         | NativeIndexRequest::ObserveCandidateInstallationV1
-        | NativeIndexRequest::ObserveRepoMapGraphInstallationV1(_)
-        | NativeIndexRequest::ObserveRepoMapEventFrontierV1 { .. }
+
         | NativeIndexRequest::ResolveProtectedSourceHead { .. }
-            | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
-            | NativeIndexRequest::ReadImportedRepoMapMember { .. }
+
         | NativeIndexRequest::PublishedViewMetadata(_)
         | NativeIndexRequest::ReadProjection { .. }
         | NativeIndexRequest::LookupProjectionOwners { .. }

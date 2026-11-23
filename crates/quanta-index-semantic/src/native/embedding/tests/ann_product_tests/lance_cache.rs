@@ -260,6 +260,37 @@ fn run_lance_cache_case(memory_pressure: bool) -> Result<(), Box<dyn std::error:
         )?;
         check_eq!(objects.reads(), 1);
         check_eq!(member_reads.take_lookup_count(), 2);
+
+        let one_owner = search_selected_lancedb(
+            &SearchQuery {
+                source_files: false,
+                max_owners: 1,
+                ..query
+            },
+            &mut ReadContext {
+                objects: &store,
+                maps: &maps,
+                budget: &mut profile_work(60)?,
+            },
+            &runtime,
+        )?;
+        check_eq!(one_owner.scanned_owners, 1);
+        let vector_ids: Vec<_> = one_owner
+            .hits
+            .iter()
+            .map(|hit| (hit.owner, hit.vector_id.as_slice()))
+            .collect();
+        check_eq!(
+            vector_ids,
+            vec![
+                (originals[0].0, b"a".as_slice()),
+                (originals[0].0, b"b".as_slice())
+            ]
+        );
+        check_eq!(
+            one_owner.traversal,
+            NativeSemanticTraversal::Approximate { capped: true }
+        );
         return Ok(());
     }
     let cache_state_bytes = u64::try_from(ann_query::lance_cache_state_bytes())?;

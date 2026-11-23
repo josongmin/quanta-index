@@ -9,6 +9,8 @@ L1의 현재 단일 검증 checkpoint와 실제 잔여는 [2026-10-30 최종 감
 
 Current L1 integration and remaining proof: [E02 L1 final audit](#e02-l1-final-audit-20261030). Later source-specific sections supersede historical migration observations.
 
+**INC-01 Native DELTA · 2026-11-22.** Source V4 및 V39 재개, Q page/Seal 응답 경계, Java 첫 DELTA의 코드 단위와 실행은 [INC-01 원장](../../bugbash/nov-20-native-delta-cost/tickets/INC-01-source-closure.md#코드-단위-현황과-검증)에 귀속한다. 해당 동결본의 QBC 통합 컴파일 입장은 `BLOCKED`(exit 75), Linux Product 본문은 `NOT_RUN`이다. [INC-03 제품 인수](../../bugbash/nov-20-native-delta-cost/tickets/INC-03-product-acceptance.md#2026-11-22-현행-제품-인수-상태)에서 실제 Q·서명 SQL worker와 Source CAS·ACK·G2 공개의 결속을 확인한다.
+
 
 <a id="e02-l1-b-plan-source-binding-20261030"></a>
 ### B plan/collector source binding and exact SDK oracle — same checkpoint

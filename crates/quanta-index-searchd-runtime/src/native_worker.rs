@@ -31,7 +31,7 @@ use crate::native_resources::{
     NativeClassScheduler, NativeResourceClass, NativeResourceLedger, NativeResourcePlan,
 };
 
-use crate::native_work_diagnostic::{self, OwnedWorkObservation};
+use crate::native_work_diagnostic::{self, OwnedControlPhase, OwnedWorkObservation};
 
 type ProviderOwner = Arc<OnceLock<Arc<dyn Send + Sync>>>;
 
@@ -897,10 +897,16 @@ async fn run_command_inner(
             assignment,
             cancellation,
             diagnostic,
+            queue_span,
             started,
             reply,
             ..
         } => {
+            let queue_trace = queue_span.map(|span| {
+                let trace = span.trace_ref();
+                let _finished = span.finish(DiagnosticTerminalV1::Ok);
+                trace
+            });
             let key = assignment.request.operation;
             if cancellation.is_cancelled() {
                 native_work_diagnostic::record_owned_if_enabled(
@@ -926,7 +932,18 @@ async fn run_command_inner(
             if let Some(barrier) = barriers.before_grant {
                 barrier.wait();
             }
-            let grant = match kernel.begin_owned_work(&assignment) {
+            let grant_span = native_work_diagnostic::begin_owned_control(
+                diagnostic.as_ref(),
+                OwnedControlPhase::Grant,
+                None,
+            );
+            let grant_result = kernel.begin_owned_work(&assignment);
+            let grant_trace = grant_span.map(|span| {
+                let trace = span.trace_ref();
+                let _finished = span.finish(DiagnosticTerminalV1::from_result(&grant_result));
+                trace
+            });
+            let grant = match grant_result {
                 Ok(OwnedWorkBegin::Granted(grant)) => grant,
                 Ok(OwnedWorkBegin::Deferred(reason)) => {
                     drop(started.send(Ok(OwnedRunStart::Skipped(OwnedRunSkip::Deferred(reason)))));
@@ -957,6 +974,11 @@ async fn run_command_inner(
                 RequestBudgetV1::until(grant.execution_deadline),
                 diagnostic.as_ref(),
             );
+            if let (Some(context), Some(worker)) = (diagnostic.as_ref(), span.as_ref()) {
+                for previous in [queue_trace, grant_trace].into_iter().flatten() {
+                    context.link(worker, previous);
+                }
+            }
             // Retain the actual worker identity before finishing consumes its guard.
             let trace = span.as_ref().map(DiagnosticSpanGuardV1::trace_ref);
             let _cancel_relay = bind_owned_cancellation(&cancellation, &request_budget);
@@ -1045,21 +1067,7 @@ async fn run_command_inner(
                 Ok(()) if !matches!(&request.kind, UpdateKind::Materialize { .. }) => Err(
                     IndexError::BackendViolation("owned work is not materialization".into()),
                 ),
-                Ok(()) => match kernel.status(
-                    request.operation,
-                    quanta_index_core::index::ports::OperationInspectAccess::Request(&budget),
-                ) {
-                    Ok(OperationStatus::Unknown) => {
-                        kernel.submit_owned_work(request, &mut budget).await
-                    }
-                    Ok(OperationStatus::Pending(_)) => {
-                        kernel.resume_owned_work(&request, &mut budget).await
-                    }
-                    Ok(status @ (OperationStatus::Published(_) | OperationStatus::Refused(_))) => {
-                        Ok(SubmitOutcome::Terminal(status))
-                    }
-                    Err(error) => Err(error),
-                },
+                Ok(()) => kernel.execute_owned_work(request, &mut budget).await,
             };
             // Exclude the zero-capacity reply handoff from kernel execution.
             finish_owned_execution(&mut span, &result);
@@ -1074,7 +1082,16 @@ async fn run_command_inner(
             // A zero-capacity reply transfers settlement ownership only
             // when the pump actually receives the result. If its receiver
             // disappeared, the worker settles after execution quiesces.
-            if reply.send(result).is_err()
+            let handoff = native_work_diagnostic::begin_owned_control(
+                diagnostic.as_ref(),
+                OwnedControlPhase::ReplyHandoff,
+                trace,
+            );
+            let sent = reply.send(result);
+            if let Some(span) = handoff {
+                let _finished = span.finish(DiagnosticTerminalV1::from_result(&sent));
+            }
+            if sent.is_err()
                 && let Err(error) = settle_abandoned_owned(&kernel, &grant)
                 && let Some(lease) = &lease
             {
@@ -1166,6 +1183,7 @@ enum WorkerCommand {
         assignment: Box<OwnedWorkAssignment>,
         cancellation: RequestBudgetV1,
         diagnostic: Option<DiagnosticContextV1>,
+        queue_span: Option<DiagnosticSpanGuardV1>,
         started: sync_mpsc::SyncSender<Result<OwnedRunStart, IndexError>>,
         reply: WorkerReply,
         quiesced: sync_mpsc::SyncSender<()>,
@@ -1292,6 +1310,7 @@ impl NativeOperationWorker {
                 assignment: Box::new(assignment),
                 cancellation: cancellation.relay.clone(),
                 diagnostic,
+                queue_span: None,
                 started: started_tx,
                 reply: reply_tx,
                 quiesced: quiesced_tx,
@@ -1301,7 +1320,19 @@ impl NativeOperationWorker {
                 )?),
             },
             Some(scope),
-            |queued| {
+            |mut queued| {
+                if let WorkerCommand::Owned {
+                    diagnostic,
+                    queue_span,
+                    ..
+                } = &mut queued.command
+                {
+                    *queue_span = native_work_diagnostic::begin_owned_control(
+                        diagnostic.as_ref(),
+                        OwnedControlPhase::WorkerQueue,
+                        None,
+                    );
+                }
                 let _sender = permit.send(queued);
             },
         )?;
@@ -1806,6 +1837,7 @@ mod tests {
             UpdateKind::SourceAdvance(_)
             | UpdateKind::SourceHistoryAdvance(_)
             | UpdateKind::SourceResync { .. }
+            | UpdateKind::SourceHistoryResync { .. }
             | UpdateKind::ProjectionAdvance(_)
             | UpdateKind::HistoryAdvance(_)
             | UpdateKind::HistoryAppend(_) => {
@@ -2371,6 +2403,50 @@ mod tests {
                     begin.pointer("/kind/parent_span_id"),
                     Some(&serde_json::json!(root_span))
                 );
+                let control_span = |lane| -> TestResult<&Value> {
+                    rows.iter()
+                        .find(|row| {
+                            row.pointer("/kind/type").and_then(Value::as_str) == Some("span_begin")
+                                && row.pointer("/kind/stage").and_then(Value::as_str)
+                                    == Some("operation")
+                                && row.pointer("/kind/lane_id").and_then(Value::as_u64)
+                                    == Some(lane)
+                                && row.pointer("/kind/parent_span_id").and_then(Value::as_u64)
+                                    == Some(root_span)
+                        })
+                        .ok_or_else(|| format!("owned control lane {lane} missing").into())
+                };
+                let queue = control_span(7)?;
+                let grant = control_span(3)?;
+                let queue_id = queue
+                    .pointer("/kind/span_id")
+                    .and_then(Value::as_u64)
+                    .ok_or("queue span identity absent")?;
+                let queue_end = rows
+                    .iter()
+                    .find(|row| {
+                        row.pointer("/kind/type").and_then(Value::as_str) == Some("span_end")
+                            && row.pointer("/kind/span_id").and_then(Value::as_u64)
+                                == Some(queue_id)
+                            && row.pointer("/kind/outcome").and_then(Value::as_str) == Some("ok")
+                    })
+                    .ok_or("queue span did not close before the grant")?;
+                check!(
+                    queue_end
+                        .get("ts_ns")
+                        .and_then(Value::as_u64)
+                        .ok_or("queue end time absent")?
+                        <= grant
+                            .get("ts_ns")
+                            .and_then(Value::as_u64)
+                            .ok_or("grant start time absent")?
+                );
+                check!(rows.iter().any(|row| {
+                    row.pointer("/kind/type").and_then(Value::as_str) == Some("link")
+                        && row.pointer("/kind/span_id").and_then(Value::as_u64) == Some(worker_span)
+                        && row.pointer("/kind/target_span_id").and_then(Value::as_u64)
+                            == Some(queue_id)
+                }));
                 check!(rows.iter().any(|row| {
                     row.pointer("/kind/type").and_then(Value::as_str) == Some("span_end")
                         && row.pointer("/kind/span_id").and_then(Value::as_u64) == Some(worker_span)

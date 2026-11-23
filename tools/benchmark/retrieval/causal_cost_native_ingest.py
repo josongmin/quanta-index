@@ -6,13 +6,13 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from tools.benchmark.retrieval.causal_cost_timeline import (
-    MANAGED_INSTALL_CUSTODY_STAGES,
-    managed_install_census,
     MANAGED_CROSS_GROUP_CHILD_COUNTERS,
     MANAGED_EXTERNAL_CHILD_COUNTERS,
+    MANAGED_INSTALL_CUSTODY_STAGES,
     MANAGED_REUSED_EXTERNAL_CHILD_COUNTER,
     OBJECT_PORT_READ_COUNTERS,
     _union_ns,
+    managed_install_census,
 )
 
 KERNEL_OWNERS = frozenset({("native_source_apply", 3), ("build_prepare", 3)})
@@ -112,7 +112,9 @@ def _group(rows: list[tuple[dict, str | None]], kind: tuple[str, int]) -> dict:
             status = (
                 "COMPLETE"
                 if observed == MANAGED_EXTERNAL_CHILD_COUNTERS
-                else "PARTIAL" if observed else "MISSING"
+                else "PARTIAL"
+                if observed
+                else "MISSING"
             )
             result["external_child_groups"].append(
                 {
@@ -121,7 +123,10 @@ def _group(rows: list[tuple[dict, str | None]], kind: tuple[str, int]) -> dict:
                     "outcome": row["outcome"],
                     "observation": status,
                     "counts": (
-                        {key: row["counters"][key] for key in sorted(MANAGED_EXTERNAL_CHILD_COUNTERS)}
+                        {
+                            key: row["counters"][key]
+                            for key in sorted(MANAGED_EXTERNAL_CHILD_COUNTERS)
+                        }
                         if status == "COMPLETE"
                         else None
                     ),
@@ -133,7 +138,9 @@ def _group(rows: list[tuple[dict, str | None]], kind: tuple[str, int]) -> dict:
                         "observation": (
                             "COMPLETE"
                             if cross_group_observed == MANAGED_CROSS_GROUP_CHILD_COUNTERS
-                            else "PARTIAL" if cross_group_observed else "MISSING"
+                            else "PARTIAL"
+                            if cross_group_observed
+                            else "MISSING"
                         ),
                         "counts": (
                             {
@@ -249,6 +256,8 @@ def build_native_ingest_report(capture: dict[str, Any], *, limit: int = 32) -> d
                 "request_span_id": key,
                 "request_identity": spans[key]["request_identity"],
                 "outcome": spans[key]["outcome"],
+                "start_ns": spans[key]["start_ns"],
+                "end_ns": spans[key]["end_ns"],
                 "wall_ns": wall(key),
                 "observed_prefix_ns": (
                     capture["last_observed_ns"] - spans[key]["start_ns"]
@@ -273,6 +282,7 @@ def build_native_ingest_report(capture: dict[str, Any], *, limit: int = 32) -> d
         ],
         "scope": {
             "request": "identified daemon request with a Kernel SourceApply/3 or BuildPrepare/3 descendant; not a harness phase or public ACK",
+            "clock": "request start and end use the capture clock; an open request has no observed end",
             "wall": "closed span wall unions by stage/lane; overlapping groups and owner buckets are not additive",
             "cpu": "sum of direct thread CPU counters when every span in the group is measured; not host CPU or scheduling delay",
             "reads": "object-port route counts and successful wire bytes; null when incomplete, not physical disk reads",

@@ -36,6 +36,8 @@ def _partial():
         "schema_version": 4,
         "capture_id": CAPTURE,
         "sha256": "01" * 32,
+        "header": {"started_ns": 0},
+        "last_observed_ns": 210,
         "health": [],
         "truncated_tail": False,
         "orphan_events": 0,
@@ -49,6 +51,43 @@ def _partial():
             6: _span(6, 1, "operation", 1, 85, None),
         },
     }
+
+
+def test_worker_control_phases_require_explicit_same_root_links():
+    capture = _partial()
+    capture["spans"].update(
+        {
+            7: _span(7, 1, "operation", 3, 0, 2),
+            8: _span(8, 1, "operation", 4, 82, 87),
+            9: _span(9, 1, "operation", 5, 85, 90),
+            10: _span(10, 1, "operation", 6, 90, 96),
+            11: _span(11, 1, "operation", 6, 100, 110),
+            12: _span(12, None, "operation", 0, 0, None, root="operation"),
+            13: _span(13, 12, "operation", 6, 100, 110),
+            14: _span(14, 1, "operation", 7, 0, 1),
+            15: _span(15, 1, "operation", 7, 0, 1),
+        }
+    )
+    capture["links"] = [
+        {"source_span_id": source, "target_span_id": target, "target_capture_id": CAPTURE}
+        for source, target in [(2, 7), (8, 2), (9, 2), (10, 2), (13, 2), (2, 14), (15, 2)]
+    ]
+    worker = build_closed_worker_report(capture)["workers"][0]
+    assert {
+        phase: (span["span_id"], span["start_ns"], span["end_ns"])
+        for phase, span in worker["linked_control_phases"].items()
+    } == {
+        "grant": (7, 0, 2),
+        "reply_handoff": (8, 82, 87),
+        "worker_quiescence": (9, 85, 90),
+        "catalog_settlement": (10, 90, 96),
+        "worker_queue": (14, 0, 1),
+    }
+    capture["links"].append(
+        {"source_span_id": 11, "target_span_id": 2, "target_capture_id": CAPTURE}
+    )
+    with pytest.raises(ValueError, match="ambiguous catalog_settlement"):
+        build_closed_worker_report(capture)
 
 
 def test_partial_closed_scopes_keep_original_loss_and_unknown_counter_coverage():
@@ -93,6 +132,179 @@ def test_open_descendant_excludes_whole_worker_without_synthetic_terminal():
     assert result["workers"] == []
     assert result["selection"]["excluded_open_subtrees"] == 2
     assert capture["spans"][4]["end_ns"] is None
+
+
+def test_worker_window_partitions_wall_time_without_adding_nested_io():
+    capture = _partial()
+    capture["spans"].update(
+        {
+            7: _span(7, 1, "operation", 1, 100, 180),
+            8: _span(8, 7, "build_prepare", 3, 105, 165),
+            9: _span(9, 8, "sqlite_work", 11, 110, 155),
+            10: _span(10, 7, "semantic_prepare", 3, 155, 175),
+            11: _span(11, 7, "semantic_prepare", 3, 160, 170),
+            12: _span(12, 1, "operation", 1, 185, 205),
+        }
+    )
+    report = build_closed_worker_report(capture, window_ns=(90, 200))
+    assert report["capture"]["status"] == "partial"
+    assert report["selection"]["excluded_open_subtrees"] == 1
+    assert report["window"] == {
+        "start_ns": 90,
+        "end_ns": 200,
+        "minimum_closed_workers": 1,
+        "fully_contained_closed_workers": 1,
+        "excluded_closed_workers_outside_window": 2,
+    }
+    (worker,) = report["workers"]
+    assert worker["span_id"] == 7
+    assert worker["observed_phase_wall_ns"] == {
+        "exclusive_by_phase": {"build_prepare": 50, "semantic_prepare": 10},
+        "overlapping_phases": 10,
+        "outside_observed_phases": 10,
+    }
+    assert next(group for group in worker["groups"] if group["lane_id"] == 11)["union_ns"] == 45
+
+
+def test_worker_window_partitions_driver_intervals_even_when_spans_are_siblings():
+    capture = _partial()
+    capture["spans"].update(
+        {
+            7: _span(7, 1, "operation", 1, 100, 200),
+            8: _span(8, 7, "semantic_prepare", 3, 110, 194),
+            9: _span(9, 8, "catalog_lock_wait", 0, 110, 115),
+            10: _span(10, 8, "sqlite_work", 11, 115, 120),
+            11: _span(11, 8, "sqlite_work", 25, 120, 125),
+            12: _span(12, 8, "sqlite_work", 12, 125, 130),
+            13: _span(13, 8, "semantic_build", 3, 135, 145),
+            14: _span(14, 8, "semantic_seal", 3, 150, 180),
+            15: _span(15, 8, "managed_object_install", 3, 160, 190),
+            16: _span(16, 15, "managed_object_install", 3, 165, 175),
+            17: _span(17, 15, "sqlite_work", 11, 170, 175),
+            18: _span(18, 7, "native_work_seal", 3, 194, 198),
+        }
+    )
+    (worker,) = build_closed_worker_report(capture, window_ns=(90, 210))["workers"]
+
+    assert worker["observed_driver_wall_ns"] == {
+        "exclusive_by_stage": {
+            "catalog_lock_wait": 5,
+            "managed_object_install": 10,
+            "semantic_build": 10,
+            "semantic_seal": 10,
+            "sqlite_main_sync": 5,
+            "sqlite_wal_backfill": 5,
+            "sqlite_wal_sync": 5,
+        },
+        "overlap_by_stage_set": [
+            {"stages": ["managed_object_install", "semantic_seal"], "duration_ns": 15},
+            {
+                "stages": ["managed_object_install", "semantic_seal", "sqlite_wal_sync"],
+                "duration_ns": 5,
+            },
+        ],
+        "outside_observed_stages": 30,
+    }
+
+
+def test_worker_window_refuses_missing_late_sample_or_invalid_window():
+    capture = _partial()
+    with pytest.raises(ValueError, match="found 0 fully contained closed worker"):
+        build_closed_worker_report(capture, window_ns=(80, 100))
+    with pytest.raises(ValueError, match="expected at least 2"):
+        build_closed_worker_report(capture, window_ns=(2, 80), minimum_closed_workers=2)
+    with pytest.raises(ValueError, match="invalid worker capture window"):
+        build_closed_worker_report(capture, window_ns=(90, 89))
+
+
+def test_worker_window_measures_closed_root_union_without_extending_missing_end():
+    capture = _partial()
+    capture["last_observed_ns"] = 185
+    capture["spans"].update(
+        {
+            7: _span(7, 1, "operation", 1, 95, 110),
+            8: _span(8, 1, "operation", 1, 120, 150),
+            9: _span(9, 8, "build_prepare", 3, 125, None),
+            10: _span(10, 1, "operation", 1, 135, 160),
+            11: _span(11, 1, "operation", 1, 170, None),
+        }
+    )
+    report = build_closed_worker_report(capture, window_ns=(100, 200))
+
+    assert report["window"]["fully_contained_closed_workers"] == 1
+    assert report["window_occupancy"] == {
+        "closed_worker_union_ns": 50,
+        "observed_without_closed_worker_ns": 35,
+        "before_capture_ns": 0,
+        "after_observed_capture_ns": 15,
+        "contributing_closed_worker_roots": 3,
+        "boundary_crossing_closed_worker_roots": 1,
+        "open_worker_roots_started_in_observed_window": 1,
+        "open_worker_roots_started_before_observed_window": 1,
+    }
+
+
+def test_occupancy_only_accepts_straddling_worker_without_closed_sample():
+    capture = _partial()
+    capture["spans"][2].update(start_ns=75, end_ns=125)
+    capture["spans"][3].update(start_ns=80, end_ns=120)
+    capture["spans"][4].update(start_ns=85, end_ns=105)
+    capture["spans"][5].update(start_ns=90, end_ns=110)
+    capture["spans"][6].update(start_ns=130)
+    original = copy.deepcopy(capture)
+
+    with pytest.raises(ValueError, match="found 0 fully contained closed worker"):
+        build_closed_worker_report(capture, window_ns=(100, 150))
+    report = build_closed_worker_report(capture, window_ns=(100, 150), occupancy_only=True)
+
+    assert capture == original
+    assert report["status"] == "OBSERVED_WINDOW_OCCUPANCY_ONLY"
+    assert report["capture"]["status"] == "partial"
+    assert "workers" not in report
+    assert report["window_occupancy"] == {
+        "closed_worker_union_ns": 25,
+        "observed_without_closed_worker_ns": 25,
+        "before_capture_ns": 0,
+        "after_observed_capture_ns": 0,
+        "contributing_closed_worker_roots": 1,
+        "boundary_crossing_closed_worker_roots": 1,
+        "open_worker_roots_started_in_observed_window": 1,
+        "open_worker_roots_started_before_observed_window": 0,
+    }
+
+
+def test_occupancy_only_unions_overlapping_roots_and_localizes_prior_open_start():
+    capture = _partial()
+    capture["last_observed_ns"] = 145
+    capture["spans"].update(
+        {
+            7: _span(7, 1, "operation", 1, 95, 110),
+            8: _span(8, 1, "operation", 1, 105, 120),
+            9: _span(9, 1, "operation", 1, 119, 140),
+            10: _span(10, 1, "operation", 1, 125, None),
+        }
+    )
+    report = build_closed_worker_report(capture, window_ns=(100, 150), occupancy_only=True)
+
+    assert report["window_occupancy"] == {
+        "closed_worker_union_ns": 40,
+        "observed_without_closed_worker_ns": 5,
+        "before_capture_ns": 0,
+        "after_observed_capture_ns": 5,
+        "contributing_closed_worker_roots": 3,
+        "boundary_crossing_closed_worker_roots": 1,
+        "open_worker_roots_started_in_observed_window": 1,
+        "open_worker_roots_started_before_observed_window": 1,
+    }
+
+
+def test_occupancy_only_requires_explicit_window():
+    with pytest.raises(ValueError, match="requires a capture window"):
+        build_closed_worker_report(_partial(), occupancy_only=True)
+    with pytest.raises(ValueError, match="does not accept a minimum closed worker sample"):
+        build_closed_worker_report(
+            _partial(), window_ns=(100, 150), minimum_closed_workers=2, occupancy_only=True
+        )
 
 
 @pytest.mark.parametrize("version", (4, 5))
@@ -207,6 +419,38 @@ def test_closed_workers_cli_preserves_canonical_partial_and_exclusive_output(tmp
     assert [row["span_id"] for row in report["workers"]] == [2]
     with pytest.raises(FileExistsError):
         main(args)
+    window = tmp_path / "window.json"
+    window_args = ["closed-workers", "--input", str(source), "--out", str(window)]
+    with pytest.raises(ValueError, match="found 0 fully contained closed worker"):
+        main([*window_args, "--window-ns", "10", "20"])
+    assert not window.exists()
+    assert main([*window_args, "--window-ns", "1", "8", "--minimum-closed-workers", "1"]) == 0
+    selected = json.loads(window.read_text())
+    assert selected["capture"]["status"] == "partial"
+    assert selected["window"]["fully_contained_closed_workers"] == 1
+    assert selected["workers"][0]["observed_phase_wall_ns"]["outside_observed_phases"] == 7
+    occupancy = tmp_path / "occupancy.json"
+    occupancy_args = [
+        "closed-workers",
+        "--input",
+        str(source),
+        "--out",
+        str(occupancy),
+        "--window-ns",
+        "5",
+        "10",
+        "--occupancy-only",
+    ]
+    assert main(occupancy_args) == 0
+    observed = json.loads(occupancy.read_text())
+    assert observed["status"] == "OBSERVED_WINDOW_OCCUPANCY_ONLY"
+    assert observed["capture"]["status"] == "partial"
+    assert observed["window_occupancy"]["closed_worker_union_ns"] == 3
+    assert observed["window_occupancy"]["observed_without_closed_worker_ns"] == 2
+    assert observed["window_occupancy"]["after_observed_capture_ns"] == 0
+    assert observed["window_occupancy"]["open_worker_roots_started_before_observed_window"] == 0
+    with pytest.raises(FileExistsError):
+        main(occupancy_args)
 
 
 def _partial_with_maintenance():

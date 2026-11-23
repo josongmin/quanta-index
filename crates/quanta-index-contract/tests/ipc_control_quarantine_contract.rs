@@ -15,7 +15,7 @@ use ciborium::value::Value;
 use quanta_index_contract::ipc::{
     QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1, QuarantineDiscardRequest,
     QuarantineInventoryRequest, QuarantineInventoryV1, QuarantineTargetV1,
-    QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1, SearchPlaneControlIpcRequest,
+    QuarantinedGenerationEntryV1, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneTrackKind,
 };
@@ -53,18 +53,10 @@ fn semantic_entry() -> QuarantinedGenerationEntryV1 {
     }
 }
 
-fn repo_map_entry() -> QuarantinedRepoMapFileEntryV1 {
-    QuarantinedRepoMapFileEntryV1 {
-        file_name: "stale--marker.json".to_string(),
-        reason: "snapshot does not decode".to_string(),
-    }
-}
-
 fn inventory() -> QuarantineInventoryV1 {
     QuarantineInventoryV1 {
         lexical: vec![lexical_entry()],
         semantic: vec![semantic_entry()],
-        repo_map: vec![repo_map_entry()],
     }
 }
 
@@ -138,10 +130,6 @@ fn every_dto_round_trips_and_rides_the_control_envelope() -> TestRes {
             QuarantineTargetV1::Generation(lexical_entry()),
             QuarantineDiscardOutcomeDtoV1::Discarded { bytes: u64::MAX },
         ),
-        (
-            QuarantineTargetV1::RepoMapFile(repo_map_entry()),
-            QuarantineDiscardOutcomeDtoV1::Absent,
-        ),
     ] {
         let request = QuarantineDiscardRequest {
             target: target.clone(),
@@ -173,7 +161,6 @@ fn every_dto_round_trips_and_rides_the_control_envelope() -> TestRes {
             .and_then(serde_json::Value::as_str);
         let expected = match ack.target {
             QuarantineTargetV1::Generation(_) => ("Generation", "Discarded"),
-            QuarantineTargetV1::RepoMapFile(_) => ("RepoMapFile", "Absent"),
         };
         if (target_kind, outcome_kind) != (Some(expected.0), Some(expected.1)) {
             return Err(format!("ack kind tags: {json}").into());
@@ -299,31 +286,6 @@ fn every_shape_that_could_name_the_unlisted_is_refused_at_decode() -> TestRes {
         })?,
     )?;
 
-    // A repo-map file name is one path segment; anything that could walk
-    // out of the quarantine directory is refused before it reaches a port.
-    let file = repo_map_entry();
-    for file_name in [
-        "",
-        ".",
-        "..",
-        "../snapshots/live.json",
-        "nested/x.json",
-        "/abs.json",
-    ] {
-        expect_refused::<QuarantinedRepoMapFileEntryV1>(
-            &format!("a repo-map file name {file_name:?}"),
-            &forged(&file, |value| {
-                set_text(field(value, "file_name")?, file_name)
-            })?,
-        )?;
-    }
-    let decoded: QuarantinedRepoMapFileEntryV1 = decode(&forged(&file, |value| {
-        set_text(field(value, "reason")?, "")
-    })?)?;
-    if !decoded.reason.is_empty() {
-        return Err("an empty repo-map reason decodes as empty".into());
-    }
-
     // The per-track lists carry only their own track; the target inside
     // a discard is validated the same way through the entry it wraps.
     let value = inventory();
@@ -342,27 +304,6 @@ fn every_shape_that_could_name_the_unlisted_is_refused_at_decode() -> TestRes {
             set_text(
                 field(item(field(value, "semantic")?, 0)?, "track")?,
                 "lexical",
-            )
-        })?,
-    )?;
-    expect_refused::<QuarantineInventoryV1>(
-        "an inventory missing its repo_map list",
-        &forged(&value, |value| {
-            value
-                .as_map_mut()?
-                .retain(|(key, _)| key.as_text() != Some("repo_map"));
-            Some(())
-        })?,
-    )?;
-    let request = QuarantineDiscardRequest {
-        target: QuarantineTargetV1::RepoMapFile(repo_map_entry()),
-    };
-    expect_refused::<QuarantineDiscardRequest>(
-        "a discard of a nested repo-map file name",
-        &forged(&request, |value| {
-            set_text(
-                field(field(field(value, "target")?, "payload")?, "file_name")?,
-                "../x",
             )
         })?,
     )?;
@@ -389,7 +330,7 @@ fn every_shape_that_could_name_the_unlisted_is_refused_at_decode() -> TestRes {
         &forged(&target, |value| set_text(field(value, "kind")?, "Snapshot"))?,
     )?;
     expect_refused::<QuarantineTargetV1>(
-        "a target kind with the other variant's payload",
+        "the retired RepoMapFile target",
         &forged(&target, |value| {
             set_text(field(value, "kind")?, "RepoMapFile")
         })?,

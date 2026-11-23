@@ -31,6 +31,8 @@ use crate::deployment_selection;
 mod native_v1;
 #[path = "history_checkpoint_export/source_v1.rs"]
 mod source_v1;
+#[path = "history_checkpoint_export/native_source_v1.rs"]
+mod native_source_v1;
 
 pub use source_v1::run_source_v1;
 

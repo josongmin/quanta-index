@@ -1,17 +1,17 @@
 # 최종 감사 · 수용 전 필수 작업
 
-**현재 판정.** Prefix와 ANN4K는 **VERIFIED**다. 제품 4K는 초기 게시를 통과했고 초기 materialization에서 **FAILED**다. 실패 당시 공개 상태에서 3,490개 완료, 603개 대기, 3개 claim을 확인했다. 두 4K 실행의 시작 시점 공통 입력은 일치했고 제품 실행 중 추적 범위가 변경됐다. [제품·품질 원본 기록 위치](04-product-acceptance.md)
+**최종 감사 · 2026-11-23 KST.** B의 결합 실행은 ANN4K 1 PASS와 Product4K 1 FAIL이다. B 제품은 초기 게시 후 materialization에서 1,200초 watchdog이 만료됐다. 별도 Root NoFeatures 후속 제품 본문은 그보다 앞선 초기 `SourceAdvance`의 30초 요청 기한에서 실패했다. 후기 Record 재접수는 admission 대기 중 `ENOSPC`로 본문 0건이었다. 현재 후보의 정식 제품 수용은 **NOT_RUN**이다. [B 실행 결과](04-product-acceptance.md#기존-실행기-결과) · [Root 후속 실행](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md#ann-재시작-후속-실행)
 
-## 필수 작업
+## 작업과 종료 조건
 
-표의 B 실행·수용 담당은 모두 이 채팅이다. 01과 04에 있는 같은 동작은 이 표의 상세 절차다. 별도 실행 요청으로 세지 않는다. [채팅별 실행권](README.md#채팅별-실행권과-재사용-범위)
+제품 RCA·수리·재검증은 기존 B 단일 큐에서 진행한다. 실행기 판독·복구와 공통 입력 비교의 기존 회귀는 아래 기록을 재사용한다. [채팅별 실행권](README.md#채팅별-실행권과-재사용-범위)
 
 | 순서·담당 | 근거와 작업 | 완료 증거 |
 | --- | --- | --- |
-| 1 · B 실행 담당 | **대기 복구와 terminal 처리를 함께 점검한다.** prefix·ANN의 기록 PID는 종료됐고 기존 제품 continuation은 살아 있었다. 원 실행기가 반환하는 `blocked`, `not_run`, `invalid_terminal`을 continuation이 두 대기 루프에서 모두 누락한다. 동일 대기에 머무는 경우 원 terminal과 이유를 한 번 인계하도록 기존 continuation에서 처리한다. | 기존 잠금과 디렉터리로만 재개. 실행 중인 담당과 새 담당이 동시에 같은 selector를 시작하지 않는다. 모든 terminal이 종료 또는 명시적인 복구 상태로 이어진다. [복구 절차](01-attribution.md) |
-| 2 · B 실행 담당 | **정상 slow PASS를 보존한다.** 기존 단일 본문 판정기에 실제 Nextest `1 test run: 1 passed (1 slow), 75 skipped` 로그·해당 본문명·exit 0을 입력하면 `invalid_terminal`이 돌아온다. 원 selector·admission·부하 기준을 유지하고 결과 판독에서 이 정당한 형식을 처리한다. | 아래 대조표를 실제 로그로 통과. pinned 원 실행기를 보존하는 경우 기존 후속 판독기가 저장된 exit·본문·summary를 함께 대조한다. 현재 떠 있는 continuation에도 수리가 적용됐는지 확인한다. |
-| 3 · B + 해당 생산자 | **현재 후보를 같은 selector로 검증한다.** 초기 게시 실패는 [01 비용 분리](01-attribution.md), ANN 상관 필터 누락은 [04 품질 판정](04-product-acceptance.md)이 맡는다. 초기 게시 뒤에 실패하면 그때의 실패 phase에서 시작한다. | 제품은 overlay 종료·두 번째 재시작을 포함한 본문 1 PASS·exit 0. ANN은 독립 exact와 파일 Q64·raw 고정 질의 각각의 기준을 충족한 본문 1 PASS·exit 0. |
-| 4 · B 수용 담당 | **분리된 두 결과를 같은 후보로 결합한다.** 현재 `retry.py`는 selector별 상태만 저장한다. 두 실행을 한 프로세스에서 돌릴 때 적용하는 `shared_input_drift` 판정이 독립 재시도 경로에는 없다. | 두 terminal에 selector·exit·source roots·before 해시·resolver·실행 중 drift가 모두 있는지 확인한다. 공통 소스와 resolver 차이를 원 함수로 대조한다. 개별 PASS, 실행 중 변경, 동일 후보 수용 여부를 분리해 기존 [07.5](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md#ann과-hybrid)에 기록한다. |
+| 1 · B 계측 | 초기 SourceAdvance와 게시 이후 owner 파이프라인을 같은 Record에서 판독할 수 있도록 빠진 계측만 준비한다. 기존 controller의 PID·잠금·terminal과 입장을 확인해 진단 한 건을 인수하거나 접수한다. | 초기 실패는 같은 operation의 기한·비용·durable 상태를 연결한다. 초기 게시 성공 시 후기 owner의 grant·게시·정산까지 연결한다. [첫 실패 경계](04-product-acceptance.md#가장-먼저-실패한-경계로-분기) |
+| 2 · B + 해당 생산자 | 재현된 첫 실패 경계의 지배 비용 하나를 수리한다. 초기 게시가 실패하면 초기 경계를, materialization에 도달하면 단일 슬롯의 비용을 확인한다. | 같은 집중 회귀에서 원 view·오류·예산과 비용 차이를 대조한다. [수정 결정표](04-product-acceptance.md#측정으로-고를-단일-슬롯-수정) |
+| 3 · B 제품 검증 | 원 실행기와 admission으로 같은 후보의 ANN4K와 tracing Off Product4K를 검증한다. | 각각 본문 1 PASS·exit 0, 공통 소스·resolver 일치와 실행 중 drift 없음, 오버레이 종료·두 번째 재시작을 확인한다. [원 4K 수용](04-product-acceptance.md#최종-감사-판정과-실행-순서) |
+| 4 · B 결과 인수 | 정확한 selector·run ID·본문 수·exit와 공통 입력 판정을 기존 원장에 연결한다. | [07.5](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md#ann과-hybrid)에 두 결과를 한 번 인수한다. |
 
 ## 실행기 반례와 회귀 기준
 
@@ -32,13 +32,13 @@
 
 - **VERIFIED · 판정과 복구.** 기존 `resume_queued.py`, `retry.py`, `product_after_prefix.py`가 같은 `quality_receipts.py`를 사용한다. 고정한 원 `run_quality.py`는 SHA-256 `7e48e56bf842…`와 일치한다. 실제 로그 5개에서 일반 PASS·slow PASS·FAIL을 대조했다. 단일 FAIL이 Nextest summary 앞뒤에 표시되는 원본 형식도 포함했다. 격리된 상태와 실제 flock으로 종료 상태 6종, owner 없는 대기, 로그가 있는 실행의 재개 거절, 제품 초기 상태의 원자적 저장 직전 중단 및 동일 예약의 1회 실행을 확인했다.
 - **VERIFIED · 동일 후보 판정 회귀.** 두 독립 receipt에서 정확한 selector·본문·exit, 소스 캡처와 resolver가 있을 때만 원 `shared_input_drift`를 실행한다. 공통 파일 차이, `Cargo.lock` 차이, 실행 중 drift, 잘못된 exit 및 누락된 입력의 거절을 대조했다. 두 제품 본문이 끝나면 기존 continuation의 출력과 같은 캐시의 `quality-pair.json`에 결합 결과를 기록한다.
-- **NOT_RUN · 수정 후보 4K 본문.** 종료된 미시작 대기 두 건을 기존 디렉터리와 잠금에서 복구했다. 새 PID는 PREFIX4K `82110`, ANN4K `82153`, PRODUCT4K continuation `82183`이다. 현재 실행권과 본문 진입은 [01의 상태 위치](01-attribution.md#실행을-이어받는-위치)에서 확인한다. 사전검사 한 차례는 외부 Rust 19개와 1분 부하 53.49/상한 8.0으로 거절됐다. 제품·ANN 본문과 실제 쌍 판정은 대기 상태다.
+- **초기 대기 이력.** 미시작 예약을 기존 디렉터리와 잠금에서 복구했다. 사전검사 한 차례는 외부 Rust 19개와 1분 부하 53.49/상한 8.0으로 거절됐다. 복구 이후 실제 prefix·ANN·제품 terminal은 [04](04-product-acceptance.md#기존-실행기-결과)에 있다.
 
 ### 후속 정적 감사
 
 - **VERIFIED · 실행 옵션과 입력 기록.** 세 selector의 원 인자 SHA-256을 검증하는 로직을 추가했다. 원 상태 파일의 `--test-threads`가 바뀌면 재실행을 거절한다. 원 실행기가 `running`을 기록할 때 revision·소스 목록·resolver를 결속하고 종료 때 실제 로그 해시를 저장한다. 양쪽 소스 목록에서 Rust 항목이 빠지거나 본문 로그가 바뀌어도 통과할 수 있었던 반례를 격리된 상태로 검증했다. 이 판정은 기록된 공통 입력의 일치를 확인한다.
 - **코드 수정 · 작은 델타 exact 검색.** exact 분기에서 사용하지 않을 ANN owner 테이블과 후보 힙을 먼저 확보하던 경로를 제거했다. 두 분기에서 같은 델타 페이지 순서·카운트·member 인증을 사용한다. 기존 검색 회귀에 exact 힙을 한 번만 허용하는 메모리 scope를 추가했다. Rustfmt와 diff 공백 검사는 통과했다. 집중 Nextest는 공용 admission 잠금에서 exit 124로 끝나 **테스트 본문 NOT_RUN**이다. [공통 델타 검증](../../../crates/quanta-index-semantic/src/native/embedding/ann_query.rs#L830) · [exact 분기](../../../crates/quanta-index-semantic/src/native/embedding/ann_query.rs#L948) · [메모리 회귀](../../../crates/quanta-index-semantic/src/native/embedding/tests/ann_product_tests/maintenance.rs#L2502)
-- **실행 중인 대기 프로세스.** 본문과 로그가 없는 상태에서 기존 잠금을 확인한 뒤 수정본을 다시 올렸다. 확인한 PID는 PREFIX4K `26094`, ANN4K `26109`, PRODUCT4K continuation `26120`이다. admission을 통과하면 지정된 원 selector가 한 번씩 실행된다.
+- **당시 확인한 복구.** 본문과 로그가 비어 있을 때 기존 잠금을 확인하고 대기를 한 번 회수했다. 그때의 PID는 현재 실행권을 나타내지 않는다. [현재 상태](01-attribution.md#실행을-이어받는-위치)
 
 ### 리전 조회·병합 재감사
 
@@ -72,7 +72,7 @@
 - **재시작 검증 보강.** 두 뷰에서 디렉터리·리전 등록 자식의 정확한 참조 집합, 리전 ID와 seal 세대, manifest·seal recipe, 차원과 행 수를 비교한다. 학습형 리전에는 실제 ANN 기록과 일치하는 indexed row 수가 필요하다. 이 검사는 파일셋 메타데이터를 대상으로 한다. [재시작 검사](../../../crates/quanta-index-searchd-runtime/tests/native_product_process/ann_quality.rs#L139) · [ANN 기록 누락 회귀](../../../crates/quanta-index-searchd-runtime/tests/native_product_process/ann_quality.rs#L103)
 - **정적 검증.** 변경 구간의 Rust 포맷·diff 공백 검사와 원 소스 수집기의 ranking 파일 포함 여부를 확인했다. `just rust-semantic-outcomes rust-error-shape rust-no-allow`도 통과했다.
 - **Projection 집중 회귀.** **VERIFIED**, 3 PASS·exit 0(`4326612f-ced9-4981-be76-b6d92d2c9357`). Arrow 58.3.0 빌드에서 직접 경로와 리포지토리 조회, 위조 입력 거절, 빈 소스 행이 포함된 결과 창을 실행했다.
-- **Semantic 집중 회귀.** Arrow 58.4.2·Tokio 1.53.3 빌드에서 19개 중 18 PASS·1 FAIL, exit 100(`f6a8220d-8324-464e-bee2-482b6bd2f345`). 청크 순서 회귀의 메모리 거부 조건이 정규 청크 식별자 검증용 인덱스까지 거절해 `ResourceLimited`가 반환됐다. 거부 시점을 검증 후 랭킹으로 좁혔다. 실패했던 선택자 하나의 재검증이 대기 중이다. [청크 회귀](../../../crates/quanta-index-semantic/src/native/embedding/tests/chunk_tests.rs#L404)
+- **Semantic 집중 회귀.** Arrow 58.4.2·Tokio 1.53.3 빌드에서 19개 중 18 PASS·1 FAIL, exit 100(`f6a8220d-8324-464e-bee2-482b6bd2f345`). 청크 순서 회귀의 메모리 거부 조건이 정규 청크 식별자 검증용 인덱스까지 거절해 `ResourceLimited`가 반환됐다. 거부 시점을 검증 후 랭킹으로 좁혔다. 같은 선택자 하나의 재검증은 **VERIFIED**, 1 PASS·exit 0(`563139c4-2d25-41df-b88d-1564f46001ef`)이다. [청크 회귀](../../../crates/quanta-index-semantic/src/native/embedding/tests/chunk_tests.rs#L404)
 - **Runtime 집중 회귀.** **VERIFIED**. 재시작·준비 상태·영수증 순서 3 PASS·exit 0(`7137a2de-42b0-478d-a431-15cc3ec80674`). 메모리 승격 1 PASS·exit 0(`6853a596-9239-4a22-9a91-3d6375c65429`).
 - **기존 4K 실행기.** Prefix와 ANN4K는 각각 **VERIFIED**, 1 PASS·exit 0이다. 제품 4K는 초기 materialization watchdog에서 **FAILED**, 1 FAIL·exit 100이다. 공통 시작 소스 1,071개와 resolver 입력 67개는 일치했다. 제품 종료 시 source drift 204개·resolver drift 2개를 기록했고 결합 상태는 `quality_incomplete`다. [실행 위치와 판정](04-product-acceptance.md)
 

@@ -1111,6 +1111,13 @@ def main(argv: list[str] | None = None) -> int:
     observed.add_argument("--input", type=Path, required=True)
     observed.add_argument("--out", type=Path, required=True)
     observed.add_argument("--max-capture-bytes", type=int, default=MAX_CAPTURE_BYTES)
+    observed.add_argument("--window-ns", type=int, nargs=2, metavar=("START", "END"))
+    observed.add_argument("--minimum-closed-workers", type=int, default=1)
+    observed.add_argument(
+        "--occupancy-only",
+        action="store_true",
+        help="report observed whole-window worker occupancy without a closed-worker sample",
+    )
     maintenance = commands.add_parser(
         "closed-maintenance",
         help="report observed closed runtime maintenance scopes without complete-capture custody",
@@ -1176,7 +1183,12 @@ def main(argv: list[str] | None = None) -> int:
             result = (
                 build_closed_maintenance_report(capture)
                 if args.command == "closed-maintenance"
-                else build_closed_worker_report(capture)
+                else build_closed_worker_report(
+                    capture,
+                    window_ns=tuple(args.window_ns) if args.window_ns is not None else None,
+                    minimum_closed_workers=args.minimum_closed_workers,
+                    occupancy_only=args.occupancy_only,
+                )
             )
         else:
             result = build_index(capture, refusal_log=raw_log)

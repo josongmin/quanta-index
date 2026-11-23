@@ -3,7 +3,6 @@
     reason = "doctor tests index serde_json::Value by key/position to assert the stable JSON contract this crate constructs; an out-of-range index is a legitimate test failure"
 )]
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::process::Command;
 use std::sync::Arc;
@@ -15,7 +14,7 @@ use quanta_index_contract::ipc::{
     MetricBucketV1, MetricCounterV1, MetricGaugeV1, MetricHistogramV1, MetricsDiagnosticsV1,
     MetricsSnapshotV1, QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1,
     QuarantineDiscardRequest, QuarantineInventoryV1, QuarantineTargetV1,
-    QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1, SearchPlaneControlIpcRequest,
+    QuarantinedGenerationEntryV1, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneTrackKind, TrackReadinessRecord,
 };
@@ -24,9 +23,7 @@ use quanta_index_contract::{
     EngineTouched, ExplainCandidateV1, GenerationPin, HybridCandidateV1, HybridLaneContributionV1,
     HybridLaneV1, HybridQueryResponse, HybridSeedQueryResponse, LexicalCandidate,
     ManifestGeneration, PlannerStage, PlannerTraceEntry, QueryResultWindowV2, RepoId,
-    RepoMapDocType, RepoMapEntryDto, RepoMapExactnessSummary, RepoMapFocusSubjectDto,
-    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapQueryResponse,
-    RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath, RevisionId, SearchExplanation,
+    RepoRelativePath, RevisionId, SearchExplanation,
     SearchPlaneErrorCodeV2, SearchPlaneExplainQueryResponse, SearchPlaneIpcError,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse, TextQueryResponse, TextQuerySyntax,
@@ -42,7 +39,6 @@ enum SmokeScenario {
     SemanticJson,
     HybridPretty,
     HybridSeedPretty,
-    RepoMapPretty,
 }
 
 struct ScenarioDispatcher {
@@ -65,7 +61,6 @@ impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for 
             SmokeScenario::SemanticJson => dispatch_semantic_request(request),
             SmokeScenario::HybridPretty => dispatch_hybrid_request(request),
             SmokeScenario::HybridSeedPretty => dispatch_hybrid_seed_request(request),
-            SmokeScenario::RepoMapPretty => dispatch_repomap_request(request),
         }
     }
 }
@@ -107,8 +102,8 @@ fn hybrid_query_text_pretty_roundtrip() {
 }
 
 #[test]
-fn repomap_pretty_roundtrip() {
-    let result = repomap_pretty_roundtrip_impl();
+fn legacy_repomap_query_is_unknown() {
+    let result = legacy_repomap_query_is_unknown_impl();
     assert!(result.is_ok(), "{result:?}");
 }
 
@@ -390,39 +385,16 @@ fn hybrid_query_text_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-fn repomap_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
-    let socket_path = unique_socket_path();
-    let shutdown = start_server(&socket_path, SmokeScenario::RepoMapPretty)?;
+fn legacy_repomap_query_is_unknown_impl() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
         .arg("legacy")
         .arg("repomap")
-        .arg("--socket")
-        .arg(&socket_path)
-        .arg("--repo-id")
-        .arg("repo-1")
-        .arg("--revision-id")
-        .arg("rev-1")
-        .arg("--manifest-generation")
-        .arg("11")
-        .arg("--query-text")
-        .arg("repo map focus")
-        .arg("--top-k")
-        .arg("5")
-        .arg("--token-budget")
-        .arg("2048")
-        .arg("--focus-subject")
-        .arg("subject-repomap:symbol")
         .output()?;
-    shutdown.trigger();
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+    if output.status.code() != Some(2) {
+        return Err(format!("unexpected exit code: {:?}", output.status.code()).into());
     }
-    let stdout = String::from_utf8(output.stdout)?;
-    if !stdout.contains("kind: repomap") {
-        return Err(format!("missing repomap kind in stdout: {stdout}").into());
-    }
-    if !stdout.contains("subject_identity=entry::ident") {
-        return Err(format!("missing repomap entry in stdout: {stdout}").into());
+    if !String::from_utf8(output.stderr)?.contains("unknown subcommand") {
+        return Err("missing unknown-subcommand error".into());
     }
     Ok(())
 }
@@ -667,8 +639,7 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             other @ (SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(_)
             | SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
-            | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
-            | SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_)
+
             | SearchPlaneControlIpcRequest::SearchCorpusActiveHead(_)
             | SearchPlaneControlIpcRequest::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcRequest::ProcessReadiness(_)) => control_error_response(
@@ -818,10 +789,6 @@ fn quarantine_fixture() -> QuarantineInventoryV1 {
             reason: "GENERATION_QUARANTINE_NON_CANONICAL_LAYOUT".to_string(),
             detail: String::new(),
         }],
-        repo_map: vec![QuarantinedRepoMapFileEntryV1 {
-            file_name: "stale--marker.json".to_string(),
-            reason: "snapshot does not decode: expected value at line 1".to_string(),
-        }],
     }
 }
 
@@ -839,10 +806,6 @@ fn quarantine_discard(request: QuarantineDiscardRequest) -> SearchPlaneControlIp
                     && listed.path == entry.path
                     && listed.reason == entry.reason
             }),
-        QuarantineTargetV1::RepoMapFile(entry) => fixture
-            .repo_map
-            .iter()
-            .any(|listed| listed.file_name == entry.file_name && listed.reason == entry.reason),
     };
     if listed {
         SearchPlaneControlIpcResponse::QuarantineDiscardAck(QuarantineDiscardAck {
@@ -921,8 +884,6 @@ fn quarantine_list_pretty_prints_discardable_lines_impl() -> Result<(), Box<dyn 
         r#"  --track lexical --path /state/indexes/lexical/repo-doctor/rev-doctor/g9 --reason GENERATION_QUARANTINE_IDENTITY_UNREADABLE --detail "identity file does not decode""#,
         "semantic: 1",
         r#"  --track semantic --path /state/indexes/semantic/repo-legacy --reason GENERATION_QUARANTINE_NON_CANONICAL_LAYOUT --detail """#,
-        "repo_map: 1",
-        r#"  --repomap-file stale--marker.json --reason "snapshot does not decode: expected value at line 1""#,
         "",
     ]
     .join("\n");
@@ -974,19 +935,18 @@ fn quarantine_discard_acks_the_listed_entry_impl() -> Result<(), Box<dyn std::er
     }
     let json = stdout_of(&run_quarantine(&[
         "discard",
-        "--repomap-file",
-        "stale--marker.json",
+        "--track",
+        "lexical",
+        "--path",
+        "/state/indexes/lexical/repo-doctor/rev-doctor/g9",
         "--reason",
-        "snapshot does not decode: expected value at line 1",
+        "GENERATION_QUARANTINE_IDENTITY_UNREADABLE",
         "--output",
         "json",
     ])?)?;
     let decoded: QuarantineDiscardAck = serde_json::from_str(&json)?;
     let expected = QuarantineDiscardAck {
-        target: QuarantineTargetV1::RepoMapFile(QuarantinedRepoMapFileEntryV1 {
-            file_name: "stale--marker.json".to_string(),
-            reason: "snapshot does not decode: expected value at line 1".to_string(),
-        }),
+        target: QuarantineTargetV1::Generation(quarantine_fixture().lexical[0].clone()),
         outcome: QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 4_096 },
     };
     if decoded != expected {
@@ -1554,35 +1514,6 @@ fn dispatch_hybrid_seed_request(
     })
 }
 
-#[expect(
-    clippy::expect_used,
-    reason = "static fixture IDs provably satisfy the canonical ID policy"
-)]
-fn dispatch_repomap_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
-    let SearchPlaneQueryIpcRequest::RepoMapQuery(payload) = request else {
-        return error_response(
-            SearchPlaneErrorCodeV2::Internal,
-            format!("expected repomap request, got {request:?}"),
-        );
-    };
-    if payload.repo_id
-        != RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy")
-        || payload.revision_id
-            != RevisionId::new("rev-1").expect("static fixture ID satisfies canonical policy")
-        || payload.manifest_generation != ManifestGeneration::new(11)
-        || payload.query_text != "repo map focus"
-        || payload.top_k != 5
-        || payload.token_budget != 2048
-        || payload.focus_subjects != vec![stub_repomap_focus_subject()]
-    {
-        return error_response(
-            SearchPlaneErrorCodeV2::Internal,
-            format!("unexpected repomap request: {payload:?}"),
-        );
-    }
-    SearchPlaneQueryIpcResponse::RepoMapQuery(stub_repomap_response())
-}
-
 fn error_response(
     code: SearchPlaneErrorCodeV2,
     message: impl Into<String>,
@@ -1667,68 +1598,6 @@ fn stub_explanation(summary: &str, engines_touched: Vec<EngineTouched>) -> Searc
         ranker_weights_hash: [7_u8; 32],
         strategy: "rrf".to_string(),
         summary: summary.to_string(),
-    }
-}
-
-fn stub_repomap_focus_subject() -> RepoMapFocusSubjectDto {
-    RepoMapFocusSubjectDto {
-        subject_identity: "subject-repomap".to_string(),
-        subject_doc_type: RepoMapDocType::Symbol,
-    }
-}
-
-fn stub_repomap_snapshot_meta() -> RepoMapSnapshotMeta {
-    RepoMapSnapshotMeta {
-        snapshot_id: "snap-1".to_string(),
-        projection_version: 7,
-        authority_digest: "blake3:deadbeef".to_string(),
-        item_index_availability: RepoMapItemIndexAvailability::Full,
-        graph_coverage_class: RepoMapGraphCoverageClass::Complete,
-        exactness_summary: RepoMapExactnessSummary::Exact,
-    }
-}
-
-fn stub_repomap_entry() -> RepoMapEntryDto {
-    RepoMapEntryDto {
-        subject_identity: "entry::ident".to_string(),
-        subject_doc_type: RepoMapDocType::Symbol,
-        subject_kind: "function".to_string(),
-        owner_path: "src/lib.rs".to_string(),
-        score: 0.875,
-        final_score_millis: 875,
-        rank: 1,
-        importance_score_millis: 500,
-        utility_score_millis: 400,
-        freshness_score_millis: 300,
-        evidence_priority_millis: 200,
-        token_budget_hint: 1024,
-        contributing_signals: BTreeMap::from([
-            ("centrality".to_string(), 100_i64),
-            ("recency".to_string(), -3_i64),
-        ]),
-        projection_evidence_kind: "authoritative".to_string(),
-        projection_authority_artifact_id: "art-1".to_string(),
-        projection_authority_digest: "blake3:cafebabe".to_string(),
-        projection_status: "ok".to_string(),
-        redaction_state: RepoMapRedactionState::Unredacted,
-    }
-}
-
-#[expect(
-    clippy::expect_used,
-    reason = "static fixture IDs provably satisfy the canonical ID policy"
-)]
-fn stub_repomap_response() -> RepoMapQueryResponse {
-    RepoMapQueryResponse {
-        repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
-        revision_id: RevisionId::new("rev-1")
-            .expect("static fixture ID satisfies canonical policy"),
-        manifest_generation: ManifestGeneration::new(11),
-        snapshot_meta: stub_repomap_snapshot_meta(),
-        entries: vec![stub_repomap_entry()],
-        dropped_entries_count: 1,
-        drop_reason_codes: vec!["token_budget".to_string()],
-        degraded_reason_codes: vec!["partial_authority".to_string()],
     }
 }
 

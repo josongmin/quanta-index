@@ -1,8 +1,8 @@
 //! The domains a query reads (plan §5.6), as a closed typed set.
 //!
 //! A domain is one authority the search plane pins for a request: a
-//! sealed track handle, an epoch-named auxiliary snapshot, the `RepoMap`
-//! store, or one of the source-repo metadata authorities materialized
+//! sealed track handle, an epoch-named auxiliary snapshot, or one of
+//! the source-repo metadata authorities materialized
 //! beside a lexical generation. A plan declares the set it reads; the
 //! read view acquires exactly that set and nothing else.
 
@@ -112,21 +112,18 @@ pub enum ReadDomainV1 {
     /// The history authority: commits, refs, tags, diff hunks and the
     /// epoch's text index, at one epoch.
     History,
-    /// The `RepoMap` projection store.
-    RepoMap,
     /// One source-repo metadata authority beside the lexical generation.
     RepoMetadata(RepoMetadataAuthorityV1),
 }
 
 impl ReadDomainV1 {
     /// Every domain, in declaration order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 11] = [
         Self::LexicalTrack,
         Self::SemanticTrack,
         Self::StructuralChunkUniverse,
         Self::RuntimeOverlay,
         Self::History,
-        Self::RepoMap,
         Self::RepoMetadata(RepoMetadataAuthorityV1::CommitRecency),
         Self::RepoMetadata(RepoMetadataAuthorityV1::Meta),
         Self::RepoMetadata(RepoMetadataAuthorityV1::Topic),
@@ -144,7 +141,6 @@ impl ReadDomainV1 {
             Self::StructuralChunkUniverse => "structural",
             Self::RuntimeOverlay => "runtime",
             Self::History => "history",
-            Self::RepoMap => "repo-map",
             Self::RepoMetadata(RepoMetadataAuthorityV1::CommitRecency) => {
                 "repo-metadata:commit-recency"
             }
@@ -165,7 +161,6 @@ impl ReadDomainV1 {
             Self::StructuralChunkUniverse => 0b0000_0000_0000_0100,
             Self::RuntimeOverlay => 0b0000_0000_0000_1000,
             Self::History => 0b0000_0000_0001_0000,
-            Self::RepoMap => 0b0000_0000_0010_0000,
             Self::RepoMetadata(RepoMetadataAuthorityV1::CommitRecency) => 0b0000_0000_0100_0000,
             Self::RepoMetadata(RepoMetadataAuthorityV1::Meta) => 0b0000_0000_1000_0000,
             Self::RepoMetadata(RepoMetadataAuthorityV1::Topic) => 0b0000_0001_0000_0000,

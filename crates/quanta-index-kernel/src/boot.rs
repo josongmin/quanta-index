@@ -63,10 +63,54 @@ pub fn verify_native_boot_inputs(
     registry: &AdapterRegistry,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
+    verify_native_boot_inputs_with_policy(
+        operation,
+        publication,
+        request,
+        profile,
+        registry,
+        false,
+        budget,
+    )
+}
+
+/// Authenticate a new candidate's selected BOOT. A retained predecessor uses
+/// `verify_native_boot_inputs` so its historical RepoMap profile can be read.
+pub fn verify_native_boot_candidate_inputs(
+    operation: &ImmutableOperation,
+    publication: &CatalogView,
+    request: &StoredObject,
+    profile: &StoredObject,
+    registry: &AdapterRegistry,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    verify_native_boot_inputs_with_policy(
+        operation,
+        publication,
+        request,
+        profile,
+        registry,
+        true,
+        budget,
+    )
+}
+
+fn verify_native_boot_inputs_with_policy(
+    operation: &ImmutableOperation,
+    publication: &CatalogView,
+    request: &StoredObject,
+    profile: &StoredObject,
+    registry: &AdapterRegistry,
+    candidate: bool,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
     budget.checkpoint()?;
     verify_immutable_publication(operation, publication, request)?;
     let decoded = request_decode::decode(&request.payload, budget)?;
     verify_immutable_request(operation, publication, request, &decoded)?;
+    if candidate {
+        crate::update::reject_retired_repomap_request(&decoded)?;
+    }
     if profile.registration.reference != publication.profile
         || !profile.registration.children.is_empty()
     {
@@ -75,6 +119,9 @@ pub fn verify_native_boot_inputs(
         ));
     }
     let loaded = profile::decode_payload(&profile.payload, budget)?;
+    if candidate {
+        crate::update::reject_retired_repomap_profile(&loaded, budget)?;
+    }
     registry.validate_profile(&loaded.instances, budget)?;
     budget.checkpoint()
 }
@@ -278,7 +325,10 @@ pub fn with_native_boot_history_request_v1<T>(
     publication: &CatalogView,
     request: &StoredObject,
     budget: &mut WorkBudget,
-    visit: impl FnOnce(&quanta_index_core::index::UpdateRequest, &mut WorkBudget) -> Result<T, IndexError>,
+    visit: impl FnOnce(
+        &quanta_index_core::index::UpdateRequest,
+        &mut WorkBudget,
+    ) -> Result<T, IndexError>,
 ) -> Result<T, IndexError> {
     verify_immutable_publication(operation, publication, request)?;
     let decoded = request_decode::decode(&request.payload, budget)?;
@@ -365,7 +415,8 @@ mod tests {
             UpdateKind::Reconfigure { profile } => *profile,
             UpdateKind::HistoryAdvance(transition) => transition.profile,
             UpdateKind::HistoryAppend(append) => append.profile,
-            UpdateKind::SourceHistoryAdvance(transition) => transition.history.profile,
+            UpdateKind::SourceHistoryAdvance(transition)
+            | UpdateKind::SourceHistoryResync { transition, .. } => transition.history.profile,
             UpdateKind::SourceAdvance(_)
             | UpdateKind::SourceResync { .. }
             | UpdateKind::ProjectionAdvance(_)
@@ -670,6 +721,69 @@ mod tests {
             ),
             Err(IndexError::CorruptObject(_))
         ))?;
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_boot_refuses_retired_repomap_profile_before_registry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = request_rows()
+            .into_iter()
+            .next()
+            .ok_or(IndexError::Conflict)?;
+        let (operation, publication, stored_request, stored_profile) = fixture(&request)?;
+        verify_native_boot_candidate_inputs(
+            &operation,
+            &publication,
+            &stored_request,
+            &stored_profile,
+            &AdapterRegistry::new(),
+            &mut budget()?,
+        )?;
+        for (producer, policy) in [
+            (
+                quanta_index_core::index::ProducerId(*b"semantica-r5-v1!"),
+                Digest([7; 32]),
+            ),
+            (
+                quanta_index_core::index::ProducerId([8; 16]),
+                quanta_index_contract::native_protocol::native_repomap_rank_policy(),
+            ),
+        ] {
+            let retired = IndexProfile {
+                instances: vec![quanta_index_core::index::InstanceSpec {
+                    instance: IndexInstanceId([1; 16]),
+                    kind: IndexKind([1; 16]),
+                    group: PublicationGroupId([1; 16]),
+                    activation: GroupActivation::CoreRequired,
+                    input_domain: InputDomain::Projection {
+                        producer,
+                        projection: quanta_index_core::index::ProjectionId([2; 16]),
+                    },
+                    schema: SchemaId([1; 16]),
+                    policy,
+                    format: StorageFormatId([1; 16]),
+                }],
+            };
+            let retired_profile = object(
+                publication.profile,
+                serde_json::to_vec(&retired)?,
+                Vec::new(),
+            )?;
+            let error = verify_native_boot_candidate_inputs(
+                &operation,
+                &publication,
+                &stored_request,
+                &retired_profile,
+                &AdapterRegistry::new(),
+                &mut budget()?,
+            )
+            .expect_err("candidate BOOT must refuse a retired RepoMap profile");
+            if !matches!(error, IndexError::InvalidInput(ref message) if message.contains("retired RepoMap"))
+            {
+                return Err(format!("candidate BOOT refused for another reason: {error}").into());
+            }
+        }
         Ok(())
     }
 

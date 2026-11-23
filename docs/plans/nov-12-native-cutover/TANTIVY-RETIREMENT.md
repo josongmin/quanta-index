@@ -4,15 +4,19 @@
 
 T 단계의 설치 기본 호출 리허설은 격리된 후보에서 실행한다. 전체 Native 출하와 전역 E06 활성화에는 통합 A/B의 제품 검증을 적용한다. LanceDB는 Native Semantic 범위에서 검증한다. [T 단계 판정](DOD.md#tantivy-우선-퇴역-t-단계)
 
-**현재 구분.** Legacy 엔진·feature·workspace patch·Cargo.lock·vendor 삭제와 전체 타깃 컴파일, workspace Tantivy 검사 통과는 [06.2–06.3 원장](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)에 기록됐다. Linux release 실물·서명 설치 번들·rollback/restore-forward·SDK60·독립 품질은 별도 수용이다. 원 SDK는 [NC-TEXT](tickets/NC-TEXT-build-final.md), 최종 후보는 [06.4–06.5](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)가 관리한다. 아래 과거 후보 수치는 현재 결과로 승계하지 않는다.
+**현행 판정.** Legacy 엔진·feature·workspace patch·Cargo.lock·vendor 삭제는 합류했다. 마지막 [06 퇴역 검사](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)의 소스·Cargo 인벤토리는 통과했고, 최종 후보의 이관 본문과 출하 증거가 부족해 전체 게이트는 exit 1이다. 실제 release compiler·서명 번들 Tantivy 0, 설치 복구, SDK60·독립 품질은 각 후보의 원 증거로 수용한다. [04 이관](../nov-20-native-cutover-closeout/tickets/04-maintained-test-migration.md) · [03 복구](../nov-20-native-cutover-closeout/tickets/03-signed-published-cp2.md) · [07 제품](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md)
 
 ## 기능 우선 최종 감사와 갭
 
 현재 구현·실행 상태는 아래 티켓이 소유한다. 이 계획은 T 단계의
 유지 기능·설치·벤치·삭제 수용 조건을 고정하며 source별 상태를 복제하지 않는다.
 
+현재 구현 오너, 동일 후보의 검증 순서와 각 레인의 종료 조건은 [Native 전환 현행 작업표](../nov-20-native-cutover-closeout/tickets/LANES.md#현행-구현과-수용-순서)에 둔다.
+
 | 경계 | 현재 원장과 재사용 계약 |
 | --- | --- |
+| Lexical 유지 회귀 | [04의 코드·본문 결과](../nov-20-native-cutover-closeout/tickets/04-maintained-test-migration.md#lexical-코드와-검증-범위)에서 G1·F15·DATA Boot·Legacy DATA·old-Q 비용의 구현과 동결 실행 범위를 관리한다. 최종 후보의 이관·유지 본문은 [기존 Root 수집](../nov-20-native-cutover-closeout/tickets/04-maintained-test-migration.md#최종-후보-수집-순서)에 귀속한다. |
+| old-Q 공개 SDK 유지 회귀 | Source·Symbol lifecycle과 SDK22 언어 필터의 코드·실명·실행 증거는 04에서 관리한다. [공개 SDK 코드와 출하 수집 범위](../nov-20-native-cutover-closeout/tickets/04-maintained-test-migration.md#legacy-sdk-custody) |
 | Native History 게시·조회·이관 | [H 잔여](tickets/NC-H-history.md#current-actionable-backlog--2026-11-16-re-audit)와 [History ADR](../../adr/NOV-12-001-native-query-and-semantic-engine.md#native-history-publication-and-read-contract). 원본 replay/checkpoint·복수 활성 revision·동일 view FULL/DELTA·필터/페이지·재시작 수용을 유지한다. |
 | Source·첫 ACK·설치 복구 | [D 잔여](tickets/NC-D-boot.md#d-current-disposition-20261116)와 [복구 계약](../../operator/state-cutover-runbook.md#rollback-boundary). 원 생산자 Source/ACK·cold graph/DFG·normal cycle을 재사용하고 같은 서명 입력에서 Q head·선택·ACK 유실·두 재시작을 검증한다. |
 | 원 SDK60 게시 | [Text 잔여](tickets/NC-TEXT-build-final.md#admission-decision-and-remaining-product-verification)와 [Text ADR](../../adr/NOV-07-001-native-index-execution-and-custody.md#cold-text-installation-and-packet-custody). Caddy·etcd 고정 입력과 Work·mutation 한도를 유지하고 최종 후보의 영향 수용을 확인한다. |
@@ -135,9 +139,9 @@ Native L4의 본문 발췌 및 제품 `snippet_matrix` 연결은 [F-PREVIEW](tic
 
 ### 설치 복구의 정확한 경계
 
-실제 생산자 admission을 닫고 미결·미전달 작업을 정산한 뒤 데몬을 종료한다. 저장소별 신원·source high-water·replay floor와 Native BOOT의 operation·SourceCut을 비교한다. 생산자 fence와 deployment lock은 선택 CAS와 디렉터리 fsync까지 유지한다. 전환 후 Native 추가 영속 게시가 0건인 경우에만 보존한 이전 Q/S 릴리스·루트로 rollback하고 양쪽 프로세스를 기동해 기존 SDK를 검증한다. 첫 추가 영속 게시 후에는 ACK가 유실돼도 rollback을 거절하고 새 Native 루트에 restore-forward 및 replay를 실행한다. stale/foreign/증거 누락, 중단과 재시도에서 잘못된 head 게시·중복 논리 발행·원본 유실은 각각 0건이다. 실제 signed producer를 붙이는 양성 실행과 복구 거절 회귀를 둘 다 확인한다. [설치 복구 계약](../../operator/state-cutover-runbook.md#installed-offline-recovery)
+실제 생산자 admission을 닫고 미결·미전달 작업을 정산한 뒤 데몬을 종료한다. 저장소별 신원·source high-water·replay floor와 Native BOOT의 operation·SourceCut을 비교한다. 생산자 fence와 deployment lock은 선택 CAS와 디렉터리 fsync까지 유지한다. 전환 후 Native 추가 영속 게시가 0건인 경우에만 보존한 이전 Q/S 릴리스·루트로 rollback하고 양쪽 프로세스를 기동해 기존 SDK를 검증한다. 첫 추가 영속 게시 후에는 ACK가 유실돼도 rollback을 거절하고 새 Native 루트에 restore-forward 및 replay를 실행한다. stale/foreign/증거 누락, 중단과 재시도에서 잘못된 head 게시·중복 논리 발행·원본 유실은 각각 0건이다. 실제 signed producer를 붙이는 양성 실행과 복구 거절 회귀를 둘 다 확인한다. [03.6](../nov-20-native-cutover-closeout/tickets/03-signed-published-cp2.md#완료-조건)은 동일 S 설치의 Q 선택 복구를 검증한다. 구 S 바이너리 복귀는 첫 V6 커밋 전 동일 DB 재생, 커밋 후 보존 V45 DB 복원과 입력 재생을 각각 검증한다. [설치 복구 계약](../../operator/state-cutover-runbook.md#installed-offline-recovery)
 
-F와 D는 기존 P11 deployment·activation·rollback 등록을 사용한다. 현재 `staged`인 action·독립 observer·승인 Linux 설치 타깃을 연결해야 정식 실행이 가능하다. Semantica Linux 설치 recipe의 x86-64와 E07 운영 사양의 ARM64는 증명 범위를 나눈다. 같은 소스·feature·policy의 릴리스에서 대상별 바이너리 해시를 별도로 고정하고, 각 호스트에서 그 대상의 바이너리로 해당 본문을 실행한다. 같은 ELF 해시 요구는 같은 대상 안에서 적용한다. [P11 등록](../../../tools/ci/proof-authority.toml#L530) · [D의 현재 설치·복구 패킷](tickets/NC-D-boot.md#current-work-packets-20261115)
+F와 D는 기존 P11 deployment·activation·rollback 등록을 사용한다. 현재 `staged`인 action·독립 observer·승인 Linux 설치 타깃을 연결해야 정식 실행이 가능하다. Semantica Linux 설치 recipe의 x86-64와 E07 운영 사양의 ARM64는 증명 범위를 나눈다. 같은 소스·feature·policy의 릴리스에서 대상별 바이너리 해시를 별도로 고정하고, 각 호스트에서 그 대상의 바이너리로 해당 본문을 실행한다. 같은 ELF 해시 요구는 같은 대상 안에서 적용한다. [P11 운영 등록](../../../tools/ci/proof-authority.toml#L664) · [D의 현재 설치·복구 패킷](tickets/NC-D-boot.md#current-work-packets-20261115)
 
 ## 벤치 실행과 합격선
 

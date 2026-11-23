@@ -2,16 +2,12 @@
 //! same immutable object authority used by Native projection builders.
 
 mod build;
-mod graph_query;
 mod query;
-mod rank_query;
 pub use build::{
     NATIVE_LEGACY_REPOMAP_FORMAT_V1, NATIVE_LEGACY_REPOMAP_KIND_V1,
     NATIVE_LEGACY_REPOMAP_SCHEMA_V1, NativeLegacyRepoMapBuildV1,
 };
-pub use graph_query::{NativeLegacyRepoMapGraphPageV1, NativeLegacyRepoMapGraphReaderV1};
 pub use query::{LoadedLegacyRepoMapRowV1, NativeLegacyRepoMapReadV1};
-pub use rank_query::NativeLegacyRepoMapRankReaderV1;
 
 use quanta_index_contract::index::{
     Digest, InputDomain, InstanceSpec, LegacyRepoMapImportV1,

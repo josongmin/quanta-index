@@ -1066,6 +1066,20 @@ fn observe_owned_renewal<T>(
     result
 }
 
+fn observe_owned_control<T>(
+    parent: Option<&DiagnosticContextV1>,
+    phase: crate::native_work_diagnostic::OwnedControlPhase,
+    worker_trace: Option<DiagnosticTraceRefV1>,
+    run: impl FnOnce() -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    let span = crate::native_work_diagnostic::begin_owned_control(parent, phase, worker_trace);
+    let result = run();
+    if let Some(span) = span {
+        let _finished = span.finish(DiagnosticTerminalV1::from_result(&result));
+    }
+    result
+}
+
 fn await_run(
     dispatcher: &Arc<NativePumpServices>,
     run: OwnedRunHandle,
@@ -1111,6 +1125,7 @@ fn await_run(
         UpdateKind::SourceAdvance(_)
         | UpdateKind::SourceHistoryAdvance(_)
         | UpdateKind::SourceResync { .. }
+        | UpdateKind::SourceHistoryResync { .. }
         | UpdateKind::ProjectionAdvance(_)
         | UpdateKind::HistoryAdvance(_)
         | UpdateKind::HistoryAppend(_)
@@ -1177,9 +1192,22 @@ fn await_run(
     // Finish may rotate a terminal old operation into a new fenced attempt.
     // Release the old worker's execution and physical custody first.
     let mut worker_quiesced = false;
-    let finish = await_worker_quiescence(&quiesced_rx).and_then(|()| {
+    use crate::native_work_diagnostic::OwnedControlPhase;
+    let diagnostics = dispatcher.diagnostic_context.as_ref();
+    let finish = observe_owned_control(
+        diagnostics,
+        OwnedControlPhase::WorkerQuiescence,
+        started.trace,
+        || await_worker_quiescence(&quiesced_rx),
+    )
+    .and_then(|()| {
         worker_quiesced = true;
-        dispatcher.kernel.finish_owned_work(&started.grant, report)
+        observe_owned_control(
+            diagnostics,
+            OwnedControlPhase::CatalogSettlement,
+            started.trace,
+            || dispatcher.kernel.finish_owned_work(&started.grant, report),
+        )
     });
     if renewal_sample_count > 0 {
         for token in renewal_samples
@@ -2321,6 +2349,68 @@ mod maintenance_diagnostic_tests {
         ensure!(child_ids.len() == 1);
         Ok(())
     }
+    #[test]
+    fn owned_control_phases_link_to_the_exact_worker() -> Result<()> {
+        use crate::native_work_diagnostic::{OwnedControlPhase, begin_owned_control};
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("owned-control.jsonl");
+        let mut recorder =
+            DiagnosticCaptureV1::start(path.clone(), DiagnosticCaptureLimitsV1::default())?;
+        let lease = recorder.lease().context("capture lease absent")?;
+        let root = lease
+            .context()
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
+        let parent = lease.context().child_context(&root);
+        let grant = begin_owned_control(Some(&parent), OwnedControlPhase::Grant, None)
+            .context("grant span absent")?;
+        let grant_trace = grant.trace_ref();
+        grant.finish(DiagnosticTerminalV1::Ok)?;
+        let worker = parent.enter(DiagnosticStageV1::Operation, DiagnosticLaneV1(1))?;
+        let worker_trace = worker.trace_ref();
+        parent.link(&worker, grant_trace);
+        worker.finish(DiagnosticTerminalV1::Ok)?;
+        let phases = [
+            (4, OwnedControlPhase::ReplyHandoff),
+            (5, OwnedControlPhase::WorkerQuiescence),
+            (6, OwnedControlPhase::CatalogSettlement),
+        ];
+        for (_, phase) in phases {
+            let observed = observe_owned_control(Some(&parent), phase, Some(worker_trace), || {
+                Err::<(), _>(IndexError::WorkFenceLost)
+            });
+            ensure!(observed == Err(IndexError::WorkFenceLost));
+        }
+        drop(parent);
+        root.finish(DiagnosticTerminalV1::Ok)?;
+        drop(lease);
+        let closed = recorder.close(Duration::from_secs(2))?;
+        ensure!(closed.status == quanta_index_searchd::DiagnosticCaptureStatusV1::Complete);
+        let rows = trace_rows(&path)?;
+        let link = |source, target| {
+            rows.iter().any(|row| {
+                row.pointer("/kind/type").and_then(Value::as_str) == Some("link")
+                    && row.pointer("/kind/span_id").and_then(Value::as_u64) == Some(source)
+                    && row.pointer("/kind/target_span_id").and_then(Value::as_u64) == Some(target)
+            })
+        };
+        ensure!(link(worker_trace.span_id.get(), grant_trace.span_id.get()));
+        for (lane, _) in phases {
+            let id = rows
+                .iter()
+                .find(|row| row.pointer("/kind/lane_id").and_then(Value::as_u64) == Some(lane))
+                .and_then(|row| row.pointer("/kind/span_id"))
+                .and_then(Value::as_u64)
+                .context("linked control span absent")?;
+            ensure!(link(id, worker_trace.span_id.get()));
+            ensure!(rows.iter().any(|row| {
+                row.pointer("/kind/span_id").and_then(Value::as_u64) == Some(id)
+                    && row.pointer("/kind/outcome").and_then(Value::as_str) == Some("error")
+            }));
+        }
+        Ok(())
+    }
+
     #[test]
     fn maintenance_round_keeps_operation_parent_and_raw_refusal_terminal() -> Result<()> {
         let directory = tempfile::tempdir()?;

@@ -9,6 +9,7 @@ import os
 import runpy
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -193,7 +194,8 @@ def test_f15_recipe_requires_three_passes_and_preserves_producer_failure(
         }
     )
     payload = "" if producer_exit else "".join(f"{json.dumps(event)}\n" for event in events)
-    stub = tmp_path / "cargow"
+    stub = tmp_path / "cargo wrappers" / "cargow"
+    stub.parent.mkdir()
     stub.write_text(
         "#!/bin/sh\n"
         f'case " $* " in *" --test native_index_uds "*) exit {native_exit};; esac\n'
@@ -207,6 +209,175 @@ def test_f15_recipe_requires_three_passes_and_preserves_producer_failure(
         text=True,
     )
     assert result.returncode == expected_exit, (result.stdout, result.stderr)
+
+
+@pytest.mark.parametrize("omit_body", [False, True])
+def test_native_history_recipe_requires_each_platform_body(tmp_path, omit_body):
+    package = "quanta-index-searchd-runtime"
+    owner = "read_sessions::query::history"
+    roster = {
+        "native_index_uds": [
+            f"{owner}::native_history_sdk_full_delta_retained_pages_and_reopen",
+            f"{owner}::native_history_append_original_publishes_without_legacy_ack_and_reopens",
+            f"{owner}::source_and_next_history_generation_publish_in_one_view_and_reopen",
+            f"{owner}::native_restore::native_history_restore_full_append_and_reopen_cross_root",
+            f"{owner}::dsl_fixture::native_history_dsl_fixed_ledger_warm_cold",
+        ],
+    }
+    if sys.platform.startswith("linux"):
+        roster["native_product_process"] = [
+            "native_boot::offline_legacy_history_export_streams_real_rows_and_terminal_ack",
+        ]
+    events = []
+    for binary, names in roster.items():
+        witnesses = names[:-1] if omit_body and binary == "native_index_uds" else names
+        suite = {"crate": package, "test_binary": binary, "kind": "test"}
+        events.append({"type": "suite", "event": "started", "test_count": len(witnesses), "nextest": suite})
+        for witness in witnesses:
+            name = f"{package}::{binary}${witness}"
+            events.extend({"type": "test", "event": event, "name": name} for event in ("started", "ok"))
+        events.append({
+            "type": "suite", "event": "ok", "passed": len(witnesses),
+            "failed": 0, "ignored": 0, "nextest": suite,
+        })
+
+    args = tmp_path / "nextest-args"
+    payload = "".join(f"{json.dumps(event)}\n" for event in events)
+    stub = tmp_path / "cargow"
+    stub.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {shlex.quote(str(args))}\n"
+        f"printf '%s' {shlex.quote(payload)}\n"
+    )
+    stub.chmod(0o700)
+    env = {
+        **os.environ,
+        "QUANTA_INDEX_LEGACY_SEARCHD_BIN": str(stub),
+        "QUANTA_INDEX_LEGACY_SEARCHD_SHA256": hashlib.sha256(stub.read_bytes()).hexdigest(),
+    }
+    result = subprocess.run(
+        ["just", "--set", "cargo", str(stub), "rust-test-native-history"],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == int(omit_body), (result.stdout, result.stderr)
+    argv = args.read_text().splitlines()
+    targets = {argv[i + 1] for i, arg in enumerate(argv) if arg == "--test"}
+    assert targets == roster.keys()
+    selections = argv[argv.index("-E") + 1].split(" | ")
+    assert selections == [
+        f"(binary(={binary}) & test(={name}))"
+        for binary, names in roster.items() for name in names
+    ]
+    if omit_body:
+        assert "nextest execution differs from collected tests" in result.stderr
+
+
+@pytest.mark.parametrize("omit_kernel_body", [False, True])
+def test_native_history_owner_recipe_requires_catalog_and_kernel_bodies(tmp_path, omit_kernel_body):
+    roster = {
+        "quanta-index-catalog": (
+            "quanta_index_catalog",
+            [
+                "native::authority::tests::offline_protected_routes::protected_route_refuses_corrupt_registered_edge_before_visiting_publications",
+                "native::authority::tests::offline_protected_routes::orphan_view_root_with_registered_workspace_refuses_current_and_retained_routes",
+                "native::authority::tests::offline_source_quiescence::single_workspace_boot_and_rollback_refuse_orphan_view_root",
+                "native::authority::tests::offline_source_quiescence::offline_head_checks_charge_current_and_history_payloads_before_decode",
+                "native::authority::tests::read_ticket_holds_scratch_through_pin_seal_and_refunds_it",
+                "native::authority::tests::read_ticket_refuses_root_scratch_without_pin_or_leaked_lease",
+                "native::authority::tests::materialization_pin_is_atomic_and_does_not_extend_execution_claim",
+            ],
+        ),
+        "quanta-index-kernel": (
+            "quanta_index_kernel",
+            [
+                "request_decode::tests::source_history_resync_refunds_retained_backing_when_history_input_is_missing",
+                "request_decode::tests::source_history_resync_requires_exact_decode_budget_and_refunds_it",
+                "request_decode::tests::initial_and_post_reservation_original_cancel_never_become_corruption",
+            ],
+        ),
+    }
+    payloads = {}
+    for package, (binary, names) in roster.items():
+        selected = names[:-1] if omit_kernel_body and package == "quanta-index-kernel" else names
+        suite = {"crate": package, "test_binary": binary, "kind": "lib"}
+        events = [
+            {"type": "suite", "event": "started", "test_count": len(selected), "nextest": suite}
+        ]
+        for name in selected:
+            identity = f"{package}::{binary}${name}"
+            events.extend(
+                {"type": "test", "event": event, "name": identity} for event in ("started", "ok")
+            )
+        events.append(
+            {
+                "type": "suite",
+                "event": "ok",
+                "passed": len(selected),
+                "failed": 0,
+                "ignored": 0,
+                "nextest": suite,
+            }
+        )
+        payloads[package] = "".join(f"{json.dumps(event)}\n" for event in events)
+
+    calls = tmp_path / "nextest-calls.jsonl"
+    stub = tmp_path / "cargow"
+    stub.write_text(
+        "#!/usr/bin/env python3\nimport json\nimport sys\nfrom pathlib import Path\n"
+        "argv = sys.argv[1:]\n"
+        f"Path({str(calls)!r}).open('a').write(json.dumps(argv) + '\\n')\n"
+        "package = argv[argv.index('-p') + 1]\n"
+        f"sys.stdout.write({payloads!r}[package])\n"
+    )
+    stub.chmod(0o700)
+    environment = os.environ.copy()
+    environment.pop("QUANTA_INDEX_LEGACY_SEARCHD_BIN", None)
+    environment.pop("QUANTA_INDEX_LEGACY_SEARCHD_SHA256", None)
+    result = subprocess.run(
+        ["just", "--set", "cargo", str(stub), "rust-test-native-history-owners"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == int(omit_kernel_body), (result.stdout, result.stderr)
+    invocations = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert [argv[argv.index("-p") + 1] for argv in invocations] == list(roster)
+    for argv, (_package, (binary, names)) in zip(invocations, roster.items()):
+        assert "--lib" in argv
+        assert "--offline" in argv
+        assert argv[argv.index("-E") + 1].split(" | ") == [
+            f"(binary(={binary}) & test(={name}))" for name in names
+        ]
+    if omit_kernel_body:
+        assert "nextest execution differs from collected tests" in result.stderr
+
+
+@pytest.mark.parametrize("recipe", [
+    ["rust-test-process-readiness-no-default"],
+    ["rust-prepare-native-dsl-history", "export", "daemon", "digest"],
+])
+@pytest.mark.parametrize("invalid_pin", ["missing", "digest"])
+def test_history_recipes_require_legacy_pin_before_cargo(tmp_path, recipe, invalid_pin):
+    env = os.environ.copy()
+    env.pop("QUANTA_INDEX_LEGACY_SEARCHD_BIN", None)
+    env.pop("QUANTA_INDEX_LEGACY_SEARCHD_SHA256", None)
+    expected = "QUANTA_INDEX_LEGACY_SEARCHD_BIN must be an absolute regular executable"
+    if invalid_pin == "digest":
+        stub = tmp_path / "old-q"
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o700)
+        env["QUANTA_INDEX_LEGACY_SEARCHD_BIN"] = str(stub)
+        env["QUANTA_INDEX_LEGACY_SEARCHD_SHA256"] = "0" * 64
+        expected = "Legacy searchd SHA-256 differs from the pinned input"
+    result = subprocess.run(
+        ["just", "--set", "cargo", "false", *recipe],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert expected in result.stderr
 
 
 def test_circleci_custody_unset_allows_only_shell_startup_hooks(tmp_path: Path):

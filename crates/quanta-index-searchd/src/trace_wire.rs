@@ -129,7 +129,7 @@ closed_names!(DiagnosticStageV1, known_stage_name, is_known_stage;
     DiagnosticStageV1::MapApply => "map_apply",
 );
 
-closed_names!(DiagnosticCounterV1, known_counter_name, is_known_counter;
+closed_names!(DiagnosticCounterV1, known_counter_name, is_current_counter;
     DiagnosticCounterV1::ThreadCpuNs => "thread_cpu_ns",
     DiagnosticCounterV1::FilesVisited => "files_visited",
     DiagnosticCounterV1::FilesRead => "files_read",
@@ -173,10 +173,6 @@ closed_names!(DiagnosticCounterV1, known_counter_name, is_known_counter;
     DiagnosticCounterV1::SqliteWriteLowerEnvelopeElapsedNs => "sqlite_write_lower_envelope_elapsed_ns",
     DiagnosticCounterV1::SqliteWritePostCallbackElapsedNs => "sqlite_write_post_callback_elapsed_ns",
     DiagnosticCounterV1::SqliteWritePostCallbackRefusals => "sqlite_write_post_callback_refusals",
-    DiagnosticCounterV1::SqliteCacheHits => "sqlite_cache_hits",
-    DiagnosticCounterV1::SqliteCacheMisses => "sqlite_cache_misses",
-    DiagnosticCounterV1::SqliteCacheWrites => "sqlite_cache_writes",
-    DiagnosticCounterV1::SqliteCacheSpills => "sqlite_cache_spills",
     DiagnosticCounterV1::SqlitePageSizeBytes => "sqlite_page_size_bytes",
     DiagnosticCounterV1::SqliteCacheSizeMagnitude => "sqlite_cache_size_magnitude",
     DiagnosticCounterV1::SqliteCacheSizeIsKib => "sqlite_cache_size_is_kib",
@@ -260,6 +256,19 @@ closed_names!(DiagnosticCounterV1, known_counter_name, is_known_counter;
     DiagnosticCounterV1::OutputWritten => "output_written",
     DiagnosticCounterV1::OutputUnwritten => "output_unwritten",
 );
+
+// V5 captures produced before pager diagnostics were retired remain readable.
+// These names are input-only: new recorder events have no corresponding enum.
+fn is_known_counter(value: &str) -> bool {
+    is_current_counter(value)
+        || matches!(
+            value,
+            "sqlite_cache_hits"
+                | "sqlite_cache_misses"
+                | "sqlite_cache_writes"
+                | "sqlite_cache_spills"
+        )
+}
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -471,6 +480,32 @@ mod tests {
     use super::*;
 
     const CAPTURE: &str = "03030303030303030303030303030303";
+
+    #[test]
+    fn retired_sqlite_cache_counters_remain_readable_in_v5_captures()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for key in [
+            "sqlite_cache_hits",
+            "sqlite_cache_misses",
+            "sqlite_cache_writes",
+            "sqlite_cache_spills",
+        ] {
+            assert_eq!(
+                normalize_record(5, json!(["e", 1, CAPTURE, 11, ["c", 7, key, 3]]))?,
+                json!({"record_type":"event", "output_seq":1, "capture_id":CAPTURE,
+                    "ts_ns":11, "kind":{"type":"counter", "span_id":7,
+                        "key":key, "value":3}})
+            );
+        }
+        assert!(
+            normalize_record(
+                5,
+                json!(["e", 1, CAPTURE, 11, ["c", 7, "sqlite_cache_unknown", 3]])
+            )
+            .is_err()
+        );
+        Ok(())
+    }
 
     #[test]
     fn native_text_inventory_stages_have_closed_v5_names() {

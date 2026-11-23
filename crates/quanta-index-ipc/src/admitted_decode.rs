@@ -3,7 +3,7 @@
 use std::fmt;
 use std::io::{self, Read};
 
-use ciborium::de::{
+use quanta_index_cbor::{
     Error as CborDecodeError, FiniteParserAllocationAdmissionV3, FiniteReadErrorV3,
     FiniteSemanticReasonV3, from_slice_with_finite_seed_and_allocation_v3,
 };
@@ -59,18 +59,41 @@ pub struct AdmittedDecodedCborV1<T, O> {
     owner: O,
 }
 
+/// Product-owned lifecycle of a controlled decode attempt. The vendor parser
+/// port is an implementation detail of the current decode phase; framing and
+/// unwind handling use this narrower contract.
+trait DecodeAttemptAdmissionV1 {
+    fn claim_preflight_v1(&mut self) -> bool;
+    fn finish_preflight_v1(&mut self) -> bool;
+    fn abort_v1(&mut self);
+}
+
+impl<O: FiniteParserAllocationAdmissionV3> DecodeAttemptAdmissionV1 for O {
+    fn claim_preflight_v1(&mut self) -> bool {
+        FiniteParserAllocationAdmissionV3::begin_preflight_v3(self).is_ok()
+    }
+
+    fn finish_preflight_v1(&mut self) -> bool {
+        FiniteParserAllocationAdmissionV3::complete_preflight_v3(self).is_ok()
+    }
+
+    fn abort_v1(&mut self) {
+        FiniteParserAllocationAdmissionV3::abort_decode_v3(self);
+    }
+}
+
 /// Preflight can invoke caller work before the parser's own attempt guard
 /// exists. Retain the same owner through both phases so an unwind poisons all
 /// of its clones without issuing a second begin.
-struct AbortIncompleteDecodeV1<'a, O: FiniteParserAllocationAdmissionV3> {
+struct AbortIncompleteDecodeV1<'a, O: DecodeAttemptAdmissionV1> {
     owner: &'a mut O,
     armed: bool,
 }
 
-impl<O: FiniteParserAllocationAdmissionV3> Drop for AbortIncompleteDecodeV1<'_, O> {
+impl<O: DecodeAttemptAdmissionV1> Drop for AbortIncompleteDecodeV1<'_, O> {
     fn drop(&mut self) {
         if self.armed {
-            self.owner.abort_decode_v3();
+            self.owner.abort_v1();
         }
     }
 }
@@ -140,7 +163,7 @@ where
         owner: &mut parser_owner,
         armed: true,
     };
-    if attempt.owner.begin_preflight_v3().is_err() {
+    if !attempt.owner.claim_preflight_v1() {
         return Err(AdmittedCborDecodeErrorV1::Parser(
             CborDecodeError::semantic(None, "controlled CBOR preflight attempt refused"),
         ));
@@ -175,7 +198,7 @@ where
         return Err(AdmittedCborDecodeErrorV1::Frame(error));
     }
     drop(reader);
-    if attempt.owner.complete_preflight_v3().is_err() {
+    if !attempt.owner.finish_preflight_v1() {
         return Err(AdmittedCborDecodeErrorV1::Parser(
             CborDecodeError::semantic(None, "controlled CBOR preflight completion refused"),
         ));

@@ -18,6 +18,8 @@ GOLD_RUNTIME_PACKAGES = (
     "regex",
     "tree-sitter",
     "tree-sitter-language-pack",
+    "tree-sitter-python",
+    "tree-sitter-rust",
     "unicodedata2",
 )
 

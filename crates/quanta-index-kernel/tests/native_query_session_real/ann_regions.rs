@@ -4,10 +4,16 @@ use super::*;
 use quanta_index_contract::native_protocol::NativeSemanticTraversal;
 use quanta_index_core::diagnostic_trace::{
     DiagnosticAnnRegionObservationV1, DiagnosticAnnRegionPhaseV1, DiagnosticCaptureIdV1,
-    DiagnosticClockV1, DiagnosticContextV1, DiagnosticEmitV1, DiagnosticEventKindV1,
-    DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticTerminalV1,
+    DiagnosticClockV1, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticEmitV1,
+    DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1,
+    DiagnosticTerminalV1,
 };
 use quanta_index_core::index::{WorkIntent, WorkScope};
+use quanta_index_core::index::{
+    WorkStatus, member_map_key, owner_map_key,
+    ports::{ImmutableObjectPort, PersistentMapPort},
+    read_owner_coverage,
+};
 use std::sync::{Mutex, atomic::AtomicBool};
 
 #[expect(
@@ -240,6 +246,276 @@ fn materialize_ann_owners(
     view: ViewRef,
 ) -> TestResult<ViewRef> {
     materialize_ann_owners_range(fixture, runtime, view, 3, 66, 0, None)
+}
+
+/// Decode the selected immutable coverage and one owner row independently of
+/// the ANN adapter's result. This also observes the old view after publication.
+fn materialize_cost_owner_state(
+    fixture: &Fixture,
+    objects: &FileObjectStore,
+    view: ViewRef,
+    selected: OwnerKey,
+) -> TestResult<(CoverageBinding, quanta_index_core::index::OwnerCoverage)> {
+    let pin = fixture
+        .kernel
+        .pin_view(ViewSelection::Exact(view), &ann_budget())?;
+    let mut work = ann_budget();
+    let coverage_ref = objects
+        .lookup_object(
+            pin.view().coverage,
+            &member_map_key(SEMANTIC_INSTANCE),
+            &mut work,
+        )?
+        .ok_or("semantic coverage root absent")?;
+    let stored = objects.get(coverage_ref, &mut work)?;
+    let coverage = quanta_index_core::index::decode_coverage_binding(&stored.payload, &work)?;
+    assert_eq!(coverage.instance, SEMANTIC_INSTANCE);
+    let key = owner_map_key(selected);
+    let row = objects
+        .lookup(coverage.owners, &key, &mut work)?
+        .ok_or("selected owner coverage absent")?;
+    let owner = read_owner_coverage(row, &key, objects, &mut work)?;
+    pin.release()?;
+    Ok((coverage, owner))
+}
+
+#[derive(Debug, Default)]
+struct MaterializePhaseSink(Mutex<Vec<DiagnosticEmitV1>>);
+
+const MATERIALIZE_PHASES: [quanta_index_core::DiagnosticStageV1; 5] = [
+    quanta_index_core::DiagnosticStageV1::BuildPrepare,
+    quanta_index_core::DiagnosticStageV1::Finalize,
+    quanta_index_core::DiagnosticStageV1::SemanticPrepare,
+    quanta_index_core::DiagnosticStageV1::NativeCoverageSave,
+    quanta_index_core::DiagnosticStageV1::NativePublish,
+];
+
+impl DiagnosticEventSinkV1 for MaterializePhaseSink {
+    fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+        match event.kind {
+            DiagnosticEventKindV1::SpanBegin { stage, .. }
+                if MATERIALIZE_PHASES.contains(&stage) => {}
+            DiagnosticEventKindV1::SpanEnd { .. }
+            | DiagnosticEventKindV1::Counter {
+                key: DiagnosticCounterV1::WorkReads,
+                ..
+            }
+            | DiagnosticEventKindV1::Health { .. } => {}
+            _ => return true,
+        }
+        let Ok(mut events) = self.0.try_lock() else {
+            return false;
+        };
+        if let DiagnosticEventKindV1::SpanEnd { span_id, .. }
+        | DiagnosticEventKindV1::Counter { span_id, .. } = event.kind
+            && !events.iter().any(|event| {
+                matches!(
+                    event.kind,
+                    DiagnosticEventKindV1::SpanBegin { span_id: opened, .. } if opened == span_id
+                )
+            })
+        {
+            return true;
+        }
+        if events.len() >= 32 {
+            return false;
+        }
+        events.push(event);
+        true
+    }
+}
+
+fn assert_materialize_phase_completed(
+    events: &[DiagnosticEmitV1],
+    stage: quanta_index_core::DiagnosticStageV1,
+) -> TestResult<u64> {
+    let spans: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event.kind {
+            DiagnosticEventKindV1::SpanBegin {
+                span_id,
+                stage: observed,
+                ..
+            } if observed == stage => Some(span_id),
+            _ => None,
+        })
+        .collect();
+    let [span] = spans.as_slice() else {
+        return Err(format!("expected exactly one {stage:?} span: {spans:?}").into());
+    };
+    assert!(events.iter().any(|event| matches!(
+        event.kind,
+        DiagnosticEventKindV1::SpanEnd {
+            span_id,
+            outcome: DiagnosticTerminalV1::Ok,
+        } if span_id == *span
+    )));
+    let mut reads = events.iter().filter_map(|event| match event.kind {
+        DiagnosticEventKindV1::Counter {
+            span_id,
+            key: DiagnosticCounterV1::WorkReads,
+            value,
+        } if span_id == *span => Some(value),
+        _ => None,
+    });
+    let observed = reads.next().ok_or("missing materialization read counter")?;
+    assert_eq!(reads.next(), None, "duplicate {stage:?} read counter");
+    Ok(observed)
+}
+
+#[test]
+fn source_local_ann_one_owner_materialize_keeps_unrelated_pending_and_traces_phases() -> TestResult
+{
+    for count in [1_u16, 64, 512] {
+        let root = tempfile::tempdir()?;
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?,
+        );
+        let fixture = fixture_with_lancedb_ann(root.path(), Arc::clone(&runtime))?;
+        let configured = configured(&fixture)?;
+        let sources = advance_ann_sources_count(&fixture, configured, count)?;
+        let objects = fixture.objects.as_ref();
+        let ready = fixture
+            .kernel
+            .ready_work(workspace(), 1, 256, &mut ann_budget())?;
+        assert_eq!(ready.len(), usize::from(count).min(256));
+        let selected = owner();
+        let old = materialize_cost_owner_state(&fixture, objects, sources.view, selected)?;
+        let expected = old.1.desired;
+        assert_eq!(expected.source, Some(sources.primary));
+        assert_eq!(old.1.covered, None);
+        let work = WorkIntent {
+            workspace: workspace(),
+            epoch: sources.view.epoch,
+            instance: SEMANTIC_INSTANCE,
+            scope: WorkScope::Owner {
+                owner: selected,
+                expected,
+            },
+        };
+        assert_eq!(
+            fixture.kernel.work_status(&work, &ann_budget())?,
+            WorkStatus::Pending
+        );
+        let unrelated = sources.extra_sources.last().map(|(owner, _source)| *owner);
+        let old_unrelated = unrelated
+            .map(|owner| materialize_cost_owner_state(&fixture, objects, sources.view, owner))
+            .transpose()?;
+        let old_pin = fixture
+            .kernel
+            .pin_view(ViewSelection::Exact(sources.view), &ann_budget())?;
+        let claim = fixture
+            .kernel
+            .claim_work(&work, Duration::from_secs(120), &ann_budget())?;
+        let request = UpdateRequest {
+            operation: operation(3),
+            expected_view: sources.view,
+            kind: UpdateKind::Materialize { claim },
+        };
+        let sink = Arc::new(MaterializePhaseSink::default());
+        let diagnostics = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([93; 16]),
+            Arc::new(CarryTraceClock::default()),
+            sink.clone(),
+        );
+        let root_span =
+            diagnostics.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
+        let request_budget = RequestBudgetV1::for_duration(Duration::from_secs(120))
+            .with_diagnostic_context(diagnostics.child_context(&root_span));
+        let mut attempt = ann_budget_with_request(request_budget);
+        let before_calls = fixture.calls.load(Ordering::SeqCst);
+        let completed = published(ann_block_on(
+            &runtime,
+            fixture.kernel.submit(request.clone(), &mut attempt),
+        )?)?;
+        root_span.finish(DiagnosticTerminalV1::Ok)?;
+        assert_eq!(
+            fixture.calls.load(Ordering::SeqCst),
+            before_calls.saturating_add(1)
+        );
+        assert!(attempt.usage().reads > 0);
+        assert!(attempt.usage().writes > 0);
+        let events = sink.0.lock().map_err(|error| error.to_string())?;
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event.kind, DiagnosticEventKindV1::Health { .. }))
+        );
+        let reads_by_phase = MATERIALIZE_PHASES
+            .into_iter()
+            .map(|stage| Ok((stage, assert_materialize_phase_completed(&events, stage)?)))
+            .collect::<TestResult<Vec<_>>>()?;
+        drop(events);
+        std::io::Write::write_fmt(
+            &mut std::io::stdout().lock(),
+            format_args!(
+                "native-ann-owner-local pending={count} reads={} phases={reads_by_phase:?}\n",
+                attempt.usage().reads,
+            ),
+        )?;
+        if count == 512 {
+            // This budget covers only the selected owner's materialization. A
+            // logical read for each pending owner would exceed this bound.
+            assert!(
+                attempt.usage().reads < u64::from(count),
+                "one-owner materialization used {} logical reads for {count} pending owners",
+                attempt.usage().reads
+            );
+        }
+        let after = materialize_cost_owner_state(&fixture, objects, completed, selected)?;
+        assert_eq!(after.1.desired, expected);
+        assert_eq!(after.1.covered, Some(expected));
+        assert!(after.1.searchable.is_some());
+        assert_eq!(after.0.desired, old.0.desired);
+        assert_ne!(after.0.owners, old.0.owners);
+        assert_eq!(after.0.status == CoverageStatus::Complete, count == 1);
+        assert_eq!(
+            source(&fixture.kernel, completed)?,
+            source(&fixture.kernel, sources.view)?
+        );
+        assert_eq!(old_pin.view().identity, sources.view);
+        old_pin.validate()?;
+        assert_eq!(
+            materialize_cost_owner_state(&fixture, objects, sources.view, selected)?,
+            old
+        );
+        if let (Some(unrelated), Some(before)) = (unrelated, old_unrelated) {
+            let after_unrelated =
+                materialize_cost_owner_state(&fixture, objects, completed, unrelated)?;
+            assert_eq!(after_unrelated.1, before.1);
+            assert_eq!(after_unrelated.0.desired, before.0.desired);
+            assert_eq!(before.1.covered, None);
+            let unrelated_work = WorkIntent {
+                workspace: workspace(),
+                epoch: 1,
+                instance: SEMANTIC_INSTANCE,
+                scope: WorkScope::Owner {
+                    owner: unrelated,
+                    expected: before.1.desired,
+                },
+            };
+            assert_eq!(
+                fixture.kernel.work_status(&unrelated_work, &ann_budget())?,
+                WorkStatus::Pending
+            );
+        }
+        assert_eq!(
+            fixture.kernel.work_status(&work, &ann_budget())?,
+            WorkStatus::Completed(completed)
+        );
+        assert_eq!(
+            ann_block_on(&runtime, fixture.kernel.submit(request, &mut ann_budget()),)?,
+            SubmitOutcome::Terminal(OperationStatus::Published(completed))
+        );
+        assert_eq!(
+            fixture.calls.load(Ordering::SeqCst),
+            before_calls.saturating_add(1)
+        );
+        old_pin.release()?;
+    }
+    Ok(())
 }
 
 fn semantic_hit_observed(

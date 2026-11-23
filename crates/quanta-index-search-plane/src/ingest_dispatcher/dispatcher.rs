@@ -4,9 +4,8 @@
 use std::sync::Arc;
 
 use quanta_index_contract::{
-    BatchPublishReceipt, GenerationPin, IngestOperationKindV1, RepoMapPublishBundleRequestV2,
-    RepoMapTerminalReceiptV2, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
-    canonical_repo_map_source_bundle_digest_v2,
+    BatchPublishReceipt, GenerationPin, IngestOperationKindV1,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
 };
 use quanta_index_core::publication_admission::{
     CatalogPublicationFundingPort, CatalogPublicationFundingScope, PublicationResourceAdmissionPort,
@@ -15,7 +14,7 @@ use quanta_index_core::{
     CATALOG_ROW_CORRUPT_CODE, ClaimOutcomeV1, CoreError, FileContributorIngestPort,
     FileOwnershipIngestPort, IdempotencyCatalogPort, IdempotencyKeyV1, IngestBatchBodyV1,
     OperationInspectV1, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1,
+    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1,
     SearchCorpusIngestPort, now_unix_ms,
 };
 use quanta_index_ipc::{BatchDigestVerdictV1, verify_batch_digest_v1};
@@ -59,7 +58,6 @@ pub struct SearchPlaneIngestDispatcher {
     repo_meta: Arc<dyn RepoMetaIngestPort + Send + Sync>,
     runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
     structural: Arc<dyn StructuralIngestPort + Send + Sync>,
-    repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
     /// Durable idempotency records (QI-BB-032, SEP-21 P02B): every
     /// receipt-bearing route runs intrinsic validation → terminal
     /// inspect → immutable prepare → mutable preflight → fenced claim →
@@ -103,8 +101,7 @@ impl SearchPlaneIngestDispatcher {
         repo_meta: Arc<dyn RepoMetaIngestPort + Send + Sync>,
         runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
         structural: Arc<dyn StructuralIngestPort + Send + Sync>,
-        repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
-        idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
+            idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
         source_publication: Arc<dyn quanta_index_core::SourcePublicationCatalogPort>,
         source_authority: Arc<dyn super::ports::SearchCorpusAuthorityInspectPort>,
     ) -> Self {
@@ -119,7 +116,6 @@ impl SearchPlaneIngestDispatcher {
             repo_meta,
             runtime,
             structural,
-            repomap,
             idempotency,
             source_publication,
             source_authority,
@@ -338,10 +334,7 @@ impl SearchPlaneIngestDispatcher {
         }
     }
 
-    /// Run one `RepoMap` V2 bundle publish under the operation journal
-    /// (SEP-21 P02B). The only journal-bearing `RepoMap` path: the V1
-    /// bundle arm below stays journal-free as the W7 removal target.
-    ///
+    /// Run one SearchCorpus source publication under the operation journal.
     fn publish_source_idempotent(
         &self,
         batch: &Arc<quanta_index_contract::SearchCorpusIngestBatch>,
@@ -522,100 +515,6 @@ impl SearchPlaneIngestDispatcher {
                 CoreError::Storage("published source event has no final binding".into())
             })?),
         ))
-    }
-
-    /// Same seven stages as [`Self::publish_idempotent`], keyed by
-    /// `RepoMapBundle` under the source-bundle digest. The terminal
-    /// payload is the repo-map terminal receipt (committed through
-    /// `commit_repomap`); the key, fence, conflict, floor and sequence
-    /// authority is the journal's — the store performs the domain
-    /// mutation only and owns no journal of its own on this path.
-    fn publish_repomap_v2_idempotent(
-        &self,
-        request: &RepoMapPublishBundleRequestV2,
-    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
-        // Stage 1 — intrinsic validation: the carried source-bundle
-        // digest is recomputed from the bundle. Pure.
-        let computed = canonical_repo_map_source_bundle_digest_v2(&request.bundle)
-            .map_err(|error| CoreError::InvalidContract(format!("repomap V2 publish: {error}")))?;
-        if computed != request.source_bundle_digest {
-            return Err(CoreError::InvalidContract(format!(
-                "repomap V2 publish: source bundle digest mismatch: carried={} computed={computed}",
-                request.source_bundle_digest
-            )));
-        }
-        // The journal's 32-byte body identity is the digest itself.
-        let body_sha256 = parse_source_bundle_digest_v2(&request.source_bundle_digest)?;
-        let bundle = &request.bundle;
-        let key = IdempotencyKeyV1 {
-            kind: IngestOperationKindV1::RepoMapBundle,
-            repo_id: bundle.repo_id.clone(),
-            revision_id: bundle.revision_id.clone(),
-            generation: bundle.manifest_generation,
-            batch_digest: request.source_bundle_digest.clone(),
-        };
-        // Stage 2 — terminal inspect before any mutable work.
-        match self.idempotency.inspect(&key)? {
-            OperationInspectV1::CommittedRepoMap { receipt, .. } => {
-                return Ok(replayed_repomap_receipt_v2(receipt));
-            }
-            OperationInspectV1::Committed { .. } => return Err(journal_payload_mismatch(&key)),
-            OperationInspectV1::Refused { code, message, .. } => {
-                return Err(CoreError::Typed { code, message });
-            }
-            OperationInspectV1::Absent
-            | OperationInspectV1::InFlight { .. }
-            | OperationInspectV1::Uncertain { .. } => {}
-        }
-        // Stage 3 — immutable prepare. Bundle domain validation lives in
-        // the store's apply under the fence; there is no
-        // dispatcher-level mutable preflight beyond the intrinsic
-        // digest, so the prepared mutation passes straight to the
-        // fenced claim.
-        let owner = claim_owner();
-        let prepare_deadline_ms = ingest_claim_deadline_ms()?;
-        let _prepared = self.idempotency.prepare(
-            &key,
-            &body_sha256,
-            &owner,
-            prepare_deadline_ms,
-            &body_sha256,
-        )?;
-        // Stage 5 — fenced claim.
-        let claim_deadline_ms = ingest_claim_deadline_ms()?;
-        let claim = match self.idempotency.claim_prepared(
-            &key,
-            &body_sha256,
-            &owner,
-            claim_deadline_ms,
-            &body_sha256,
-        )? {
-            ClaimOutcomeV1::ReplayRepoMap { receipt, .. } => {
-                return Ok(replayed_repomap_receipt_v2(receipt));
-            }
-            ClaimOutcomeV1::Replay { .. } => return Err(journal_payload_mismatch(&key)),
-            ClaimOutcomeV1::Claimed(claim) => claim,
-        };
-        // Stage 6 — apply under the fence: the store's domain mutation.
-        self.idempotency.mark_applying(&claim)?;
-        match self.repomap.ingest_bundle(request) {
-            // Stage 7 — terminal.
-            Ok(receipt) => match self.idempotency.commit_repomap(&claim, &receipt) {
-                Ok(_durable_sequence) => Ok(receipt),
-                Err(error) => {
-                    self.idempotency.mark_uncertain(&claim)?;
-                    Err(error)
-                }
-            },
-            Err(error) => {
-                if is_frozen_policy_refusal(&error) {
-                    let _refused = self.idempotency.record_refused(&claim, &error)?;
-                } else {
-                    self.idempotency.mark_uncertain(&claim)?;
-                }
-                Err(error)
-            }
-        }
     }
 
     /// Serve one ingest request (QI-BB-002).
@@ -866,15 +765,7 @@ impl SearchPlaneIngestDispatcher {
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request) => {
-                // The only journal-bearing RepoMap path (SEP-21 P02B):
-                // no arm calls `ingest_bundle_v2` outside
-                // `publish_repomap_v2_idempotent`.
-                match self.publish_repomap_v2_idempotent(&request) {
-                    Ok(receipt) => SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt),
-                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
-                }
-            } // QI-LXB-01 / QI-HIST-01 / QI-RT-02 / QI-STR-02: history /
+ // QI-LXB-01 / QI-HIST-01 / QI-RT-02 / QI-STR-02: history /
               // dirty / structural batches now have first-class arms above.
               // No fallback arm needed.
         }
@@ -921,55 +812,6 @@ fn journal_payload_mismatch(key: &IdempotencyKeyV1) -> CoreError {
             key.kind, key.batch_digest
         ),
     }
-}
-
-/// Decode the `sha256:<hex>` source-bundle digest wire token.
-///
-/// The target is the journal's 32-byte body identity. The dispatcher
-/// already proved the token is the bundle's own digest, so a malformed
-/// token here is a contract defect, not a producer retry.
-fn parse_source_bundle_digest_v2(token: &str) -> Result<[u8; 32], CoreError> {
-    let hex = token.strip_prefix("sha256:").ok_or_else(|| {
-        CoreError::InvalidContract(format!(
-            "repomap V2 publish: source bundle digest {token:?} has no sha256: prefix"
-        ))
-    })?;
-    if hex.len() != 64 {
-        return Err(CoreError::InvalidContract(format!(
-            "repomap V2 publish: source bundle digest {token:?} is not 64 hex characters"
-        )));
-    }
-    let mut body = [0_u8; 32];
-    // `hex` is exactly 64 bytes, so there are exactly 32 pairs for the
-    // 32 slots; `zip` ends the loop with the shorter side, which cannot
-    // happen here.
-    for (slot, chunk) in body.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
-        let &[high, low] = chunk else {
-            return Err(CoreError::InvalidContract(format!(
-                "repomap V2 publish: source bundle digest {token:?} is not hex pairs"
-            )));
-        };
-        let nibble = |byte: u8| match byte {
-            b'0'..=b'9' => Some(byte.wrapping_sub(b'0')),
-            b'a'..=b'f' => Some(byte.wrapping_sub(b'a').wrapping_add(10)),
-            _ => None,
-        };
-        let (Some(high), Some(low)) = (nibble(high), nibble(low)) else {
-            return Err(CoreError::InvalidContract(format!(
-                "repomap V2 publish: source bundle digest {token:?} is not lowercase hex"
-            )));
-        };
-        *slot = (high << 4) | low;
-    }
-    Ok(body)
-}
-
-/// The stored terminal receipt of an earlier apply, re-issued for a
-/// replay of the same bundle: every commitment is the original apply's,
-/// `replayed` says this call mutated nothing.
-fn replayed_repomap_receipt_v2(mut receipt: RepoMapTerminalReceiptV2) -> RepoMapTerminalReceiptV2 {
-    receipt.mutation.replayed = true;
-    receipt
 }
 
 /// Recompute `body`'s canonical digest and require the carried token to be

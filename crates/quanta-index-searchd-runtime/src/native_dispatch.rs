@@ -209,33 +209,6 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 crate::native_graph_transport::query(self, selection, instance, query, &mut work)
                     .map(NativeReply::Graph)
             }
-            NativeIndexRequest::QueryImportedRepoMap {
-                selection,
-                instance,
-                query,
-            } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
-                crate::native_imported_repomap_transport::query(
-                    self, selection, instance, query, &mut work,
-                )
-                .map(NativeReply::ImportedRepoMap)
-            }
-            NativeIndexRequest::ReadRepoMapPriorFileV1 { view, instance, owner } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
-                crate::native_repomap_prior_file_transport::read(
-                    self, view, instance, owner, &mut work,
-                )
-                .map(NativeReply::RepoMapPriorFile)
-            }
-            NativeIndexRequest::QueryRepoMap {
-                selection,
-                instance,
-                query,
-            } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
-                crate::native_repomap_transport::query(self, selection, instance, query, &mut work)
-                    .map(NativeReply::RepoMapRanked)
-            }
             NativeIndexRequest::Submit(request) => {
                 let key = request.operation;
                 let work = WorkBudget::with_request(self.limits, budget.clone());
@@ -416,6 +389,8 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
             )),
             other @ (NativeIndexRequest::CreateWorkspace { .. }
             | NativeIndexRequest::SealCandidateWithSourceRoutes { .. }
+            | NativeIndexRequest::SealCandidateWithSourceRoutesAndRetiredPolicyV1 { .. }
+            | NativeIndexRequest::SealCandidateWithRetiredPolicyOnlyV1 { .. }
             | NativeIndexRequest::BeginInput(_)
             | NativeIndexRequest::ReopenInputWithRootForSourceStageV1 { .. }
             | NativeIndexRequest::StageSource { .. }
@@ -434,11 +409,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
             | NativeIndexRequest::ReadView(_)
             | NativeIndexRequest::ObserveRootView(_)
             | NativeIndexRequest::ObserveCandidateInstallationV1
-            | NativeIndexRequest::ObserveRepoMapGraphInstallationV1(_)
-            | NativeIndexRequest::ObserveRepoMapEventFrontierV1 { .. }
             | NativeIndexRequest::ResolveProtectedSourceHead { .. }
-            | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
-            | NativeIndexRequest::ReadImportedRepoMapMember { .. }
             | NativeIndexRequest::PublishedViewMetadata(_)
             | NativeIndexRequest::ReadProjection { .. }
             | NativeIndexRequest::Status(_)
@@ -452,11 +423,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                     NativeIndexRequest::ReadView(_)
                         | NativeIndexRequest::ObserveRootView(_)
                         | NativeIndexRequest::ObserveCandidateInstallationV1
-                        | NativeIndexRequest::ObserveRepoMapGraphInstallationV1(_)
-                        | NativeIndexRequest::ObserveRepoMapEventFrontierV1 { .. }
                         | NativeIndexRequest::ResolveProtectedSourceHead { .. }
-                        | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
-                        | NativeIndexRequest::ReadImportedRepoMapMember { .. }
                 );
                 let mut work = WorkBudget::with_request(self.limits, budget.clone());
                 let mut read_view_stage = ReadFailureStage::Checkpoint;

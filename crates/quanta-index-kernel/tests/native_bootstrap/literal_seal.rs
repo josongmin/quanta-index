@@ -613,20 +613,23 @@ fn literal_seal_directory_rows(
     Ok((root, rows))
 }
 
-fn check_literal_multipage_seal(fail_second_page: bool) -> TestResult {
-    let root = tempfile::tempdir()?;
-    let objects = Arc::new(FileObjectStore::open(root.path().join("objects"))?);
+fn open_literal_multipage_kernel(
+    root: &Path,
+    literal: &InstanceSpec,
+    fail_second_page: bool,
+) -> TestResult<(
+    Kernel<SqliteCatalog>,
+    Arc<FileObjectStore>,
+    Arc<DirectoryPageFaultMaps>,
+)> {
+    let objects = Arc::new(FileObjectStore::open(root.join("objects"))?);
     let maps = Arc::new(DirectoryPageFaultMaps::new(
         objects.clone(),
         fail_second_page,
     ));
-    let catalog = Arc::new(SqliteCatalog::open(
-        root.path(),
-        Duration::from_millis(100),
-    )?);
-    let [literal, _, _] = specs()?;
+    let catalog = Arc::new(SqliteCatalog::open(root, Duration::from_millis(100))?);
     let mut registry = AdapterRegistry::new();
-    registry.register(descriptor(&literal), NativeLiteralIndex, |delta| {
+    registry.register(descriptor(literal), NativeLiteralIndex, |delta| {
         Ok(delta.clone())
     })?;
     let services = KernelServices::new(
@@ -634,12 +637,19 @@ fn check_literal_multipage_seal(fail_second_page: bool) -> TestResult {
         maps.clone(),
         catalog,
         Arc::new(FileScratchSpace::open_standalone(
-            root.path().join("scratch"),
+            root.join("scratch"),
             16 * 1024 * 1024 * 1024,
         )?),
         Duration::from_secs(120),
     )?;
-    let engine = Kernel::new(services, registry);
+    Ok((Kernel::new(services, registry), objects, maps))
+}
+
+fn check_literal_multipage_seal(fail_second_page: bool) -> TestResult {
+    let root = tempfile::tempdir()?;
+    let [literal, _, _] = specs()?;
+    let (engine, objects, maps) =
+        open_literal_multipage_kernel(root.path(), &literal, fail_second_page)?;
     let genesis = engine.create_workspace(workspace(), 1, &mut budget()?)?;
     let old_body = multipage_literal_body(0x9e37_79b9_7f4a_7c15);
     let next_body = multipage_literal_body(0xd1b5_4a32_d192_ed03);
@@ -693,7 +703,7 @@ fn check_literal_multipage_seal(fail_second_page: bool) -> TestResult {
         &mut budget()?,
     ))?)?;
     let literal_instance = literal.instance;
-    let installed = published(reconfigure(&engine, source_only, 2, vec![literal])?)?;
+    let installed = published(reconfigure(&engine, source_only, 2, vec![literal.clone()])?)?;
     let (prior_directory, before_rows) = literal_seal_directory_rows(&engine, &objects, installed)?;
     assert!(
         before_rows.len() > 64,
@@ -701,71 +711,74 @@ fn check_literal_multipage_seal(fail_second_page: bool) -> TestResult {
     );
     assert_literal_matches(&engine, &objects, installed, &[0xff; 3], &[])?;
 
-    let key = operation(3);
-    let ingress = engine.begin_input(key)?;
-    let mut inputs = (1..=8)
-        .map(|id| SourceInput {
-            path: format!("src/{id:02}.bin"),
-            bytes: next_body.clone(),
-            text: SourceTextAdmission::Excluded,
-            language: None,
-        })
-        .collect::<Vec<_>>();
-    inputs.push(SourceInput {
-        path: "src/last.bin".into(),
-        bytes: vec![0xff; 3],
-        text: SourceTextAdmission::Excluded,
-        language: None,
-    });
-    let next_records = engine.stage_sources(ingress, inputs, &mut budget()?)?;
-    let mutations = engine.stage_mutations(
-        ingress,
-        (1..=8)
-            .zip(
-                old_records
-                    .iter()
-                    .copied()
-                    .zip(next_records.iter().copied()),
-            )
-            .map(|(id, (old, next))| {
-                Ok(OwnerMutation {
-                    owner: multipage_literal_owner(id),
-                    expected: Some(old),
-                    next: Some(next),
-                })
-            })
-            .chain([Ok(OwnerMutation {
-                owner: multipage_literal_owner(9),
-                expected: None,
-                next: Some(*next_records.get(8).ok_or("last record missing")?),
-            })]),
-        &mut budget()?,
-    )?;
     let old_ticket = engine.pin_view(ViewSelection::Exact(installed), &budget()?)?;
-    let mut transition = SourceTransition {
-        expected_source: old_ticket.view().source,
-        owners: mutations,
-        events: Vec::new(),
-    };
-    transition.events.push(SourceEvent {
-        producer: key.producer,
-        stream: key.stream,
-        stream_epoch: key.stream_epoch,
-        predecessor: 1,
-        sequence: 2,
-        payload: transition.owner_digest()?,
-    });
+    let expected_source = old_ticket.view().source;
+    let stage_patch =
+        |engine: &Kernel<SqliteCatalog>, key: OperationKey| -> TestResult<UpdateRequest> {
+            let ingress = engine.begin_input(key)?;
+            let mut inputs = (1..=8)
+                .map(|id| SourceInput {
+                    path: format!("src/{id:02}.bin"),
+                    bytes: next_body.clone(),
+                    text: SourceTextAdmission::Excluded,
+                    language: None,
+                })
+                .collect::<Vec<_>>();
+            inputs.push(SourceInput {
+                path: "src/last.bin".into(),
+                bytes: vec![0xff; 3],
+                text: SourceTextAdmission::Excluded,
+                language: None,
+            });
+            let next_records = engine.stage_sources(ingress, inputs, &mut budget()?)?;
+            let mutations = engine.stage_mutations(
+                ingress,
+                (1..=8)
+                    .zip(
+                        old_records
+                            .iter()
+                            .copied()
+                            .zip(next_records.iter().copied()),
+                    )
+                    .map(|(id, (old, next))| {
+                        Ok(OwnerMutation {
+                            owner: multipage_literal_owner(id),
+                            expected: Some(old),
+                            next: Some(next),
+                        })
+                    })
+                    .chain([Ok(OwnerMutation {
+                        owner: multipage_literal_owner(9),
+                        expected: None,
+                        next: Some(*next_records.get(8).ok_or("last record missing")?),
+                    })]),
+                &mut budget()?,
+            )?;
+            let mut transition = SourceTransition {
+                expected_source,
+                owners: mutations,
+                events: Vec::new(),
+            };
+            transition.events.push(SourceEvent {
+                producer: key.producer,
+                stream: key.stream,
+                stream_epoch: key.stream_epoch,
+                predecessor: 1,
+                sequence: 2,
+                payload: transition.owner_digest()?,
+            });
+            Ok(UpdateRequest {
+                operation: key,
+                expected_view: installed,
+                kind: UpdateKind::SourceAdvance(transition),
+            })
+        };
+    let key = operation(3);
+    let request = stage_patch(&engine, key)?;
     maps.prior_directory
         .set(prior_directory)
         .map_err(|_| "Literal directory fault already configured")?;
-    let outcome = block_on(engine.submit(
-        UpdateRequest {
-            operation: key,
-            expected_view: installed,
-            kind: UpdateKind::SourceAdvance(transition),
-        },
-        &mut budget()?,
-    ));
+    let outcome = block_on(engine.submit(request.clone(), &mut budget()?));
     assert!(maps.pages.load(Ordering::Relaxed) >= 2);
     assert!(maps.continuation_pages.load(Ordering::Relaxed) >= 1);
     if fail_second_page {
@@ -829,6 +842,62 @@ fn check_literal_multipage_seal(fail_second_page: bool) -> TestResult {
             },
         )?;
         assert!(absent.hits.is_empty());
+
+        old_ticket.release()?;
+        drop(engine);
+        drop(maps);
+        drop(objects);
+
+        let (reopened, objects, maps) =
+            open_literal_multipage_kernel(root.path(), &literal, false)?;
+        maps.prior_directory
+            .set(prior_directory)
+            .map_err(|_| "reopened Literal directory already configured")?;
+        let refusal = OperationStatus::Refused(Refusal::BackendViolation);
+        assert_eq!(
+            reopened.status(
+                key,
+                quanta_index_core::index::ports::OperationInspectAccess::Request(&budget()?),
+            )?,
+            refusal
+        );
+        assert_eq!(
+            block_on(reopened.submit(request, &mut budget()?))?,
+            SubmitOutcome::Terminal(refusal)
+        );
+        assert_eq!(
+            maps.pages.load(Ordering::Relaxed),
+            0,
+            "terminal replay rebuilt Literal"
+        );
+
+        let latest = reopened.pin_view(
+            ViewSelection::Latest {
+                workspace: workspace(),
+                epoch: 1,
+            },
+            &budget()?,
+        )?;
+        assert_eq!(latest.view().identity, installed);
+        assert_eq!(latest.view().source, expected_source);
+        latest.release()?;
+        assert_literal_matches(&reopened, &objects, installed, &[0xff; 3], &[])?;
+
+        // A new operation can apply the same unconsumed Source event. The
+        // failed attempt must not leave a partial posting or advance the fence.
+        let replacement = stage_patch(&reopened, operation(4))?;
+        let recovered = published(block_on(reopened.submit(replacement, &mut budget()?))?)?;
+        assert_eq!(Some(recovered.sequence), installed.sequence.checked_add(1));
+        assert!(maps.continuation_pages.load(Ordering::Relaxed) > 0);
+        assert_literal_matches(
+            &reopened,
+            &objects,
+            recovered,
+            &[0xff; 3],
+            &[multipage_literal_owner(9)],
+        )?;
+        assert_literal_matches(&reopened, &objects, installed, &[0xff; 3], &[])?;
+        return Ok(());
     } else {
         assert_eq!(maps.failures.load(Ordering::Relaxed), 0);
         let published = published(outcome?)?;

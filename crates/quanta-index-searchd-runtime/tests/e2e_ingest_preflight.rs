@@ -272,7 +272,7 @@ fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => None,
     }

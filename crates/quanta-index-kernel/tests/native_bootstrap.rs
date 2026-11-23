@@ -622,7 +622,7 @@ fn existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens() -
     let replacement = engine.stage_source_text(
         ingress,
         "src/001.rs",
-        b"Ne XQZ",
+        b"Ne XQZ-QZX",
         SourceTextAdmission::Utf8 { policy: ADMISSION },
         &mut budget()?,
     )?;
@@ -689,6 +689,9 @@ fn existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens() -
     assert_literal_matches(&engine, &objects, revised, b"N", &remaining_owners)?;
     assert_literal_matches(&engine, &objects, revised, b"Ne", &remaining_owners)?;
     assert_literal_matches(&engine, &objects, revised, b"XQZ", &[owner(1)])?;
+    assert_literal_matches(&engine, &objects, revised, b"QZX", &[owner(1)])?;
+    // Both trigrams of XQZX are present, but the source bytes do not contain it.
+    assert_literal_matches(&engine, &objects, revised, b"XQZX", &[])?;
     assert_literal_matches(&engine, &objects, revised, &[0xff, 0x80, 0x80], &[])?;
     drop(engine);
     drop(objects);
@@ -717,6 +720,7 @@ fn existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens() -
     assert_literal_matches(&reopened, &objects, revised, b"N", &remaining_owners)?;
     assert_literal_matches(&reopened, &objects, revised, b"Ne", &remaining_owners)?;
     assert_literal_matches(&reopened, &objects, revised, b"XQZ", &[owner(1)])?;
+    assert_literal_matches(&reopened, &objects, revised, b"XQZX", &[])?;
     assert_literal_matches(&reopened, &objects, revised, &[0xff, 0x80, 0x80], &[])?;
     assert_eq!(literal_builds.load(Ordering::Relaxed), 4);
     Ok(())

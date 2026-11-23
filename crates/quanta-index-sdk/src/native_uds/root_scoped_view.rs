@@ -56,35 +56,6 @@ impl AdmittedNativeCandidateInstallationReplyV1 {
 }
 
 impl<P: AsRef<Path>> NativeUdsClient<P> {
-    /// Resolve a preserved RepoMap pair to the exact pinned view, member and
-    /// instance selected by the installed BOOT route.
-    pub fn resolve_protected_repomap_head_v1(
-        &self,
-        repo_id: RepoId,
-        revision_id: RevisionId,
-        budget: &RequestBudgetV1,
-    ) -> Result<
-        quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1,
-        NativeUdsError,
-    > {
-        read_session::admitted_budget_checkpoint(budget)?;
-        let NativeIndexResponse::ProtectedRepoMapHead(resolved) = self.request(
-            NativeIndexRequest::ResolveProtectedRepoMapHead {
-                repo_id,
-                revision_id,
-            },
-            budget,
-        )?
-        else {
-            return Err(NativeUdsError::Protocol(
-                "unexpected protected RepoMap head reply".into(),
-            ));
-        };
-        validate_repomap_reply(&resolved)?;
-        read_session::admitted_budget_checkpoint(budget)?;
-        Ok(resolved)
-    }
-
     /// Resolve a selected, protected Source revision to its exact view. The
     /// server derives BOOT route custody; callers cannot supply an object ref.
     pub fn resolve_protected_source_head_v1(
@@ -169,22 +140,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         )
     }
 
-    /// Read the config SHA and exact Graph descriptor from the same connected
-    /// peer that reports the selected root. The installation owner must
-    /// compare the measured SHA, peer image and root against its trusted inputs.
-    pub fn observe_repomap_graph_installation_admitted_v1(
-        &self,
-        selection: ViewSelection,
-        budget: &RequestBudgetV1,
-        memory: &MemoryScope,
-    ) -> Result<AdmittedNativeRootScopedViewReplyV1, NativeUdsError> {
-        self.observe_on_admitted_peer(
-            NativeIndexRequest::ObserveRepoMapGraphInstallationV1(selection),
-            budget,
-            memory,
-        )
-    }
-
     /// Observe the candidate Q installation before its first workspace write.
     /// This reply retains the same-connection peer; it grants no write authority.
     pub fn observe_candidate_installation_admitted_v1(
@@ -258,19 +213,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
     }
 }
 
-pub(super) fn validate_repomap_graph_installation(
-    selection: ViewSelection,
-    observed: &quanta_index_contract::native_protocol::NativeRepoMapGraphInstallationV1,
-) -> Result<(), NativeUdsError> {
-    validate_reply(selection, &observed.root)?;
-    if observed.config_sha256 == Digest([0; 32]) {
-        return Err(NativeUdsError::Protocol(
-            "RepoMap installation config SHA is zero".into(),
-        ));
-    }
-    Ok(())
-}
-
 pub(super) fn validate_candidate_installation(
     observed: &quanta_index_contract::native_protocol::NativeCandidateInstallationV1,
 ) -> Result<(), NativeUdsError> {
@@ -297,20 +239,5 @@ pub(super) fn validate_reply(
     }
     // Device/inode are observed DATA, not portable authorization heuristics.
     // Matching them against the installed provider remains that owner's work.
-    Ok(())
-}
-
-pub(super) fn validate_repomap_reply(
-    resolved: &quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1,
-) -> Result<(), NativeUdsError> {
-    validate_reply(
-        ViewSelection::Exact(resolved.root.view.identity),
-        &resolved.root,
-    )?;
-    if resolved.member_binding.0 == Digest([0; 32]) {
-        return Err(NativeUdsError::Protocol(
-            "protected RepoMap member is zero".into(),
-        ));
-    }
     Ok(())
 }

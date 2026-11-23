@@ -176,16 +176,6 @@ fn parse(args: &[String]) -> CliResult<NativeOptions> {
                 quanta_index_sdk::LegacyQueryCapabilityV1::Explain,
             ));
         }
-        Some("repomap") => {
-            return Err(CliError::unsupported(
-                quanta_index_sdk::LegacyQueryCapabilityV1::RepoMapQuery,
-            ));
-        }
-        Some("repomap-query") => {
-            return Err(CliError::unsupported(
-                quanta_index_sdk::LegacyQueryCapabilityV1::RepoMapQuery,
-            ));
-        }
         Some(other) => {
             return Err(CliError::usage(format!(
                 "unsupported native command {other}"

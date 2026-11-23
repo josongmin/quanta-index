@@ -202,12 +202,33 @@ def test_candidate_handoff_preserves_optional_protected_route_identity() -> None
     )["publication"]
     handoff["protected_source_routes_hex"] = "33" * 32
     routed = launcher._candidate_source_handoff(json.dumps(handoff).encode())
-    assert routed[-1] == "33" * 32
+    assert routed[-2] == "33" * 32
     assert launcher._decode_candidate_handoff(
         launcher._candidate_handoff_envelope("bound", routed), "bound"
     ) == routed
     handoff["protected_source_routes_hex"] = "0" * 64
     with pytest.raises(launcher.SelectionError, match="empty identity"):
+        launcher._candidate_source_handoff(json.dumps(handoff).encode())
+
+
+def test_candidate_handoff_preserves_complete_retired_policy_reference() -> None:
+    receipt = native_receipt().to_wire()
+    handoff = {
+        "root_nonce_hex": receipt["root_nonce_hex"],
+        "manifest_operation": receipt["manifest_operation"],
+        "source_cut_digest_hex": receipt["source_cut_digest_hex"],
+        "original_full_sequence": 17,
+        "retired_policy_object_hex": "44" * 32,
+        "retired_policy_sha256_hex": "55" * 32,
+        "retired_policy_identity_count": 4096,
+    }
+    parsed = launcher._candidate_source_handoff(json.dumps(handoff).encode())
+    assert parsed[-1] == ("44" * 32, "55" * 32, 4096)
+    assert launcher._decode_candidate_handoff(
+        launcher._candidate_handoff_envelope("bound", parsed), "bound"
+    ) == parsed
+    del handoff["retired_policy_sha256_hex"]
+    with pytest.raises(launcher.SelectionError):
         launcher._candidate_source_handoff(json.dumps(handoff).encode())
 
 
@@ -292,6 +313,40 @@ def test_native_receipt_binds_protected_routes_through_selected_command() -> Non
         changed = dict(wire, protected_source_routes_hex=invalid)
         with pytest.raises(launcher.SelectionError):
             launcher.NativeBootReceipt.from_wire(changed)
+
+
+def test_schema3_retired_policy_roundtrip_and_identity_args(tmp_path: Path) -> None:
+    _selection_path, binary, root, _cache, environment = fixture(tmp_path)
+    config = tmp_path / "native.json"
+    native_config(config, root)
+    wire = native_receipt().to_wire()
+    wire.update(
+        retired_policy_object_hex="44" * 32,
+        retired_policy_sha256_hex="55" * 32,
+        retired_policy_identity_count=4096,
+    )
+    receipt = launcher.NativeBootReceipt.from_wire(wire)
+    selection = launcher.Selection(
+        binary, hashlib.sha256(FAKE_SEARCHD).hexdigest(), root,
+        tuple(sorted(environment.items())), config,
+        hashlib.sha256(config.read_bytes()).hexdigest(), receipt,
+    )
+    encoded = selection.to_wire()
+    assert encoded["schema_version"] == 3
+    assert launcher.selection_from_wire(encoded) == selection
+    args = launcher._native_identity_args(receipt, install=True)
+    assert args[-6:] == [
+        "--retired-policy-object", "44" * 32,
+        "--retired-policy-sha256", "55" * 32,
+        "--retired-policy-identity-count", "4096",
+    ]
+    encoded["schema_version"] = 2
+    with pytest.raises(launcher.SelectionError):
+        launcher.selection_from_wire(encoded)
+    encoded["schema_version"] = 3
+    del encoded["native_boot_receipt"]["retired_policy_sha256_hex"]
+    with pytest.raises(launcher.SelectionError):
+        launcher.selection_from_wire(encoded)
 
 
 @pytest.mark.parametrize("fault", ["duplicate", "missing"])
@@ -745,7 +800,7 @@ else:
     assert "--native-candidate-active-selection-sha256" not in flags
     assert "--native-candidate-q-config" not in flags
     assert "--native-candidate-q-config-sha256" not in flags
-if flags.get("--native-candidate-source-mode") == "legacy-multiactive":
+if flags.get("--native-candidate-source-mode") == "source-only":
     image = Path(os.environ["FIXTURE_LEGACY_BINARY"])
     assert flags["--native-candidate-source-exporter-executable"] == str(image)
     assert flags["--native-candidate-source-exporter-executable-sha256"] == sha256(image.read_bytes()).hexdigest()
@@ -799,7 +854,7 @@ print(os.environ["FIXTURE_HANDOFF"])
     else:
         args.extend(("--native-candidate-history-source", "native"))
     if current_mode_v1 == "legacy_source":
-        args.extend(("--native-candidate-source-mode", "legacy-multiactive"))
+        args.extend(("--native-candidate-source-mode", "source-only"))
     assert launcher.main([
         *args, "--quanta-internal-filesystem-scan-worker-path-v1", str(image),
     ]) == 1
@@ -845,7 +900,7 @@ print(os.environ["FIXTURE_HANDOFF"])
             invalid_mode = args.copy()
             invalid_mode[invalid_mode.index("--native-candidate-source-mode") + 1] = "replay"
             assert launcher.main(invalid_mode) == 1
-            assert "candidate Source mode must be legacy-multiactive" in capsys.readouterr().err
+            assert "candidate Source mode must be source-only" in capsys.readouterr().err
         for flag, replacement in foreign_replacements:
             foreign_args = args.copy()
             foreign_args[foreign_args.index(flag) + 1] = replacement
@@ -1691,7 +1746,7 @@ def native_switch_fixture(tmp_path: Path):
 def test_candidate_producer_receives_only_the_selected_q_config_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    active, _, selected, _ = native_switch_fixture(tmp_path)
+    active, old, selected, _ = native_switch_fixture(tmp_path)
     config = selected.native_config
     assert config is not None
     socket = selected.state_root / "native.sock"
@@ -1736,6 +1791,32 @@ def test_candidate_producer_receives_only_the_selected_q_config_digest(
         launcher.build_native_candidate(
             active, candidate, selected, expected,
             producer_arguments=["--native-q-config-sha256", "12" * 32], **inputs,
+        )
+
+    def observe_old_and_new(child, stopping, lock_fd, endpoint, producer, argv, env, timeout):
+        flags = dict(zip(argv[::2], argv[1::2]))
+        assert flags["--native-candidate-q-config"] == str(selected.native_config)
+        assert flags["--native-candidate-q-config-sha256"] == digest
+        assert flags["--native-candidate-old-q-config"] == str(old.native_config)
+        assert flags["--native-candidate-old-q-config-sha256"] == old.native_config_sha256
+        assert old.native_config != selected.native_config
+        assert old.native_config_sha256 != digest
+        raise ReachedProducer
+
+    monkeypatch.setattr(launcher, "_run_candidate_source", observe_old_and_new)
+    native_args = [
+        "--native-candidate-history-source", "native",
+        "--native-candidate-source-mode", "source-only",
+    ]
+    with pytest.raises(ReachedProducer):
+        launcher.build_native_candidate(
+            active, candidate, selected, expected, producer_arguments=native_args, **inputs,
+        )
+    with pytest.raises(launcher.SelectionError, match="launcher owns the candidate Q endpoint"):
+        launcher.build_native_candidate(
+            active, candidate, selected, expected,
+            producer_arguments=native_args + ["--native-candidate-old-q-config", str(old.native_config)],
+            **inputs,
         )
 
 

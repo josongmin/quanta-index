@@ -8,7 +8,7 @@ use quanta_index_contract::{
         NativeGraphResult, NativeHybridFileResult, NativeIndexRequest, NativeIndexResponse,
         NativeProjectionRead, NativeReadSessionProfile,
         NativeReadSessionSettlement, NativeReadSessionState, NativeReadSessionStatus,
-        NativeRepoMapQuery, NativeRepoMapResult, NativeSemanticResult, NativeTextCursor,
+        NativeSemanticResult, NativeTextCursor,
         NativeTextPage, NativeTextResult, NativeTextPathCursorV1, NativeTextPathPageV1,
         NativeTextPathResultV1,
     },
@@ -123,17 +123,6 @@ impl<'a> NativeQueryReader<'a> {
             return Err(NativeQueryError::ProfileBindingMismatch);
         }
         Ok(Self { selection: ViewSelection::Exact(view), ..self })
-    }
-
-    pub fn repomap(
-        &self,
-        instance: IndexInstanceId,
-        query: NativeRepoMapQuery,
-        budget: &RequestBudgetV1,
-    ) -> Result<NativeRepoMapResult, NativeQueryError> {
-        Ok(self
-            .client
-            .query_repomap(self.selection, instance, query, &self.budget(budget)?)?)
     }
 
     pub fn graph(

@@ -82,15 +82,12 @@ def test_mutated_consumer_copy_cannot_poison_next_case(inputs, release_seed, tmp
     assert binding.replay(capsule, selection, canonical(suite), canonical(pack)) == result
 
 
-def test_gold_producer_binds_the_actual_vendored_parser_sources():
+def test_gold_producer_binds_the_actual_parser_sources_and_released_extensions():
     from tools.benchmark.retrieval import declaration_parsers
 
     digests = binding._gold_producer_source_digests()
     assert "declaration_parsers" in digests
     for relative in (
-        "vendor/tree-sitter-javascript/src/parser.c",
-        "vendor/tree-sitter-javascript/src/scanner.c",
-        "vendor/tree-sitter-javascript/src/tree_sitter/parser.h",
         "vendor/tree-sitter-typescript/typescript/src/parser.c",
         "vendor/tree-sitter-typescript/tsx/src/parser.c",
         "vendor/tree-sitter-typescript/common/scanner.h",
@@ -98,6 +95,10 @@ def test_gold_producer_binds_the_actual_vendored_parser_sources():
         assert digests[relative] == binding.digest_bytes(
             (declaration_parsers.ROOT / relative).read_bytes()
         )
+    for grammar in declaration_parsers.RELEASED_GRAMMARS:
+        extension = declaration_parsers._released_extension(grammar)
+        key = f"tree-sitter-{grammar}/{extension.name}"
+        assert digests[key] == binding.digest_bytes(extension.read_bytes())
     for name, relative in (("pyproject_toml", "pyproject.toml"), ("uv_lock", "uv.lock")):
         assert digests[name] == binding.digest_bytes(
             (binding.GOLD_RUNTIME_SOURCE_ROOT / relative).read_bytes()
@@ -153,6 +154,8 @@ def test_gold_runtime_requires_source_locked_parser_versions():
         "regex": "2025.10.23",
         "tree-sitter": "0.25.2",
         "tree-sitter-language-pack": "0.10.0",
+        "tree-sitter-python": "0.25.0",
+        "tree-sitter-rust": "0.24.2",
         "unicodedata2": "17.0.0",
     }
 

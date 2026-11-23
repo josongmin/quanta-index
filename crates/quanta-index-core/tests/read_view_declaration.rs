@@ -80,7 +80,6 @@ fn every_registered_predicate_declares_the_domain_it_reads() {
             | ReadDomainV1::StructuralChunkUniverse
             | ReadDomainV1::RuntimeOverlay
             | ReadDomainV1::History
-            | ReadDomainV1::RepoMap
             | ReadDomainV1::RepoMetadata(_)) => RequiredDomainsV1::of(other),
         };
         assert_eq!(
@@ -375,13 +374,5 @@ fn structural_adds_the_lexical_track_only_for_a_text_leaf() {
         declare_required_domains_v1(QueryRouteV1::Structural, Some(&mixed)),
         RequiredDomainsV1::of(ReadDomainV1::StructuralChunkUniverse)
             .with(ReadDomainV1::LexicalTrack)
-    );
-}
-
-#[test]
-fn repo_map_reads_the_repo_map_store() {
-    assert_eq!(
-        declare_required_domains_v1(QueryRouteV1::RepoMap, None),
-        RequiredDomainsV1::of(ReadDomainV1::RepoMap)
     );
 }

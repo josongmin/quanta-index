@@ -20,7 +20,6 @@ pub mod native_uds;
 mod observability;
 pub mod preparation;
 mod quarantine;
-mod repomap;
 mod runtime;
 mod search;
 pub(crate) mod semantic;
@@ -60,7 +59,8 @@ pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
 pub use native_query::{NativeQueryError, NativeQueryReader, NativeQuerySession};
 pub use observability::ObservabilityNamespace;
 pub use quanta_index_contract::{
-    IngestObservationStatus, IngestStageDurations, IngestStageReport,
+    IngestObservationStatus, IngestStageDurations, IngestStageReport, RepoMapModuleId,
+    RepoMapNodeRef,
     SearchCorpusIngestObservation, SearchCorpusPublishOutcome,
 };
 /// The canonical batch digest (QI-BB-032): the SDK builders stamp it on
@@ -70,9 +70,6 @@ pub use quanta_index_ipc::{
     ClientIpcTimingV1, IngestBatchBodyV1, canonical_batch_digest_v1, stamp_batch_digest_v1,
 };
 pub use quarantine::QuarantineNamespace;
-pub use repomap::{
-    AdmittedRepoMapTerminalReceiptV3, RepoMapAdmittedPublishErrorV3, RepoMapNamespace,
-};
 pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeQueryBuilder};
 pub use search::{HybridQueryBuilder, HybridSeedQueryBuilder, SearchNamespace};
 pub use semantic::{SemanticNamespace, SemanticQueryBuilder};
@@ -100,13 +97,9 @@ pub use quanta_index_contract::{
     IngestOperationKindV1, LexicalCandidate, ManifestGeneration, MetricBucketV1, MetricCounterV1,
     MetricGaugeV1, MetricHistogramV1, MetricsDiagnosticsV1, MetricsSnapshotV1, OwnerDocKind,
     QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
-    QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1, RepoId, RepoMapCallEdge,
-    RepoMapChunkNode, RepoMapContainsEdge, RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode,
-    RepoMapGraphCoverage, RepoMapImportEdge, RepoMapModuleId, RepoMapModuleNode,
-    RepoMapMutationAck, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest,
-    RepoMapQueryResponse, RepoMapSourceBundle, RepoMapSymbolNode, RepoRelativePath, RevisionId,
-    RuntimeMetadataCursorV1, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
-    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
+    QuarantinedGenerationEntryV1, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataCursorV1,
+    SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1, SearchCorpusReplaceScope,
+    SearchCorpusTombstoneScope, SearchExplanation,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryResponse,
     SearchPlaneHistoryQueryResponse, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSearchCorpusActivationCasAck,

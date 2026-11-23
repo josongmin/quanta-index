@@ -19,7 +19,6 @@ use crate::query_dispatcher::tests::support::common::{
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState, RejectLexicalOpener, StubLexicalOpener,
 };
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::{
     RecordingSemanticOpener, RecordingSemanticState, RejectSemanticOpener, exact_dense_lane,
 };
@@ -701,7 +700,6 @@ fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&semantic_state),
         }),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -748,7 +746,7 @@ fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
         | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
@@ -840,7 +838,6 @@ fn hybrid_dispatch_rejects_unsealed_semantic_generation_with_exact_code() -> Tes
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         Arc::new(RwLock::new(ledger)),
         test_activation_catalog()?,
@@ -946,7 +943,7 @@ fn hybrid_dispatch_emits_closed_obs_metrics() -> TestResult {
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Hybrid response, got {other:?}").into());
@@ -1028,7 +1025,6 @@ fn hybrid_rows_carry_per_lane_provenance_and_the_fused_score() -> TestResult {
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&semantic_state),
         }),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,

@@ -46,7 +46,7 @@ use crate::materializer::{
     CandidateProjectionMeta, RepoMapGraphCompiler, decode_compiled_payload,
     snapshot_from_projection,
 };
-use crate::model::RepoMapIndexedSnapshot;
+use crate::model::RepoMapSnapshot;
 use crate::object_store::{
     AFTER_CATALOG_COMMIT, LEGACY_V1_DIR_NAMES, ObjectVerificationErrorV1, RepoMapObjectStore,
     exit_at_crash_boundary,
@@ -58,7 +58,7 @@ pub struct RepoMapGenerationStore {
     root: PathBuf,
     catalog: Arc<SqliteCatalog>,
     objects: Option<RepoMapObjectStore>,
-    snapshots: RwLock<BTreeMap<RepoMapStoreKeyV1, Arc<RepoMapIndexedSnapshot>>>,
+    snapshots: RwLock<BTreeMap<RepoMapStoreKeyV1, Arc<RepoMapSnapshot>>>,
     activated: RwLock<BTreeMap<(String, String), ActivatedHeadV1>>,
     /// Serializes acquire-to-pin, publish/activation projection, and
     /// retirement-to-unlink within this store. The catalog remains durable
@@ -306,7 +306,7 @@ impl RepoMapGenerationStore {
                         &revision_id,
                         ManifestGeneration::new(candidate.manifest_generation),
                     );
-                    let indexed = Arc::new(RepoMapIndexedSnapshot::new(snapshot));
+                    let indexed = Arc::new(snapshot);
                     let _prior = self
                         .snapshots
                         .write()
@@ -655,7 +655,7 @@ impl RepoMapGenerationStore {
                 &bundle.revision_id,
                 bundle.manifest_generation,
             );
-            let indexed = Arc::new(RepoMapIndexedSnapshot::new(snapshot));
+            let indexed = Arc::new(snapshot);
             let mut guard = self
                 .snapshots
                 .write()
@@ -926,7 +926,7 @@ impl RepoMapGenerationStore {
                     &meta,
                     &projection,
                 );
-                let _prior = entry.insert(Arc::new(RepoMapIndexedSnapshot::new(snapshot)));
+                let _prior = entry.insert(Arc::new(snapshot));
             }
         }
         // A replay may follow a catalog commit whose in-process projection

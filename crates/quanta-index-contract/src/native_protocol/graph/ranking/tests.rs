@@ -175,96 +175,13 @@ fn wire_view() -> crate::index::ViewRef {
     }
 }
 
-#[test]
-fn rank_request_envelope_roundtrips_canonical_wire() -> TestResult {
-    use crate::{
-        index::{IndexInstanceId, ViewSelection},
-        native_protocol::{NativeIndexRequest, NativeIndexRequestEnvelope},
-    };
-    let envelope = NativeIndexRequestEnvelope {
-        request_id: 17,
-        payload: NativeIndexRequest::QueryRepoMap {
-            selection: ViewSelection::Exact(wire_view()),
-            instance: IndexInstanceId([5; 16]),
-            query: NativeRepoMapQuery {
-                query_text: "needle".into(),
-                focus_subjects: Vec::new(),
-                top_k: 5,
-                token_budget: 64,
-            },
-        },
-    };
-    let json = serde_json::to_vec(&envelope)?;
-    if !String::from_utf8(json.clone())?.contains("\"QueryRepoMap\"")
-        || serde_json::from_slice::<NativeIndexRequestEnvelope>(&json)? != envelope
-    {
-        return Err("native RepoMap request envelope changed".into());
-    }
-    let mut cbor = Vec::new();
-    ciborium::ser::into_writer(&envelope, &mut cbor)?;
-    if ciborium::de::from_reader::<NativeIndexRequestEnvelope, _>(cbor.as_slice())? != envelope {
-        return Err("native RepoMap request CBOR changed".into());
-    }
-    Ok(())
-}
 
-#[test]
-fn borrowed_rank_response_matches_owned_wire() -> TestResult {
-    use crate::{
-        index::IndexInstanceId,
-        native_protocol::{
-            NativeIndexResponse, NativeRepoMapHit, NativeRepoMapResult, NativeRepoMapResultRef,
-        },
-    };
-    use serde::{Serialize, Serializer};
-
-    struct Borrowed<'a>(NativeRepoMapResultRef<'a>);
-    impl Serialize for Borrowed<'_> {
-        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            NativeIndexResponse::serialize_repomap_ranked_ref(&self.0, serializer)
-        }
-    }
-
-    let result = NativeRepoMapResult {
-        view: wire_view(),
-        instance: IndexInstanceId([5; 16]),
-        policy: native_repomap_rank_policy(),
-        hits: vec![NativeRepoMapHit {
-            subject: RepoMapNodeRef::File(FileId::new("file-1")),
-            owner_path: RepoRelativePath::new("src/lib.rs"),
-            final_score_millis: 975,
-            rank: 1,
-        }],
-        dropped_entries_count: 2,
-        drop_reason_codes: vec!["top_k_exhausted".into()],
-        degraded_reason_codes: Vec::new(),
-        exhaustive: true,
-    };
-    let owned = NativeIndexResponse::RepoMapRanked(result.clone());
-    let borrowed = Borrowed(NativeRepoMapResultRef::from(&result));
-    let owned_json = serde_json::to_vec(&owned)?;
-    if owned_json != serde_json::to_vec(&borrowed)?
-        || serde_json::from_slice::<NativeIndexResponse>(&owned_json)? != owned
-    {
-        return Err("borrowed RepoMap response JSON differs from owned wire".into());
-    }
-    let mut owned_cbor = Vec::new();
-    ciborium::ser::into_writer(&owned, &mut owned_cbor)?;
-    let mut borrowed_cbor = Vec::new();
-    ciborium::ser::into_writer(&borrowed, &mut borrowed_cbor)?;
-    if owned_cbor != borrowed_cbor
-        || ciborium::de::from_reader::<NativeIndexResponse, _>(owned_cbor.as_slice())? != owned
-    {
-        return Err("borrowed RepoMap response CBOR differs from owned wire".into());
-    }
-    Ok(())
-}
 
 #[test]
 fn rank_reason_codes_are_closed_categorized_and_canonical() -> TestResult {
     use crate::{
         index::IndexInstanceId,
-        native_protocol::{NativeRepoMapResult, NativeRepoMapResultRef},
+        native_protocol::graph::ranking::{NativeRepoMapResult, NativeRepoMapResultRef},
     };
 
     let valid = NativeRepoMapResult {

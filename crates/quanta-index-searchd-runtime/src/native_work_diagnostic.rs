@@ -18,8 +18,8 @@ use quanta_index_core::index::{
     ports::TerminalCustodyPage,
 };
 use quanta_index_core::{
-    DiagnosticCaptureIdV1, DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1,
-    DiagnosticTraceRefV1,
+    DiagnosticCaptureIdV1, DiagnosticContextV1, DiagnosticLaneV1, DiagnosticSpanGuardV1,
+    DiagnosticStageV1, DiagnosticTerminalV1, DiagnosticTraceRefV1,
 };
 use quanta_index_kernel::QueryExecutionTimings;
 use serde::Serialize;
@@ -828,6 +828,40 @@ fn record_published_budget_span(budget: &WorkBudget) {
     let _finished = span.finish(DiagnosticTerminalV1::Ok);
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum OwnedControlPhase {
+    Grant,
+    ReplyHandoff,
+    WorkerQuiescence,
+    CatalogSettlement,
+    WorkerQueue,
+}
+
+/// Record control boundaries alongside the worker, whose execution span can
+/// already be closed. Operation lanes 3–7 are read by the offline worker report.
+pub(super) fn begin_owned_control(
+    context: Option<&DiagnosticContextV1>,
+    phase: OwnedControlPhase,
+    worker: Option<DiagnosticTraceRefV1>,
+) -> Option<DiagnosticSpanGuardV1> {
+    let context = context?;
+    let lane = match phase {
+        OwnedControlPhase::Grant => 3,
+        OwnedControlPhase::ReplyHandoff => 4,
+        OwnedControlPhase::WorkerQuiescence => 5,
+        OwnedControlPhase::CatalogSettlement => 6,
+        OwnedControlPhase::WorkerQueue => 7,
+    };
+    let span = crate::runtime_diagnostic_span(
+        context,
+        context.enter(DiagnosticStageV1::Operation, DiagnosticLaneV1(lane)),
+    )?;
+    if let Some(worker) = worker {
+        context.link(&span, worker);
+    }
+    Some(span)
+}
+
 /// Observe the original refusal before its execution/credit custody unwinds.
 /// This is local allocator context, not an operation-bound receipt or RSS.
 pub(super) fn record_memory_scope_refusal_if_enabled(
@@ -1087,6 +1121,7 @@ fn encode_owned(
                 UpdateKind::SourceAdvance(_)
                 | UpdateKind::SourceHistoryAdvance(_)
                 | UpdateKind::SourceResync { .. }
+                | UpdateKind::SourceHistoryResync { .. }
                 | UpdateKind::ProjectionAdvance(_)
                 | UpdateKind::HistoryAdvance(_)
                 | UpdateKind::HistoryAppend(_)

@@ -3025,9 +3025,11 @@ fn inspect(
                         return Err(IndexError::DigestConflict);
                     }
                     history_predecessors.push(NativeBootManifest {
+                        format_version: NativeBootManifest::FORMAT_VERSION_V1,
                         operation,
                         publication,
                         protected_source_routes: None,
+                        retired_projection_policy: None,
                     });
                     Ok(())
                 },
@@ -3397,8 +3399,10 @@ fn read_candidate(
     }
     let publication = boot_record::load_publication(connection, identity, budget)?;
     Ok(NativeBootManifest {
+        format_version: NativeBootManifest::FORMAT_VERSION_V1,
         operation: row.immutable,
         publication,
         protected_source_routes: None,
+        retired_projection_policy: None,
     })
 }

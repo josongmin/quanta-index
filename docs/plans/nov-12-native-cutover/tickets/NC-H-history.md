@@ -3,6 +3,21 @@
 <a id="current-nc-h-status--2026-11-21"></a>
 ## Current NC-H status · 2026-11-21
 
+- The existing local lanes verified Q Runtime 4/4, Q UDS retry 1/1,
+  S Original replay 2/2, S CLI compilation and S production Runtime
+  compilation. The [owner results](#current-actionable-backlog--2026-11-16-re-audit)
+  bind each check to its recorded inputs. The current S Legacy V2 source
+  matches the module that passed 7/7 on macOS. Current S Linux CLI and
+  signed installed acceptance remain deferred. The separately supplied
+  [Source/History Resync](#source-epoch-replacement-and-history-publication)
+  requires affected Q and S test execution.
+- The Native History and Legacy checkpoint readers now decode framed JSON
+  without building a temporary untyped body tree. The Q decoder reuses the
+  Source JSON prepass and the existing History typed body visitor. The
+  Legacy checkpoint reader borrows the body slice from the admitted frame
+  until its kind is available. Source JSON and the generic History serde
+  compatibility path retain their existing wire behavior.
+  [Framed JSON verification](#history-export-frame-json-budget--2026-11-23).
 - A follow-up Q Catalog audit found a missed single-workspace path in
   `boot_quiescence`: BOOT, Source-root readout and rollback could skip the
   global registered-row/orphan-root scan when no protected route was supplied.
@@ -99,11 +114,11 @@
   a captured 3,264-file Q source. The History fixture, query and replay
   leaves checked in this audit match that capture. A first whole-input scan
   found 96 differences from the live worktree and a second found 97 as shared
-  edits continued, including the test mount. A current-source four-case sweep is
-  **NOT_RUN**. The other three individual bodies are **NOT_RUN**: large
-  Original DELTA under 64 MiB, compact Original FULL/DELTA and reopen under
-  64 MiB, and superseded replay-memory retirement. The frozen 1/1 is neither
-  the four-case sweep nor signed install. A later Runtime4 request entered
+  edits continued, including the test mount. The earlier capture ran only
+  that one body. The later [owner results](#current-actionable-backlog--2026-11-16-re-audit)
+  record the 4/4 local sweep, including large Original DELTA, compact
+  Original FULL/DELTA and reopen, and replay-memory retirement.
+  An intervening Runtime4 request entered
   Cargo, but selected mount, SearchPlane,
   Kernel and Contract inputs changed during its 42-minute dependency build.
   The owned diagnostic run was stopped with zero bodies; its wrapper exit 126
@@ -113,14 +128,11 @@
   That frozen capture was not executed: a new checkout has a cold target,
   internal free space fell to about 43 GiB, the external SSD was absent, and
   other work held Q admission. The disposable snapshot was removed.
-- The existing S CLI owner request is routed to `history-source-readback`.
-  One new bounded owner run exited 1 before Cargo when
-  `search_plane_query_ports.rs` changed during raw source hashing;
-  current-source CLI compilation is **NOT_RUN**. Earlier S Required
-  DATA and production no-default results remain valid only for their recorded
-  frozen sources. The existing SSD lane and owner request were reused;
-  no signed Root or parallel compiler request was launched. Retry needs a
-  stable S/Q/GQLang source capture.
+- The S CLI owner request uses `history-source-readback`. An earlier
+  attempt exited 1 before Cargo when `search_plane_query_ports.rs`
+  changed during hashing. The later CLI compile passed on its recorded
+  frozen inputs. See the [owner results](#current-actionable-backlog--2026-11-16-re-audit)
+  for the S CLI, Required DATA and production no-default receipts.
 - H-INTEGRATE-01/04/05 installed assertions remain in the existing
   H-ACCEPT-01 fixture. F/Root verified Q 49/49 and the selected Legacy and
   Native Linux ELF inputs. The S shipping and private late-peak Linux checks
@@ -595,9 +607,154 @@
   supports that executed body. Catalog rerun
   `401e1d5a-bfc6-4959-a7eb-7d8b5dc0ffe4` ran 11/11 with exit 0. The 668-path
   preflight, admission, completion and live readback all match. The
-  Source exporter rerun remains on the shared Q lane. The later Lindera
-  lockfile change leaves the resolved Catalog and SearchPlane package and
-  feature graphs unchanged. It changes the Runtime graph.
+  Source exporter rerun entered Cargo after shared Q admission and
+  **FAILED** with exit 101 and zero bodies on the same two Q Graph
+  predecessor `unused-results` errors as S History DATA. Its manifest
+  changed on 17 paths before admission and four after admission. The later
+  Lindera lockfile change leaves the resolved Catalog and SearchPlane package
+  and feature graphs unchanged. It changes the Runtime graph.
+- The frozen Q exporter retry included the Graph repair and passed that
+  crate. It **FAILED** at exit 101 with zero bodies on unused `OperationStatus`
+  results in Kernel `update.rs` at lines 2477 and 2636. The raw terminal is
+  `/private/tmp/nc-h-close03-current.CweB4k/q-exporter-retry-output.log` and
+  the run released Q admission. B owns the affected owned-work changes.
+  The next retry seals the B repair in Q `a3dda0ea2` with overlay
+  `5642ed30a69e862ff6192a7dce81c39f`. Both Graph and Kernel repair files
+  match their captured digests. Its raw stream at
+  `/private/tmp/nc-h-after-kernel-fix.IT7Nzy/q-exporter-output.log` stopped
+  during compilation without a terminal or surviving exporter processes.
+  The recorded zero exit in that directory belongs to source capture.
+  The existing detached executor reused the same frozen source, selector
+  and warm `test-workspace-lane` with the approved shared lock. Nextest
+  `f541bfcd-f10a-4ba0-8af3-7a8b6018fa44` **VERIFIED** the single frame
+  budget and cancellation body (1 pass, 652 skipped, real exit 0).
+  Its raw stream and terminal are under `/private/tmp/nc-h-exporter-owned.3ismr9zy`.
+  After that Q terminal, H-CLOSE-03 entered the existing
+  `history-source-readback` admission with the same paired snapshot and
+  two-body owner request. The detached S executor's raw stream and receipt
+  escrow are under `/private/tmp/nc-h-s-data-owned.d9ur9h2r`. The S executor
+  ended at 18:38 KST with exit 75 and no canonical result because the
+  Source509 host compile-activity admission lock stayed occupied. Cargo
+  did not start and both S bodies are **NOT_RUN** for that attempt.
+  Source509 reached `STOPPED_ON_OWNER_FAILURE`, its controller exited,
+  and the host claim was released. The same S request was then resubmitted
+  once in `history-source-readback` on the existing paired snapshot.
+  Run `20261122T094844.703285Z-f0692c009f52` cleared admission and **FAILED**
+  with Cargo and executor exit 101, zero bodies and an owner `RED` result.
+  `quanta-runtime-analysis` could not resolve the recovered MayAlias member
+  and paid preimage module through its PTA intraprocedural facade. The
+  canonical receipt and raw terminal paths are recorded in
+  `/private/tmp/nc-h-s-data-post-source509.jstw6sq2/data-result.json`.
+- The existing QRA/PTA source owner for this boundary is M23-147 C
+  (`01a20228-a063-7463-bb45-70c06bd482ec`). Its ownership is recorded in
+  [the M23-147 C handoff](/Users/songmin/.codex/artifacts/scg-m23-147-parallel-20261122.yQQmVc/C.md).
+  The H feature closure enables `live-native-java-generation`,
+  `live-native-dfg-output`, `cfg-dfg-surface`, `runtime-cfg-dfg`, and
+  `pta-rail`. The failing frozen callers use the thin `intraprocedural`
+  facade. S `ccc94119317` routes the observed MayAlias callers and paid
+  preimage birth directly through `intraprocedural_owner`.
+  H retains one whole-target request `a10740d1c02c9248cd1ff50637c9022c`
+  in `history-source-readback` with class `0ac60ceaae02`.
+- Fresh S capture `60bdd170af3` includes the current QRA caller routes and
+  Q `187e9668a` with its fixed overlay. The owner request ID, Cargo argv,
+  and Runtime and QRA feature sets match the earlier run. Run
+  `20261122T102411.386113Z-9a2845f6434a` reached Cargo and compilation
+  **FAILED** (Cargo and owner exit 101, owner `RED`). The two History DATA
+  bodies are **NOT_RUN**, with zero witnesses in the receipt. QRA reported
+  three diagnostics. `pta_query_facade.rs:133` re-exports the member
+  through the private `intraprocedural_owner` module (`E0603`), and
+  `original_program_point_v3.rs:373,379` calls `consume_work_v1` with
+  `NativeAllocationAdmissionV3` out of scope (`E0599`). The previous
+  `E0432`, `E0433`, `E0412`, `E0614`, and `E0282` diagnostics did
+  not appear. The owner result, receipt and terminal log paths are in
+  `/private/tmp/nc-h-current-qra.drLVJy/owned/data-result.json`.
+- M23-147 C repaired all three compiler diagnostics in S `ff3c911222cd`.
+  The MayAlias query exposes the single recovered member type through the
+  existing Java-gated PTA facade. The program-point path imports
+  `NativeAllocationAdmissionV3` for the two existing budget charges.
+  The same H request retains the designated Q `187e9668a` overlay for
+  exact re-verification. S `ff3c911222cd` was paired with that overlay
+  using exact snapshot custody. The request ID, feature sets and Cargo argv
+  match the previous run.
+  Run `20261122T104013.874347Z-9de09aca5fd4` reached the
+  `quanta-runtime` library with none of the prior three QRA diagnostics.
+  Runtime compilation **FAILED** with 18 Rust diagnostics (Cargo and
+  owner exit 101, owner `RED`). Both Required History DATA bodies are
+  **NOT_RUN** (0/2 witnesses). The result and hash-bound receipt, stderr
+  and stdout are recorded in
+  `/private/tmp/nc-h-qra-repaired-pinned.uarcqlfr/owned/data-result.json`.
+  The diagnostics cover these Runtime boundaries:
+  - Native prepare and SDK resume reference a payload through the wrong
+    parent and a keeper through a disabled facade. The cold watch V12
+    method exposes an argument whose Runtime feature gate is absent.
+  - Cold parent transfer has two missing scoped-memory type references.
+    Change-event reconciliation omits the new pending memo argument in
+    `native_pending_transfer_v3::reconcile_v3`.
+  - Source closure issuance passes typed keys to a string-keyed API, and
+    one binding validation loop iterates an extra reference. Required
+    RepoMap preparation has an ambiguous conversion and Ordinary resume
+    omits the new `NativeRepoMapPublishedReplay` error variant.
+  - Native DELTA final handoff uses stale retained-artifact accessors and
+    omits prior required read data. Two Native semantic staging sites
+    require a serving-source lease capability that the supplied memory
+    group does not implement.
+- The H follow-up addresses three Runtime boundaries from that receipt.
+  Native source birth references the original execution keeper through
+  its internal owner module. Cold Watch RecordOnly activation shares the
+  V12 checkpoint birth's feature requirements, and the SDK published
+  indexing feature requests the Runtime artifact registry for that caller.
+  Targeted source capture borrows each canonical path as a string and
+  owns that string only in the input map passed to the issuance API.
+  The keeper and Watch changes are in S `7ea6d7273ab`. The path change
+  and the existing owner's Native preparation, pending transfer,
+  RepoMap, DELTA and V6 staging repairs are in the S `1fe07adb943`
+  source selected for the same whole-target request. The SDK feature
+  tree resolves the V12 caller's Runtime features. The existing H
+  Runtime and QRA feature sets are unchanged.
+- Run `20261122T113741.378748Z-a917d8e8537a` bound S `1fe07adb943`
+  to the existing Q `187e9668a` overlay and reused the same request,
+  Cargo arguments and feature closure. Compilation **FAILED** (Cargo
+  and owner exit 101, owner `RED`) before Runtime: S imports
+  `InstalledNativeRecoveryV2` from Q's shared installed-artifact trust
+  crate, and the pinned Q source does not export it (`E0432`). The
+  export exists in the Q working tree as of this check. The previously
+  frozen Q does not satisfy the new S dependency. Both DATA bodies are
+  **NOT_RUN** (0/2) in this attempt. It supplied no Runtime compile proof.
+  The result and its receipt-bound logs are recorded in
+  `/private/tmp/nc-h-runtime-repaired-pinned.fYmiMazA/owned/data-result.json`.
+- The compatible capture pairs S `1fe07adb943` with Q `252ec2ec7`
+  overlay `15bf9af2e2136a82b082e3d25f6549f3`. The validated sibling
+  carries `InstalledNativeRecoveryV2` and `NativeRepoMapPriorAffectedV1`.
+  The two Q files match the captured working bytes by SHA-256. The owner
+  request and reviewed Runtime/QRA feature sets match the previous run.
+  Run `20261122T114342.990945Z-9e514429e4ab` compiled and linked the
+  integration binary. The two-body harness started and aborted with SIGABRT
+  when the SDK failure-handoff test overflowed the libtest stack. QBC
+  recorded **FAILED**, exit 101 and zero completed witnesses. An isolated
+  replay of that exact binary passed the private-terminal budget body.
+  With an 8 MiB worker stack, the SDK failure-handoff body reached the
+  assertion and failed because it expected a plain writer rejection.
+  The Native History reader wraps `InvalidNotApplicable` in a preadmitted
+  typed Original failure. S `d75e8d6b987` uses the existing
+  synchronous large-stack harness and checks that exact History route and
+  cause at the writer and inside the SDK failure packet. The direct
+  coordinator check drops the error before measuring the DATA lifetime.
+  Result and receipt-bound logs are recorded in
+  `/private/tmp/nc-h-runtime-trust-paired.3BYnW4LJ/owned/data-result.json`.
+- H-CLOSE-03 is **VERIFIED** on S `d75e8d6b987` and Q `252ec2ec7`
+  overlay `15bf9af2e2136a82b082e3d25f6549f3`. Existing
+  `history-source-readback-snapshot-artifact` run
+  `20261122T121408.682064Z-b5d727533865` kept request
+  `a10740d1c02c9248cd1ff50637c9022c`, the reviewed compile class
+  `0ac60ceaae02`, and the two original selectors. The QBC receipt
+  records `GREEN`, Cargo exit 0 and both completed witnesses.
+  `persisted_required_data_survives_late_private_terminal_budget_refusal_v3`
+  verifies the persisted DATA path after the late private refusal.
+  `rejected_required_history_readback_reaches_sdk_failure_handoff_v93`
+  verifies the typed History refusal, unpromoted DATA ownership in the SDK
+  failure packet and refund after the last owner drops.
+  The published receipt, marker and raw terminal logs are under
+  `/private/tmp/nc-h-typed-oracle.AopXfi3R/owned/terminal/`.
 - S coordinator readback used to drop fresh Required DATA on writer or
   phase rejection before SDK failure handoff could take it. The coordinator
   now stages the existing pending slot before the read and releases it on
@@ -619,6 +776,37 @@
   imports the lifecycle types through their mounted portable module.
   The post-fix observation found no stable interval for another exact
   capture. Corrected-cohort DATA and CLI run remain **NOT_RUN**.
+- The Legacy restore-forward route without protected Source routes uses the
+  existing whole-root activation scope check before and after physical
+  readback. Catalog quiescence also rejects active RepoMap outside the
+  selected scope. The Linux Runtime library now exercises the existing
+  activation reader against real files for primary acceptance and sibling
+  refusal. Its body is **NOT_RUN**.
+- Native first-FULL cold Acked retry now transfers the coordinator's
+  Required readback into its Original failure packet when revalidation,
+  pin comparison, root restore or memo checkpoint work refuses. The
+  earlier coordinator-only regression now also checks the real retry
+  packet retains unpromoted DATA and releases funding at the last drop.
+  The same Required History owner target uses feature isolation
+  `quanta-runtime.no-default.0ac60ceaae02` for this branch. The previous
+  narrow profile omits the SDK workspace bundle and skips the cold retry
+  assertion. Package-scoped Cargo feature resolution confirmed both SDK
+  gates in the corrected request. Exact S `e796fb7b0fa` with Q overlay
+  ran `20261122T071110.826166Z-e894231a2587` in the existing History lane.
+  Cargo **FAILED** with exit 101 and zero bodies on two `unused-results`
+  errors in the live Q Graph predecessor file. Those inserts belong to the
+  [existing RepoMap DELTA lane](../../nov-20-native-cutover-closeout/tickets/LANES.md).
+  History test bodies and S CLI check remain **NOT_RUN**. CLI compilation
+  uses the same blocking Q Contract dependency.
+- The History owner test target now requires Original and the Python SDK
+  workspace bundle in Cargo. The named SDK failure-handoff test executes
+  its packet assertions unconditionally whenever the target is selected.
+  Locked offline Cargo metadata and package-scoped feature resolution show
+  the old profile lacks the required Python bundle and the History profile
+  supplies all four required features.
+  This body verifies the real retained failure packet and lease release.
+  The installed cold retry entry, pin and root restoration, memo backfill
+  and restart remain separate execution obligations.
 
 ## Current NC-H implementation map
 
@@ -638,7 +826,9 @@ and tests in those files.
 | S installed empty inventory, FULL→DELTA, lost ACK and restart | [Installed recovery fixture](/Users/songmin/Documents/code-new/semantica-codegraph-v2/crates/quanta-cli-server/tests/server_socket_daemon_e2e/native_offline_recovery_v1/scenario_v1.rs) · [Old and new Q readback](/Users/songmin/Documents/code-new/semantica-codegraph-v2/crates/quanta-cli-server/tests/server_socket_daemon_e2e/native_offline_recovery_v1/history_readback_v1.rs) · [ACK loss hook](/Users/songmin/Documents/code-new/semantica-codegraph-v2/crates/quanta-cli-server/src/native_history_ack_loss_process_proof_v1.rs) · [Existing 03.7 D/F intake](../../nov-20-native-cutover-closeout/tickets/03-signed-published-cp2.md#완료-조건) |
 
 Q Catalog 4 uses the command below. Q Runtime4 requires `process_readiness_owner_v1`;
-`just rust-test-native-history` selects the old-Q UDS and process cases. The
+`just rust-test-native-history` requires five named old-Q UDS bodies and adds
+the offline export body on Linux. It validates each completed body from
+Nextest events so a stale selector cannot silently reduce coverage. The
 Q BOOT modules and Runtime4 mount currently include untracked source files.
 Include those paths when capturing the existing owner proof inputs.
 
@@ -670,8 +860,18 @@ with exit 0 and matching observed inputs.
 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-catalog --lib --no-tests fail --no-fail-fast -E 'test(=native::authority::tests::read_ticket_holds_scratch_through_pin_seal_and_refunds_it) | test(=native::authority::tests::read_ticket_refuses_root_scratch_without_pin_or_leaked_lease) | test(=native::authority::tests::materialization_pin_is_atomic_and_does_not_extend_execution_claim) | test(=native::authority::tests::read_ticket_refuses_unbounded_or_unowned_view_rows_without_a_pin) | test(=native::authority::tests::live_pin_read_refuses_unfunded_scratch_and_preserves_lease) | test(=native::authority::tests::read_recovery_preserves_committed_cursor_when_retired_cleanup_lacks_memory) | test(=native::authority::tests::read_recovery_keeps_partial_session_cursor_and_retries_bounded_batch) | test(=native::authority::tests::read_session_open_intents_are_bounded_and_budget_atomic) | test(=native::authority::lifetime::read_attempt::tests::read_observation_refuses_unfunded_pin_scratch_before_advancing_clock) | test(=native::authority::lifetime::tests::widest_canonical_workspace_pin_is_accepted_and_corrupt_shapes_are_rejected) | test(=native::authority::lifetime::tests::retired_snapshot_rejects_corrupt_blob_shapes_without_deleting_tombstone)'
 ```
 
-**Current Q Runtime4 command · NOT_RUN.** This selects the no-default
-Runtime owner target in the existing Q lane.
+**Current Q Runtime4 command · VERIFIED 4/4.** This selects the no-default
+Runtime owner target in the existing Q lane. Nextest
+`6a988b77-fcb1-4851-99be-e7fed604315e` passed all four bodies, with
+248 skipped and exit 0. The 1,374 checked Rust/Cargo files matched between
+the in-run capture and completion as Q HEAD advanced from `11cc2785d8a3`
+to `b766fa676dfb`. The receipt applies to those observed source bytes.
+A transitive Semantic file outside that manifest,
+`quanta-index-semantic/src/native/embedding/ann_directory.rs`, changed
+around terminal publication. The four passes apply to the built binary.
+The terminal output was inspected before the host reboot. The transient
+`/private/tmp` file was absent after reboot.
+[Runtime fixture](../../../../crates/quanta-index-searchd-runtime/tests/e2e_auxiliary_catalog/history_native.rs#L332).
 
 ```sh
 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline --no-default-features -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --no-tests fail --no-fail-fast -E 'test(=e2e_auxiliary_catalog_history::history_native::native_history_full_delta_query_old_view_and_reopen) | test(=e2e_auxiliary_catalog_history::history_native::native_history_large_original_delta_reopens_under_64_mib) | test(=e2e_auxiliary_catalog_history::history_native::native_history_compact_original_full_delta_reopens_under_64_mib) | test(=e2e_auxiliary_catalog_history::history_native::native_history_replay_memory_retires_superseded_rows)'
@@ -689,10 +889,15 @@ replay regression on its recorded inputs.
 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-search-plane --lib --no-tests fail --no-fail-fast -E 'test(=auxiliary_authority::history_source::tests::source_replay_admits_large_delta_and_refunds_a_partial_refusal) | test(=auxiliary_authority::history_source::tests::native_history_successor_funds_next_identity_before_releasing_prior) | test(=native_history::large_row_tests::snapshot_restore_admits_generation_identity_before_scanning_rows)'
 ```
 
-**Q Source exporter frame refusal command · current cohort NOT_RUN.** This
-uses the Runtime library target in the same Q lane and requires no old-Q
-image. Run `4bd33309-ca38-4ad2-874b-1f416722f51e` executed one passing body
-while the Catalog input manifest changed.
+**Q Source exporter frame refusal command · VERIFIED on its frozen source.**
+This uses the Runtime library target in the same Q lane and requires no old-Q
+image. Run `f541bfcd-f10a-4ba0-8af3-7a8b6018fa44` passed one body with
+exit 0 on the captured Graph and Kernel repair overlay. The preceding
+Kernel `OperationStatus` compile failure exited 101 with zero bodies. Earlier run
+`4bd33309-ca38-4ad2-874b-1f416722f51e` executed one passing body while the
+Catalog input manifest changed. The selected frame body covers budget and
+cancellation refusal. Complete Source and RepoMap inventory export remains
+a separate execution obligation.
 
 ```sh
 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline --no-default-features -p quanta-index-searchd-runtime --lib --no-tests fail -E 'test(=native_product::history_checkpoint_export::source_v1::tests::source_frame_refuses_budget_and_cancellation_without_output)'
@@ -2217,6 +2422,215 @@ S/Q process acceptance. Signed installed migration remains **NOT_RUN**.
 
 ## Current actionable backlog · 2026-11-16 re-audit
 
+**H-CLOSE-01/02/04 follow-up · 2026-11-22.** The existing S lane resolved
+the three requested local operations on fixed S `9b22d1c9bf8` and Q
+`ff15e8172afc` overlay `20bed006fc2f773ea34c3c6206b4f00f`. CLI
+check `c9c34b69ff14f9e7e6fa1dc7743822db` reached Cargo. Run
+`20261122T130338.509436Z-46a49130a8a2` **FAILED**, exit 101, with two
+QRA `E0616` diagnostics for `field_cfg_phase_failure_v3`. Existing S
+`5c17585d21b` already scoped the field to the parent projection module
+used by the sibling caller. S `c0e0c267f6f` included that change and
+reached Runtime without those QRA diagnostics. The same CLI request
+in run `20261122T131651.045914Z-782627b33f62` **FAILED**, exit 101,
+with 12 diagnostics across five repairs. The CallGraph method now uses
+relative module visibility. Ancestry SQL explicitly selects the Store
+error type. Completed SDK readback imports the generation trait and
+consumes the validation view before transferring Required custody. The
+Original install refusal takes its first cause without moving the later
+failure slot. The next capture batches all five changes.
+[CLI result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-resolve.wp2EnOqC/cli/data-result.json>).
+[CLI retry result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-repaired.65j1H1n0/cli/data-result.json>).
+CLI Original replay request
+`63446d40adb1d494862dcc7326d7b2c5` selects the candidate History module
+with both JSON/compact retry and cancellation witnesses. Production
+compile remains the existing lib check
+`7a5d32463bc71f1b298bdf4c00199257`. The preceding S batch used
+`e6f4ffb37ccc+ovl-301681f09bbc1f381fa23aac3e54d24e` with the same
+sealed Q sibling. The owning lane runs CLI check, Original replay,
+and production check in that order. QBC recovered enough space to admit
+the CLI compiler invocation after falling below the 50 GiB and 2.75%
+activation requirements.
+[Frozen repair input for that batch](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-batched.Jkt3KlQb/source.json>).
+That batch's CLI run `20261122T134145.620440Z-1fd74f08cc06` returned
+**FAILED**, exit 101, with one `E0308` diagnostic in the signed ancestry
+seal schema reader. The earlier 12 diagnostics were absent. The signed
+`AstTransaction::query_row` now takes the empty argument slice by
+reference. The next batch resealed S
+`c002ad74ed9+ovl-3228655d518b7634994531553c518154` with the same Q sibling
+and the three original requests.
+[CLI result and raw log custody](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-batched.Jkt3KlQb/cli/data-result.json>).
+[Resealed source](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-seal-schema.xjz9iXvj/source.json>).
+The next CLI run `20261122T141008.658687Z-e8250569ba02` returned
+**FAILED**, exit 101, before Runtime on a separate `E0308` in the S
+retrieval-kernel's RepoMap publication caller. The new shared egress
+helper requires a borrowed Native UDS client. The caller now passes
+`&access.client`, preserving the same admitted request and budget.
+The same three owner requests were resealed on
+`b9c6ae2df6d+ovl-3eea5764a7a906d731b324e090be89fb` with both fixes and
+the same sealed Q sibling. CLI run `20261122T142433.660393Z-fe9442f67012`
+**FAILED**, exit 101, after reaching Runtime. The two transport
+diagnostics were absent. This source had two Rust 2021 let chains in
+PTA recovery and two duplicate writer-fence reexports. The live PTA
+fix keeps the original boolean gates around both failure takes. The
+existing Native cleanup owner removed the duplicate reexports in
+`07393a9619a`.
+The next serial proof fixed the two transport callers on S
+`c002ad74ed9+ovl-d580a8e19901c1e66f00310c6224903a` and used the same
+Q sibling. It **FAILED**, exit 101, in CLI run
+`20261122T150049.037062Z-05519cb22654`. The S caller already selected
+`ReadExactNativeCleanupCurrentHeadV2`. Its SQL and statement 263
+registration landed together in `f024f965d8c`. The next fixed input
+uses that revision plus the same two transport corrections,
+`f024f965d8c+ovl-c3c32820f0455d1b82acb912f83e6a29`, with the same Q
+sibling. It predates the separately landed PTA and cleanup errors.
+The validated source capsule carries all seven repaired source
+locations, the existing QRA fix, and both registered SQL files.
+[The f024 CLI result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-sql-cohort.Gx1Itc7s/cli/data-result.json>)
+is **FAILED**, exit 101, in `20261122T153325.603464Z-2f074d456642`.
+Runtime compiled. The downstream SDK session owner had two
+`unreachable-pub` diagnostics and one dropped callback `Result`.
+Existing S `53ddab9cb3b` scopes both accessors to their owner module
+and propagates the inner callback error. The production Runtime lib
+check **VERIFIED**, exit 0, in `20261122T160639.418133Z-f4c56d306c5e`
+on the fixed f024 input. The CLI attempt on the later full
+`53ddab9cb3b` tree **FAILED**, exit 101, in
+`20261122T161534.564636Z-0b8dd10adf84`. Its older SQL reader had four
+trailing-comma diagnostics and three inner-doc-comment diagnostics.
+The live SQL reader accepts a trailing separator and uses ordinary
+comments at the included module boundary.
+The CLI and Original replay now use the validated f024 Runtime/SQL
+base plus just the three SDK fixes and the two transport corrections.
+The same Q sibling is held in
+`f024f965d8c+ovl-31b2f9b681abbda10325c87be7c56bcf`.
+That owner attempt was **BLOCKED** before Cargo. QBC exited 1 with
+18.9 GiB / 1.0% available after automatic maintenance and no run ID.
+Admission requires at least 50 GiB and 2.75% on the existing artifact
+volume. A guarded incremental-only cleanup of the completed production
+target recovered about 16 GiB of free space. The production receipt and
+both raw logs still match their original hashes. CLI compilation and
+both Original replay bodies were **NOT_RUN** in that attempt.
+When the volume recovered to 94.49 GiB, the same two requests were
+queued with the same source capsule and feature class. The CLI retry
+`20261122T163532.240231Z-8dd7460e1ccd` **FAILED**, exit 101, after
+the SDK session owner compiled. The remaining compiler diagnostic was
+a Rust 2021 let chain in the CompletedAttach pointer check.
+An AST scan of 2,772 CLI and SDK Rust files identified that site, two
+exact-baseline comparisons and one test-gated cancellation probe.
+All four checks now use nested conditions. The pointer and baseline
+refusal strings, comparison sequence and cancellation gate are preserved.
+The scoped boundary and Rust 2021 parse checks passed. The CLI and
+Original requests use the expanded repair snapshot
+`f024f965d8c+ovl-425f34a33ad3dfdfe97465abc8386659` in the same lane.
+On that input, CLI run `20261122T170334.799567Z-7a92e050cc1c`
+**FAILED**, exit 101, in the SDK runtime executor. Of its 205 diagnostics,
+189 came from three bridge closures capturing owners that contained
+non-`Sync` recovery data. Those closures now capture the existing
+runtime/session handles, terminal reference and checkpoint values they
+need. The blocking bridge and its `Send` requirement stay intact.
+The remaining diagnostics were addressed at the canonical API imports,
+typed replay digest, committed Watch closure and rollback Code custody.
+The Watch read retains the Original pin validation and reads the exact
+snapshot ID and Source digest from the committed closure. The rollback
+mint uses the same admitted Code session through its fallible retain.
+Scoped boundary, Rust 2021 parse and diff checks passed. The same CLI
+and replay requests were resubmitted on
+`f024f965d8c+ovl-06a7dfaf20ffa7772e9c1b17ef8e8b85` with the existing Q
+sibling.
+The resubmitted CLI run `20261122T172919.799722Z-6cc8a5a55e8e` compiled
+through the SDK executor and stopped in CLI ingress, **FAILED**, exit
+101. The four ingress diagnostics are the IDE outcome annotation, two
+borrows across the IDE replay-state update, and a const panic formatter.
+The live fix gives the outcome closure its string type, borrows the
+existing submitter through its observation field, and uses a const-safe
+literal with the original panic text. Scoped boundary and parse checks
+passed. The CLI and Original replay use the same Q sibling and the
+fixed S snapshot `f024f965d8c+ovl-b7c5db8423e5211df97d376b01c0e09f`.
+That CLI run `20261122T175535.328801Z-a22ff0fbe105` cleared ingress
+and **FAILED**, exit 101, at the CLI binary with six diagnostics.
+macOS startup now uses the existing library socket-parent helper.
+The two provider types come through the existing ingress dependency,
+and three unused imports were removed. The next CLI and Original
+requests use `f024f965d8c+ovl-deda0679d99a786d432c080033d4eeba` and
+the same Q sibling. CLI **VERIFIED**, exit 0, in
+`20261122T182431.287276Z-c4208e5f9d37` with
+`dist-full,installed-product-authority`. The signed installed target
+remains deferred. On the same source the Original replay request
+`63446d40adb1d494862dcc7326d7b2c5` **FAILED**, exit 101 and 0/2
+bodies, in `20261122T184525.786571Z-86be1a0c6f30`. The binary test
+harness found three compile errors. The private publication commit
+helper now allows the parent module's fixture to call it, and the
+committed generation fixture validates the authority constructor's
+`Result` before issuance. Both repairs passed Rust 2021 parsing and
+scoped diff checks. The same owner request was resubmitted on the fixed
+S snapshot `f024f965d8c+ovl-7b87f11b3e385319a3858f407cfcfa63` and the
+same Q sibling. The host rebooted at 04:53 KST during Cargo compilation.
+Both bodies are **NOT_RUN** for that attempt. QBC normalized
+`20261122T191947.386875Z-eee16a6d7b5a` to exit 124 after detecting the
+dead owner PID. The compiler exit is null and no owner result was
+published. The original logs were preserved. The same request, source and
+warm target were submitted once after reboot. Run `20261122T213410.985224Z-4e68729b56dc`
+built the CLI test binary, then returned exit 125 with **NOT_RUN** (0/2).
+Its module selector matched no libtest names on macOS because the entire
+History module was gated on Linux. The macOS test harness now includes
+the same replay and immutable object staging functions. Snapshot export,
+installed transfers and publication orchestration remain Linux-gated.
+The test names and payload, identity and budget assertions are unchanged.
+The existing request was submitted on S `f024f965d8c+ovl-0100bc41…`
+with the same Q sibling. Run `20261122T222538.962949Z-e6535a942dfd`
+**FAILED**, exit 101, before executing either body. The portable test
+build found three references to `Duration` from one missing import.
+The test module now imports it directly. The existing owner request was
+resubmitted with S `f024f965d8c+ovl-6226e82a…` and the same Q sibling.
+The retry `20261122T231637.103774Z-42eab1cab035` is **VERIFIED**, exit 0
+and 2/2 on macOS. Both named witnesses executed in 1.94 seconds with
+237 other cases filtered. The JSON overflow test preserves
+cancellation. The JSON and compact CBOR retry test preserves the
+immutable object identity and refunds staged bytes. The QBC receipt and
+raw output match their custody hashes.
+[Verified Original replay result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-original-test-import.dycAcfb4/original-replay/data-result.json>).
+[Replay test import source](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-original-test-import.dycAcfb4/source.json>).
+[Portable compile result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-original-portable.z6xKTIPm/original-replay/data-result.json>).
+[Portable replay source](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-original-portable.z6xKTIPm/source.json>).
+[Selector refusal](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-original-reboot-retry.20261123-0633/original-replay/data-result.json>).
+[Interrupted attempt](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-original-harness-fixed.Smonijbj/original-replay/interrupted-20261123-host-reboot/observation.json>).
+[Original replay repair source](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-original-harness-fixed.Smonijbj/source.json>).
+[Original replay compiler result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-cli-bin-fixed.HhYA3vkE/original-replay/data-result.json>).
+[CLI admission log](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-sdk-leaf.DuwZ9EQO/cli/operator.log>).
+[Same-source compiler result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-capacity-retry.oqanxq98/cli/data-result.json>).
+[Expanded Rust 2021 repair source](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-sdk-complete-edition.qZSxlAMe/source.json>).
+[SDK executor compiler result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-sdk-complete-edition.qZSxlAMe/cli/data-result.json>).
+[SDK executor repair source](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-executor-fixed.7mPOarfd/source.json>).
+[CLI ingress compiler result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-executor-fixed.7mPOarfd/cli/data-result.json>).
+[CLI ingress repair source](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-cli-ingress-fixed.2FqB7KmF/source.json>).
+[CLI binary compiler result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-cli-ingress-fixed.2FqB7KmF/cli/data-result.json>).
+[CLI binary repair source](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-cli-bin-fixed.HhYA3vkE/source.json>).
+[Verified CLI compiler result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-cli-bin-fixed.HhYA3vkE/cli/data-result.json>).
+[S production result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-sql-cohort.Gx1Itc7s/production/data-result.json>).
+[Later SQL reader compiler result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-sdk-resolved.J7zazY2S/cli/data-result.json>).
+[S CLI and Original source](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-sdk-leaf.DuwZ9EQO/source.json>).
+[RepoMap compiler result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-seal-schema.xjz9iXvj/cli/data-result.json>).
+[Later CLI compiler result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-repomap-borrow.qWzNOJ0h/cli/data-result.json>).
+[Earlier fixed CLI result](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-fixed-base.EjcA0mp1/cli/data-result.json>).
+[Fixed S replay and compile input](</Volumes/Extreme SSD 1/build-cache/nc-h-close01-04-sql-cohort.Gx1Itc7s/source.json>).
+
+The existing Q Kernel first held the `test-workspace-lane` compile lock
+while the internal volume had approximately 548 MiB available. It released
+the lane at 22:39 KST. Q Runtime4 then passed **4/4** in
+`6a988b77-fcb1-4851-99be-e7fed604315e`. The existing Native overlay
+request released the same lane at 22:57 KST. The UDS retry then passed
+**1/1** in `7c17e7d7-3828-43a1-a7e5-48ff8d57b9ae` on the previously
+compiled RepoMap source. After that dependency changed, Nextest
+`9a2a521c-a90e-4e21-8308-68654fd083d8` passed **1/1**, exit 0, on Q
+`65ef552d702d`. It checks retirement of the FULL view and Catalog row,
+reopen on the successor DELTA, stable Published identity for the original
+FULL Submit, and `DigestConflict` on changed bytes. The 1,354 Rust/Cargo
+files consumed by this target and the Legacy reference binary matched
+their pre-run hashes at completion. Signed Linux installation and
+installed History acceptance remain deferred.
+The terminal output was inspected before the host reboot. The transient
+`/private/tmp` file was absent after reboot.
+[UDS fixture](../../../../crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/history.rs#L545).
+
 The six original closeout items are mapped below. The focused Q/S checks have
 recorded frozen results. Current-source qualification and the installed replay
 remain open. The installed parts of H-INTEGRATE-01/02/03/04/05 use the existing
@@ -2228,30 +2642,31 @@ Submit proof uses the separate existing UDS fixture.
 | Q Catalog single-workspace orphan-root guard · additional check | `boot_quiescence` now applies the canonical registered-row scan to the no-route BOOT, Source-root readout and rollback path. `single_workspace_boot_and_rollback_refuse_orphan_view_root` injects a checksummed root at a missing parent view, checks typed refusal and unchanged BOOT/root state, removes the row and checks acceptance. The current-source body **VERIFIED** 1/1 in Nextest `61d2f67d-6a74-4215-b711-c76aad391735` on the bound 382-file Q closure. F/Root must rebind this fix into its signed source. | Q Catalog owns code and the same existing lane; F/Root consumes the result without a second fixture. |
 | Q Catalog orphan-root/BOOT · additional check | Rerun `orphan_view_root_with_registered_workspace_refuses_current_and_retained_routes` and `protected_native_import_is_atomic_exact_and_retryable` on the current Catalog source. Earlier Nextest `a6dcf064-be31-4c9e-b4ce-ed2c3f5b30ec` passed 2/2 on its recorded source, before the current guard and callsite changes. Current-source bodies **VERIFIED** 2/2 in Nextest `61d2f67d-6a74-4215-b711-c76aad391735` on the bound Q closure. | Q Catalog owns the existing `test-workspace-lane` check. |
 | Q Catalog protected route/Source/export · closeout 03.7 | The six distinct bodies listed in [closeout 03.7](../../nov-20-native-cutover-closeout/tickets/03-signed-published-cp2.md#완료-조건) cover selected workspace floors, orphan protected rows, a second Source-key encoding, a foreign Work payload, an epoch-head floor, and an unrepresentable V1 History row. All six current-source bodies **VERIFIED** 6/6 in Nextest `61d2f67d-6a74-4215-b711-c76aad391735` on the bound Q closure. F/Root still needs this fix in its selected signed source. The closeout Catalog 19/19 uses different selectors and does not discharge this row or the two orphan-root/BOOT bodies above. | Q Catalog owns the existing lane; F/Root consumes its result without a duplicate fixture. |
-| H-CLOSE-01 · 1 | Verify the adopted S CLI History/RepoMap/SearchCorpus callbacks and Original JSON/compact replay staging | The caller passes all three callbacks with the Original aggregate's Required History receipt identity. The older `20261117T015405.067830Z-622e5e309813` receipt shows exit 101 before Rust compilation from a frozen-lock error; S `60dc03485e8` corrected that lock. An earlier SSD QBC receipt `20261120T071930.313723Z-a53bc5bfb5c5` for request `c9c34b69ff14f9e7e6fa1dc7743822db` exited 125 with zero Cargo bodies after source-capture drift. A later bounded owner attempt exited 1 before Cargo because live `search_plane_query_ports.rs` changed during raw hashing. Current owning CLI compilation and new Original replay bodies are **NOT_RUN**; neither source-capture exit is a compiler failure. | S CLI and resident candidate owners own callback and Linux checks. |
-| H-CLOSE-02 · 2 | Verify canonical checkpoint framing, FULL/DELTA reopen, replay memory return and a large DELTA under 64 MiB | Run `f366f01b-b802-471c-9b08-9196df56a1e2` passed the original two cases. The current four `e2e_auxiliary_catalog_history::history_native` bodies are `native_history_full_delta_query_old_view_and_reopen`, `native_history_large_original_delta_reopens_under_64_mib`, `native_history_compact_original_full_delta_reopens_under_64_mib`, and `native_history_replay_memory_retires_superseded_rows`. The first also checks a forged DELTA replay advance and **VERIFIED** 1/1 in `5a54ca77-a6a9-4b36-a1bf-d553d2d62382` on a later frozen Q cohort. Its 3,264-file capture differs from the live shared worktree; the current-source four-body sweep is **NOT_RUN**, as are the other three individual bodies. The earlier two-selector attempt in the old target had a compile refusal and an admission timeout. An admitted Runtime4 build was stopped after 42 minutes with zero bodies because selected inputs changed during compilation; the wrapper exit 126 after owned SIGINT is not a Rust failure. A fixed-HEAD capture of 742 dirty/untracked paths passed pre/post raw-hash comparison, but its cold target was not run: Q admission was held by other work, internal free space was about 43 GiB and the external SSD was absent. Runtime4 and UDS retry1 remain **NOT_RUN**. | Q Runtime owns the current no-default `process_readiness_owner_v1` target and existing no-default `native_index_uds` target in the canonical lane. |
-| H-CLOSE-03 · 3 | Verify S Required History DATA after a private-terminal budget refusal | The published receipt and stdout for `20261116T184029.973262Z-d3d4c6ba39a3` show 1/1 test body and Cargo exit 0 on the frozen source. The verification index records owner-level exit 125 for that run. Current-source execution is **NOT_RUN**. | S Runtime uses the existing `history-source-readback` lane and original class `7f44320823fb`. |
-| H-CLOSE-04 · 4 | Verify the S production no-default class | The reopened receipt and compiler log for `20261116T022818.404013Z-91bce8b69094` show **VERIFIED** compile, exit 0, on class `73ab9f2c701b` with `original-snapshot-v3,search-plane-sdk-ingress-product-proof`. Current-source compilation is **NOT_RUN**. | S Runtime uses the same production feature class. |
+| H-CLOSE-01 · 1 | Verify the adopted S CLI History/RepoMap/SearchCorpus callbacks and Original JSON/compact replay staging | The caller passes all three callbacks with the Original aggregate's Required History receipt identity. CLI **VERIFIED** compile, exit 0, in `20261122T182431.287276Z-c4208e5f9d37` on the fixed source above. Original replay **VERIFIED** 2/2, exit 0, in `20261122T231637.103774Z-42eab1cab035` on the fixed macOS test source. The two witnesses cover cancellation, retry object identity and staged byte return. | S CLI and resident candidate owners own callback and Linux checks. |
+| H-CLOSE-02 · 2 | Verify checkpoint framing, FULL/DELTA reopen, replay memory return and a large DELTA under 64 MiB | The four `e2e_auxiliary_catalog_history::history_native` bodies **VERIFIED** 4/4 with exit 0 in Nextest `6a988b77-fcb1-4851-99be-e7fed604315e`. The observed 1,374-file Rust/Cargo closure matched through completion while checked-out HEAD advanced. UDS retry **VERIFIED** 1/1 with exit 0 in `9a2a521c-a90e-4e21-8308-68654fd083d8` on Q `65ef552d702d`. | Q Runtime owns the no-default `process_readiness_owner_v1` target and the no-default `native_index_uds` retry target in `test-workspace-lane`. |
+| H-CLOSE-03 · 3 | Verify S Required History DATA after a private-terminal budget refusal and in the SDK retry failure packet | **VERIFIED** 2/2 on frozen S `d75e8d6b987` and Q `252ec2ec7` overlay `15bf9af2e2136a82b082e3d25f6549f3`. Run `20261122T121408.682064Z-b5d727533865` records owner `GREEN` and exit 0. Both the budget refusal and SDK failure-handoff witnesses executed. | Existing `history-source-readback` request `a10740d1c02c9248cd1ff50637c9022c`, class `0ac60ceaae02`. Installed/restart proof remains on H-ACCEPT-01. |
+| H-CLOSE-04 · 4 | Verify the S production no-default class | **VERIFIED** compile, exit 0, QBC run `20261122T160639.418133Z-f4c56d306c5e` on fixed S `f024f965d8c+ovl-c3c32820…` and the recorded Q sibling. The receipt and raw compiler log match their recorded hashes. Class `73ab9f2c701b` uses `original-snapshot-v3,search-plane-sdk-ingress-product-proof`. | S Runtime production request `7a5d32463bc71f1b298bdf4c00199257`. |
 | H-INTEGRATE-01 · 5 | Qualify authenticated SQL snapshot bootstrap when S originals are unavailable | The [ADR's pre-ingress inventory, checkpoint and FD3 handoff](../../../adr/NOV-12-001-native-query-and-semantic-engine.md#legacy-history-replay-during-cutover) are supplied. The signed fixture checks incomplete inventory refusal, seal, BOOT and the exact retained terminal for a Q-only cut with no S original. The installed body and production-root census, terminal ACKs and readback are **NOT_RUN**. | Q owns physical read and final verification. D owns launcher and S candidate preparation. S cutover journal owns the retained terminal. |
 | H-INTEGRATE-04 | Verify the adopted Source/History DELTA and retry across Q commit and S terminal append | Reuse the [Source/History CAS and V9 contract](../../../adr/NOV-12-001-native-query-and-semantic-engine.md#legacy-history-replay-during-cutover). Verify owning compilation and terminal persistence, then bind same-operation retry to the installed Published view, predecessor cut and immutable History input. Installed successor execution is **NOT_RUN**. | Q owns transition and CAS. S producer journal owns live/cold binding and terminal evidence. |
-| H-INTEGRATE-02/03 · installed subconditions | Ordered retained-generation FULL and same-candidate Published retry are source supplied. Q's earlier ordered-FULL component run `e50615f9-ce4a-4ea1-86cc-5ef8c1eeb76a` passed 4 selected cases. The Q UDS History fixture covers original Submit after Exact retirement (`native_index_uds/read_sessions/query/history.rs:772..840`); its earlier 1/1 receipt predates the current feature boundary, so its current-source body is **NOT_RUN**. The signed H fixture separately checks direct S History publication, launcher reuse and a second identical launcher build before selection; its Linux body is **NOT_RUN**. Candidate retention is disabled and the selection CAS input changes after cutover, so an installed same-candidate retry after Exact retirement is not a preselection acceptance condition. | H owns History input and retry assertion; D owns candidate orchestration; F owns the signed run. |
+| H-INTEGRATE-02/03 · installed subconditions | Ordered retained-generation FULL and same-candidate Published retry are source supplied. Q's earlier ordered-FULL component run `e50615f9-ce4a-4ea1-86cc-5ef8c1eeb76a` passed 4 selected cases. The Q UDS History fixture covers original Submit after Exact retirement and reopen ([History UDS fixture](../../../../crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/history.rs#L545)). Its local no-default body **VERIFIED** 1/1 in `9a2a521c-a90e-4e21-8308-68654fd083d8`. The signed H fixture checks direct S History publication, launcher reuse and a second identical launcher build before selection. That Linux body is **NOT_RUN**. Candidate mode has retention disabled. After cutover, the launcher uses a new selection CAS input. | H owns History input and retry assertion. D owns candidate orchestration. F owns the signed run. |
 | H-ACCEPT-01 · 6 | Qualify S producer → installed History FULL, successor DELTA and restart | `native-installed-history-full-delta-process-owner` selects `installed_native_history_full_then_delta_retains_generations_v1` on F's signed private retained bundle. The [History ADR](../../../adr/NOV-12-001-native-query-and-semantic-engine.md#legacy-history-replay-during-cutover) owns the exact two cuts, Source-bound successor, ACK-loss and restart oracle. The installed body is **NOT_RUN**. | [D](NC-D-boot.md) owns install and launcher. [F/Root](NC-F-integration.md) owns signed Linux execution. H owns the History fixture and writer. |
 | H-INTEGRATE-05 | Qualify installed cross-revision History | Q BOOT snapshot identity and installed-row rejection are **VERIFIED** in `4340d420-fc85-446b-8bfa-6a339a15739a`. The same-ordinal multi-revision inventory is **VERIFIED** in `3eccd731-5e31-4d07-915b-f18d56f9d63b`. The installed cross-revision cut is **NOT_RUN** and uses H-ACCEPT-01. | H owns History candidate targets and cross-revision proof. |
 
-**Current S admission.** H-CLOSE-01, H-CLOSE-03 and H-CLOSE-04 were routed to
+**S admission history before the 2026-11-22 compiler runs.**
+H-CLOSE-01, H-CLOSE-03 and H-CLOSE-04 were routed to
 the existing `history-source-readback` lane on the recovered SSD target.
 Their first owner runs were **BLOCKED** by the host compile-activity lock
 (exit 75, no Cargo execution). After the lock opened, three CLI retries with
 the existing SSD snapshot root exited 1 before Cargo. Concurrent Java and
 Taint input edits interrupted raw hashing or changed the live S/Q/GQLang
-source closure during capture. The two compiler checks and the Required DATA
-test body are **NOT_RUN**. On recheck, Q was still changing within the
+source closure during capture. The first attempts ran no compiler checks
+or Required DATA bodies. On recheck, Q was still changing within the
 S/Q/GQLang closure and the host lock was occupied again.
 When admission opened again, CLI request `c9c34b69ff14f9e7e6fa1dc7743822db`
 resolved on `history-source-readback` to `quanta-cli-server` with
 `dist-full,installed-product-authority`. Its SSD-backed run exited 1 before
 Cargo because the live S source changed during closure capture. Current CLI
-compilation and the two downstream S checks remain **NOT_RUN**. The host
+compilation and the downstream S checks were **NOT_RUN** at that point. The host
 lock was available on recheck and no run occupied the owning lane. S HEAD
 continued changing during the recheck, so the same capture was not retried.
 The latest `quanta-build-cli owner resolve` confirmed the same request ID
@@ -2802,7 +3217,8 @@ Root collected the Text single-queue terminal result:
 - Current input boundary: the History module mounts unconditionally in
   `native_index_uds`. `just rust-test-native-history` selects it with no
   default features and validates the pinned external old-Q binary and its
-  SHA-256. Current process verification is deferred.
+  SHA-256. The current local UDS result is in H-CLOSE-02 above.
+  Signed installed process verification is deferred.
 - fixture `searchd-runtime/tests/native_index_uds/read_sessions/query/history.rs`
   SHA256 `4213971c90321b0d816286ae714d460259dd1bab1217bdbe71332aefd7c5dfc2`
 - scope: fixed original batch/ACK input through actual History port, Kernel CAS,
@@ -3034,6 +3450,307 @@ The 22 full-file identities and superseded carrier identity are retained in the
 [recovery entry](../../../ARCHIVE-INDEX.md#2026-11-16-history-contract-and-text-plan-consolidation).
 They identify their original proof cohort, including concurrent owners' hunks;
 they neither assign exclusive ownership nor attest current shared-main bytes.
+
+## Source epoch replacement and History publication
+
+Working-tree Q adds `SourceHistoryResync` as request tag 9. It compares the
+prior producer epoch and History cut under the same expected Catalog View.
+The existing Source replacement and History-generation builders commit one
+View and one operation receipt. A stale Source epoch or invalid History
+generation leaves the old Source owners and History visible.
+
+The existing `source_and_next_history_generation_publish_in_one_view_and_reopen`
+exact in `rust-test-native-history` now covers both Advance and Resync. Its
+Resync case replaces the old owner, checks the new epoch and exact SourceRef
+after reopening Q, reads the next History cut and frozen inputs, and replays
+the same operation. The older History receipt predates this Resync case.
+S's V9 producer already builds the combined request from the staged Source
+Resync and Required History, retains the prior epoch and binds the owner census.
+The changed Q UDS body **VERIFIED** 1/1, exit 0, in Nextest
+`4e8fd36e-9962-4c36-9b6e-d4c609abe49c`. The test executed both Advance
+and Resync in 25.320 seconds on the local old-Q reference with its
+expected SHA-256. The Resync Contract, Kernel and UDS fixture bytes matched
+before and after. Concurrent ANN and other test inputs changed during the
+run, so this receipt applies to the built binary. Same-candidate installed
+multi-epoch acceptance remains deferred.
+[Q UDS result](</Volumes/Extreme SSD 1/build-cache/nc-h-resync-owner.OIsYrsN4/q-uds.log>).
+[S V9 producer](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/source_bound_projection_assembly/authority_assembly/prepared_aggregate_owner_pipeline_v1.rs:1860) ·
+[S owner selectors](/Users/songmin/Documents/code-new/semantica-codegraph-v2/tools/testing/suite-registry-v1.yaml:9006).
+
+The Q request decoder now has a focused Resync unit test. It removes the
+required History input from an otherwise valid request and checks that
+decoding reaches retained admission once, refuses the request as corrupt,
+and returns all bytes. The existing `test-workspace-lane` ran the production
+decoder, request preparation and staging modules with Q Contract and Core
+in a small macOS harness. All 12 unit tests passed in 0.01 seconds after
+a 46-second compile. The Q UDS publication and reopen test remains separate.
+[Unit test](../../../../crates/quanta-index-kernel/src/request_decode.rs#L873) ·
+[Unit output](</Volumes/Extreme SSD 1/build-cache/nc-h-resync-unit.pTtdC0Bs/unit.log>).
+The follow-up unit test exercises a valid Resync at the exact decode budget
+and one byte below it. It checks `ResourceLimited` and a full refund on
+refusal, and retained-byte accounting and refund on success. A one-byte
+undercharge in the diagnostic copy made the new test fail. The unmodified
+source passed **13/13** in the isolated macOS harness.
+[Boundary test](../../../../crates/quanta-index-kernel/src/request_decode.rs#L905) ·
+[Undercharge run](</Volumes/Extreme SSD 1/build-cache/nc-h-resync-budget-unit.qr1zQDly/undercharge.log>) ·
+[Current unit run](</Volumes/Extreme SSD 1/build-cache/nc-h-resync-budget-unit.qr1zQDly/isolated-unit.log>).
+The first frozen S wire run exited 101 before executing its body. An isolated
+resolver run identified one missing `quanta-runtime-analysis` dev dependency
+in `Cargo.lock`. The run adopted the existing S fix, retaining the same
+verified Q supplier overlay. The existing S wire, binding, and witness exact
+tests then **VERIFIED 3/3**, each with exit 0, on S `678089183fa2` and Q
+`70d17e3cb6cc+ovl-d2e61e1ff5ab`. The three receipts share source digest
+`fa9633e7e4a26d20368572148f30e4fd24d191a40e5ac8eeaa2c0fab83182f1f`.
+[Initial S receipt](</Volumes/Extreme SSD 1/build-cache/nc-h-resync-owner.OIsYrsN4/s-wire-result.json>) ·
+[S wire](</Volumes/Extreme SSD 1/build-cache/nc-h-resync-owner.OIsYrsN4/s-wire-fixed-result.json>) ·
+[S binding](</Volumes/Extreme SSD 1/build-cache/nc-h-resync-owner.OIsYrsN4/s-binding-result.json>) ·
+[S witness](</Volumes/Extreme SSD 1/build-cache/semantica-codegraph-v2-target/quanta-build-cli/_state/execution-roots/semantica-codegraph-v2-4250cacec3df/lanes/history-source-readback-snapshot-artifact/verification-results/20261123T031042.670539Z-4f51b054ac49/receipt.json>).
+
+## History export frame JSON budget · 2026-11-23
+
+S uses the bounded Q JSON decoder for Native History and protected History
+frames. The Q direct path handles a body before its kind without entering the
+generic serde body replay. The Legacy checkpoint V2 receiver separately
+borrows the framed JSON body and dispatches directly to the selected typed
+payload. Its completion and frame rejection paths retain the memory grant
+until the decoded value is dropped.
+
+- Q Contract library **VERIFIED** 485/485, exit 0, Nextest
+  `ab5d681b-9991-40a0-b4dc-1f04c266c4e6`. The existing
+  `test-workspace-lane` used Q `70d17e3cb` with only the decoder,
+  tests and API baseline overlaid. The live attempt failed before tests
+  because of an unused result in the new H regression and another in a
+  concurrent Source join test. The owned regression was corrected.
+  The focused no-replay test checks a valid 64 KiB Native chunk.
+  [Q test output](</Volumes/Extreme SSD 1/build-cache/nc-h-frame-codec-q.kUrw8fvl/contract-projection.log>).
+  The Contract API check matched the new History method against the updated
+  baseline. The package gate **FAILED** on pre-existing API drift outside
+  this method.
+  [API output](</Volumes/Extreme SSD 1/build-cache/nc-h-frame-codec-q.kUrw8fvl/public-api.log>).
+- The exact S `checkpoint_stage_v1/wire_v2.rs` module **VERIFIED** 3/3,
+  exit 0, in a macOS diagnostic with the Q overlay, the same S module
+  bytes and the S-vendored serde_json `raw_value` feature. It verifies
+  body borrowing from the original frame buffer, typed page and
+  chunk decoding, and malformed frame rejection. The separate owning
+  Linux CLI test request `b8575d4ef55de9c89018d00e3d77fc0f` is
+  **NOT_RUN**. Installed Linux acceptance remains deferred.
+  [S codec test output](</Volumes/Extreme SSD 1/build-cache/nc-h-frame-codec-q.kUrw8fvl/s-wire.log>).
+- The Legacy V2 body-first decoder now validates the original envelope
+  without retaining a replay tree. The original adjacent-tag decoder
+  refused out-of-range numbers, unpaired surrogate escapes and nesting
+  beyond the JSON recursion limit, even inside ignored body fields.
+  Each regression reproduced before its fix (exit 101). The exact S
+  module passed all 6 tests after both fixes (exit 0) in the macOS
+  diagnostic. The tested module SHA-256 is
+  `093511320d461aae974246957712ac61ee231bbfb674c6c28f26ca41d99abbdf`.
+  [Scalar RED](</Volumes/Extreme SSD 1/build-cache/nc-h-codec-tdd.aEB1K9Ke/red.log>) ·
+  [Recursion RED](</Volumes/Extreme SSD 1/build-cache/nc-h-codec-tdd.aEB1K9Ke/recursion-red.log>) ·
+  [Final GREEN](</Volumes/Extreme SSD 1/build-cache/nc-h-codec-tdd.aEB1K9Ke/wire-final.log>).
+- A Legacy completion unit test now checks both field orders and verifies
+  the typed generation, root, epoch, digest, count and exact terminal ACK.
+  Omitting the ACK is rejected. The isolated macOS module ran **7/7**.
+  Both follow-up unit harnesses used separate targets from the active Runtime
+  build after shared admission timed out. They built serially with one job.
+  [Completion test](/Users/songmin/Documents/code-new/semantica-codegraph-v2/crates/quanta-cli-server/src/native_candidate_prepare_v1/history_snapshot_v1/checkpoint_stage_v1/wire_v2.rs:257) ·
+  [Current codec output](</Volumes/Extreme SSD 1/build-cache/nc-h-legacy-complete-unit.xmqDHa2u/isolated-unit.log>).
+
+## Maintained History test gates · 2026-11-23
+
+The S gate `ag5-history-required-data-cold-full-retry-owner` now selects the
+whole `history_required_terminal_budget_owner_v3` integration target and
+requires both test names. The old library test wrapper was redundant with
+the integration target and has been removed. The four-feature class and
+the Just entry point remain the same. Registry resolution found two tests.
+The witness validator accepted the two original passed names and rejected
+an incomplete result containing only the first. The original execution is
+recorded separately in H-CLOSE-03.
+[S gate registry](/Users/songmin/Documents/code-new/semantica-codegraph-v2/tools/testing/suite-registry-v1.yaml) ·
+[Resolve output](</Volumes/Extreme SSD 1/build-cache/nc-h-history-gate.7nRxiK3D/s-required-history-resolve-recheck.log>).
+
+The three required S `SourceHistoryResync` suites now have a literal runner
+in `justfiles::gates::gate-native-source-history-resync-owners`. It invokes
+the registered wire, binding and witness selectors once each. This wiring
+uses the exact selectors already exercised on the recorded S/Q input above.
+All three selectors resolved to one expected test each. The pre-fix wiring
+reported all three runners missing. The current audit found runners for all
+six required S History suites, including the two Git suites in the existing
+Linux Watchman gate. The scoped consumer and exact-witness check passed **9/9**.
+[S Resync gate](/Users/songmin/Documents/code-new/semantica-codegraph-v2/justfiles/gates.just:546) ·
+[S regression tests](/Users/songmin/Documents/code-new/semantica-codegraph-v2/tools/testing/tests/test_history_required_suite_contract_v1.py) ·
+[S regression output](</Volumes/Extreme SSD 1/build-cache/nc-h-history-gate-followup.Ql8zAEr9/s-history-regression.log>).
+
+The Q History recipe requires the platform's full roster from Nextest
+terminal events. The fixture-producer recipe now checks the same old-Q
+path and digest before building. Regression tests verify complete and
+missing-body results, and the platform-specific target selection.
+The gate and Nextest event checks passed **76/76**. The local recipe timed
+out before Cargo admission, so the five selected macOS bodies ran directly
+from the existing UDS test binary with the hash-checked old-Q executable.
+All five passed in 204 seconds. The Linux branch selected six names in a
+gate diagnostic. Its Linux exporter body remains unexecuted in this run.
+[Q recipe](../../../../Justfile#L474) ·
+[Gate tests](../../../../tools/ci/tests/test_circleci_authority.py) ·
+[Gate test results](</Volumes/Extreme SSD 1/build-cache/nc-h-history-gate.7nRxiK3D/q-gate-pytest-final.log>) ·
+[Q UDS output](</Volumes/Extreme SSD 1/build-cache/nc-h-history-gate.7nRxiK3D/q-existing-uds-bodies.log>).
+
+The no-default Q process readiness recipe now performs the same Legacy
+path and SHA-256 check before Cargo. Its mounted History and recovery
+bodies use that executable. The local readiness and DSL fixture recipes
+both refuse missing inputs and mismatched digests before building. The
+gate, event and retirement checks passed **93/93** in the follow-up.
+The follow-up invocation of the full Q History recipe timed out after 600
+seconds waiting for the shared build lock. It returned exit 124 before
+Cargo, with zero new bodies executed. The recorded macOS binary result
+above still covers the five bodies from that build.
+[Readiness recipe](../../../../Justfile#L332) ·
+[Follow-up gate tests](</Volumes/Extreme SSD 1/build-cache/nc-h-history-gate-followup.Ql8zAEr9/q-gate-pytest.log>) ·
+[Q lock timeout](</Volumes/Extreme SSD 1/build-cache/nc-h-history-gate-followup.Ql8zAEr9/q-gate.log>).
+
+The closeout recheck passed **Q 93/93** and **S 9/9**. The first Q recheck
+observed one catalog failure while the separate RepoMap retirement removed
+`repo_map_end_to_end.rs`. The existing owner removed the obsolete mount and
+catalog entries, and the same Q check passed in full afterward.
+[First Q run](</Volumes/Extreme SSD 1/build-cache/nc-h-history-gate-closeout.DWnNkka1/q-fast-gates.log>) ·
+[Q recheck](</Volumes/Extreme SSD 1/build-cache/nc-h-history-gate-closeout.DWnNkka1/q-fast-gates-recheck.log>) ·
+[S recheck](</Volumes/Extreme SSD 1/build-cache/nc-h-history-gate-closeout.DWnNkka1/s-fast-gates.log>).
+
+The closeout retry used the pinned old-Q executable and the same
+`test-workspace-lane`. It timed out at **14:31 KST** after waiting **1,800
+seconds** for shared build admission. The holder was still compiling. The
+command returned **exit 124** before Cargo and ran **0/5** macOS History
+bodies. The earlier **5/5** remains evidence for its existing binary.
+[Closeout retry log](</Volumes/Extreme SSD 1/build-cache/nc-h-history-gate-closeout.DWnNkka1/q-gate.log>).
+
+## History owner gate audit · 2026-11-23
+
+The Linux Candidate parser suite carried two obsolete multiactive Source
+test names. The S source resolver reported **2 unresolved of 3** before
+the registry fix. The optional Linux owner gate now runs this parser suite
+and the seven Legacy History checkpoint codec tests with the existing CLI
+bin class `quanta-cli-server.no-default.1e9ebdacdb1c`. The codec child had
+an implicit module path under a parent loaded with `#[path]`. Rust reproduced
+`E0583` for that layout. An explicit child path now resolves every codec
+test through the production CLI module. The focused S checks passed
+**11/11**. The byte-identical codec module passed **7/7** in its existing
+isolated macOS binary. The Linux owner binary and signed installation proof
+are **NOT_RUN**.
+[S Linux owner gate](/Users/songmin/Documents/code-new/semantica-codegraph-v2/justfiles/gates.just:553) ·
+[S checkpoint module](/Users/songmin/Documents/code-new/semantica-codegraph-v2/crates/quanta-cli-server/src/native_candidate_prepare_v1/history_snapshot_v1/checkpoint_stage_v1.rs:32) ·
+[S scoped output](</Volumes/Extreme SSD 1/build-cache/nc-h-owner-audit.QAbLAKAE/s-history-gates-recheck.log>) ·
+[S isolated codec output](</Volumes/Extreme SSD 1/build-cache/nc-h-owner-audit.QAbLAKAE/s-codec-isolated-replayed.log>).
+
+`just rust-test-native-history-owners` selects seven named Catalog bodies
+and three Kernel decoder bodies in the existing Q lane. It checks the
+completed test identities and fails if a required body is omitted even when
+Nextest exits zero. These owner lib targets use no installed or old-Q
+executable. The shared witness parser also accepts real libtest-json-plus
+events from a disposable Nextest library probe. Q fast checks passed
+**95/95**. The full owner lane is awaiting shared build availability.
+[Q owner gate](../../../../Justfile#L524) ·
+[Q fast output](</Volumes/Extreme SSD 1/build-cache/nc-h-owner-audit.QAbLAKAE/q-owner-gates.log>).
+
+The Kernel cancellation regression now checks both ProjectionAdvance and
+SourceHistoryResync before admission and after reserving retained bytes.
+It requires a typed cancellation and a full refund. The current decoder
+module ran **13/13** in an isolated macOS diagnostic linked against the
+recorded cached Contract and Core artifacts. A scratch copy that reclassified
+the Resync cancellation as corruption failed the strengthened test.
+[Decoder test](../../../../crates/quanta-index-kernel/src/request_decode.rs#L934) ·
+[Diagnostic output](</Volumes/Extreme SSD 1/build-cache/nc-h-owner-audit.QAbLAKAE/q-kernel-diagnostic-green.log>) ·
+[Mutation output](</Volumes/Extreme SSD 1/build-cache/nc-h-owner-audit.QAbLAKAE/q-kernel-diagnostic-red.log>).
+
+The S static regression now resolves all five required exact History tests
+through their Cargo library roots. For Required DATA it checks the declared
+integration target path and features, the two executable names and the full
+source test count. The check rejects both renaming a listed test and adding
+an undeclared test in a scratch target. The focused Python checks passed
+**12/12** without compiling Rust. The current S Candidate audit index also
+points to the Linux parser and checkpoint recipe with the current Source-only
+policy and its Linux execution still pending.
+[S source and consumer regression](/Users/songmin/Documents/code-new/semantica-codegraph-v2/tools/testing/tests/test_history_required_suite_contract_v1.py) ·
+[S scope output](/tmp/nc-h-owner-local.RCYNrxF1/s-history-regression.log) ·
+[S mutation output](/tmp/nc-h-owner-local.RCYNrxF1/s-history-source-negative.log) ·
+[Q fast recheck](/tmp/nc-h-owner-local.RCYNrxF1/q-fast-recheck.log).
+
+The next Q owner run entered the existing `test-workspace-lane` from the
+internal cache after the external SSD detached. The Catalog test binary
+failed to compile because the shared `quanta-index-contract` retirement
+decoder returned a borrowed view without identifying its lifetime
+(`E0106`). The run returned **exit 101**, with **Catalog 0/7** and **Kernel
+0/3**. The in-progress retired-projection decoder is part of the separate
+Product retirement work. The view borrows only the supplied payload bytes.
+The owner gate is ready to rerun once that Contract input is stable.
+[Q owner terminal](/tmp/nc-h-owner-local.RCYNrxF1/q-owner.log) ·
+[Retirement dependency record](../../nov-20-native-cutover-closeout/tickets/07-product-qualification.md#L234).
+
+The shared Contract decoder now ties the returned view lifetime to its
+payload. A scratch compile reproduced `E0106` on the former signature and
+ran the decoder's two existing tests after applying only the lifetime fix.
+The canonical Q owner gate was resubmitted once with the corrected Contract.
+[Scratch compiler refusal](/tmp/nc-h-contract-lifetime.5NIU9EVs/before.log) ·
+[Scratch decoder result](/tmp/nc-h-contract-lifetime.5NIU9EVs/after.log) ·
+[Q owner retry](/tmp/nc-h-owner-after-lifetime.hIJKJie6/q-owner.log).
+
+The retry compiled Contract and reached the Catalog test crate. Thirteen
+terminal-custody fixture calls still passed six protection slots after the
+reader moved to seven. The fixtures now infer the array width from the
+reader. A new assertion in the existing custody test checks that the final
+slot protects the matched operation object before bytes are charged. The
+production SQL probe returned the object when that slot was empty and
+excluded it when the slot contained the reference.
+
+The next run `b641ff4e-ab8f-48c0-a339-3214980f4dd9` executed seven Catalog
+tests, with **6 passed and 1 failed**. The quiescence fixture injected a
+1 MiB payload and expected budget refusal even though the row-width cap is
+4 KiB. It now compares two malformed payloads within the admitted width.
+The assertions require the exact payload byte delta, a checksum refusal
+with sufficient budget and `ResourceLimited` for the larger row under the
+smaller row's budget. Both current and historical Source reads are checked,
+along with the historical rollback path. The stored payload length is
+unchanged after refusal. The first retry stopped before compilation with
+**exit 102** because `--locked` detected Manifest and lockfile drift.
+Both files were updated by the existing work and the same locked metadata
+command passed. The owner gate was resubmitted once on the reconciled inputs.
+[Catalog compiler output](/tmp/nc-h-owner-after-lifetime.hIJKJie6/q-owner.log) ·
+[First body result](/tmp/nc-h-owner-after-custody.iANkSiEU/q-owner.log) ·
+[Protected slot SQL probe](/tmp/nc-h-owner-after-custody.iANkSiEU/q-custody-sql-probe.log) ·
+[Locked metadata refusal](/tmp/nc-h-owner-width-boundary.2VFGOqRf/q-owner.log) ·
+[Reconciled owner gate](/tmp/nc-h-owner-lock-synced.klFuMqBt/q-owner.log).
+
+The reconciled run `231bfe91-1837-4db4-b1df-bdd211962131` passed all
+**7/7 Catalog** bodies, including the corrected byte-admission test. The
+test source SHA-256 matched the pre-admission copy. A separate policy-only
+BOOT test was added afterward. Removing that addition reproduces the
+executed fixture's source SHA-256. The same compiled
+Catalog test binary separately passed the terminal-custody fixture **1/1**,
+including the final protection slot. The Kernel phase of the same recipe
+ran `eada82f8-4f75-41e2-a855-8acd45ed9c7e` and passed **3/3**. The full recipe
+returned **exit 0**. The Kernel test source and custody fixture matched
+before and after. The shared Cargo lock and Contract input changed while
+the request was alive. These are test results for the binaries that ran.
+[Catalog result](/tmp/nc-h-owner-lock-synced.klFuMqBt/q-owner.log) ·
+[Custody fixture result](/tmp/nc-h-owner-lock-synced.klFuMqBt/q-custody-runtime.log) ·
+[Fixture source comparison](/tmp/nc-h-owner-lock-synced.klFuMqBt/q-catalog-fixture-after-neighbor.log).
+
+The S Linux Candidate gate now selects Native→Native inventory tests for
+exact zero completion, memory refund, and foreign, ambiguous or repeated
+members. The empty case now rejects a zero completion for another repository.
+The portable Original replay gate selects the existing retry identity and
+cancellation tests on Linux and macOS. Both suites use the explicit bin
+feature class `quanta-cli-server.no-default.1e9ebdacdb1c`. A resolve-only
+attempt with the old feature pair refused the Original bin because
+`daemon-runtime` is required. The source regression now checks the Cargo
+bin manifest alongside the witness names.
+
+The S fast scope passed **14/14**. The three Native inventory bodies passed
+in a macOS diagnostic built from the selected production functions and
+cached Q dependencies. The foreign-repository assertion failed when the
+repository comparison was removed from the diagnostic. Current Linux CLI
+execution and installed qualification remain separate.
+[S gates](/Users/songmin/Documents/code-new/semantica-codegraph-v2/justfiles/gates.just:553) ·
+[Inventory diagnostic](/tmp/nc-h-native-history-inventory.GnUV5d48/green.log) ·
+[Foreign-repository mutation](/tmp/nc-h-native-history-inventory.GnUV5d48/red.log) ·
+[S fast scope](/tmp/nc-h-native-history-inventory.GnUV5d48/s-history-gates-final.log).
 
 ## Retired section links
 

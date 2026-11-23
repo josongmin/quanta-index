@@ -19,29 +19,10 @@ fn check_sealed_result(
 ) -> TestResult {
     require_equal(&result.view, &selected, "sealed ANN selected view")?;
     require_equal(&result.instance, &instance, "sealed ANN instance")?;
-    require_equal(
-        &result.coverage.instance,
-        &instance,
-        "sealed ANN coverage instance",
-    )?;
-    require_equal(
-        &result.coverage.status,
-        &CoverageStatus::Complete,
-        "sealed ANN coverage",
-    )?;
-    require_equal(
-        &result.coverage.desired.root,
-        &expected_source_owners,
-        "sealed ANN selected source root",
-    )?;
-    require_equal(
-        &result.coverage.covered,
-        &Some(result.coverage.desired),
-        "sealed ANN covered input binding",
-    )?;
-    require(
-        result.coverage.searchable.is_some(),
-        "sealed ANN searchable root absent",
+    super::ann_quality::check_complete_ann_coverage(
+        &result.coverage,
+        instance,
+        expected_source_owners,
     )?;
     require(
         matches!(

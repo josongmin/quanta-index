@@ -9,6 +9,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::owned_fd_close::close_owned_file;
 use quanta_index_catalog::{CatalogIoAdmission, CatalogIoScope, CatalogReadOnlyIoAdmission};
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::publication_admission::CatalogPublicationFundingScope;
@@ -20,7 +21,6 @@ use quanta_index_core::{
     },
     publication_capacity::InodeKey,
 };
-use rusqlite::ffi::quanta_capacity_vfs::close_owned_file;
 use rustix::fs::OFlags;
 
 use crate::{

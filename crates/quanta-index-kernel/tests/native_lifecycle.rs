@@ -8,6 +8,8 @@
     clippy::panic_in_result_fn,
     reason = "integration assertions are independent behavior oracles inside Result-returning test functions"
 )]
+#[path = "native_lifecycle/lexical_cold_source_advance.rs"]
+mod lexical_cold_source_advance;
 #[path = "common/native_catalog_profile.rs"]
 mod native_catalog_profile;
 #[path = "native_lifecycle/searchable_preparation.rs"]
@@ -972,7 +974,7 @@ fn staged_mutation_pages_reject_duplicate_count_and_stale_ingress() -> TestResul
 #[test]
 fn mutation_pages_allow_cross_page_key_reordering_with_canonical_seal() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let (engine, objects, _catalog) = kernel(directory.path())?;
+    let (engine, objects, catalog) = kernel(directory.path())?;
     let _genesis = engine.create_workspace(workspace(), 1, &mut budget())?;
     let ingress = engine.begin_input(operation(1))?;
     let mutation = |id| OwnerMutation {
@@ -990,16 +992,43 @@ fn mutation_pages_allow_cross_page_key_reordering_with_canonical_seal() -> TestR
         &high_page,
         &mut budget(),
     )?;
+    let persisted_root = high_root
+        .0
+        .ok_or("first mutation page returned an empty root")?;
+    drop(engine);
+    drop(objects);
+    drop(catalog);
+
+    let (engine, objects, catalog) = kernel(directory.path())?;
+    let other_ingress = engine.begin_input(operation(2))?;
+    assert_eq!(
+        catalog.reopen_source_stage_ingress_v1(
+            other_ingress.operation,
+            persisted_root,
+            &mut budget(),
+        ),
+        Err(IndexError::InvalidInput(
+            "Source stage root is not confirmed by its ingress".into(),
+        )),
+    );
+    let reopened =
+        catalog.reopen_source_stage_ingress_v1(ingress.operation, persisted_root, &mut budget())?;
+    assert_eq!(reopened.operation, ingress.operation);
+    assert!(reopened.fence > ingress.fence);
+    assert_eq!(
+        catalog.reserve_inputs(ingress, &[]),
+        Err(IndexError::FenceLost)
+    );
     let low = mutation(1);
     let complete_root = engine.stage_mutation_page(
-        ingress,
+        reopened,
         high_root,
         std::slice::from_ref(&low),
         &mut budget(),
     )?;
     assert!(matches!(
         engine.stage_mutation_page(
-            ingress,
+            reopened,
             complete_root,
             std::slice::from_ref(&mutation(2)),
             &mut budget()
@@ -1007,10 +1036,10 @@ fn mutation_pages_allow_cross_page_key_reordering_with_canonical_seal() -> TestR
         Err(IndexError::Conflict)
     ));
     assert!(matches!(
-        engine.seal_mutations(ingress, complete_root, 128, &mut budget()),
+        engine.seal_mutations(reopened, complete_root, 128, &mut budget()),
         Err(IndexError::InvalidInput(_))
     ));
-    let sealed = engine.seal_mutations(ingress, complete_root, 129, &mut budget())?;
+    let sealed = engine.seal_mutations(reopened, complete_root, 129, &mut budget())?;
     let mut expected = quanta_index_core::index::OwnerMutationDigest::default();
     for id in 1..=129 {
         expected.push(&mutation(id))?;
@@ -8427,6 +8456,20 @@ fn native_text_services(
     inventory_batch_limit: usize,
     io_observer: &Arc<quanta_index_storage::ObjectIoObservation>,
 ) -> TestResult<(CostKernelFixture, InstanceSpec)> {
+    native_text_services_with_batch_policy(
+        root,
+        inventory_reuse_limit,
+        Some(inventory_batch_limit),
+        io_observer,
+    )
+}
+
+fn native_text_services_with_batch_policy(
+    root: &std::path::Path,
+    inventory_reuse_limit: usize,
+    inventory_batch_limit: Option<usize>,
+    io_observer: &Arc<quanta_index_storage::ObjectIoObservation>,
+) -> TestResult<(CostKernelFixture, InstanceSpec)> {
     use quanta_index_lexical::native::{NativeTextIndex, TextRecipe};
     let scratch = Arc::new(quanta_index_storage::FileScratchSpace::open_standalone(
         root.join("scratch"),
@@ -8453,6 +8496,12 @@ fn native_text_services(
         policy: recipe.output_policy(),
         ..spec()
     };
+    let text_index =
+        NativeTextIndex::new(recipe).with_inventory_reuse_limit(inventory_reuse_limit)?;
+    let text_index = match inventory_batch_limit {
+        Some(limit) => text_index.with_inventory_batch_limit(limit)?,
+        None => text_index,
+    };
     let mut registry = AdapterRegistry::new();
     registry.register(
         AdapterDescriptor {
@@ -8460,9 +8509,7 @@ fn native_text_services(
             schema: text_spec.schema,
             format: text_spec.format,
         },
-        NativeTextIndex::new(recipe)
-            .with_inventory_reuse_limit(inventory_reuse_limit)?
-            .with_inventory_batch_limit(inventory_batch_limit)?,
+        text_index,
         |delta| Ok(delta.clone()),
     )?;
     let engine = Kernel::new(
@@ -10644,7 +10691,7 @@ fn owned_terminal_replay_survives_work_retirement_restart_and_fresh_create() -> 
     )?;
     let original = grant.assignment.request.clone();
     let complete = published(block_on(
-        engine.submit_owned_work(original.clone(), &mut budget()),
+        engine.execute_owned_work(original.clone(), &mut budget()),
     )?)?;
     engine.finish_owned_work(&grant, OwnedWorkReport::Reconcile)?;
     assert_eq!(
@@ -10709,7 +10756,11 @@ fn owned_terminal_replay_survives_work_retirement_restart_and_fresh_create() -> 
         Err(IndexError::DigestConflict),
     );
     assert_eq!(
-        block_on(replay_kernel.submit_owned_work(altered, &mut budget())),
+        block_on(replay_kernel.submit_owned_work(altered.clone(), &mut budget())),
+        Err(IndexError::DigestConflict),
+    );
+    assert_eq!(
+        block_on(replay_kernel.execute_owned_work(altered, &mut budget())),
         Err(IndexError::DigestConflict),
     );
     let mut cancelled = budget();
@@ -10724,6 +10775,10 @@ fn owned_terminal_replay_survives_work_retirement_restart_and_fresh_create() -> 
     );
     assert_eq!(
         block_on(replay_kernel.submit_owned_work(original.clone(), &mut budget()))?,
+        SubmitOutcome::Terminal(OperationStatus::Published(complete)),
+    );
+    assert_eq!(
+        block_on(replay_kernel.execute_owned_work(original.clone(), &mut budget()))?,
         SubmitOutcome::Terminal(OperationStatus::Published(complete)),
     );
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);

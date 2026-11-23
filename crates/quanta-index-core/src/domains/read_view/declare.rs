@@ -36,8 +36,6 @@ pub enum QueryRouteV1 {
     /// The runtime-metadata route: runtime predicates over the chunk
     /// universe.
     RuntimeMetadata,
-    /// The `RepoMap` route.
-    RepoMap,
     /// The explain route: a lexical plan re-scored for one candidate, or a
     /// presence lookup.
     Explain,
@@ -62,7 +60,6 @@ impl QueryRouteV1 {
             Self::Structural => RequiredDomainsV1::of(ReadDomainV1::StructuralChunkUniverse),
             Self::RuntimeMetadata => RequiredDomainsV1::of(ReadDomainV1::RuntimeOverlay)
                 .with(ReadDomainV1::StructuralChunkUniverse),
-            Self::RepoMap => RequiredDomainsV1::of(ReadDomainV1::RepoMap),
         }
     }
 
@@ -71,7 +68,7 @@ impl QueryRouteV1 {
     ///
     /// The history and runtime-metadata routes refuse predicate leaves
     /// before execution and evaluate their filter families inside their
-    /// base domain; `RepoMap` and the cluster read carry no text plan.
+    /// base domain; the cluster read carries no text plan.
     const fn executes_lexical_plan(self) -> bool {
         match self {
             Self::Lexical
@@ -81,7 +78,7 @@ impl QueryRouteV1 {
             | Self::HybridSeed
             | Self::Structural
             | Self::Explain => true,
-            Self::History | Self::RuntimeMetadata | Self::RepoMap | Self::ClusterMembershipRead => {
+            Self::History | Self::RuntimeMetadata | Self::ClusterMembershipRead => {
                 false
             }
         }
@@ -99,7 +96,6 @@ impl QueryRouteV1 {
             | Self::History
             | Self::Structural
             | Self::RuntimeMetadata
-            | Self::RepoMap
             | Self::ClusterMembershipRead => false,
         }
     }
@@ -111,7 +107,7 @@ impl QueryRouteV1 {
 /// lexical, symbol, hybrid, hybrid-seed and explain routes, the lexical
 /// *scope* of the semantic route (`None` when unscoped), the structural
 /// tree of the structural route, and the filter plan of the history and
-/// runtime-metadata routes; `None` for `RepoMap`, the cluster read and a
+/// runtime-metadata routes; `None` for the cluster read and a
 /// presence-only explain.
 ///
 /// On a route that executes a lexical plan every predicate leaf adds the

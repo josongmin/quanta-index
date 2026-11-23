@@ -103,7 +103,7 @@ impl ScanFile {
 impl Drop for ScanFile {
     fn drop(&mut self) {
         if let Some(file) = self.file.take() {
-            if rusqlite::ffi::quanta_capacity_vfs::close_owned_file(file).is_err() {
+            if crate::owned_fd_close::close_owned_file(file).is_err() {
                 self.state.mark_close_uncertain();
             } else {
                 self.state.release();

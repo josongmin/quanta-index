@@ -8,7 +8,7 @@ use std::time::Instant;
 use quanta_index_contract::{
     ActiveGenerationResolutionV1, ClusterMembershipBatchReadRequestV1, CurrentGenerationRequest,
     EarlyStopReason, GenerationPin, GoTestTraceFileQueryRequestV1, HistoryQueryRequest,
-    HybridFileQueryRequestV1, HybridQueryRequest, HybridSeedQueryRequest, RepoMapQueryRequest,
+    HybridFileQueryRequestV1, HybridQueryRequest, HybridSeedQueryRequest,
     RuntimeMetadataQueryRequest, SearchCorpusActiveHeadV1, SearchPlaneExplainQueryRequest,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
     SemanticQueryRequest, SemanticWorkBoundedQueryRequestV1, SemanticWorkBoundedQueryResponseV1,
@@ -17,7 +17,7 @@ use quanta_index_contract::{
 use quanta_index_core::domains::structural::StructuralProducerPort;
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridFetchFloorPolicy, HybridQueryPort, LexicalIndexOpenPort,
-    QueryRouteV1, RepoMapSnapshotAcquirePort, RequestBudgetV1, SemanticIndexOpenPort,
+    QueryRouteV1, RequestBudgetV1, SemanticIndexOpenPort,
     SemanticQueryPort,
 };
 use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
@@ -45,10 +45,6 @@ pub struct SearchPlaneDispatcher {
     /// Resident opened generations, shared with the ingest side which
     /// invalidates them (QI-BB-001).
     pub(super) snapshots: SnapshotRegistries,
-    /// The `RepoMap` snapshot acquisition port (S21-05): the read view
-    /// acquires one pinned handle per request; no route holds this port
-    /// for execution.
-    pub(super) repo_map_snapshots: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync>,
     /// Structural producer adapter wired by the composition root.
     pub(super) structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
     pub(super) ledger: Arc<RwLock<Ledger>>,
@@ -80,7 +76,6 @@ impl SearchPlaneDispatcher {
     pub fn new(
         lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
         sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
-        repo_map_snapshots: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync>,
         structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
         activation_catalog: Arc<ActivationCatalog>,
@@ -89,7 +84,6 @@ impl SearchPlaneDispatcher {
             lex_opener,
             sem_opener,
             SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
-            repo_map_snapshots,
             structural_producer,
             ledger,
             activation_catalog,
@@ -108,7 +102,6 @@ impl SearchPlaneDispatcher {
         lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
         sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
         snapshots: SnapshotRegistries,
-        repo_map_snapshots: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync>,
         structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
         activation_catalog: Arc<ActivationCatalog>,
@@ -119,7 +112,6 @@ impl SearchPlaneDispatcher {
             lex_opener,
             sem_opener,
             snapshots,
-            repo_map_snapshots,
             structural_producer,
             ledger,
             activation_catalog,
@@ -237,7 +229,6 @@ impl SearchPlaneDispatcher {
             SearchPlaneQueryIpcRequest::HybridSeed(req) => self.dispatch_hybrid_seed(&req, budget),
             SearchPlaneQueryIpcRequest::History(req) => self.dispatch_history(&req, budget),
             SearchPlaneQueryIpcRequest::Structural(req) => self.dispatch_structural(&req, budget),
-            SearchPlaneQueryIpcRequest::RepoMapQuery(req) => self.dispatch_repo_map(req, budget),
             SearchPlaneQueryIpcRequest::Explain(req) => self.dispatch_explain(req, budget),
             SearchPlaneQueryIpcRequest::RuntimeMetadata(req) => {
                 self.dispatch_runtime_metadata(&req, budget)
@@ -742,41 +733,6 @@ impl SearchPlaneDispatcher {
                 }
                 Err(err) => {
                     self.emit_error_metric(requested_pin, &err);
-                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
-                }
-            }
-        })
-    }
-
-    fn dispatch_repo_map(
-        &self,
-        request: RepoMapQueryRequest,
-        budget: &RequestBudgetV1,
-    ) -> SearchPlaneQueryIpcResponse {
-        let requested_pin = GenerationPin::new(
-            request.repo_id.clone(),
-            request.revision_id.clone(),
-            request.manifest_generation,
-        );
-        self.observed_route(QueryRoute::RepoMap, Some(&requested_pin), || {
-            match self.repo_map(request, budget) {
-                Ok(response) => {
-                    let response_pin = GenerationPin::new(
-                        response.repo_id.clone(),
-                        response.revision_id.clone(),
-                        response.manifest_generation,
-                    );
-                    self.emit_planner_metric(&response_pin);
-                    self.emit_engine_activity_metrics(
-                        &response_pin,
-                        1,
-                        usize::from(!response.entries.is_empty()),
-                    );
-                    self.emit_merge_count_metric(&response_pin, response.entries.len());
-                    SearchPlaneQueryIpcResponse::RepoMapQuery(response)
-                }
-                Err(err) => {
-                    self.emit_error_metric(Some(&requested_pin), &err);
                     SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
                 }
             }

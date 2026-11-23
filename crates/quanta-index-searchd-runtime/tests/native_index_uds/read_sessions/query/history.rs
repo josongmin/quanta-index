@@ -1096,6 +1096,11 @@ fn native_history_append_original_publishes_without_legacy_ack_and_reopens() -> 
 
 #[test]
 fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestResult {
+    source_and_next_history_generation_round_trip(false)?;
+    source_and_next_history_generation_round_trip(true)
+}
+
+fn source_and_next_history_generation_round_trip(resync: bool) -> TestResult {
     let (full, _, full_input, _) = publish_in_legacy_child()?;
     let full_cut = cut(&full, None, full_input.fence.final_replay)?;
     let next_revision = RevisionId::new("next-source-revision")?;
@@ -1110,7 +1115,7 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
     let setup = (|| -> TestResult<_> {
         let client = NativeUdsClient::new(&socket);
         let configured = create_text_workspace(&client)?;
-        let (source_view, _) =
+        let (source_view, old_source_ref) =
             publish_text_owner(&client, configured, 2, 1, "old.rs", "needle old source")?;
         let live = published(&client.submit(
             stage_history(&client, source_view, 3, &full_input, None, full_cut.clone())?,
@@ -1126,8 +1131,12 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
         let prepare = |sequence,
                        generation,
                        forged_recency|
-         -> TestResult<(UpdateRequest, HistoryGenerationInputV1)> {
-            let ingress = client.begin_input(operation(sequence), &budget())?;
+         -> TestResult<(UpdateRequest, HistoryGenerationInputV1, ObjectRef)> {
+            let mut key = operation(sequence);
+            if resync {
+                key.stream_epoch = 2;
+            }
+            let ingress = client.begin_input(key, &budget())?;
             let profile = client.stage_profile(
                 ingress,
                 IndexProfile {
@@ -1206,14 +1215,29 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
                 &children,
                 &budget(),
             )?;
-            let (request, _) = prepare_text_owner_in_ingress(
-                &client,
-                live,
-                ingress,
-                2,
-                "new.rs",
-                "needle next source",
-            )?;
+            let (request, next_source) = if resync {
+                let next_source = stage_text_source_in_ingress(
+                    &client, ingress, "new.rs", "needle next source", None,
+                )?;
+                let producer = ingress.operation.producer;
+                let request = prepare_text_mutations_in_ingress(&client, live, ingress, [
+                    OwnerMutation {
+                        owner: OwnerKey { producer, stable_id: StableOwnerId([1; 16]) },
+                        expected: Some(old_source_ref),
+                        next: None,
+                    },
+                    OwnerMutation {
+                        owner: OwnerKey { producer, stable_id: StableOwnerId([2; 16]) },
+                        expected: None,
+                        next: Some(next_source),
+                    },
+                ])?;
+                (request, next_source)
+            } else {
+                prepare_text_owner_in_ingress(
+                    &client, live, ingress, 2, "new.rs", "needle next source",
+                )?
+            };
             let UpdateKind::SourceAdvance(mut source) = request.kind else {
                 return Err("expected the ordinary Source fixture request".into());
             };
@@ -1222,23 +1246,27 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
             let [event] = source.events.as_mut_slice() else {
                 return Err("expected one Source fixture event".into());
             };
-            event.sequence = 2;
-            event.predecessor = 1;
+            (event.predecessor, event.sequence) = if resync { (0, 1) } else { (1, 2) };
+            let transition = Box::new(SourceHistoryTransitionV1 {
+                source,
+                history: HistoryGenerationAdvanceV1 {
+                    prior_instance: history_spec().instance,
+                    expected: full_cut.clone(),
+                    instance: target.instance,
+                    input,
+                    profile,
+                },
+            });
             let request = UpdateRequest {
-                kind: UpdateKind::SourceHistoryAdvance(Box::new(SourceHistoryTransitionV1 {
-                    source,
-                    history: HistoryGenerationAdvanceV1 {
-                        prior_instance: history_spec().instance,
-                        expected: full_cut.clone(),
-                        instance: target.instance,
-                        input,
-                        profile,
-                    },
-                })),
+                kind: if resync {
+                    UpdateKind::SourceHistoryResync { prior_epoch: 1, transition }
+                } else {
+                    UpdateKind::SourceHistoryAdvance(transition)
+                },
                 expected_view: live,
                 operation: request.operation,
             };
-            Ok((request, closure))
+            Ok((request, closure, next_source))
         };
         assert!(matches!(
             client.submit(prepare(4, full.generation, false)?.0, &budget())?,
@@ -1248,30 +1276,56 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
             client.submit(prepare(5, next, true)?.0, &budget())?,
             SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))
         ));
-        let (mut wrong_prior, _) = prepare(6, next, false)?;
-        let UpdateKind::SourceHistoryAdvance(transition) = &mut wrong_prior.kind else {
-            return Err("expected a combined publication to test the prior cut".into());
+        let (mut wrong_prior, _, _) = prepare(6, next, false)?;
+        let transition = match &mut wrong_prior.kind {
+            UpdateKind::SourceHistoryAdvance(transition)
+            | UpdateKind::SourceHistoryResync { transition, .. } => transition,
+            _ => return Err("expected a combined publication to test the prior cut".into()),
         };
         transition.history.expected.generation.revision_id = next_revision.clone();
         assert!(matches!(
             client.submit(wrong_prior, &budget())?,
             SubmitOutcome::Terminal(OperationStatus::Refused(_))
         ));
+        if resync {
+            let (mut stale, _, _) = prepare(7, next, false)?;
+            let UpdateKind::SourceHistoryResync { prior_epoch, .. } = &mut stale.kind else {
+                return Err("expected a resync to test the prior Source epoch".into());
+            };
+            *prior_epoch = 0;
+            assert!(matches!(
+                client.submit(stale, &budget()),
+                Err(quanta_index_sdk::native_uds::NativeUdsError::Refused(error))
+                    if error.code == NativeIndexErrorCode::Conflict
+            ));
+        }
         let latest = ViewSelection::Latest {
             workspace: workspace(),
             epoch: 1,
         };
         assert_eq!(client.read_view(latest, &budget())?, old);
-        let (request, expected_inputs) = prepare(7, next, false)?;
+        if resync {
+            let page = client.list_producer_source_owners(
+                ViewSelection::Exact(live), operation(2).producer, None, 2, &budget(),
+            )?;
+            assert_eq!(page.source_epoch, Some(1));
+            let [owner] = page.rows.as_slice() else {
+                return Err("refused History must retain exactly the old Source owner".into());
+            };
+            assert_eq!(owner.owner.stable_id, StableOwnerId([1; 16]));
+            assert_eq!(owner.source, old_source_ref);
+        }
+        let (request, expected_inputs, next_source) =
+            prepare(if resync { 8 } else { 7 }, next, false)?;
         let view = published(&client.submit(request.clone(), &budget())?)?;
         assert_eq!(view.sequence, live.sequence + 1);
         let published_view = client.read_view(latest, &budget())?;
         assert_eq!(published_view.identity, view);
         assert_ne!(published_view.source, old.source);
-        Ok((request, published_view, next, expected_inputs))
+        Ok((request, published_view, next, expected_inputs, next_source))
     })();
     let stopped = running.stop();
-    let (request, published_view, next, expected_inputs) = setup?;
+    let (request, published_view, next, expected_inputs, next_source) = setup?;
     stopped?;
 
     let reopened = NativeServiceGuard::start(history_service(root.path(), &socket)?);
@@ -1288,10 +1342,20 @@ fn source_and_next_history_generation_publish_in_one_view_and_reopen() -> TestRe
             OperationStatus::Published(observed) if observed == view
         ));
         assert_eq!(client.read_view(latest, &budget())?, published_view);
-        let UpdateKind::SourceHistoryAdvance(transition) = &request.kind else {
-            return Err("expected the combined publication request".into());
-        };
-        let expected_source_input = transition.history.input;
+        let expected_source_input = request.kind.history_generation_advance_v1()
+            .ok_or("expected the combined publication request")?.input;
+        if resync {
+            let page = client.list_producer_source_owners(
+                ViewSelection::Exact(view), request.operation.producer, None, 2, &budget(),
+            )?;
+            assert_eq!(page.source_epoch, Some(2));
+            assert_eq!(page.source, published_view.source);
+            let [owner] = page.rows.as_slice() else {
+                return Err("recovered SourceResync must retain exactly the replacement owner".into());
+            };
+            assert_eq!(owner.owner.stable_id, StableOwnerId([2; 16]));
+            assert_eq!(owner.source, next_source);
+        }
         let sdk = QuantaIndex::connect_query_only(ConnectOptions::from_native_socket(
             &socket,
             ViewSelection::Exact(view),

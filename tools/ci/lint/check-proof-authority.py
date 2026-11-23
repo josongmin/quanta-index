@@ -223,11 +223,15 @@ def _require_passing_nextest_target(
         raise ValueError(f"registered nextest cases did not pass for {target_id}: {missing}")
 
 
-def _just_recipe_body(root: Path, recipe: str) -> str | None:
+def _just_recipe_body(
+    root: Path, recipe: str, *, required_attribute: str | None = None,
+) -> str | None:
     lines = (root / "Justfile").read_text(encoding="utf-8").splitlines()
     header = re.compile(rf"^{re.escape(recipe)}(?:\s+[^:]*)?:\s*(?:#.*)?$")
     for index, line in enumerate(lines):
         if header.fullmatch(line):
+            if required_attribute and (index == 0 or lines[index - 1].strip() != required_attribute):
+                return None
             body: list[str] = []
             for candidate in lines[index + 1 :]:
                 if candidate and not candidate[0].isspace():
@@ -626,16 +630,20 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                     r5_cases(proof)
             except ValueError as error:
                 findings.append(Finding(path, str(error)))
-            if paired_runner and authority_state == "executable":
-                from tools.ci.p11_attestation import public_key
-
+            if paired_runner:
                 try:
-                    public_key(proof.get("attestation_public_key"))
-                    recipe = _just_recipe_body(root, "rust-verify-hellgate-cross-repo") or ""
+                    if authority_state == "executable":
+                        from tools.ci.p11_attestation import public_key
+
+                        public_key(proof.get("attestation_public_key"))
+                    recipe = _just_recipe_body(
+                        root, "rust-verify-hellgate-cross-repo",
+                        required_attribute="[positional-arguments]",
+                    ) or ""
                     if (
                         proof.get("command") != "just rust-verify-hellgate-cross-repo"
                         or recipe.strip()
-                        != './scripts/verify-repomap-cross-repo.sh "{{semantica_root}}"'
+                        != '#!/bin/bash -p\nexec ./scripts/verify-repomap-cross-repo.sh "$1"'
                         or test_targets
                         or proof.get("test_authority_scopes")
                     ):

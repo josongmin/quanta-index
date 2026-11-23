@@ -1,6 +1,6 @@
 # 02 · 파일 경계를 넘는 경로 쓰기 배치
 
-**보류 · 별도 착수자 미확인.** 대상 함수는 [기존 TEXT 작성 경로](README.md#채팅별-실행권과-재사용-범위)에 속한다. B는 prefix에서 분리한 비용과 재현 입력을 제공한다.
+**보류.** 최근 제품 본문에서 동일 4,096개 SourceAdvance가 게시됐고 지연은 후속 materialization에서 발생했다. 대상 함수는 [기존 TEXT 작성 경로](README.md#채팅별-실행권과-재사용-범위)에 속한다. 경로 scratch가 지배한 별도 실측이 나오면 B가 입력과 비용을 제공한다. [최신 4K 결과](04-product-acceptance.md#기존-실행기-결과)
 
 **착수 조건.** [01](01-attribution.md)에서 scratch 제출 비용이 확인됐을 때 TEXT 담당이 적용한다. 변경 위치는 `PathWrites`다. Tree·Layered가 이 writer를 공유하므로 두 값 형식의 회귀를 함께 실행한다. [경로 writer](../../../crates/quanta-index-lexical/src/native/text_path.rs#L256) · [Layered 호출부](../../../crates/quanta-index-lexical/src/native/text_segment/build_v2.rs#L594)
 

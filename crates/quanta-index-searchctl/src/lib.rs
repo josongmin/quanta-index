@@ -16,8 +16,6 @@ mod native;
 mod parse;
 mod render;
 
-#[cfg(test)]
-use parse::parse_focus_subject;
 use parse::{CliRequest, CommandKind, OutputMode, ParsedCommand};
 
 use render::{
@@ -159,7 +157,6 @@ where
         | CliRequest::GoTestTraceFileV1(_)
         | CliRequest::HybridSeed(_)
         | CliRequest::Explain { .. }
-        | CliRequest::RepoMap(_)
         | CliRequest::RuntimeMetadata(_)
         | CliRequest::History(_)
         | CliRequest::Structural(_)) => {
@@ -221,9 +218,6 @@ fn dispatch_query_request(
                 .search()
                 .hybrid_seed_request(hybrid)
                 .map_err(map_sdk_error)?,
-        ),
-        CliRequest::RepoMap(repomap) => SearchPlaneQueryIpcResponse::RepoMapQuery(
-            client.repomap().query(repomap).map_err(map_sdk_error)?,
         ),
         CliRequest::RuntimeMetadata(runtime) => SearchPlaneQueryIpcResponse::RuntimeMetadata(
             client
@@ -501,7 +495,6 @@ Legacy comparison/test subcommands:
   hybrid-seed      --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph --semantic-query TEXT --top-k N
   explain          --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|- [--syntax native|sourcegraph --query-text TEXT]
   explain          --repo-id ID --revision-id REV --manifest-generation N --hybrid-candidate-json PATH|- --syntax native|sourcegraph --query-text TEXT --semantic-query-text TEXT --top-k N
-  repomap          --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
   history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N --order recency|relevance [--cursor-json PATH|-]
   runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
   structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
@@ -512,7 +505,6 @@ Legacy comparison/test subcommands:
   metrics
   quarantine       list
   quarantine       discard --track lexical|semantic --path PATH --reason CODE [--detail TEXT]
-  quarantine       discard --repomap-file NAME --reason TEXT
 
 `hybrid` runs two independent, bounded lanes over the pinned generation — the
 lexical lane over `--query-text` and the dense lane over the embedded
@@ -566,9 +558,9 @@ that directory; the temporary-file-then-rename keeps a half-written scrape
 from being read). Every metric is process-wide and label-free by design:
 no repository, generation or query text ever becomes a label.
 
-`quarantine list` prints what the daemon has set aside as it cannot trust it
-(a generation directory with an unreadable or foreign identity, a RepoMap file
-that does not decode), each line in the form `quarantine discard` takes back.
+`quarantine list` prints generation directories the daemon has set aside
+because their identity is unreadable or foreign, each in the form
+`quarantine discard` takes back.
 A discard names one entry exactly as listed; the daemon re-checks before it
 removes anything and refuses a stale or invented entry typed.
 "

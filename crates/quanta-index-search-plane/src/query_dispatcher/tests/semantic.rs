@@ -22,7 +22,6 @@ use crate::query_dispatcher::tests::support::common::{
     test_activation_catalog,
 };
 use crate::query_dispatcher::tests::support::lexical::RejectLexicalOpener;
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::{
     FixedModelQueryEmbedder, RecordingSemanticOpener, RecordingSemanticState, RejectSemanticOpener,
     UnavailableTestQueryEmbedder, semantic_focus_request,
@@ -479,7 +478,6 @@ fn resolved_active_selector_rejects_a_to_b_to_a_aba() -> TestResult {
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         Arc::clone(&catalog),
@@ -523,7 +521,6 @@ fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         Arc::clone(&activation_catalog),
@@ -716,7 +713,6 @@ fn semantic_dispatch_embeds_query_text() -> TestResult {
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&state),
         }),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -781,7 +777,7 @@ fn semantic_dispatch_embeds_query_text() -> TestResult {
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
@@ -817,7 +813,6 @@ fn bounded_semantic_route_rejects_searcher_without_native_work_authority() -> Te
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&state),
         }),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -864,7 +859,6 @@ fn bounded_canonical_semantic_routes_ties_before_public_cut() -> TestResult {
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&state),
         }),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -922,7 +916,6 @@ fn semantic_dispatch_rejects_model_identity_drift_v1() -> TestResult {
             state: Arc::clone(&state),
         }),
         SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -977,7 +970,6 @@ fn semantic_dispatch_unavailable_embedder_keeps_provider_error_before_model_gate
             state: Arc::clone(&state),
         }),
         SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -1047,7 +1039,6 @@ fn semantic_dispatch_rejects_active_digest_mismatch_with_exact_code() -> TestRes
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         Arc::new(RwLock::new(ledger)),
         activation_catalog,
@@ -1099,7 +1090,6 @@ fn semantic_dispatch_rejects_unsealed_pinned_generation_with_exact_code() -> Tes
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         Arc::new(RwLock::new(ledger)),
         test_activation_catalog()?,

@@ -120,6 +120,8 @@ Lance의 기존 refill은 같은 후보 tuple만 기억했다. 같은 member의 
 
 ## 4K 실패의 원인과 다음 판정
 
+**후속 판정.** 기존 prefix와 이후 제품 본문에서 SourceAdvance 4,096개 게시를 확인했다. 마지막 제품 실패는 그 뒤 1,200초 materialization 기한이다. 후기 trace는 아직 없으며 경로 쓰기 배치·posting 포맷 변경은 경로 비용이 다시 지배한다는 증거가 있을 때 검토한다. [최신 4K 코드·실행 원장](../../plans/nov-21-bugbash-source-advance-4k/04-product-acceptance.md#현재-코드와-실행-판정)
+
 | 실제 제품 실행 | 기한을 소비한 구간 | 마지막으로 확인된 결과 |
 | --- | --- | --- |
 | `ab0014fa-2851-4e64-af77-cf14c98fd920` | 초기 4,096건 완료 확인 814.467초, 그중 WorkStatus RPC 43.921초 | 초기·첫 재시작·선택 증분 검색 통과. 오버레이 요청에서 Fast 수신 후 Deep 전에 만료. exit 100. [첫 실행 기록](../../plans/nov-12-native-cutover/tickets/NC-B-semantic.md#L622) |

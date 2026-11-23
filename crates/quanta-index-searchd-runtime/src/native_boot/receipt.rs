@@ -9,10 +9,10 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use crate::owned_fd_close::close_owned_file;
 use anyhow::{Context as _, Result, anyhow, bail};
 use quanta_index_core::index::{Digest, IndexError, MemoryLifetime, WorkBudget, WorkUsage};
 use quanta_index_searchd::cli::NativeBootIdentityV1;
-use rusqlite::ffi::quanta_capacity_vfs::close_owned_file;
 use rustix::fs::{
     AtFlags, Mode, OFlags, RenameFlags, open, openat, renameat_with, statat, unlinkat,
 };
@@ -29,12 +29,16 @@ struct Receipt {
     source_cut_digest_hex: String,
     protected_source_routes_hex: Option<String>,
     install_catalog_digest_hex: String,
+    retired_projection_policy: Option<quanta_index_contract::index::RetiredProjectionPolicyRefV1>,
 }
 
 impl Serialize for Receipt {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let has_routes = self.protected_source_routes_hex.is_some();
-        let mut record = serializer.serialize_struct("Receipt", if has_routes { 6 } else { 5 })?;
+        let mut record = serializer.serialize_struct(
+            "Receipt",
+            5 + usize::from(has_routes) + 3 * usize::from(self.retired_projection_policy.is_some()),
+        )?;
         record.serialize_field("root_nonce_hex", &self.root_nonce_hex)?;
         record.serialize_field("manifest_operation", &self.manifest_operation)?;
         record.serialize_field("manifest_object_hex", &self.manifest_object_hex)?;
@@ -49,6 +53,12 @@ impl Serialize for Receipt {
             "install_catalog_digest_hex",
             &self.install_catalog_digest_hex,
         )?;
+        if let Some(policy) = self.retired_projection_policy {
+            policy.validate_v1().map_err(serde::ser::Error::custom)?;
+            record.serialize_field("retired_policy_object_hex", &hex(&policy.object.0.0))?;
+            record.serialize_field("retired_policy_sha256_hex", &hex(&policy.sha256.0))?;
+            record.serialize_field("retired_policy_identity_count", &policy.identity_count)?;
+        }
         record.end()
     }
 }
@@ -298,6 +308,7 @@ impl ReceiptTarget {
                 .protected_source_routes
                 .map(|reference| hex(&(reference.0).0)),
             install_catalog_digest_hex: hex(&digest.0),
+            retired_projection_policy: boot.retired_projection_policy,
         };
         let bytes = serde_json::to_vec(&receipt)?;
         let length = u64::try_from(bytes.len())?;
@@ -447,6 +458,7 @@ mod tests {
             manifest_object: ObjectRef(Digest([11; 32])),
             source_cut_digest: Digest([12; 32]),
             protected_source_routes: None,
+            retired_projection_policy: None,
         }
     }
 

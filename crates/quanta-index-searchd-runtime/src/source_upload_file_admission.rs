@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::owned_fd_close::close_owned_file;
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::publication_admission::{
     PublicationControlFileMutation, PublicationControlOpenTicket, PublicationOutputClass,
@@ -17,7 +18,6 @@ use quanta_index_core::publication_admission::{
 };
 use quanta_index_core::publication_capacity::{InodeKey, PublicationAllowance};
 use quanta_index_core::{CoreError, SourcePublicationUploadFileAdmissionPort};
-use rusqlite::ffi::quanta_capacity_vfs::close_owned_file;
 use rustix::fs::{
     AtFlags, Dir, FileType, Mode, OFlags, RenameFlags, fstat, openat, renameat_with, statat,
     unlinkat,

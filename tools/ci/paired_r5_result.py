@@ -9,10 +9,14 @@ import json
 import os
 import re
 import secrets
+import site
 import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.ci import binary_custody as daemon_custody
 from tools.ci.daemon_execution_evidence import (
@@ -40,6 +44,7 @@ from tools.ci.paired_cargo_resolution import (
     REQUIRED_QUANTA_PACKAGES,
     frozen_source_head,
     resolve_from_qbc,
+    source_python_environment,
 )
 from tools.ci.proof_json import parse_proof_json
 
@@ -779,23 +784,37 @@ def verify_pair_boundary(
     check_sources_and_daemon()
 
 
-def main() -> int:
+def main(*, standalone: bool = False) -> int:
     # QBC and Cargo spawn descendants using this process' environment.
     socket = os.environ.pop(SOCKET_ENV, None)
     removed_agent = remove_signing_agent(os.environ, socket)
+    deferred_site = sys.flags.isolated and sys.flags.no_site
+    if standalone and socket and not deferred_site:
+        raise ValueError("P11 signing requires the isolated paired R5 launcher")
     git_no_replace = os.environ.get("GIT_NO_REPLACE_OBJECTS")
     os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
     removed_witness = {
         key: os.environ.pop(key) for key in (WITNESS_DIR_ENV, WITNESS_NONCE_ENV)
         if key in os.environ
     }
+    python_cache = (sys.pycache_prefix, sys.dont_write_bytecode)
     try:
-        return _main(socket)
+        with source_python_environment(os.environ) as cache_prefix:
+            sys.pycache_prefix, sys.dont_write_bytecode = cache_prefix, True
+            # The isolated launcher defers installed site packages and hooks
+            # until the signing agent has been removed from the environment.
+            if standalone and deferred_site:
+                site.main()
+            return _main(socket)
     finally:
-        if socket is not None:
-            os.environ[SOCKET_ENV] = socket
-        if removed_agent is not None:
-            os.environ["SSH_AUTH_SOCK"] = removed_agent
+        sys.pycache_prefix, sys.dont_write_bytecode = python_cache
+        # Only in-process callers regain their environment. A CLI may still
+        # run site exit hooks after returning from main.
+        if not standalone:
+            if socket is not None:
+                os.environ[SOCKET_ENV] = socket
+            if removed_agent is not None:
+                os.environ["SSH_AUTH_SOCK"] = removed_agent
         os.environ.update(removed_witness)
         if git_no_replace is None:
             os.environ.pop("GIT_NO_REPLACE_OBJECTS", None)
@@ -942,4 +961,4 @@ def _main(signer_socket: str | None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(standalone=True))

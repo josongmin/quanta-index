@@ -10,13 +10,14 @@
 
 | 위치 | 확인 또는 복구할 내용 |
 | --- | --- |
-| `ann4k-materialization-diagnostic-mug1rt81/` | `state.json`, `admission-controller.log`, `PREFIX4K.log`, `trace/`. 확인 당시 PID 26624 종료, 로그에 `PREFIX4K-preflight.txt`·`state.tmp` 쓰기 ENOSPC, 본문 로그와 capture 없음 |
-| `ann4k-owner-budget-repair-uls30q9w/ANN4K/` | 기록 PID 26633 종료. `runs[0].status`는 여전히 `waiting_for_existing_diagnostic`. 동일 selector의 신규 PID·로그·terminal이 생겼는지 대조 |
-| `ann4k-owner-budget-repair-uls30q9w/` | `resume_queued.py`가 기존 대기 디렉터리와 잠금을 회수한다. `source-bound-local/build-env.json`의 target이 존재하고 상태·로그·빌드를 쓸 공간이 있는지 확인. `product_after_prefix.py`는 확인 당시 실행 중이며 prefix 게시와 ANN terminal을 기다린다 |
+| `ann4k-materialization-diagnostic-mug1rt81/` | 초기 ENOSPC 뒤 회수한 prefix 본문이 1 PASS·exit 0으로 끝났다. `PREFIX4K.log`와 `trace/ann-materialization-4096-prefix128.qtrace`를 판독한다. |
+| `ann4k-owner-budget-repair-uls30q9w/` | `ANN4K/`는 1 PASS·exit 0, `PRODUCT4K/`는 1 FAIL·exit 100 terminal이다. `quality-pair.json`은 `quality_incomplete`다. [두 결과](04-product-acceptance.md#기존-실행기-결과) |
+| `ann4k-late-record-6cO3Bn2x/` | 미시작 예약 이력. PID 5314가 사라졌고 child·본문 로그·trace·terminal이 없다. 종료 원인은 기록되지 않았다. |
+| `ann4k-late-record-h4a2lcwt/` | 같은 controller로 재접수했으나 admission 대기 중 preflight·상태 쓰기에서 `ENOSPC`가 났다. PID는 종료, child·본문·trace는 부재다. [실행 기록](04-product-acceptance.md#후기-worker-계측-준비) |
 | `ann4k-resume-20261117/run_quality.py` | 원 admission·정확한 Nextest 본문·소스 및 resolver 비교의 실행 권한. 복구 스크립트가 이 파일의 SHA를 확인한다 |
 
 1. `controller_pid`와 `child_pid`의 실제 명령, 기존 실행 잠금, 본문 로그·trace와 terminal을 대조한다. 실행 중이면 그 실행을 이어서 관찰한다. 본문이 시작되었거나 종료했다면 로그부터 인수한다.
-2. 두 대기가 모두 **본문 시작 전**에 중단됐고 기존 복구 스크립트의 선행검사가 맞으면, 저장소 루트에서 `python3 -B "$HOME/Library/Caches/quanta-index/ann4k-owner-budget-repair-uls30q9w/resume_queued.py"`로 한 번 회수한다. 하나만 중단됐다면 해당 label 인자(`PREFIX4K` 또는 `ANN4K`)만 쓴다. PID 갱신·잠금·본문 진입을 확인한다. `state.json`을 수동 수정하거나 기존 product continuation을 중복 실행하지 않는다. [호스트 admission](../../../AGENT_PLAYBOOK.md#L49)
+2. Prefix와 ANN 예약의 초기 ENOSPC 회수는 기존 `resume_queued.py`가 처리했고 두 본문의 terminal이 남아 있다. 후기 Record는 별도 진단 슬롯이다. 다음 실행 전 원 controller와 공용 잠금을 확인한다. 앞선 슬롯을 미시작 예약으로 되돌리거나 상태 파일을 수동 수정하지 않는다. [호스트 admission](../../../AGENT_PLAYBOOK.md#L49)
 
 ## 원인 판별
 
@@ -28,11 +29,19 @@ python3 -m tools.benchmark.retrieval.causal_cost_diagnostic native-ingest \
 ```
 
 - 같은 요청의 `native_source_apply/3`, `build_prepare/3`, `lexical_build/2`, `native_text_postings/49`, `native_coverage_map_apply`에서 완료 여부와 논리 읽기·쓰기·bytes·mutations를 비교한다. 중첩된 부모와 자식 수치는 합산하지 않는다. `PARTIAL_DIAGNOSTIC`이면 닫힌 span만 사용하고 미관측 비용은 미상으로 둔다.
-- 이전 제품 로그의 `NativeCoverageMapApply`는 등록된 자식 메타데이터를 읽은 뒤 edge 검증과 회수 인수를 위해 읽기 4회를 청구하다 거절됐다. 당시 소스 캡처의 `managed_install.rs` SHA-256은 현재 파일과 일치하고, 당시 실행의 소스 drift는 0건이다. 4회는 해당 작업 실행과 사용량 반영 전에 거절됐다. 앞서 승인된 999,999회의 단계별 기여도는 prefix trace의 닫힌 span에서 확인한다. [자식 검증 청구](../../../crates/quanta-index-catalog/src/native/authority/managed_install.rs#L176) · [원 로그 위치](04-product-acceptance.md)
+- 이전 제품 로그의 `NativeCoverageMapApply`는 등록된 자식 메타데이터를 읽은 뒤 edge 검증과 회수 인수를 위해 읽기 4회를 청구하다 거절됐다. 당시 소스 캡처의 `managed_install.rs` SHA-256은 현재 파일과 일치하고, 당시 실행의 소스 drift는 0건이다. 4회는 해당 작업 실행과 사용량 반영 전에 거절됐다. 성공한 별도 prefix의 닫힌 span으로 같은 종류의 단계 비용을 비교할 수 있다. 실패 실행에서 이미 승인된 999,999회의 단계별 기여도는 미관측이다. [자식 검증 청구](../../../crates/quanta-index-catalog/src/native/authority/managed_install.rs#L176) · [원 로그 위치](04-product-acceptance.md)
 - 기본 출력은 선택된 요청 최대 32개다. `COMPLETE_DIAGNOSTIC`이어도 `requests`에 목표 요청이 없을 수 있다. `matched_requests`, `omitted_requests`, `kernel_spans_without_request`와 해당 `request_identity`·닫힌 span을 먼저 확인한다. 누락 시 같은 capture를 더 큰 `--limit`로 다시 읽는다. 목표 요청과 operation(2)의 관계를 확인할 수 없으면 비용 원인을 확정하지 않는다. [요청 선택과 집계](../../../tools/benchmark/retrieval/causal_cost_native_ingest.py#L205)
 - 180초 prefix가 source 게시 marker를 남기고 128개 완료 관측 전에 끝날 수 있다. marker는 초기 게시 증거다. 128 receipt는 별도로 판정한다. Record 기한만 만료되고 게시됐는지 판단할 자료가 없으면 제품의 1,200초 Off 테스트가 실패했다고 간주하지 않는다. [게시 marker와 완료 검사](../../../crates/quanta-index-searchd-runtime/tests/native_product_process/ann_quality/materialization_diagnostic.rs#L412)
 - lane 49는 `paths.finish`만 감싼다. 파일별 수집이 분리되지 않으면 `PathWrites`에서 성공한 배치·행 수와 scratch 작업 전후의 읽기 차액을 집계한다. 맵 설치에는 기존 `install_census` 및 외부 자식 검증 수치를 먼저 쓴다. 실패 요청에서 census가 비어 있으면 닫힌 설치 구간에서 확인되는 부분만 기록한다. 계측의 on/off에서 root·오류·예산 사용량이 같은지 기존 회귀로 확인한다. [설치 span](../../../crates/quanta-index-lexical/src/native/text.rs#L14129) · [계측 범위](../../../tools/benchmark/retrieval/causal_cost_native_ingest.py#L271)
 - **인계 조건.** 현재 패킹으로 게시가 확인되면 04. 파일별 scratch 제출이 주요 비용이면 02. 비용이 경로 맵 설치·자식 검증에 집중되고 객체 수와 함께 증가하면 03. 그 밖의 단계가 지배하면 해당 단계와 증거를 기존 담당에게 넘긴다. trace가 불충분하면 빠진 계측을 특정하고 같은 prefix로 판별한다.
+
+## 후기 실행의 판독 기준
+
+Prefix는 초기 게시와 첫 128개 완료의 근거다. 후기 원인 비교에는 원 Product4K 본문의 첫 daemon이 작성한 `ann-initial.qtrace`를 사용한다. 해당 실행기의 PID·실명·본문·종료값과 소스·resolver 입력을 먼저 확인한다. Record의 결과는 진단 범위에 귀속한다.
+
+1. `native-ingest`에서 원 SourceAdvance 요청과 `start_ns`를 찾는다. `closed-workers --occupancy-only --window-ns START END --max-capture-bytes 1073741824`에는 같은 qtrace의 절대 시각을 전달한다. 첫 worker가 SourceAdvance 응답보다 먼저 시작할 수 있다. 단계별 비용이 필요하면 `--occupancy-only` 대신 `--minimum-closed-workers N`을 지정한다. [CLI](../../../tools/benchmark/retrieval/causal_cost_diagnostic.py#L1114)
+2. 닫힌 worker 점유가 작으면 worker 밖에서 시간이 빠지는 경계를 조사한다. 점유가 크면 동일 구간의 Catalog 락 대기·WAL/main sync·backfill·객체 설치·ANN build/seal을 대조한다. 열린 worker, 누락 이벤트, 캡처 밖 시간은 별도 기록한다. wall time이 겹치는 `WorkStatus` 관측과 worker 실행은 합산하지 않는다.
+3. 원 watchdog 만료를 처리하며 daemon을 강제 종료하면 footer가 없을 수 있다. 건강한 canonical partial의 관측 구간만 사용할 수 있다. 후기 표본 또는 시각 경계가 부족하면 원인을 미확정으로 유지한다. [실패 정리](../../../crates/quanta-index-searchd-runtime/tests/native_product_process/ann_quality.rs#L955) · [코드 잔여](04-product-acceptance.md#현재-코드와-실행-판정)
 
 ## Prefix 실측 결과
 

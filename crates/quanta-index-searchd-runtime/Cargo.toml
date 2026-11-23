@@ -115,14 +115,11 @@ path = "tests/native_owned_pump.rs"
 
 [target.'cfg(unix)'.dependencies]
 libsqlite3-sys = { workspace = true, features = ["quanta-capacity-vfs"] }
+nix = { workspace = true, features = ["fs"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 quanta-explicit-fd-process.workspace = true
 quanta-installed-artifact-trust.workspace = true
 
-[target.'cfg(target_os = "macos")'.dependencies]
-nix.workspace = true
-
 [target.'cfg(unix)'.dev-dependencies]
 libsqlite3-sys = { workspace = true, features = ["quanta-capacity-vfs-test-hooks"] }
-nix = { workspace = true, features = ["fs"] }

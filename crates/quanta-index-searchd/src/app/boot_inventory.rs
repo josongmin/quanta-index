@@ -25,7 +25,7 @@ use anyhow::Result;
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
 use quanta_index_core::{
     CoreError, DiagnosticContextV1, FinishedReclaims, IntegrityScrubPort, MetricPointV1,
-    MetricSourcePort, QuarantinedGenerationV1, RepoMapOpenReportV1, SealedGenerationReclaimPort,
+    MetricSourcePort, QuarantinedGenerationV1, SealedGenerationReclaimPort,
     SealedGenerationScanPort, count_from_usize,
 };
 use quanta_index_ipc::SocketAccessPolicy;
@@ -266,9 +266,6 @@ pub struct BootInventoryReportV1 {
     pub active_pairs_validated: usize,
     /// Auxiliary authority rows restored from the catalog at boot.
     pub auxiliary_rows_restored: u64,
-    /// What the `RepoMap` store found on disk: loaded, swept and
-    /// quarantined files (QI-BB-008).
-    pub repo_map: RepoMapOpenReportV1,
     /// The effective access policy each socket was bound under
     /// (QI-BB-014): private, or shared with a group and/or listed users.
     pub socket_access: SocketAccessPolicies,
@@ -386,26 +383,6 @@ impl MetricSourcePort for BootInventoryReportV1 {
         points.push(MetricPointV1::gauge_count(
             "boot_auxiliary_rows_restored",
             self.auxiliary_rows_restored,
-        ));
-        points.push(MetricPointV1::gauge_count(
-            "boot_repomap_snapshots_loaded",
-            self.repo_map.snapshots_loaded,
-        ));
-        points.push(MetricPointV1::gauge_count(
-            "boot_repomap_activations_loaded",
-            self.repo_map.activations_loaded,
-        ));
-        points.push(MetricPointV1::gauge_count(
-            "boot_repomap_stale_temporaries_removed",
-            self.repo_map.stale_temporaries_removed,
-        ));
-        points.push(MetricPointV1::gauge_count(
-            "boot_repomap_quarantined_files",
-            count_from_usize(self.repo_map.quarantined.len()),
-        ));
-        points.push(MetricPointV1::gauge_count(
-            "boot_repomap_activations_without_snapshot",
-            count_from_usize(self.repo_map.activations_without_snapshot.len()),
         ));
         for role in SocketRole::ALL {
             points.extend(socket_access_points(

@@ -138,7 +138,7 @@ impl<'a> SearchNamespace<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
@@ -226,7 +226,7 @@ impl<'a> SearchNamespace<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
             | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(
                 _,
             )
@@ -413,7 +413,7 @@ fn dispatch_hybrid_seed_query_request_v1(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
-        | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
@@ -758,7 +758,7 @@ fn dispatch_hybrid_query_request_v1(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
-        | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)

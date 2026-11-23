@@ -24,7 +24,8 @@ pub(crate) fn children(request: &UpdateRequest) -> ObjectChildren {
         UpdateKind::SourceAdvance(transition) | UpdateKind::SourceResync { transition, .. } => {
             [transition.owners.root.0, None, None, None]
         }
-        UpdateKind::SourceHistoryAdvance(transition) => [
+        UpdateKind::SourceHistoryAdvance(transition)
+        | UpdateKind::SourceHistoryResync { transition, .. } => [
             transition.source.owners.root.0,
             Some(transition.history.input),
             Some(transition.history.profile),
@@ -194,7 +195,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn requests() -> [UpdateRequest; 9] {
+    pub(crate) fn requests() -> [UpdateRequest; 10] {
         let history_cut: quanta_index_core::index::HistorySourceCutV1 =
             serde_json::from_value(serde_json::json!({
                 "generation": {"repo_id": "repo-a", "revision_id": "rev-a", "generation": 1},
@@ -207,6 +208,16 @@ pub(crate) mod tests {
             expected_source: historical_cut(),
             owners: owner_set(Some(reference(4))),
             events: vec![event()],
+        };
+        let combined = quanta_index_core::index::SourceHistoryTransitionV1 {
+            source: transition.clone(),
+            history: quanta_index_core::index::HistoryGenerationAdvanceV1 {
+                prior_instance: IndexInstanceId([254; 16]),
+                expected: history_cut.clone(),
+                instance: IndexInstanceId([255; 16]),
+                input: reference(3),
+                profile: reference(5),
+            },
         };
         [
             UpdateKind::SourceAdvance(transition.clone()),
@@ -241,16 +252,11 @@ pub(crate) mod tests {
                 input: reference(3),
                 profile: reference(4),
             }),
-            UpdateKind::SourceHistoryAdvance(Box::new(quanta_index_core::index::SourceHistoryTransitionV1 {
-                source: transition,
-                history: quanta_index_core::index::HistoryGenerationAdvanceV1 {
-                    prior_instance: IndexInstanceId([254; 16]),
-                    expected: history_cut,
-                    instance: IndexInstanceId([255; 16]),
-                    input: reference(3),
-                    profile: reference(5),
-                },
-            })),
+            UpdateKind::SourceHistoryAdvance(Box::new(combined.clone())),
+            UpdateKind::SourceHistoryResync {
+                prior_epoch: u64::MAX,
+                transition: Box::new(combined),
+            },
             materialize(WorkScope::ProjectionDomain {
                 projection: ProjectionId([255; 16]),
                 source: historical_cut(),
@@ -314,6 +320,14 @@ pub(crate) mod tests {
             }))
             .as_slice()
             .is_empty(),
+        )?;
+        let combined_resync = requests()
+            .into_iter()
+            .find(|sample| matches!(&sample.kind, UpdateKind::SourceHistoryResync { .. }))
+            .ok_or(IndexError::Conflict)?;
+        require(
+            children(&combined_resync).as_slice()
+                == [reference(3), reference(4), reference(5)],
         )?;
         require(
             children(&request(projection(

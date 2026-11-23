@@ -19,7 +19,7 @@ use std::io::Cursor;
 
 use quanta_index_contract::{
     CurrentGenerationRequest, DirtyIngestBatch, GenerationStatusRequest, HistoryIngestBatch,
-    HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest, RepoMapQueryRequest,
+    HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest,
     RepoMapSourceBundle, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneExplainQueryRequest,
@@ -45,7 +45,6 @@ fuzz_target!(|data: &[u8]| {
     let _ = ciborium::de::from_reader::<HybridSeedQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<HistoryQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<StructuralQueryRequest, _>(data);
-    let _ = ciborium::de::from_reader::<RepoMapQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneExplainQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneQueryIpcRequest, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneQueryIpcRequestEnvelope, _>(data);

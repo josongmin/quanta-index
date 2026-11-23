@@ -453,7 +453,7 @@ fn validate_identity(value: &str) -> Result<(), IdentityValidationErrorV1> {
 #[derive(Debug)]
 pub enum NativeIdentityConstructionErrorV1<E> {
     Validation(IdentityValidationErrorV1),
-    Normalization(unicode_normalization::NativeNormalizationErrorV1<E>),
+    Normalization(quanta_index_unicode::NativeNormalizationErrorV1<E>),
     Copy(NativeIdentityCopyErrorV1<E>),
 }
 
@@ -477,21 +477,21 @@ pub struct NativeIdentityConstructionSlotsV1<'data, T, E> {
     pub backing: &'data mut String,
     pub output: &'data mut Option<T>,
     pub attempted: &'data mut bool,
-    pub normalization: &'data mut unicode_normalization::NativeNormalizationDataV1<E>,
+    pub normalization: &'data mut quanta_index_unicode::NativeNormalizationDataV1<E>,
     pub copy: &'data mut NativeIdentityCopyDataV1<E>,
     pub failure: &'data mut Option<NativeIdentityConstructionErrorV1<E>>,
 }
 
 #[cfg(feature = "quanta-native-identity-v1")]
-struct NativeIdentityValidationV1<'a, P: unicode_normalization::NativeNormalizationAdmissionV1> {
+struct NativeIdentityValidationV1<'a, P: quanta_index_unicode::NativeNormalizationAdmissionV1> {
     admission: &'a mut P,
-    data: &'a mut unicode_normalization::NativeNormalizationDataV1<P::Error>,
+    data: &'a mut quanta_index_unicode::NativeNormalizationDataV1<P::Error>,
 }
 #[cfg(feature = "quanta-native-identity-v1")]
-impl<P: unicode_normalization::NativeNormalizationAdmissionV1> IdentityValidationPolicyV1
+impl<P: quanta_index_unicode::NativeNormalizationAdmissionV1> IdentityValidationPolicyV1
     for NativeIdentityValidationV1<'_, P>
 {
-    type Error = unicode_normalization::NativeNormalizationErrorV1<P::Error>;
+    type Error = quanta_index_unicode::NativeNormalizationErrorV1<P::Error>;
     fn character_step_v1(&mut self) -> Result<(), Self::Error> {
         self.admission
             .checkpoint_work_v1(1)
@@ -501,14 +501,14 @@ impl<P: unicode_normalization::NativeNormalizationAdmissionV1> IdentityValidatio
         if !self.data.is_fresh_v1() {
             return Err(Self::Error::InvalidNativeProducer);
         }
-        let status = unicode_normalization::try_is_nfc_into_with_native_admission_v1(
+        let status = quanta_index_unicode::try_is_nfc_into_with_native_admission_v1(
             value,
             self.data,
             self.admission,
         );
         if status.is_ok() {
             return match self.data.result_v1() {
-                Some(Ok(unicode_normalization::NativeNormalizationOutcomeV1::IsNfc(value))) => {
+                Some(Ok(quanta_index_unicode::NativeNormalizationOutcomeV1::IsNfc(value))) => {
                     Ok(value)
                 }
                 _ => Err(Self::Error::InvalidNativeProducer),
@@ -528,25 +528,25 @@ impl<P: unicode_normalization::NativeNormalizationAdmissionV1> IdentityValidatio
 }
 
 #[cfg(feature = "quanta-native-identity-v1")]
-fn validate_native_identity_v1<P: unicode_normalization::NativeNormalizationAdmissionV1>(
+fn validate_native_identity_v1<P: quanta_index_unicode::NativeNormalizationAdmissionV1>(
     value: &str,
     admission: &mut P,
 ) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>> {
-    let mut data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+    let mut data = quanta_index_unicode::NativeNormalizationDataV1::new_v1();
     let result = validate_native_identity_into_v1(value, &mut data, admission);
     data.release_scratch_v1(admission);
     result
 }
 
 #[cfg(feature = "quanta-native-identity-v1")]
-fn validate_native_identity_into_v1<P: unicode_normalization::NativeNormalizationAdmissionV1>(
+fn validate_native_identity_into_v1<P: quanta_index_unicode::NativeNormalizationAdmissionV1>(
     value: &str,
-    data: &mut unicode_normalization::NativeNormalizationDataV1<P::Error>,
+    data: &mut quanta_index_unicode::NativeNormalizationDataV1<P::Error>,
     admission: &mut P,
 ) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>> {
     if !data.is_fresh_v1() {
         return Err(NativeIdentityConstructionErrorV1::Normalization(
-            unicode_normalization::NativeNormalizationErrorV1::InvalidNativeProducer,
+            quanta_index_unicode::NativeNormalizationErrorV1::InvalidNativeProducer,
         ));
     }
     match validate_identity_with_policy_v1(
@@ -710,12 +710,12 @@ macro_rules! validated_identity {
                 backing: &mut String,
                 output: &mut Option<Self>,
                 attempted: &mut bool,
-                normalization_data: &mut unicode_normalization::NativeNormalizationDataV1<P::Error>,
+                normalization_data: &mut quanta_index_unicode::NativeNormalizationDataV1<P::Error>,
                 normalization_admission: &mut P,
                 copy_admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, P::Error>,
             ) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>>
             where
-                P: unicode_normalization::NativeNormalizationAdmissionV1,
+                P: quanta_index_unicode::NativeNormalizationAdmissionV1,
             {
                 let mut copy = NativeIdentityCopyDataV1::new_v1();
                 let mut failure = None;
@@ -746,7 +746,7 @@ macro_rules! validated_identity {
                 normalization_admission: &mut P,
                 copy_admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, P::Error>,
             ) -> Result<(), NativeIdentityDecodeDataRefusalV1>
-            where P: unicode_normalization::NativeNormalizationAdmissionV1,
+            where P: quanta_index_unicode::NativeNormalizationAdmissionV1,
             {
                 if slots.failure.is_some() {
                     return Err(NativeIdentityDecodeDataRefusalV1::OccupiedOutput);
@@ -763,7 +763,7 @@ macro_rules! validated_identity {
                 }
                 let Ok(copy_work) = u64::try_from(value.len()) else {
                     *slots.failure = Some(NativeIdentityConstructionErrorV1::Normalization(
-                        unicode_normalization::NativeNormalizationErrorV1::ArithmeticOverflow,
+                        quanta_index_unicode::NativeNormalizationErrorV1::ArithmeticOverflow,
                     ));
                     return Err(NativeIdentityDecodeDataRefusalV1::OperationRefused);
                 };
@@ -797,12 +797,12 @@ macro_rules! validated_identity {
                 copy_admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, P::Error>,
             ) -> Result<Self, NativeIdentityConstructionErrorV1<P::Error>>
             where
-                P: unicode_normalization::NativeNormalizationAdmissionV1,
+                P: quanta_index_unicode::NativeNormalizationAdmissionV1,
             {
                 let mut backing = String::new();
                 let mut output = None;
                 let mut attempted = false;
-                let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+                let mut normalization_data = quanta_index_unicode::NativeNormalizationDataV1::new_v1();
                 let result = Self::try_from_str_into_with_native_admission_v1(
                     value, &mut backing, &mut output, &mut attempted,
                     &mut normalization_data, normalization_admission, copy_admission,
@@ -822,12 +822,12 @@ macro_rules! validated_identity {
                 normalization_admission: &mut P,
             ) -> Result<Self, NativeIdentityConstructionErrorV1<P::Error>>
             where
-                P: unicode_normalization::NativeNormalizationAdmissionV1,
+                P: quanta_index_unicode::NativeNormalizationAdmissionV1,
             {
                 validate_native_identity_v1(&value, normalization_admission)?;
                 normalization_admission.checkpoint_work_v1(0)
                     .map_err(|cause| NativeIdentityConstructionErrorV1::Normalization(
-                        unicode_normalization::NativeNormalizationErrorV1::Admission(cause)
+                        quanta_index_unicode::NativeNormalizationErrorV1::Admission(cause)
                     ))?;
                 Ok(Self(value))
             }
@@ -868,7 +868,7 @@ macro_rules! validated_identity {
                 normalization_admission: &mut P,
             ) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>>
             where
-                P: unicode_normalization::NativeNormalizationAdmissionV1,
+                P: quanta_index_unicode::NativeNormalizationAdmissionV1,
             {
                 validate_native_identity_v1(value, normalization_admission)
             }
@@ -890,11 +890,11 @@ macro_rules! validated_identity {
             #[cfg(feature = "quanta-native-identity-v1")]
             pub fn validate_str_into_with_native_admission_v1<P>(
                 value: &str,
-                normalization_data: &mut unicode_normalization::NativeNormalizationDataV1<P::Error>,
+                normalization_data: &mut quanta_index_unicode::NativeNormalizationDataV1<P::Error>,
                 normalization_admission: &mut P,
             ) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>>
             where
-                P: unicode_normalization::NativeNormalizationAdmissionV1,
+                P: quanta_index_unicode::NativeNormalizationAdmissionV1,
             {
                 validate_native_identity_into_v1(value, normalization_data, normalization_admission)
             }
@@ -1030,7 +1030,7 @@ macro_rules! validated_identity {
                 normalization: &mut P,
                 copy: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
             ) -> Result<(), NativeIdentityDecodeDataRefusalV1>
-            where P: unicode_normalization::NativeNormalizationAdmissionV1<Error = E>,
+            where P: quanta_index_unicode::NativeNormalizationAdmissionV1<Error = E>,
             {
                 if self.state.construction_attempted || self.state.output.is_some()
                     || self.state.failure.is_some() {
@@ -1059,7 +1059,7 @@ macro_rules! validated_identity {
                             )?;
                             normalization.checkpoint_work_v1(0).map_err(|cause|
                                 NativeIdentityConstructionErrorV1::Normalization(
-                                    unicode_normalization::NativeNormalizationErrorV1::Admission(cause)
+                                    quanta_index_unicode::NativeNormalizationErrorV1::Admission(cause)
                                 ))?;
                             self.state.output = Some($name(core::mem::take(&mut self.state.backing)));
                             Ok(())
@@ -1375,7 +1375,7 @@ mod tests {
 #[cfg(all(test, feature = "quanta-native-identity-v1"))]
 mod native_raw_identity_tests_v1 {
     use super::*;
-    use unicode_normalization::{
+    use quanta_index_unicode::{
         NativeNormalizationAdmissionV1, NativeNormalizationErrorV1,
         NativeNormalizationScratchDemandV1, NativeNormalizationScratchOwnerV1,
     };
@@ -1545,7 +1545,7 @@ mod native_raw_identity_tests_v1 {
             ("e\u{301}", IdentityValidationErrorV1::NonCanonical),
         ] {
             for revision in [false, true] {
-                let mut data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+                let mut data = quanta_index_unicode::NativeNormalizationDataV1::new_v1();
                 let mut admission = Admission::default();
                 let result = if revision {
                     RevisionId::validate_str_into_with_native_admission_v1(
@@ -1580,7 +1580,7 @@ mod native_raw_identity_tests_v1 {
     fn borrowed_validation_into_data_rejects_used_and_retired_scratch_without_poll_v1() {
         let source = format!("q{}", "\u{301}".repeat(20));
         for revision in [false, true] {
-            let mut data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+            let mut data = quanta_index_unicode::NativeNormalizationDataV1::new_v1();
             let mut admission = Admission::default();
             let first = if revision {
                 RevisionId::validate_str_into_with_native_admission_v1(
@@ -1620,7 +1620,7 @@ mod native_raw_identity_tests_v1 {
                 assert_eq!(
                     data.result_v1(),
                     Some(Ok(
-                        unicode_normalization::NativeNormalizationOutcomeV1::IsNfc(true)
+                        quanta_index_unicode::NativeNormalizationOutcomeV1::IsNfc(true)
                     ))
                 );
                 assert_eq!(admission.work, work);
@@ -1635,7 +1635,7 @@ mod native_raw_identity_tests_v1 {
         let mut backing = String::new();
         let mut output = None;
         let mut attempted = false;
-        let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+        let mut normalization_data = quanta_index_unicode::NativeNormalizationDataV1::new_v1();
         let mut admission = Admission::default();
         let mut copies = 0_usize;
         RepoId::try_from_str_into_with_native_admission_v1(
@@ -1668,7 +1668,7 @@ mod native_raw_identity_tests_v1 {
         let source = "é".repeat(256);
         let mut revision = None;
         let mut attempted = false;
-        let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+        let mut normalization_data = quanta_index_unicode::NativeNormalizationDataV1::new_v1();
         RevisionId::try_from_str_into_with_native_admission_v1(
             &source,
             &mut backing,
@@ -1702,7 +1702,7 @@ mod native_raw_identity_tests_v1 {
             let mut backing = String::new();
             let mut output = None;
             let mut attempted = false;
-            let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+            let mut normalization_data = quanta_index_unicode::NativeNormalizationDataV1::new_v1();
             let mut admission = Admission::default();
             let error = RepoId::try_from_str_into_with_native_admission_v1(
                 source,
@@ -1750,7 +1750,7 @@ mod native_raw_identity_tests_v1 {
             let expected = backing.clone();
             let mut output = None;
             let mut attempted = false;
-            let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+            let mut normalization_data = quanta_index_unicode::NativeNormalizationDataV1::new_v1();
             let mut admission = Admission {
                 fail_work: Some(7),
                 ..Admission::default()
@@ -1783,7 +1783,7 @@ mod native_raw_identity_tests_v1 {
         let mut output = Some(prior);
         let mut backing = String::new();
         let mut attempted = false;
-        let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+        let mut normalization_data = quanta_index_unicode::NativeNormalizationDataV1::new_v1();
         let mut admission = Admission {
             fail_work: Some(7),
             ..Admission::default()
@@ -1868,7 +1868,7 @@ mod native_raw_identity_tests_v1 {
             let mut backing = String::new();
             let mut output = None;
             let mut attempted = false;
-            let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+            let mut normalization_data = quanta_index_unicode::NativeNormalizationDataV1::new_v1();
             let cause = Box::new(23);
             let pointer = std::ptr::from_ref(cause.as_ref());
             let error = RepoId::try_from_str_into_with_native_admission_v1(
@@ -1930,7 +1930,7 @@ mod native_raw_identity_tests_v1 {
             releases: 0,
             polls: 0,
         };
-        let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+        let mut normalization_data = quanta_index_unicode::NativeNormalizationDataV1::new_v1();
         let mut backing = String::new();
         let mut output = None;
         let mut attempted = false;
@@ -2001,7 +2001,7 @@ mod native_raw_identity_tests_v1 {
         let mut backing = String::new();
         let mut output = None;
         let mut attempted = false;
-        let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+        let mut normalization_data = quanta_index_unicode::NativeNormalizationDataV1::new_v1();
         let error = RevisionId::try_from_str_into_with_native_admission_v1(
             "rev/test",
             &mut backing,

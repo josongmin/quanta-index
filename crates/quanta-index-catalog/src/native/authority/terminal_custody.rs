@@ -101,7 +101,8 @@ const NEXT_OPERATION_OBJECT: &str =
        AND (?2 IS NULL OR object<>?2) AND (?3 IS NULL OR object<>?3)
        AND (?4 IS NULL OR object<>?4) AND (?5 IS NULL OR object<>?5)
        AND (?6 IS NULL OR object<>?6) AND (?7 IS NULL OR object<>?7)
-     ORDER BY object LIMIT ?8";
+       AND (?8 IS NULL OR object<>?8)
+     ORDER BY object LIMIT ?9";
 const NEXT_ATTEMPT_OBJECT: &str = "SELECT fence,
             CASE WHEN typeof(object)='blob' AND length(object)=32 THEN object END,
             CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN row_digest END
@@ -115,7 +116,7 @@ fn next_fixed_chunk(
     connection: &Connection,
     operation: CustodyOperation<'_>,
     kind: CustodyKind,
-    protected: &[Option<ObjectRef>; 6],
+    protected: &[Option<ObjectRef>; 7],
     limit: usize,
     budget: &mut WorkBudget,
 ) -> Result<FixedCustodyChunk, IndexError> {
@@ -126,11 +127,11 @@ fn next_fixed_chunk(
     }
     let sql_limit = i64::try_from(limit).map_err(|_error| IndexError::ResourceLimited)?;
     let blobs = protected.map(|slot| slot.map(|object| object.0.0));
-    let [one, two, three, four, five, six] = blobs
+    let [one, two, three, four, five, six, seven] = blobs
         .each_ref()
         .map(|slot| slot.as_ref().map(<[u8; 32]>::as_slice));
     let operation_bound: &[&dyn rusqlite::ToSql] =
-        params![operation.id, one, two, three, four, five, six, sql_limit];
+        params![operation.id, one, two, three, four, five, six, seven, sql_limit];
     let attempt_bound: &[&dyn rusqlite::ToSql] = params![operation.id, sql_limit];
     let (query, bound, object_slot, digest_slot): (&str, &[&dyn rusqlite::ToSql], usize, usize) =
         match kind {
@@ -238,7 +239,7 @@ fn next_fixed_row(
     connection: &Connection,
     operation: CustodyOperation<'_>,
     kind: CustodyKind,
-    protected: &[Option<ObjectRef>; 6],
+    protected: &[Option<ObjectRef>; 7],
     budget: &mut WorkBudget,
 ) -> Result<Option<CustodyRow>, IndexError> {
     let chunk = next_fixed_chunk(connection, operation, kind, protected, 1, budget)?;
@@ -329,7 +330,7 @@ fn next_in_table(
     connection: &Connection,
     operation: CustodyOperation<'_>,
     kind: CustodyKind,
-    protected: &[Option<ObjectRef>; 6],
+    protected: &[Option<ObjectRef>; 7],
     budget: &mut WorkBudget,
 ) -> Result<Option<CustodyRow>, IndexError> {
     match kind {
@@ -343,7 +344,7 @@ fn next_in_table(
 fn next_row(
     connection: &Connection,
     operation: CustodyOperation<'_>,
-    protected: &[Option<ObjectRef>; 6],
+    protected: &[Option<ObjectRef>; 7],
     kind: &mut Option<CustodyKind>,
     budget: &mut WorkBudget,
 ) -> Result<Option<CustodyRow>, IndexError> {
@@ -722,7 +723,7 @@ mod tests {
         };
         for kind in [CustodyKind::OperationObject, CustodyKind::AttemptObject] {
             let mut funded = budget(64)?;
-            let row = next_in_table(&connection, custody, kind, &[None; 6], &mut funded)?
+            let row = next_in_table(&connection, custody, kind, &[None; _], &mut funded)?
                 .ok_or("fixed custody row missing")?;
             check_eq!(row.object.as_slice(), object.as_slice());
             check_eq!(funded.usage().bytes, 64);
@@ -731,10 +732,27 @@ mod tests {
                 key: &[9_u8; 32],
             };
             check!(matches!(
-                next_in_table(&connection, wrong_key, kind, &[None; 6], &mut budget(64)?),
+                next_in_table(&connection, wrong_key, kind, &[None; _], &mut budget(64)?),
                 Err(IndexError::Storage(message)) if message.contains("custody digest mismatch")
             ));
         }
+        let mut protected = [None; _];
+        let last = protected.last_mut().ok_or("boot protection has no slots")?;
+        *last = Some(ObjectRef(quanta_index_contract::index::Digest(
+            object.as_slice().try_into()?,
+        )));
+        let mut funded = budget(0)?;
+        check!(
+            next_in_table(
+                &connection,
+                custody,
+                CustodyKind::OperationObject,
+                &protected,
+                &mut funded,
+            )?
+            .is_none()
+        );
+        check_eq!(funded.usage().bytes, 0);
         let _changed = connection.execute(
             "UPDATE native_operation_object_v1 SET row_digest=zeroblob(1048577)",
             [],
@@ -745,7 +763,7 @@ mod tests {
                 &connection,
                 custody,
                 CustodyKind::OperationObject,
-                &[None; 6],
+                &[None; _],
                 &mut funded
             ),
             Err(IndexError::Storage(_))
@@ -761,7 +779,7 @@ mod tests {
                 &connection,
                 custody,
                 CustodyKind::AttemptObject,
-                &[None; 6],
+                &[None; _],
                 &mut funded
             ),
             Err(IndexError::Storage(_))
@@ -809,7 +827,7 @@ mod tests {
             &connection,
             custody,
             CustodyKind::OperationObject,
-            &[None; 6],
+            &[None; _],
             32,
             &mut funded,
         )?;
@@ -827,7 +845,7 @@ mod tests {
             &connection,
             custody,
             CustodyKind::OperationObject,
-            &[None; 6],
+            &[None; _],
             32,
             &mut funded,
         )?;
@@ -848,7 +866,7 @@ mod tests {
                 &connection,
                 custody,
                 CustodyKind::OperationObject,
-                &[None; 6],
+                &[None; _],
                 0,
                 &mut funded
             ),
@@ -891,7 +909,7 @@ mod tests {
                 &connection,
                 custody,
                 CustodyKind::ObjectIntent,
-                &[None; 6],
+                &[None; _],
                 &mut ample
             ),
             Err(IndexError::Storage(_))
@@ -909,7 +927,7 @@ mod tests {
                 &connection,
                 custody,
                 CustodyKind::ObjectIntent,
-                &[None; 6],
+                &[None; _],
                 &mut budget(1024)?
             ),
             Err(IndexError::Storage(_))
@@ -936,7 +954,7 @@ mod tests {
                         &connection,
                         custody,
                         CustodyKind::ObjectIntent,
-                        &[None; 6],
+                        &[None; _],
                         &mut ample
                     ),
                     Err(IndexError::Storage(_))
@@ -951,7 +969,7 @@ mod tests {
                 &connection,
                 custody,
                 CustodyKind::ObjectIntent,
-                &[None; 6],
+                &[None; _],
                 &mut ample
             ),
             Err(IndexError::Storage(_))
@@ -966,7 +984,7 @@ mod tests {
                 &connection,
                 custody,
                 CustodyKind::ObjectIntent,
-                &[None; 6],
+                &[None; _],
                 &mut exhausted
             ),
             Err(IndexError::ResourceLimited)
@@ -990,7 +1008,7 @@ mod tests {
                 &connection,
                 custody,
                 CustodyKind::ObjectIntent,
-                &[None; 6],
+                &[None; _],
                 &mut cancelled
             ),
             Err(IndexError::Cancelled)

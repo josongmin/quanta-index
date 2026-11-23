@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     CompiledRepoMapProjectionEntryV1, RepoMapCandidateCommitmentsV1, RepoMapCompileRefusalV1,
-    RepoMapNode, RepoMapSourceBundle, RepoRelativePath,
+    RepoMapNode, RepoMapNodeRef, RepoMapSourceBundle, RepoRelativePath,
     index::{Digest, ObjectRef},
     native_protocol::{
         GraphEdge, GraphNode, GraphOwnerOutput, GraphProjectionRow, MAX_NATIVE_GRAPH_ITEMS,
@@ -247,19 +247,15 @@ impl RepoMapGraphCompiler {
                 .map_err(NativeRepoMapOwnerError::Compile)?;
             return Ok(Vec::new());
         }
+        let mut file_nodes = BTreeMap::new();
         let (nodes, edges, rank_rows, commitments) =
-            self.compile_native_parts_v1(bundle, selected_paths)?;
-        let mut paths = BTreeMap::new();
+            self.compile_native_parts_v1(bundle, selected_paths, Some(&mut file_nodes))?;
         let mut owners = BTreeMap::<&RepoRelativePath, NativeRepoMapOwnerProjection>::new();
         let mut owner_facts = BTreeMap::<&RepoRelativePath, Vec<RepoMapNode>>::new();
-        for node in &bundle.nodes {
+        // Nodes arrive in identity order. Each file's retained facts inherit
+        // that order without cloning or sorting the other files' identities.
+        for &node in file_nodes.values() {
             let path = node_owner_path(node);
-            if paths.insert(node_identity(node), path).is_some() {
-                return Err(NativeRepoMapOwnerError::OwnerPartition);
-            }
-            if selected_paths.is_some_and(|selected| !selected.contains(path)) {
-                continue;
-            }
             owner_facts.entry(path).or_default().push(node.clone());
             let owner = owners
                 .entry(path)
@@ -278,9 +274,9 @@ impl RepoMapGraphCompiler {
             }
         }
         for node in nodes {
-            let path = paths
-                .get(&node.identity)
-                .ok_or(NativeRepoMapOwnerError::OwnerPartition)?;
+            let path = node_owner_path(
+                file_nodes.get(&node.identity).ok_or(NativeRepoMapOwnerError::OwnerPartition)?,
+            );
             owners
                 .get_mut(path)
                 .ok_or(NativeRepoMapOwnerError::OwnerPartition)?
@@ -289,12 +285,11 @@ impl RepoMapGraphCompiler {
                 .push(node);
         }
         for edge in edges {
-            let path = paths
-                .get(&edge.source)
-                .ok_or(NativeRepoMapOwnerError::OwnerPartition)?;
-            if !paths.contains_key(&edge.target) {
-                return Err(NativeRepoMapOwnerError::OwnerPartition);
-            }
+            // Whole-graph validation already certified the target. An edge
+            // is owned by its source file even when the target is unselected.
+            let path = node_owner_path(
+                file_nodes.get(&edge.source).ok_or(NativeRepoMapOwnerError::OwnerPartition)?,
+            );
             owners
                 .get_mut(path)
                 .ok_or(NativeRepoMapOwnerError::OwnerPartition)?
@@ -303,10 +298,10 @@ impl RepoMapGraphCompiler {
                 .push(edge);
         }
         for row in rank_rows {
-            let path = paths
-                .get(&row.subject)
-                .ok_or(NativeRepoMapOwnerError::OwnerPartition)?;
-            if *path != &row.owner_path {
+            let path = node_owner_path(
+                file_nodes.get(&row.subject).ok_or(NativeRepoMapOwnerError::OwnerPartition)?,
+            );
+            if path != &row.owner_path {
                 return Err(NativeRepoMapOwnerError::OwnerPartition);
             }
             owners
@@ -317,10 +312,9 @@ impl RepoMapGraphCompiler {
         }
         let mut result = Vec::with_capacity(owners.len());
         for (owner_path, mut projection) in owners {
-            let mut facts_nodes = owner_facts
+            let facts_nodes = owner_facts
                 .remove(owner_path)
                 .ok_or(NativeRepoMapOwnerError::OwnerPartition)?;
-            facts_nodes.sort_unstable_by_key(node_identity);
             projection
                 .output
                 .nodes
@@ -369,7 +363,7 @@ impl RepoMapGraphCompiler {
         if bundle.nodes.len().saturating_add(bundle.edges.len()) > MAX_NATIVE_GRAPH_ITEMS {
             return Err(NativeRepoMapOwnerError::GraphLimit);
         }
-        let (nodes, edges, rank_rows, commitments) = self.compile_native_parts_v1(bundle, None)?;
+        let (nodes, edges, rank_rows, commitments) = self.compile_native_parts_v1(bundle, None, None)?;
         let output = GraphOwnerOutput {
             nodes,
             edges,
@@ -390,10 +384,11 @@ impl RepoMapGraphCompiler {
         })
     }
 
-    fn compile_native_parts_v1(
+    fn compile_native_parts_v1<'bundle>(
         &self,
-        bundle: &RepoMapSourceBundle,
+        bundle: &'bundle RepoMapSourceBundle,
         selected_paths: Option<&BTreeSet<RepoRelativePath>>,
+        mut file_nodes: Option<&mut BTreeMap<RepoMapNodeRef, &'bundle RepoMapNode>>,
     ) -> Result<
         (
             Vec<GraphNode>,
@@ -410,15 +405,6 @@ impl RepoMapGraphCompiler {
             return Err(NativeRepoMapOwnerError::InvalidRankRow);
         }
 
-        let mut owner_paths = BTreeMap::new();
-        if selected_paths.is_some() {
-            for node in &bundle.nodes {
-                let path = node_owner_path(node);
-                if owner_paths.insert(node_identity(node), path).is_some() {
-                    return Err(NativeRepoMapOwnerError::OwnerPartition);
-                }
-            }
-        }
         let mut nodes = if selected_paths.is_none() {
             Vec::with_capacity(bundle.nodes.len())
         } else {
@@ -428,12 +414,23 @@ impl RepoMapGraphCompiler {
             if selected_paths.is_some_and(|selected| !selected.contains(node_owner_path(node))) {
                 continue;
             }
+            let identity = node_identity(node);
+            if let Some(index) = file_nodes.as_deref_mut() {
+                if index.insert(identity.clone(), node).is_some() {
+                    return Err(NativeRepoMapOwnerError::OwnerPartition);
+                }
+            }
             nodes.push(GraphNode {
-                identity: node_identity(node),
+                identity,
                 payload_digest: graph_node_payload_digest_v1(node)
                     .map_err(NativeRepoMapOwnerError::Encoding)?,
             });
         }
+        let selected_sources = if selected_paths.is_some() {
+            Some(file_nodes.ok_or(NativeRepoMapOwnerError::OwnerPartition)?)
+        } else {
+            None
+        };
         nodes.sort_unstable_by(|left, right| left.identity.cmp(&right.identity));
         let mut edges = if selected_paths.is_none() {
             Vec::with_capacity(graph.edges.len())
@@ -441,13 +438,8 @@ impl RepoMapGraphCompiler {
             Vec::new()
         };
         for edge in graph.edges {
-            if let Some(selected) = selected_paths {
-                let path = owner_paths
-                    .get(&edge.source)
-                    .ok_or(NativeRepoMapOwnerError::OwnerPartition)?;
-                if !selected.contains(*path) {
-                    continue;
-                }
+            if selected_sources.as_ref().is_some_and(|index| !index.contains_key(&edge.source)) {
+                continue;
             }
             edges.push(GraphEdge {
                 kind: edge.kind,

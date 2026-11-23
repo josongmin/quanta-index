@@ -15,9 +15,7 @@ use crate::{
     HybridSeedQueryRequest, HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1,
     ProcessReadinessRequest, ProcessReadinessV1, ProcessRequestEventsRequestV1,
     ProcessRequestEventsV1, QuarantineDiscardAck, QuarantineDiscardRequest,
-    QuarantineInventoryRequest, QuarantineInventoryV1, RepoMapActivateGenerationRequestV2,
-    RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2, RepoMapQueryRequest,
-    RepoMapQueryResponse, RepoMapTerminalReceiptV2, RuntimeMetadataQueryRequest,
+    QuarantineInventoryRequest, QuarantineInventoryV1, RuntimeMetadataQueryRequest,
     SearchCorpusActiveHeadObservationV1, SearchCorpusGenerationReservationRequestV1,
     SearchCorpusGenerationReservationV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
     SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
@@ -49,7 +47,6 @@ const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
     "History",
     "RuntimeMetadata",
     "Structural",
-    "RepoMapQuery",
     "Explain",
     "ClusterMembershipRead",
 ];
@@ -67,7 +64,6 @@ const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "History",
     "RuntimeMetadata",
     "Structural",
-    "RepoMapQuery",
     "Explain",
     "ClusterMembershipRead",
     "Error",
@@ -76,8 +72,6 @@ const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
     "ReserveSearchCorpusGenerationV1",
     "ActivateSearchCorpusGenerationCas",
     "RollbackSearchCorpusGenerationCas",
-    "RepoMapActivateV2",
-    "RepoMapActiveHeadV2",
     "CurrentGeneration",
     "GenerationStatus",
     "SearchCorpusActiveHead",
@@ -91,8 +85,6 @@ const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "SearchCorpusGenerationReservationV1",
     "SearchCorpusActivationCasAck",
     "SearchCorpusRollbackCasAck",
-    "RepoMapTerminalReceiptV2",
-    "RepoMapActiveHeadV2",
     "Error",
     "CurrentGenerationSnapshot",
     "GenerationStatusReport",
@@ -282,7 +274,6 @@ pub enum SearchPlaneQueryIpcRequest {
     History(HistoryQueryRequest),
     RuntimeMetadata(RuntimeMetadataQueryRequest),
     Structural(StructuralQueryRequest),
-    RepoMapQuery(RepoMapQueryRequest),
     Explain(SearchPlaneExplainQueryRequest),
     ClusterMembershipRead(ClusterMembershipBatchReadRequestV1),
 }
@@ -308,7 +299,6 @@ pub enum SearchPlaneQueryIpcResponse {
     History(SearchPlaneHistoryQueryResponse),
     RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse),
     Structural(SearchPlaneStructuralQueryResponse),
-    RepoMapQuery(RepoMapQueryResponse),
     Explain(SearchPlaneExplainQueryResponse),
     ClusterMembershipRead(ClusterMembershipBatchReadResponseV1),
     Error(SearchPlaneIpcError),
@@ -338,7 +328,6 @@ impl SearchPlaneQueryIpcResponse {
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
             | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
@@ -357,30 +346,6 @@ pub struct SearchPlaneControlIpcRequestEnvelope {
     pub diagnostic_attempt: DiagnosticAttemptFieldV1,
 }
 
-/// Borrowed view of the existing `RepoMap` activation control wire.
-#[derive(Clone, Copy, Debug)]
-pub struct BorrowedRepoMapActivateControlIpcRequestEnvelopeV3<'a> {
-    pub request_id: u64,
-    pub payload: BorrowedRepoMapActivateControlIpcRequestV3<'a>,
-    pub diagnostic_attempt: DiagnosticAttemptFieldV1,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct BorrowedRepoMapActivateControlIpcRequestV3<'a>(
-    pub &'a RepoMapActivateGenerationRequestV2,
-);
-
-impl Serialize for BorrowedRepoMapActivateControlIpcRequestV3<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serialize_adjacent_tagged(
-            "SearchPlaneControlIpcRequest",
-            "RepoMapActivateV2",
-            self.0,
-            serializer,
-        )
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneControlIpcRequest {
     /// Durable number reservation before final publication body construction.
@@ -389,8 +354,6 @@ pub enum SearchPlaneControlIpcRequest {
     ActivateSearchCorpusGenerationCas(SearchPlaneActivateSearchCorpusGenerationCasRequest),
     /// Explicit composite rollback CAS; normal activation remains monotonic.
     RollbackSearchCorpusGenerationCas(SearchPlaneRollbackSearchCorpusGenerationCasRequest),
-    RepoMapActivateV2(RepoMapActivateGenerationRequestV2),
-    RepoMapActiveHeadV2(RepoMapActiveHeadRequestV2),
     /// QI-ACT-01: read-only generation admin query for one
     /// `(repo, revision, track)` triple.
     CurrentGeneration(CurrentGenerationRequest),
@@ -424,8 +387,6 @@ pub enum SearchPlaneControlIpcResponse {
     SearchCorpusGenerationReservationV1(SearchCorpusGenerationReservationV1),
     SearchCorpusActivationCasAck(SearchPlaneSearchCorpusActivationCasAck),
     SearchCorpusRollbackCasAck(SearchPlaneSearchCorpusRollbackCasAck),
-    RepoMapTerminalReceiptV2(RepoMapTerminalReceiptV2),
-    RepoMapActiveHeadV2(RepoMapActiveHeadResponseV2),
     Error(SearchPlaneIpcError),
     /// QI-ACT-01: response to [`SearchPlaneControlIpcRequest::CurrentGeneration`].
     CurrentGenerationSnapshot(GenerationSnapshot),
@@ -715,12 +676,6 @@ impl Serialize for SearchPlaneQueryIpcRequest {
                 payload,
                 serializer,
             ),
-            Self::RepoMapQuery(payload) => serialize_adjacent_tagged(
-                "SearchPlaneQueryIpcRequest",
-                "RepoMapQuery",
-                payload,
-                serializer,
-            ),
             Self::Explain(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcRequest",
                 "Explain",
@@ -793,9 +748,6 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcRequestVisitor {
                             SearchPlaneQueryIpcRequest::RuntimeMetadata(map.next_value()?)
                         }
                         "Structural" => SearchPlaneQueryIpcRequest::Structural(map.next_value()?),
-                        "RepoMapQuery" => {
-                            SearchPlaneQueryIpcRequest::RepoMapQuery(map.next_value()?)
-                        }
                         "Explain" => SearchPlaneQueryIpcRequest::Explain(map.next_value()?),
                         "ClusterMembershipRead" => {
                             SearchPlaneQueryIpcRequest::ClusterMembershipRead(map.next_value()?)
@@ -973,12 +925,6 @@ impl Serialize for SearchPlaneQueryIpcResponse {
                 payload,
                 serializer,
             ),
-            Self::RepoMapQuery(payload) => serialize_adjacent_tagged(
-                "SearchPlaneQueryIpcResponse",
-                "RepoMapQuery",
-                payload,
-                serializer,
-            ),
             Self::Explain(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcResponse",
                 "Explain",
@@ -1059,9 +1005,6 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcResponseVisitor {
                             SearchPlaneQueryIpcResponse::RuntimeMetadata(map.next_value()?)
                         }
                         "Structural" => SearchPlaneQueryIpcResponse::Structural(map.next_value()?),
-                        "RepoMapQuery" => {
-                            SearchPlaneQueryIpcResponse::RepoMapQuery(map.next_value()?)
-                        }
                         "Explain" => SearchPlaneQueryIpcResponse::Explain(map.next_value()?),
                         "ClusterMembershipRead" => {
                             SearchPlaneQueryIpcResponse::ClusterMembershipRead(map.next_value()?)
@@ -1113,18 +1056,6 @@ impl Serialize for SearchPlaneControlIpcRequestEnvelope {
     where
         S: Serializer,
     {
-        serialize_request_envelope(
-            "SearchPlaneControlIpcRequestEnvelope",
-            self.request_id,
-            &self.payload,
-            self.diagnostic_attempt,
-            serializer,
-        )
-    }
-}
-
-impl Serialize for BorrowedRepoMapActivateControlIpcRequestEnvelopeV3<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serialize_request_envelope(
             "SearchPlaneControlIpcRequestEnvelope",
             self.request_id,
@@ -1191,15 +1122,6 @@ impl Serialize for SearchPlaneControlIpcRequest {
             Self::RollbackSearchCorpusGenerationCas(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcRequest",
                 "RollbackSearchCorpusGenerationCas",
-                payload,
-                serializer,
-            ),
-            Self::RepoMapActivateV2(payload) => {
-                BorrowedRepoMapActivateControlIpcRequestV3(payload).serialize(serializer)
-            }
-            Self::RepoMapActiveHeadV2(payload) => serialize_adjacent_tagged(
-                "SearchPlaneControlIpcRequest",
-                "RepoMapActiveHeadV2",
                 payload,
                 serializer,
             ),
@@ -1300,12 +1222,6 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestVisitor {
                             SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
                                 map.next_value()?,
                             )
-                        }
-                        "RepoMapActivateV2" => {
-                            SearchPlaneControlIpcRequest::RepoMapActivateV2(map.next_value()?)
-                        }
-                        "RepoMapActiveHeadV2" => {
-                            SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(map.next_value()?)
                         }
                         "CurrentGeneration" => {
                             SearchPlaneControlIpcRequest::CurrentGeneration(map.next_value()?)
@@ -1420,25 +1336,6 @@ impl<'de> Deserialize<'de> for SearchPlaneControlIpcResponseEnvelope {
     }
 }
 
-#[path = "split/admitted_repo_map_control_v3.rs"]
-mod admitted_repo_map_control_v3;
-
-/// Decode the existing `RepoMap` activation receipt or control refusal under
-/// the caller's retained admission owner.
-pub fn admitted_repo_map_control_response_seed_v3<
-    'a,
-    A: crate::SourceIdentityDecodeAdmissionV1 + ?Sized,
->(
-    admission: &'a A,
-    max_text_bytes: usize,
-) -> impl for<'de> serde::de::DeserializeSeed<'de, Value = SearchPlaneControlIpcResponseEnvelope> + 'a
-{
-    admitted_repo_map_control_v3::RepoMapControlResponseEnvelopeSeedV3::new(
-        admission,
-        max_text_bytes,
-    )
-}
-
 impl Serialize for SearchPlaneControlIpcResponse {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1460,18 +1357,6 @@ impl Serialize for SearchPlaneControlIpcResponse {
             Self::SearchCorpusRollbackCasAck(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcResponse",
                 "SearchCorpusRollbackCasAck",
-                payload,
-                serializer,
-            ),
-            Self::RepoMapTerminalReceiptV2(payload) => serialize_adjacent_tagged(
-                "SearchPlaneControlIpcResponse",
-                "RepoMapTerminalReceiptV2",
-                payload,
-                serializer,
-            ),
-            Self::RepoMapActiveHeadV2(payload) => serialize_adjacent_tagged(
-                "SearchPlaneControlIpcResponse",
-                "RepoMapActiveHeadV2",
                 payload,
                 serializer,
             ),
@@ -1578,14 +1463,6 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcResponseVisitor {
                             SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
                                 map.next_value()?,
                             )
-                        }
-                        "RepoMapTerminalReceiptV2" => {
-                            SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(
-                                map.next_value()?,
-                            )
-                        }
-                        "RepoMapActiveHeadV2" => {
-                            SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(map.next_value()?)
                         }
                         "Error" => SearchPlaneControlIpcResponse::Error(map.next_value()?),
                         "CurrentGenerationSnapshot" => {
@@ -2257,10 +2134,13 @@ mod tests {
             "ActivateGenerationCas",
             "RollbackGeneration",
             "RepoMapActivate",
+            "RepoMapActivateV2",
+            "RepoMapActiveHeadV2",
         ] {
             let wire = json!({
                 "request_id": 12,
-                "payload": {"kind": legacy_kind, "payload": {}}
+                "payload": {"kind": legacy_kind, "payload": {}},
+                "diagnostic_attempt": DiagnosticAttemptFieldV1::Absent,
             });
             let mut old_cbor = Vec::new();
             ciborium::ser::into_writer(&wire, &mut old_cbor).expect("legacy fixture encodes");
@@ -2284,6 +2164,33 @@ mod tests {
         let error = serde_json::from_value::<SearchPlaneControlIpcResponseEnvelope>(response)
             .expect_err("removed scalar rollback response tag must fail closed");
         assert!(error.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn retired_repomap_query_tag_is_rejected_in_json_and_cbor() {
+        let old_request = crate::repomap::RepoMapQueryRequest {
+            repo_id: fixture_repo(),
+            revision_id: fixture_revision(),
+            manifest_generation: ManifestGeneration::new(1),
+            query_text: "old-query".to_string(),
+            top_k: 5,
+            token_budget: 1024,
+            focus_subjects: Vec::new(),
+        };
+        let wire = json!({
+            "request_id": 12,
+            "payload": {"kind": "RepoMapQuery", "payload": serde_json::to_value(old_request).expect("old request encodes")},
+            "diagnostic_attempt": DiagnosticAttemptFieldV1::Absent,
+        });
+        let mut old_cbor = Vec::new();
+        ciborium::ser::into_writer(&wire, &mut old_cbor).expect("legacy fixture encodes");
+        let error = serde_json::from_value::<SearchPlaneQueryIpcRequestEnvelope>(wire)
+            .expect_err("retired RepoMap query must be rejected");
+        assert!(error.to_string().contains("unknown variant"), "{error}");
+        let error =
+            ciborium::de::from_reader::<SearchPlaneQueryIpcRequestEnvelope, _>(old_cbor.as_slice())
+                .expect_err("retired RepoMap query must be rejected on CBOR");
+        assert!(error.to_string().contains("unknown variant"), "{error}");
     }
 
     fn corpus_identity_v1(generation: u64, digest: &str) -> SearchCorpusGenerationIdentityV1 {
@@ -2785,7 +2692,6 @@ mod tests {
                 | SearchPlaneQueryIpcResponse::Symbol(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::Structural(_)
-                | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                 | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
                 | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
                 | SearchPlaneQueryIpcResponse::Error(_) => None,

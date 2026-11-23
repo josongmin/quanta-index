@@ -702,6 +702,16 @@ impl WorkBudget {
         self.usage
     }
 
+    /// Whether a known future charge fits the unspent request work limits.
+    /// This preview does not reserve work or replace a charge or checkpoint.
+    #[must_use]
+    pub const fn can_charge(&self, delta: WorkUsage) -> bool {
+        delta.reads <= self.limits.reads.saturating_sub(self.usage.reads)
+            && delta.writes <= self.limits.writes.saturating_sub(self.usage.writes)
+            && delta.bytes <= self.limits.bytes.saturating_sub(self.usage.bytes)
+            && delta.mutations <= self.limits.mutations.saturating_sub(self.usage.mutations)
+    }
+
     /// Record accepted logical work since an observed synchronous boundary.
     ///
     /// Deltas include nested work, not rejected charges or physical I/O. Call

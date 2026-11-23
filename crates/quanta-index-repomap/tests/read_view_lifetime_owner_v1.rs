@@ -2,8 +2,8 @@
 //! (S21-05).
 //!
 //! Covers the `DoD` matrix at the authority the view acquires from:
-//! - the activation/retire/query barrier: a view acquired before an
-//!   activation/retire/GC completes on the same commitment it pinned;
+//! - the activation/retire pin barrier: a view acquired before an
+//!   activation/retire/GC retains the same commitment;
 //! - retire-wins: a new acquire of a superseded generation is a typed
 //!   refusal;
 //! - cancel/panic: RAII returns the pin and GC proceeds afterwards;
@@ -34,7 +34,7 @@ use quanta_index_contract::{
     FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
     RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
     RepoMapItemIndexAvailability, RepoMapMutationAck, RepoMapNode, RepoMapPublishBundleRequestV2,
-    RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
+    RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
 };
 use quanta_index_core::{CoreError, PinnedRepoMapSnapshot, RepoMapSnapshotAcquireV1};
 use quanta_index_repomap::{RepoMapGcOutcomeV1, RepoMapGenerationStore};
@@ -97,18 +97,6 @@ fn acquire_request(repo_id: &RepoId, generation: u64) -> RepoMapSnapshotAcquireV
         repo_id: repo_id.clone(),
         revision_id: revision(),
         manifest_generation: ManifestGeneration::new(generation),
-    }
-}
-
-fn query_request(generation: u64) -> RepoMapQueryRequest {
-    RepoMapQueryRequest {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(generation),
-        query_text: "lib".to_string(),
-        top_k: 10,
-        token_budget: 1_000,
-        focus_subjects: Vec::new(),
     }
 }
 
@@ -201,11 +189,8 @@ fn an_old_view_completes_on_the_same_commitment_across_activate_and_gc() -> Test
         store.pinned_view_count(&repo(), &revision(), ManifestGeneration::new(1))?,
         1
     );
-    // The barrier: the old view still answers, on the commitment it
-    // pinned, although the store moved on.
-    let response = view.query(query_request(1))?;
-    assert_eq!(response.manifest_generation, ManifestGeneration::new(1));
-    assert!(!response.entries.is_empty());
+    // The old pin retains its commitment although the store moved on.
+    assert_eq!(view.evidence().manifest_generation, 1);
     assert_eq!(
         view.evidence().candidate_commitment,
         first.new_candidate_commitment
@@ -235,7 +220,7 @@ fn after_the_view_releases_gc_reclaims_the_retired_object() -> TestResult {
         view.evidence().candidate_commitment,
         second.new_candidate_commitment
     );
-    assert!(!view.query(query_request(2))?.entries.is_empty());
+    assert_eq!(view.evidence().manifest_generation, 2);
     // Reopen: reconcile treats the reclaimed invalidated row as the
     // expected terminal condition, quarantines nothing, and the active
     // head still serves.
@@ -243,7 +228,7 @@ fn after_the_view_releases_gc_reclaims_the_retired_object() -> TestResult {
     let reopened = reopened.as_ref();
     assert!(reopened.gc_retired_objects()?.considered >= 1);
     let view = reopened.acquire_pinned(&acquire_request(&repo(), 2))?;
-    assert!(!view.query(query_request(2))?.entries.is_empty());
+    assert_eq!(view.evidence().manifest_generation, 2);
     Ok(())
 }
 
@@ -363,8 +348,8 @@ fn a_pinned_generation_cannot_be_republished_underneath_a_view() -> TestResult {
             unreachable!("a different request for one immutable candidate must conflict")
         }
     }
-    // The view still serves the artifact it pinned.
-    assert!(!view.query(query_request(1))?.entries.is_empty());
+    // The view still holds the artifact it pinned.
+    assert_eq!(view.evidence().manifest_generation, 1);
     drop(view);
     // After release the pin gate no longer refuses; the catalog's own
     // content-bound CAS is then the authority over the republish.

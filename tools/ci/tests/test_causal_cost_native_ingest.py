@@ -84,7 +84,7 @@ def _identity(request_id: int) -> dict:
 
 def test_complete_report_keeps_nearest_request_and_ignores_wrong_lane() -> None:
     capture = _capture(
-        _span(1, None, "request", 0, 0, 200, identity=_identity(1)),
+        _span(1, None, "request", 0, 2, 200, identity=_identity(1)),
         _span(2, 1, "operation", 0, 5, 190),
         _span(3, 2, "native_source_apply", 3, 10, 70),
         _span(4, 2, "build_prepare", 3, 70, 180),
@@ -107,7 +107,7 @@ def test_complete_report_keeps_nearest_request_and_ignores_wrong_lane() -> None:
     first, second = report["requests"]
     assert first["request_identity"] == _identity(1)
     assert first["outcome"] == "ok"
-    assert first["wall_ns"] == 200
+    assert (first["start_ns"], first["end_ns"], first["wall_ns"]) == (2, 200, 198)
     assert first["stages"]["native_source_apply/3"]["count"] == 1
     assert first["stages"]["build_prepare/3"]["closed_count"] == 1
     assert first["stages"]["lexical_build/2"]["union_ns"] == 50
@@ -236,6 +236,7 @@ def test_partial_capture_keeps_open_request_last_without_inventing_duration() ->
     assert [row["request_span_id"] for row in report["requests"]] == [1, 10]
     open_request = report["requests"][1]
     assert open_request["outcome"] is None
+    assert (open_request["start_ns"], open_request["end_ns"]) == (0, None)
     assert open_request["wall_ns"] is None
     open_stage = open_request["stages"]["native_source_apply/3"]
     assert open_stage["count"] == 1

@@ -52,6 +52,7 @@ impl SearchdCommand {
         let mut history_generation_json: Option<String> = None;
         let mut history_inventory_repo_id: Option<String> = None;
         let mut protected_native_heads: Option<String> = None;
+        let mut source_only_native = false;
         let mut native_mode: Option<NativeCommandModeV1> = None;
         let mut legacy_serve = false;
         let mut source_root: Option<PathBuf> = None;
@@ -73,6 +74,14 @@ impl SearchdCommand {
                 }
                 "export-native-source-snapshot" => {
                     select_command(&mut selected_command, "export-native-source-snapshot")?;
+                }
+                "--source-only-native" => {
+                    if source_only_native {
+                        return Err(anyhow::anyhow!(
+                            "--source-only-native may be specified only once"
+                        ));
+                    }
+                    source_only_native = true;
                 }
                 "--generation-json" => {
                     set_once(&mut history_generation_json, &mut args, "--generation-json")?;
@@ -149,6 +158,21 @@ impl SearchdCommand {
                     &mut native_input.protected_source_routes,
                     &mut args,
                     "--protected-source-routes",
+                )?,
+                "--retired-policy-object" => set_once(
+                    &mut native_input.retired_policy_object,
+                    &mut args,
+                    "--retired-policy-object",
+                )?,
+                "--retired-policy-sha256" => set_once(
+                    &mut native_input.retired_policy_sha256,
+                    &mut args,
+                    "--retired-policy-sha256",
+                )?,
+                "--retired-policy-identity-count" => set_once(
+                    &mut native_input.retired_policy_identity_count,
+                    &mut args,
+                    "--retired-policy-identity-count",
                 )?,
                 "--config-digest" => set_once(
                     &mut native_input.config_digest,
@@ -309,12 +333,17 @@ impl SearchdCommand {
                     "Source exporter accepts config binding without Native state command flags"
                 ));
             }
-            Some(
-                recovery_input
-                    .clone()
-                    .finish_source_export(config_path, config_digest)?,
-            )
+            Some(recovery_input.clone().finish_source_export(
+                source_only_native,
+                config_path,
+                config_digest,
+            )?)
         } else {
+            if source_only_native {
+                return Err(anyhow::anyhow!(
+                    "--source-only-native requires export-native-source-snapshot"
+                ));
+            }
             None
         };
         let recovery_command = if selected_command == Some("recover-native") {
@@ -684,6 +713,14 @@ mod tests {
             .source_export_command()
             .ok_or_else(|| anyhow::anyhow!("source export command absent"))?;
         ensure!(export.selection_path == std::path::Path::new("/tmp/active.json"));
+        ensure!(!export.source_only_native);
+        let mut native = args.to_vec();
+        native.push("--source-only-native");
+        ensure!(parse(&native)?
+            .source_export_command()
+            .is_some_and(|export| export.source_only_native));
+        native.push("--source-only-native");
+        ensure!(parse(&native).is_err());
         ensure!(parsed.into_config().is_err());
         for index in (1..args.len()).step_by(2) {
             let mut missing = args.to_vec();
@@ -1238,6 +1275,7 @@ mod tests {
                     root_nonce: [0x11; 32],
                     source_cut_digest: quanta_index_contract::index::Digest([0x22; 32]),
                     protected_source_routes: None,
+                    retired_projection_policy: None,
                 }
         );
         ensure!(command.config_digest == Some(quanta_index_contract::index::Digest([0x44; 32])));
@@ -1250,6 +1288,7 @@ mod tests {
                 protected_source_routes: Some(quanta_index_contract::index::ObjectRef(
                     quanta_index_contract::index::Digest([0x33; 32])
                 )),
+                    retired_projection_policy: None,
             }));
         Ok(())
     }

@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use ciborium::de::{
+use quanta_index_cbor::{
     Error as CborDecodeError, FiniteParserAllocationAdmissionV3, FiniteParserAllocationRefusalV3,
     FiniteSemanticReasonV3,
 };

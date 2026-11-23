@@ -14,6 +14,9 @@ import secrets
 import stat
 import subprocess
 import sys
+import tempfile
+from collections.abc import Iterator, MutableMapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +47,30 @@ def _unsigned_environment() -> dict[str, str]:
     environment = os.environ.copy()
     remove_signing_agent(environment, environment.pop(SOCKET_ENV, None))
     return environment
+
+
+@contextmanager
+def source_python_environment(environment: MutableMapping[str, str]) -> Iterator[str]:
+    """Isolate source-backed imports and shell startup for proof children."""
+    removed = (
+        "BASH_ENV", "ENV", "PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE",
+        "PYTHONSTARTUP", "PYTHONINSPECT",
+    )
+    controlled = {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
+    keys = (*removed, *controlled, "PYTHONPYCACHEPREFIX")
+    previous = {key: environment.get(key) for key in keys}
+    with tempfile.TemporaryDirectory(prefix="paired-r5-python-") as directory:
+        for key in removed:
+            environment.pop(key, None)
+        environment.update(controlled, PYTHONPYCACHEPREFIX=directory)
+        try:
+            yield directory
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    environment.pop(key, None)
+                else:
+                    environment[key] = value
 
 
 def frozen_source_head(root: Path) -> str:
@@ -177,11 +204,19 @@ def resolve_from_qbc(
     paired_root = paired_root.resolve(strict=True)
     if not lane or "/" in lane or lane in {".", ".."}:
         raise ValueError("QBC resolver lane is invalid")
-    roots = {root: frozen_source_head(root) for root in (quanta_root, paired_root)}
-    inputs = _bound_inputs(quanta_root, paired_root, consumer)
     environment = _unsigned_environment()
     environment["CODEGRAPH_PERSONA"] = "agent"
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    with source_python_environment(environment):
+        return _resolve_with_qbc(quanta_root, paired_root, consumer, feature, lane, environment)
+
+
+def _resolve_with_qbc(
+    quanta_root: Path, paired_root: Path, consumer: str, feature: str, lane: str,
+    environment: dict[str, str],
+) -> dict[str, Any]:
+    roots = {root: frozen_source_head(root) for root in (quanta_root, paired_root)}
+    inputs = _bound_inputs(quanta_root, paired_root, consumer)
     before, prior = _status(paired_root, lane, environment)
     prior_id = (prior.get("receipt") or {}).get("last_run_id_v1")
     command = [

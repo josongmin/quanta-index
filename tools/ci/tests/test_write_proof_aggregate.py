@@ -317,7 +317,10 @@ def _build_fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict
             recipe = proof["command"].removeprefix("just ")
             if proof["id"] == PAIR_PROOF:
                 proof_recipes.append(
-                    f'{recipe} semantica_root="fixture":\n    ./scripts/verify-repomap-cross-repo.sh "{{{{semantica_root}}}}"\n'
+                    '[positional-arguments]\n'
+                    f'{recipe} semantica_root="fixture":\n'
+                    '    #!/bin/bash -p\n'
+                    '    exec ./scripts/verify-repomap-cross-repo.sh "$1"\n'
                 )
                 continue
             if proof["id"] == P12A_PROOF:
@@ -779,6 +782,23 @@ def test_paired_manifest_refuses_mixed_release_prerequisite(
         proof_by_id=proof_by_id,
     )
     assert any(message in item.message for item in findings), findings
+
+
+@pytest.mark.parametrize("executable", [False, True], ids=["staged", "executable"])
+def test_registered_paired_recipe_refuses_ambient_shell_launch(
+    tmp_path: Path, aggregate_templates: AggregateTemplates, executable: bool,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=executable, templates=aggregate_templates)
+    path = root / "tools/ci/proof-authority.toml"
+    assert not CHECKER.check_registry(registry, root=root, path=path)
+    justfile = root / "Justfile"
+    original = justfile.read_text()
+    justfile.write_text(original.replace("    #!/bin/bash -p\n", "    #!/bin/bash\n", 1))
+    findings = CHECKER.check_registry(registry, root=root, path=path)
+    assert any(
+        "P11 paired runner must use its registered cross-repo recipe" in item.message
+        for item in findings
+    ), findings
 
 
 def test_paired_manifest_requires_both_exact_witnesses(

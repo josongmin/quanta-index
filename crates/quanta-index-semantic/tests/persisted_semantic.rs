@@ -367,6 +367,17 @@ fn exact_canonical_ties_are_selected_before_lance_top_k_cut() -> TestResult {
         got.iter()
             .all(|row| row.score.to_bits() == 1.0_f32.to_bits())
     );
+    let exact_path = QueryConstraintSetV1::from_exact_repo_relative_path(
+        ExactRepoRelativePathV1::new("src/file_25.go").map_err(str::to_string)?,
+    );
+    let filtered = searcher.search_constrained_canonical_ties(
+        &[1.0, 0.0, 0.0],
+        &exact_path,
+        1,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].repo_relative_path.as_str(), "src/file_25.go");
     let insufficient = RequestBudgetV1::unbounded().with_semantic_work_limit_v1(77)?;
     assert!(matches!(
         searcher.search_constrained_canonical_ties(

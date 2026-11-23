@@ -1040,6 +1040,18 @@ fn selected_repomap_only_workspace_is_protected_without_source_route() -> TestRe
         None,
         &mut protected_budget_v1(),
     )?;
+    let mut source_only = routes.clone();
+    source_only.repomap_heads.clear();
+    check_eq!(
+        boot_quiescence::check_quiescent_protected_routes(
+            &guard,
+            selected.publication.identity,
+            &source_only,
+            None,
+            &mut protected_budget_v1(),
+        ),
+        Err(IndexError::Conflict)
+    );
     drop(guard);
     check_eq!(
         catalog.advance_exact_history_floor(second_workspace(), 7, 2, &mut admission_budget(),)?,

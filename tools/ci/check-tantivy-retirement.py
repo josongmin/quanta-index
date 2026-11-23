@@ -439,6 +439,7 @@ def shipped_bundle_findings(
     from tools.deployment.native_release_approval import (
         PRODUCT_ACTIVE_MAX_BYTES,
         SCHEMA,
+        require_matching_installed_recovery,
         signing_bytes,
         verify_installed_product_generation,
     )
@@ -485,6 +486,7 @@ def shipped_bundle_findings(
         Ed25519PublicKey.from_public_bytes(key).verify(bytes.fromhex(signature), signing_bytes(payload))
     except InvalidSignature as error:
         raise ValueError("installed Q approval signature differs") from error
+    require_matching_installed_recovery(active, daemon_sha256, payload.get("config_sha256"))
 
     manifest_path = bundle / "share/quanta/release-manifest.json"
     manifest_bytes = read_regular_bytes(manifest_path, 4 * 1024 * 1024, "shipped release manifest")

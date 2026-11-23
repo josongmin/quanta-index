@@ -65,32 +65,6 @@ fn legacy_query_text(syntax: TextQuerySyntax, query: &str, top_k: u32) -> TextQu
     }
 }
 
-#[test]
-fn native_rejects_legacy_repomap_with_typed_identity_before_socket_io() {
-    let (_directory, listener, client) = native_query_listener();
-    let error = client
-        .repomap()
-        .query(sample_repomap_query_request())
-        .expect_err("Legacy contract must refuse");
-    assert!(matches!(
-        error,
-        SdkError::UnsupportedNativeQuery {
-            capability: LegacyQueryCapabilityV1::RepoMapQuery
-        }
-    ));
-    assert_eq!(
-        LegacyQueryCapabilityV1::RepoMapQuery.code(),
-        quanta_index_contract::native_protocol::NativeIndexErrorCode::CapabilityUnavailable
-    );
-    assert_eq!(
-        LegacyQueryCapabilityV1::RepoMapQuery.as_str(),
-        "legacy.repomap"
-    );
-    assert_eq!(crate::UNSUPPORTED_QUERY_DIAGNOSTIC_VERSION, 1);
-    assert_no_query_connection(&listener);
-    assert!(error.published_evidence().is_none());
-    assert!(error.published_failure_stage().is_none());
-}
 
 #[test]
 fn native_rejects_legacy_runtime_metadata_in_both_syntaxes_before_socket_io() {
@@ -205,21 +179,4 @@ fn native_rejects_legacy_subroutes_before_their_local_validation() {
         }
     ));
     assert_no_query_connection(&listener);
-}
-
-#[test]
-fn injected_legacy_repomap_still_dispatches_its_original_contract() {
-    let response = sample_repomap_query_response();
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::RepoMapQuery(response.clone()),
-    ));
-    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
-    assert_eq!(
-        ok_or_fail!(client.repomap().query(sample_repomap_query_request())),
-        response
-    );
-    assert!(matches!(
-        ok_or_fail!(only_query_request(query.as_ref())).payload,
-        quanta_index_contract::SearchPlaneQueryIpcRequest::RepoMapQuery(_)
-    ));
 }

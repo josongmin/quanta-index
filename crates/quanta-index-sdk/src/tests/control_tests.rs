@@ -750,7 +750,7 @@ fn request_events_bind_plane_and_limit_before_sdk_publication() {
 fn quarantine_inventory_and_discard_carry_the_target_verbatim() {
     use quanta_index_contract::{
         QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1,
-        QuarantineTargetV1, QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1,
+        QuarantineTargetV1, QuarantinedGenerationEntryV1,
         SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneTrackKind,
     };
     let inventory = QuarantineInventoryV1 {
@@ -761,10 +761,6 @@ fn quarantine_inventory_and_discard_carry_the_target_verbatim() {
             detail: "identity file does not decode".to_string(),
         }],
         semantic: Vec::new(),
-        repo_map: vec![QuarantinedRepoMapFileEntryV1 {
-            file_name: "stale--marker.json".to_string(),
-            reason: "snapshot does not decode".to_string(),
-        }],
     };
     let control = Arc::new(StubControlTransport::new(
         SearchPlaneControlIpcResponse::QuarantineInventory(inventory.clone()),
@@ -781,10 +777,7 @@ fn quarantine_inventory_and_discard_carry_the_target_verbatim() {
         "the inventory request is what went over the wire: {sent:?}"
     );
 
-    let target = QuarantineTargetV1::RepoMapFile(QuarantinedRepoMapFileEntryV1 {
-        file_name: "stale--marker.json".to_string(),
-        reason: "snapshot does not decode".to_string(),
-    });
+    let target = QuarantineTargetV1::Generation(inventory.lexical[0].clone());
     let ack = QuarantineDiscardAck {
         target: target.clone(),
         outcome: QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 15 },

@@ -258,9 +258,14 @@ mod tests {
             serde_json::from_slice::<HistorySnapshotExportFrameV1>(json).expect("JSON"),
             expected
         );
+        assert_eq!(
+            HistorySnapshotExportFrameV1::decode_json_v1(json).expect("bounded JSON"),
+            expected
+        );
         let duplicate =
             br#"{"body":{"offset":3,"offset":4,"bytes":[255]},"kind":"native_object_chunk"}"#;
         assert!(serde_json::from_slice::<HistorySnapshotExportFrameV1>(duplicate).is_err());
+        assert!(HistorySnapshotExportFrameV1::decode_json_v1(duplicate).is_err());
 
         // The previous decoder accepts byte-string keys for the envelope
         // and the variant body, including unknown non-UTF-8 field names.
@@ -275,6 +280,94 @@ mod tests {
         assert!(
             ciborium::from_reader::<HistorySnapshotExportFrameV1, _>(bignum.as_slice()).is_err()
         );
+    }
+
+    #[test]
+    fn export_frame_direct_json_decoder_keeps_tag_and_error_semantics() {
+        let expected = HistorySnapshotExportFrameV1::NativeObjectChunk {
+            offset: 3,
+            bytes: vec![255],
+        };
+        let valid: &[&[u8]] = &[
+            br#"{"kind":"native_object_chunk","body":{"offset":3,"bytes":[255]}}"#,
+            br#"{"body":{"bytes":[255],"offset":3},"kind":{"native_object_chunk":null}}"#,
+            br#"["native_object_chunk",{"offset":3,"bytes":[255]}]"#,
+        ];
+        for json in valid {
+            assert_eq!(
+                HistorySnapshotExportFrameV1::decode_json_v1(json).expect("direct JSON"),
+                expected
+            );
+            assert_eq!(
+                serde_json::from_slice::<HistorySnapshotExportFrameV1>(json).expect("generic JSON"),
+                expected
+            );
+        }
+
+        let malformed: &[&[u8]] = &[
+            br#"{"body":{"offset":3,"offset":4,"bytes":[255]},"kind":"native_object_chunk"}"#,
+            br#"{"body":{"offset":3,"bytes":[255]},"kind":"native_object_chunk","kind":"page"}"#,
+            br#"{"body":{"offset":3,"bytes":[255]},"body":{},"kind":"native_object_chunk"}"#,
+            br#"{"body":{"offset":3,"bytes":[256]},"kind":"native_object_chunk"}"#,
+            br#"{"body":{"offset":3,"bytes":[255]},"kind":"unknown"}"#,
+            br#"{"body":{"offset":3,"bytes":[255]}}"#,
+            br#"{"kind":"native_object_chunk"}"#,
+            br#"{"body":{"offset":3,"bytes":[255]},"kind":"native_object_chunk"} true"#,
+        ];
+        for json in malformed {
+            assert!(
+                HistorySnapshotExportFrameV1::decode_json_v1(json).is_err(),
+                "direct decoder accepted {}",
+                String::from_utf8_lossy(json)
+            );
+            assert!(
+                serde_json::from_slice::<HistorySnapshotExportFrameV1>(json).is_err(),
+                "generic decoder accepted {}",
+                String::from_utf8_lossy(json)
+            );
+        }
+    }
+
+    #[test]
+    fn export_frame_direct_json_body_first_avoids_replay_at_admitted_frame_size() {
+        use export_decode::BODY_REPLAY_ENTRY_COUNT;
+
+        // A maximum Native chunk fits the production frame admission.
+        let byte_count = 64 * 1024;
+        let mut json = Vec::with_capacity(byte_count * 2 + 96);
+        json.extend_from_slice(br#"{"body":{"offset":0,"bytes":["#);
+        for index in 0..byte_count {
+            if index != 0 {
+                json.push(b',');
+            }
+            json.push(b'0');
+        }
+        json.extend_from_slice(br#"]},"kind":"native_object_chunk"}"#);
+        assert!(json.len() <= MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1 + 4096);
+
+        BODY_REPLAY_ENTRY_COUNT.with(|count| count.set(0));
+        let decoded = HistorySnapshotExportFrameV1::decode_json_v1(&json)
+            .expect("body-first direct JSON at frame admission");
+        assert_eq!(
+            decoded,
+            HistorySnapshotExportFrameV1::NativeObjectChunk {
+                offset: 0,
+                bytes: vec![0; byte_count],
+            }
+        );
+        BODY_REPLAY_ENTRY_COUNT.with(|count| assert_eq!(count.get(), 0));
+
+        let small = br#"{"body":{"offset":0,"bytes":[0]},"kind":"native_object_chunk"}"#;
+        let generic: HistorySnapshotExportFrameV1 =
+            serde_json::from_slice(small).expect("generic compatibility path");
+        assert_eq!(
+            generic,
+            HistorySnapshotExportFrameV1::NativeObjectChunk {
+                offset: 0,
+                bytes: vec![0],
+            }
+        );
+        BODY_REPLAY_ENTRY_COUNT.with(|count| assert!(count.get() > 0));
     }
 
     #[test]

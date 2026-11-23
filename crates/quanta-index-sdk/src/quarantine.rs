@@ -29,8 +29,8 @@ impl<'a> QuarantineNamespace<'a> {
             other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+
+
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -69,8 +69,8 @@ impl<'a> QuarantineNamespace<'a> {
             other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+
+
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)

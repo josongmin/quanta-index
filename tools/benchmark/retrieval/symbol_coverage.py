@@ -95,15 +95,23 @@ def grammar_identity(root: Path = ROOT) -> str:
         "tree-sitter-typescript": "0.23.2",
     }
     lock = tomllib.loads(regular_bytes(root / "Cargo.lock").decode())
+    registry_checksums = {}
     for name, version in versions.items():
         rows = [p for p in lock["package"] if p["name"] == name]
         if len(rows) != 1 or rows[0]["version"] != version:
             raise ValueError(f"grammar lock identity differs: {name}")
-        if name in {
+        if name in {"tree-sitter-rust", "tree-sitter-python"}:
+            row = rows[0]
+            checksum = row.get("checksum")
+            if (
+                row.get("source") != "registry+https://github.com/rust-lang/crates.io-index"
+                or not is_sha(checksum)
+            ):
+                raise ValueError(f"{name} must have a crates.io checksum")
+            registry_checksums[name] = checksum
+        elif name in {
             "tree-sitter-go",
             "tree-sitter-typescript",
-            "tree-sitter-rust",
-            "tree-sitter-python",
             "tree-sitter-javascript",
         } and ("source" in rows[0] or "checksum" in rows[0]):
             raise ValueError(f"{name} grammar must resolve to the source-bound path dependency")
@@ -115,21 +123,21 @@ def grammar_identity(root: Path = ROOT) -> str:
         ("python", "0.25.0"),
         ("javascript", "0.25.0"),
     ]:
-        if manifest["workspace"]["dependencies"]["tree-sitter-" + tag] != {
-            "version": "=" + version,
-            "path": "vendor/tree-sitter-" + tag,
-        }:
-            raise ValueError(f"{tag} grammar path dependency differs")
+        expected = "=" + version
+        if tag not in {"rust", "python"}:
+            expected = {"version": expected, "path": "vendor/tree-sitter-" + tag}
+        if manifest["workspace"]["dependencies"]["tree-sitter-" + tag] != expected:
+            raise ValueError(f"{tag} grammar dependency differs")
     return (
-        "tree-sitter@0.25.10;rust@0.24.2+quanta-abi14-1;vendored-source-sha256="
-        + _vendor_digest(root / "vendor/tree-sitter-rust", "rust")
+        "tree-sitter@0.25.10;rust@0.24.2;registry-checksum="
+        + registry_checksums["tree-sitter-rust"]
         + ";"
         "go@0.25.0+quanta-go-compatibility-1;vendored-source-sha256="
         + _vendor_digest(root / "vendor/tree-sitter-go", "go")
         + ";javascript@0.25.0+quanta-javascript-export-names-1;vendored-source-sha256="
         + _vendor_digest(root / "vendor/tree-sitter-javascript", "javascript")
-        + ";python@0.25.0+quanta-abi14-1;vendored-source-sha256="
-        + _vendor_digest(root / "vendor/tree-sitter-python", "python")
+        + ";python@0.25.0;registry-checksum="
+        + registry_checksums["tree-sitter-python"]
         + ";"
         "typescript@0.23.2+quanta-typescript-compatibility-2;vendored-source-sha256="
         + _vendor_digest(root / "vendor/tree-sitter-typescript", "typescript")

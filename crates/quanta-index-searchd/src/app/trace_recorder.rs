@@ -1552,19 +1552,6 @@ mod tests {
                 DiagnosticCounterV1::SqliteWritePostCallbackRefusals,
                 "sqlite_write_post_callback_refusals",
             ),
-            (DiagnosticCounterV1::SqliteCacheHits, "sqlite_cache_hits"),
-            (
-                DiagnosticCounterV1::SqliteCacheMisses,
-                "sqlite_cache_misses",
-            ),
-            (
-                DiagnosticCounterV1::SqliteCacheWrites,
-                "sqlite_cache_writes",
-            ),
-            (
-                DiagnosticCounterV1::SqliteCacheSpills,
-                "sqlite_cache_spills",
-            ),
             (
                 DiagnosticCounterV1::SqlitePageSizeBytes,
                 "sqlite_page_size_bytes",

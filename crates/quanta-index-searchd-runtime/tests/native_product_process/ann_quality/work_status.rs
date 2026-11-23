@@ -250,8 +250,8 @@ impl<'a> CompletionProgress<'a> {
         self.sources.len()
     }
 
-    pub(crate) fn instance(&self) -> IndexInstanceId {
-        self.spec.instance
+    pub(super) fn spec(&self) -> &InstanceSpec {
+        self.spec
     }
 
     pub(crate) fn poll_next(
@@ -544,6 +544,114 @@ mod tests {
     }
 
     #[test]
+    fn product_size_readiness_separates_available_receipts_from_observation_deadline() -> TestResult
+    {
+        let sources: Vec<_> = (0..4_096_u16)
+            .map(|ordinal| {
+                let ordinal = ordinal.to_be_bytes();
+                let mut owner = [0; 16];
+                owner
+                    .first_chunk_mut::<2>()
+                    .ok_or("owner key has no ordinal")?
+                    .copy_from_slice(&ordinal);
+                let mut source = [0; 32];
+                source
+                    .first_chunk_mut::<2>()
+                    .ok_or("source digest has no ordinal")?
+                    .copy_from_slice(&ordinal);
+                Ok((
+                    OwnerKey {
+                        producer: operation(2).producer,
+                        stable_id: StableOwnerId(owner),
+                    },
+                    ObjectRef(Digest(source)),
+                ))
+            })
+            .collect::<TestResult<_>>()?;
+        let spec = text_spec();
+        let source_view = view(5);
+        // The 63 pauses between 64 completed pages require 31.5 s even
+        // when every receipt is available before the observer starts.
+        for (ready_at_start, deadline_ms, expected_ms, expected_reads, expected_complete) in [
+            (true, 31_000, 31_000, 3_968, 3_968),
+            (true, 32_000, 31_500, 4_096, 4_096),
+            (false, 1_200_000, 1_200_000, 2_402, 0),
+        ] {
+            let mut progress = CompletionProgress::new(&sources, source_view, &spec)?;
+            let mut pace = ReadinessPace::new();
+            let deadline = Duration::from_millis(deadline_ms);
+            let mut elapsed = Duration::ZERO;
+            let mut observed = Vec::new();
+            let mut ready = false;
+            for _ in 0..1_202 {
+                if elapsed >= deadline {
+                    break;
+                }
+                let prior = progress.completed();
+                ready = progress.poll_next(|intent| {
+                    let WorkScope::Owner { owner, .. } = intent.scope else {
+                        return Err("ANN readiness requested a non-owner status".into());
+                    };
+                    let [high, low, ..] = owner.stable_id.0;
+                    let ordinal = u16::from_be_bytes([high, low]);
+                    let (expected_owner, source) = sources
+                        .get(usize::from(ordinal))
+                        .copied()
+                        .ok_or("ANN readiness requested an unknown owner")?;
+                    require_equal(
+                        &intent,
+                        &owner_intent(workspace(), 1, &spec, expected_owner, source),
+                        "ANN readiness work identity",
+                    )?;
+                    observed.push(ordinal);
+                    if ready_at_start {
+                        // Publish in the reverse of the observer's owner order.
+                        Ok(WorkStatus::Completed(view(
+                            4_101_u64.saturating_sub(u64::from(ordinal)),
+                        )))
+                    } else {
+                        Ok(WorkStatus::Pending)
+                    }
+                })?;
+                if ready {
+                    break;
+                }
+                let remaining = deadline.saturating_sub(elapsed);
+                let pause = pace.after_page(progress.completed() > prior, remaining);
+                require(
+                    !pause.is_zero() && pause <= remaining,
+                    "invalid ANN poll pause",
+                )?;
+                elapsed = elapsed.saturating_add(pause);
+            }
+            require_equal(
+                &elapsed,
+                &Duration::from_millis(expected_ms),
+                "ANN readiness virtual elapsed time",
+            )?;
+            require_equal(
+                &observed,
+                &(0..expected_reads).collect::<Vec<_>>(),
+                "ANN readiness exact probe order and bound",
+            )?;
+            require_equal(
+                &progress.completed(),
+                &expected_complete,
+                "ANN receipt count",
+            )?;
+            require_equal(
+                &ready,
+                &(expected_complete == 4_096),
+                "ANN readiness result",
+            )?;
+            if ready {
+                progress.verify_latest_publication(view(4_101))?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn out_of_order_completion_never_hides_pending_input() -> TestResult {
         let sources = sources(2);
         let spec = text_spec();
@@ -781,7 +889,11 @@ mod tests {
                 "rejected completion cursor",
             )?;
         }
-        require_equal(&progress.instance(), &spec.instance, "completion instance")?;
+        require_equal(
+            &progress.spec().instance,
+            &spec.instance,
+            "completion instance",
+        )?;
         Ok(())
     }
 

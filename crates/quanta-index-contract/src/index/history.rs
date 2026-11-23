@@ -1,19 +1,20 @@
 //! History input identity is independent of the current file SourceCut.
-mod source_input;
-mod snapshot_checkpoint;
 mod native_restore;
+mod snapshot_checkpoint;
+mod source_input;
 use super::{Digest, IndexInstanceId, ObjectRef, SourceTransition};
 use crate::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
+pub use native_restore::NativeHistoryRestoreInputV1;
 use sha2::{Digest as _, Sha256};
+pub use snapshot_checkpoint::{
+    HistorySnapshotCheckpointV1, HistorySnapshotExportFrameV1, HistorySnapshotPageV1,
+    HistorySnapshotRowV1, MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1,
+    MAX_HISTORY_SNAPSHOT_ROWS_PER_PAGE_V1,
+};
 pub use source_input::{
     HistoryReplayFenceV1, HistoryReplayPublicationV1, HistorySourceInputV1,
     MAX_HISTORY_SOURCE_INPUT_BYTES_V1,
 };
-pub use snapshot_checkpoint::{
-    HistorySnapshotCheckpointV1, HistorySnapshotExportFrameV1, HistorySnapshotPageV1, HistorySnapshotRowV1,
-    MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1, MAX_HISTORY_SNAPSHOT_ROWS_PER_PAGE_V1,
-};
-pub use native_restore::NativeHistoryRestoreInputV1;
 
 /// The generation one auxiliary row belongs to. Core reexports this owner.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -185,7 +186,11 @@ crate::native_serde_struct!(HistoryGenerationInputV1 {
 
 impl HistoryGenerationInputV1 {
     pub fn child_references_v1(self) -> impl Iterator<Item = ObjectRef> {
-        let mut edges = [Some(self.original), self.repo_commit_recency, self.file_contributor];
+        let mut edges = [
+            Some(self.original),
+            self.repo_commit_recency,
+            self.file_contributor,
+        ];
         edges.sort_unstable();
         edges.into_iter().flatten()
     }

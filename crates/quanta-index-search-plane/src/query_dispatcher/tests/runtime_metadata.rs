@@ -85,9 +85,6 @@ fn runtime_metadata_dispatch_success_emits_closed_obs_metrics() -> TestResult {
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
         crate::SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
-        Arc::new(
-            crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort::default(),
-        ),
         Arc::new(crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer),
         ready_runtime_metadata_ledger(100, 20),
         crate::query_dispatcher::tests::support::common::test_activation_catalog()?,

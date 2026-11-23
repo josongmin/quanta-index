@@ -352,7 +352,7 @@ fn open_native_format(
                 Ok(())
             })();
             let observed = InodeObservation::from_file(&file);
-            if let Err(error) = rusqlite::ffi::quanta_capacity_vfs::close_owned_file(file) {
+            if let Err(error) = crate::owned_fd_close::close_owned_file(file) {
                 physical.mark_close_unwitnessed();
                 return Err(anyhow::anyhow!("close native marker: {error}"));
             }
@@ -405,27 +405,7 @@ pub(super) struct NativeDispatcher {
             quanta_index_repomap::native::GraphPage,
         >,
     >,
-    pub(super) repomap: OnceLock<
-        QueryAdapterRegistry<
-            quanta_index_contract::native_protocol::NativeRepoMapQuery,
-            quanta_index_repomap::native::NativeRepoMapRankPage,
-        >,
-    >,
-    pub(super) repomap_prior_files: OnceLock<
-        QueryAdapterRegistry<
-            OwnerKey,
-            Option<quanta_index_repomap::native::NativeRepoMapPriorFileContextV1>,
-        >,
-    >,
     pub(super) installation_config_sha256: OnceLock<quanta_index_contract::index::Digest>,
-    pub(super) repomap_graph_installation:
-        OnceLock<quanta_index_contract::native_protocol::NativeRepoMapGraphDescriptorV1>,
-    pub(super) imported_repomap_graph: OnceLock<
-        QueryAdapterRegistry<
-            quanta_index_contract::native_protocol::NativeImportedRepoMapQueryV1,
-            quanta_index_repomap::native::NativeLegacyRepoMapGraphPageV1,
-        >,
-    >,
     pub(super) overlay: OnceLock<Arc<crate::native_overlay::NativeOverlay>>,
     pub(super) stub_ast:
         OnceLock<Arc<dyn quanta_index_lexical::native::stub::StubAstCertificatePort>>,
@@ -2025,20 +2005,6 @@ impl NativeIndexService {
             .map_err(|_readers| IndexError::Conflict)
     }
 
-    pub fn configure_repomap(
-        &self,
-        readers: QueryAdapterRegistry<
-            quanta_index_contract::native_protocol::NativeRepoMapQuery,
-            quanta_index_repomap::native::NativeRepoMapRankPage,
-        >,
-    ) -> Result<(), IndexError> {
-        readers.validate_reservation(self.dispatcher.interactive_need)?;
-        self.dispatcher
-            .repomap
-            .set(readers)
-            .map_err(|_readers| IndexError::Conflict)
-    }
-
     pub(crate) fn record_installation_config_sha256(
         &self,
         config_sha256: quanta_index_contract::index::Digest,
@@ -2050,53 +2016,6 @@ impl NativeIndexService {
             .installation_config_sha256
             .set(config_sha256)
             .map_err(|_| IndexError::Conflict)
-    }
-
-    pub(crate) fn configure_repomap_prior_files(
-        &self,
-        descriptor: AdapterDescriptor,
-        need: ResourceNeed,
-    ) -> Result<(), IndexError> {
-        use quanta_index_repomap::native::NativeRepoMapPriorFileReaderV1;
-
-        let mut readers = QueryAdapterRegistry::new();
-        readers.register(descriptor, need, NativeRepoMapPriorFileReaderV1::new(need)?)?;
-        readers.validate_reservation(self.dispatcher.interactive_need)?;
-        self.dispatcher
-            .repomap_prior_files
-            .set(readers)
-            .map_err(|_readers| IndexError::Conflict)
-    }
-
-    pub(crate) fn record_repomap_graph_installation(
-        &self,
-        descriptor: quanta_index_contract::native_protocol::NativeRepoMapGraphDescriptorV1,
-    ) -> Result<(), IndexError> {
-        if self.dispatcher.graph.get().is_none()
-            || self.dispatcher.repomap.get().is_none()
-            || self.dispatcher.repomap_prior_files.get().is_none()
-            || self.dispatcher.read_sessions.get().is_none()
-        {
-            return Err(IndexError::SnapshotUnavailable);
-        }
-        self.dispatcher
-            .repomap_graph_installation
-            .set(descriptor)
-            .map_err(|_| IndexError::Conflict)
-    }
-
-    pub fn configure_imported_repomap_graph(
-        &self,
-        readers: QueryAdapterRegistry<
-            quanta_index_contract::native_protocol::NativeImportedRepoMapQueryV1,
-            quanta_index_repomap::native::NativeLegacyRepoMapGraphPageV1,
-        >,
-    ) -> Result<(), IndexError> {
-        readers.validate_reservation(self.dispatcher.interactive_need)?;
-        self.dispatcher
-            .imported_repomap_graph
-            .set(readers)
-            .map_err(|_readers| IndexError::Conflict)
     }
 
     /// Configure bounded ephemeral text before serving. Authentication reuses
@@ -2685,11 +2604,7 @@ impl NativeIndexService {
             effort: OnceLock::new(),
             interaction: OnceLock::new(),
             graph: OnceLock::new(),
-            repomap: OnceLock::new(),
-            repomap_prior_files: OnceLock::new(),
             installation_config_sha256: OnceLock::new(),
-            repomap_graph_installation: OnceLock::new(),
-            imported_repomap_graph: OnceLock::new(),
             overlay: OnceLock::new(),
             stub_ast: OnceLock::new(),
             root_lease: Arc::clone(&lease),
@@ -3115,9 +3030,6 @@ mod native_closeout_tests {
                 | NativeReply::HybridFile(_)
                 | NativeReply::Semantic(_)
                 | NativeReply::Graph(_)
-                | NativeReply::RepoMapPriorFile(_)
-                | NativeReply::ImportedRepoMap(_)
-                | NativeReply::RepoMapRanked(_)
                 | NativeReply::Stub(_)
                 | NativeReply::Overlay(_)
                 | NativeReply::OverlayText(_)

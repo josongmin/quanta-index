@@ -10,7 +10,6 @@ pub mod model;
 pub mod native;
 mod object_store;
 mod pinned;
-pub mod query;
 pub mod store;
 
 pub use delta::RepoMapDeltaApplier;
@@ -23,9 +22,10 @@ pub use materializer::{
     CandidateProjectionMeta, RepoMapGraphCompiler, decode_compiled_payload,
     snapshot_from_projection,
 };
-pub use model::{RepoMapEntry, RepoMapIndexedSnapshot, RepoMapSnapshot, RepoMapSnapshotIndex};
-pub use object_store::{VerifiedActiveRepoMapFilesV1, visit_existing_active_repomap_compiled_payload_v1};
+pub use model::{RepoMapEntry, RepoMapSnapshot};
+pub use object_store::{
+    VerifiedActiveRepoMapFilesV1, visit_existing_active_repomap_compiled_payload_v1,
+};
 pub use pinned::PinnedRepoMapSnapshotV1;
-pub use query::RepoMapQueryEngine;
 pub use store::RepoMapGcOutcomeV1;
 pub use store::{OpenedRepoMapStore, RepoMapGenerationStore};

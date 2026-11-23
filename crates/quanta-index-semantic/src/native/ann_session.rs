@@ -86,6 +86,11 @@ impl fmt::Debug for AnnLanceSession {
 }
 
 impl AnnLanceSession {
+    #[cfg(test)]
+    pub(in crate::native) fn arm_test_read_gate(&self, gate: Arc<super::ann_store::TestReadGate>) {
+        self.store.arm_test_read_gate(gate);
+    }
+
     /// Admit all store work and backing against the original request budget.
     pub(super) fn new(limits: AnnStoreLimits, budget: &mut WorkBudget) -> Result<Self, IndexError> {
         budget.checkpoint()?;
@@ -122,6 +127,10 @@ impl AnnLanceSession {
     ) -> Result<Self, IndexError> {
         let store = AnnMemoryStore::from_verified_files(&fileset.files, limits, budget).await?;
         Self::with_store(store, budget)
+    }
+
+    pub(super) fn read_store(&self) -> Arc<AnnMemoryStore> {
+        Arc::clone(&self.store)
     }
 
     /// A connection uses this instance's registry, including on reopen.

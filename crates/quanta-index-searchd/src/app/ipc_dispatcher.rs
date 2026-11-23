@@ -49,7 +49,6 @@ impl PlaneDispatch<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>
             SearchPlaneQueryIpcRequest::History(_) => "query.history",
             SearchPlaneQueryIpcRequest::RuntimeMetadata(_) => "query.runtime_metadata",
             SearchPlaneQueryIpcRequest::Structural(_) => "query.structural",
-            SearchPlaneQueryIpcRequest::RepoMapQuery(_) => "query.repo_map",
             SearchPlaneQueryIpcRequest::Explain(_) => "query.explain",
             SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => "query.cluster_membership",
         }
@@ -71,7 +70,7 @@ impl PlaneDispatch<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => None,
         }
@@ -107,10 +106,6 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_) => {
                 "control.rollback_corpus"
             }
-            SearchPlaneControlIpcRequest::RepoMapActivateV2(_) => "control.activate_repo_map_v2",
-            SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_) => {
-                "control.repo_map_active_head_v2"
-            }
             SearchPlaneControlIpcRequest::CurrentGeneration(_) => "control.current_generation",
             SearchPlaneControlIpcRequest::GenerationStatus(_) => "control.generation_status",
             SearchPlaneControlIpcRequest::SearchCorpusActiveHead(_) => {
@@ -130,8 +125,8 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+
+
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -180,7 +175,6 @@ impl PlaneDispatch<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>
             SearchPlaneIngestIpcRequest::PublishDirtyBatch(_) => "ingest.dirty",
             SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(_) => "ingest.runtime_catalog",
             SearchPlaneIngestIpcRequest::PublishStructuralBatch(_) => "ingest.structural",
-            SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => "ingest.repo_map_v2",
             SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_) => "ingest.repo_meta",
             SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_) => {
                 "ingest.repo_description"
@@ -201,7 +195,7 @@ impl PlaneDispatch<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
             | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => None,
         }

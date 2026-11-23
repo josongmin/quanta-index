@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{
     BorrowedAuxiliaryIngestIpcRequestEnvelopeV1, BorrowedAuxiliaryIngestIpcRequestV1,
-    BorrowedRepoMapActivateControlIpcRequestEnvelopeV3, DiagnosticAttemptFieldV1,
+    DiagnosticAttemptFieldV1,
     DiagnosticAttemptOutcomeV1, DiagnosticAttemptTokenV1, SearchPlaneControlIpcRequestEnvelope,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneIngestIpcRequestEnvelope,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
@@ -85,18 +85,6 @@ pub(crate) trait ControlTransport: Send + Sync {
         send_with_attempt(request, source, false, |request| self.send(request))
     }
 
-    fn send_borrowed_repo_map_admitted_v3(
-        &self,
-        _request: BorrowedRepoMapActivateControlIpcRequestEnvelopeV3<'_>,
-        _source: Option<&dyn DiagnosticAttemptSourceV1>,
-        _budget: &RequestBudgetV1,
-        _memory: &MemoryScope,
-        _work: &mut dyn FnMut(usize) -> Result<(), IpcError>,
-    ) -> Result<AdmittedClientResponseBody, SdkError> {
-        Err(SdkError::Protocol(
-            "control transport does not support admitted RepoMap activation".to_string(),
-        ))
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -181,38 +169,6 @@ impl ControlTransport for UdsControlTransport {
         })
     }
 
-    fn send_borrowed_repo_map_admitted_v3(
-        &self,
-        request: BorrowedRepoMapActivateControlIpcRequestEnvelopeV3<'_>,
-        source: Option<&dyn DiagnosticAttemptSourceV1>,
-        budget: &RequestBudgetV1,
-        memory: &MemoryScope,
-        work: &mut dyn FnMut(usize) -> Result<(), IpcError>,
-    ) -> Result<AdmittedClientResponseBody, SdkError> {
-        send_with_uds_attempt_admitted(&request, source, work, |plain, linked, work| {
-            match linked {
-                Some((linked, capture_id)) => {
-                    send_request_body_negotiated_with_budget_admitted_with_work_v1(
-                        self.inner.socket_path(),
-                        plain,
-                        linked,
-                        capture_id,
-                        budget,
-                        memory,
-                        work,
-                    )
-                }
-                None => send_request_body_with_budget_admitted_with_work_v1(
-                    self.inner.socket_path(),
-                    plain,
-                    budget,
-                    memory,
-                    work,
-                ),
-            }
-            .map_err(SdkError::Transport)
-        })
-    }
 }
 
 /// QI-SDK-01: typed ingest transport.
@@ -355,21 +311,6 @@ impl<'a> DiagnosticAttemptEnvelope for BorrowedAuxiliaryIngestIpcRequestEnvelope
     }
 }
 
-impl<'a> DiagnosticAttemptEnvelope for BorrowedRepoMapActivateControlIpcRequestEnvelopeV3<'a> {
-    type Payload = quanta_index_contract::BorrowedRepoMapActivateControlIpcRequestV3<'a>;
-
-    fn diagnostic_attempt(&mut self) -> &mut DiagnosticAttemptFieldV1 {
-        &mut self.diagnostic_attempt
-    }
-
-    fn request_id(&self) -> u64 {
-        self.request_id
-    }
-
-    fn payload(&self) -> &Self::Payload {
-        &self.payload
-    }
-}
 
 fn send_with_attempt<Envelope, Response>(
     mut request: Envelope,

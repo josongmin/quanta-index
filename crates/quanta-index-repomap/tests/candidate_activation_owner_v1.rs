@@ -35,8 +35,8 @@ use quanta_index_contract::{
     CandidateCommitmentV1, FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
     RepoMapExactnessSummary, RepoMapExpectedActiveV2, RepoMapFileNode, RepoMapGraphCoverage,
     RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapMutationPhaseV2, RepoMapNode,
-    RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
-    RepoRelativePath, RevisionId,
+    RepoMapPublishBundleRequestV2, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath,
+    RevisionId,
 };
 use quanta_index_core::{CoreError, RepoMapMutationCommit, RepoMapQuarantinePort};
 use quanta_index_repomap::{CandidateProjectionMeta, RepoMapGenerationStore};
@@ -46,20 +46,17 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 // A distinct valid 64-hex producer digest per fixture marker.
 
-fn read_query_snapshot(
+fn read_pinned_evidence(
     store: &quanta_index_repomap::RepoMapGenerationStore,
-    request: &RepoMapQueryRequest,
-) -> Result<quanta_index_contract::RepoMapQueryResponse, quanta_index_core::CoreError> {
-    // S21-05: the ambient store read is gone; a test reads through one
-    // acquired pinned view, exactly like a production route.
+    generation: u64,
+) -> Result<quanta_index_core::RepoMapSnapshotEvidenceV1, quanta_index_core::CoreError> {
     use quanta_index_core::PinnedRepoMapSnapshot as _;
-    store
-        .acquire_pinned(&quanta_index_core::RepoMapSnapshotAcquireV1 {
-            repo_id: request.repo_id.clone(),
-            revision_id: request.revision_id.clone(),
-            manifest_generation: request.manifest_generation,
-        })?
-        .query(request.clone())
+    let pinned = store.acquire_pinned(&quanta_index_core::RepoMapSnapshotAcquireV1 {
+        repo_id: repo(),
+        revision_id: revision(),
+        manifest_generation: ManifestGeneration::new(generation),
+    })?;
+    Ok(pinned.evidence().clone())
 }
 
 fn producer_hex(marker: &str) -> String {
@@ -186,31 +183,9 @@ fn expected_from_mutation(
     Ok(RepoMapExpectedActiveV2::new(epoch, commitment))
 }
 
-fn query(store: &RepoMapGenerationStore, generation: u64) -> Result<(), CoreError> {
-    let _response = read_query_snapshot(
-        store,
-        &RepoMapQueryRequest {
-            repo_id: repo(),
-            revision_id: revision(),
-            manifest_generation: ManifestGeneration::new(generation),
-            ..query_defaults()
-        },
-    )?;
+fn acquire_active(store: &RepoMapGenerationStore, generation: u64) -> Result<(), CoreError> {
+    let _evidence = read_pinned_evidence(store, generation)?;
     Ok(())
-}
-
-fn query_defaults() -> quanta_index_contract::RepoMapQueryRequest {
-    // The exact query shape does not matter to these tests; a minimal
-    // all-entries page does.
-    RepoMapQueryRequest {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(1),
-        query_text: "lib".to_string(),
-        top_k: 10,
-        token_budget: 1_000,
-        focus_subjects: Vec::new(),
-    }
 }
 
 fn assert_typed(error: &CoreError, code: quanta_index_contract::SearchPlaneErrorCodeV2) {
@@ -237,7 +212,10 @@ fn closed_transition_table_publish_activate_supersede_and_illegal_refusals() -> 
     assert_eq!(seal.activation_epoch, 0);
     assert!(seal.prior_candidate_commitment.is_none());
     assert!(seal.new_candidate_commitment.starts_with("sha256:"));
-    assert!(query(store, 1).is_err(), "publish alone must not serve");
+    assert!(
+        acquire_active(store, 1).is_err(),
+        "publish alone must not serve"
+    );
 
     // Same logical generation + same commitment: original receipt replay.
     let replay = publish(store, 1, "g1")?;
@@ -259,7 +237,7 @@ fn closed_transition_table_publish_activate_supersede_and_illegal_refusals() -> 
     assert!(!activation.replayed);
     assert_eq!(activation.activation_epoch, 1);
     assert!(activation.prior_candidate_commitment.is_none());
-    assert!(query(store, 1).is_ok());
+    assert!(acquire_active(store, 1).is_ok());
 
     // Activated -> (same) replay of the original activation receipt.
     let replay_activation = store
@@ -297,9 +275,9 @@ fn closed_transition_table_publish_activate_supersede_and_illegal_refusals() -> 
         supersede_replay.terminal_sequence,
         supersede.terminal_sequence
     );
-    assert!(query(store, 2).is_ok());
+    assert!(acquire_active(store, 2).is_ok());
     assert!(
-        query(store, 1).is_err(),
+        acquire_active(store, 1).is_err(),
         "superseded generation must not serve"
     );
     drop(seal_two);
@@ -409,7 +387,7 @@ fn v2_activation_replay_repairs_missing_in_process_projection() -> TestResult {
         None,
     )?;
     assert!(!committed.replayed);
-    assert!(query(fixture.store.as_ref(), 1).is_err());
+    assert!(acquire_active(fixture.store.as_ref(), 1).is_err());
 
     let replay = fixture
         .store
@@ -426,7 +404,7 @@ fn v2_activation_replay_repairs_missing_in_process_projection() -> TestResult {
             .activated_generation_for(&repo(), &revision())?,
         Some(1)
     );
-    query(fixture.store.as_ref(), 1)?;
+    acquire_active(fixture.store.as_ref(), 1)?;
     Ok(())
 }
 
@@ -477,7 +455,7 @@ fn concurrent_v2_activations_leave_projection_at_catalog_head() -> TestResult {
             .activated_generation_for(&repo(), &revision())?,
         Some(active.manifest_generation)
     );
-    query(fixture.store.as_ref(), active.manifest_generation)?;
+    acquire_active(fixture.store.as_ref(), active.manifest_generation)?;
     Ok(())
 }
 
@@ -523,7 +501,7 @@ fn stale_prepared_activation_cannot_replace_newer_catalog_head() -> TestResult {
     assert_eq!(fixture.catalog.sequence_allocator()?, sequence_before);
     assert_eq!(after.manifest_generation, 2);
     assert_eq!(current.mutation.activation_epoch, after.epoch);
-    query(fixture.store.as_ref(), 2)?;
+    acquire_active(fixture.store.as_ref(), 2)?;
     Ok(())
 }
 
@@ -794,7 +772,7 @@ fn corruption_durable_invalidation_and_no_resurrection() -> TestResult {
         let (_catalog, store) = open_fixture(&root)?;
         let _seal = publish(store.as_ref(), 1, "g1")?;
         let _activated = activate(store.as_ref(), 1)?;
-        assert!(query(store.as_ref(), 1).is_ok());
+        assert!(acquire_active(store.as_ref(), 1).is_ok());
     }
     // Corrupt the sealed object bytes in place.
     let objects_dir = root.join("repo-map").join("objects").join("sha256");
@@ -810,7 +788,7 @@ fn corruption_durable_invalidation_and_no_resurrection() -> TestResult {
     eprintln!("STAGE: reopening after corruption");
     let (catalog, store) = open_fixture(&root)?;
     assert!(
-        query(store.as_ref(), 1).is_err(),
+        acquire_active(store.as_ref(), 1).is_err(),
         "corrupt object must not serve"
     );
     let activation = catalog.repomap_activation_row("repo-p03", "rev-p03")?;
@@ -829,7 +807,7 @@ fn corruption_durable_invalidation_and_no_resurrection() -> TestResult {
     eprintln!("STAGE: reopening after repair");
     let (_catalog, store) = open_fixture(&root)?;
     assert!(
-        query(store.as_ref(), 1).is_err(),
+        acquire_active(store.as_ref(), 1).is_err(),
         "file reappearance must never resurrect an invalidated activation"
     );
     Ok(())
@@ -875,7 +853,7 @@ fn quarantine_projection_exact_byte_replay_and_tombstone_discard() -> TestResult
 
     // Missing object at open: durable quarantine incident + invalidation.
     let (_catalog, store) = open_fixture(&root)?;
-    assert!(query(store.as_ref(), 1).is_err());
+    assert!(acquire_active(store.as_ref(), 1).is_err());
     let incidents = catalog.repomap_quarantine_incidents()?;
     assert_eq!(incidents.len(), 1, "one durable incident");
     let incident = incidents.first().expect("checked length");
@@ -1251,20 +1229,18 @@ fn restart_serves_the_activated_generation_with_identical_projection() -> TestRe
         let _sealed = publish(store.as_ref(), 1, "g1")?;
         let _activated = activate(store.as_ref(), 1)?;
     }
-    let (_catalog, store) = open_fixture(&root)?;
-    assert!(query(store.as_ref(), 1).is_ok());
-    // The restart-rebuilt registry keeps the bundle-declared snapshot id.
-    let response = read_query_snapshot(
-        store.as_ref(),
-        &RepoMapQueryRequest {
-            repo_id: repo(),
-            revision_id: revision(),
-            manifest_generation: ManifestGeneration::new(1),
-            ..query_defaults()
-        },
-    )?;
-    assert_eq!(response.snapshot_meta.snapshot_id, "snap-g1");
-    assert!(!response.entries.is_empty());
+    let (catalog, store) = open_fixture(&root)?;
+    assert!(acquire_active(store.as_ref(), 1).is_ok());
+    let evidence = read_pinned_evidence(store.as_ref(), 1)?;
+    let active = catalog
+        .repomap_activation_row(repo().as_str(), revision().as_str())?
+        .expect("active row");
+    assert_eq!(evidence.manifest_generation, active.manifest_generation);
+    assert_eq!(evidence.activation_epoch, active.epoch);
+    assert_eq!(
+        CandidateCommitmentV1::from_wire_str(&evidence.candidate_commitment)?.as_bytes(),
+        &active.candidate_commitment
+    );
     Ok(())
 }
 
@@ -1314,7 +1290,10 @@ fn crash_at_seal_boundaries_converges_to_old_or_new_committed_authority() -> Tes
             catalog_row_expected,
             "at {boundary} the catalog row presence must converge"
         );
-        assert!(query(store.as_ref(), 2).is_err(), "nothing is active");
+        assert!(
+            acquire_active(store.as_ref(), 2).is_err(),
+            "nothing is active"
+        );
         if catalog_row_expected {
             // The committed seal survives; a retry replays it exactly.
             let replay = publish(store.as_ref(), 2, "g2")?;

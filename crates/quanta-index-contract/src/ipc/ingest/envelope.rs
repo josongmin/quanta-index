@@ -16,7 +16,7 @@ use super::{
     SourcePublicationUploadAck, SourcePublicationUploadCommit, SourcePublicationUploadIdentity,
     SourcePublicationUploadPart, StructuralIngestBatch,
 };
-use crate::{DiagnosticAttemptFieldV1, RepoMapPublishBundleRequestV2, RepoMapTerminalReceiptV2};
+use crate::DiagnosticAttemptFieldV1;
 
 // Batch-dependent binding helpers live beside the request DTO so transient
 // response observations do not depend back on the ingest request module.
@@ -74,7 +74,6 @@ pub enum SearchPlaneIngestIpcRequest {
     PublishDirtyBatch(DirtyIngestBatch),
     PublishRuntimeCatalogBatch(RuntimeCatalogIngestBatch),
     PublishStructuralBatch(StructuralIngestBatch),
-    PublishRepoMapBundleV2(RepoMapPublishBundleRequestV2),
     PublishRepoMetaBatch(RepoMetaIngestBatch),
     PublishRepoDescriptionBatch(RepoDescriptionIngestBatch),
 }
@@ -88,7 +87,6 @@ pub enum BorrowedAuxiliaryIngestIpcRequestV1<'a> {
     FileContributor(&'a FileContributorIngestBatch),
     Dirty(&'a DirtyIngestBatch),
     Structural(&'a StructuralIngestBatch),
-    RepoMap(crate::BorrowedRepoMapPublishBundleRequestV3<'a>),
 }
 
 fn serialize_auxiliary_publish_variant_v1<S: Serializer, P: Serialize>(
@@ -130,12 +128,6 @@ impl Serialize for BorrowedAuxiliaryIngestIpcRequestV1<'_> {
                 "PublishStructuralBatch",
                 payload,
             ),
-            Self::RepoMap(payload) => serialize_auxiliary_publish_variant_v1(
-                serializer,
-                14,
-                "PublishRepoMapBundleV2",
-                payload,
-            ),
         }
     }
 }
@@ -153,7 +145,6 @@ const SEARCH_PLANE_INGEST_REQUEST_VARIANTS: &[&str] = &[
     "PublishDirtyBatch",
     "PublishRuntimeCatalogBatch",
     "PublishStructuralBatch",
-    "PublishRepoMapBundleV2",
     "PublishRepoMetaBatch",
     "PublishRepoDescriptionBatch",
 ];
@@ -222,13 +213,6 @@ impl Serialize for SearchPlaneIngestIpcRequest {
             Self::PublishStructuralBatch(payload) => {
                 BorrowedAuxiliaryIngestIpcRequestV1::Structural(payload).serialize(serializer)
             }
-            Self::PublishRepoMapBundleV2(payload) => BorrowedAuxiliaryIngestIpcRequestV1::RepoMap(
-                crate::BorrowedRepoMapPublishBundleRequestV3 {
-                    source_bundle_digest: &payload.source_bundle_digest,
-                    bundle: &payload.bundle,
-                },
-            )
-            .serialize(serializer),
             Self::PublishRepoMetaBatch(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
                 10,
@@ -304,9 +288,6 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestVisitor {
             "PublishStructuralBatch" => Ok(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
                 variant.newtype_variant()?,
             )),
-            "PublishRepoMapBundleV2" => Ok(SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(
-                variant.newtype_variant()?,
-            )),
             "PublishRepoMetaBatch" => Ok(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(
                 variant.newtype_variant()?,
             )),
@@ -353,7 +334,6 @@ pub enum SearchPlaneIngestIpcResponse {
     DirtyReceipt(BatchPublishReceipt),
     RuntimeCatalogReceipt(BatchPublishReceipt),
     StructuralReceipt(BatchPublishReceipt),
-    RepoMapTerminalReceiptV2(RepoMapTerminalReceiptV2),
     RepoMetaReceipt(BatchPublishReceipt),
     RepoDescriptionReceipt(BatchPublishReceipt),
     Error(SearchPlaneIpcError),
@@ -370,7 +350,6 @@ const SEARCH_PLANE_INGEST_RESPONSE_VARIANTS: &[&str] = &[
     "DirtyReceipt",
     "RuntimeCatalogReceipt",
     "StructuralReceipt",
-    "RepoMapTerminalReceiptV2",
     "RepoMetaReceipt",
     "RepoDescriptionReceipt",
     "Error",
@@ -442,12 +421,6 @@ impl Serialize for SearchPlaneIngestIpcResponse {
                 "StructuralReceipt",
                 payload,
             ),
-            Self::RepoMapTerminalReceiptV2(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcResponse",
-                14,
-                "RepoMapTerminalReceiptV2",
-                payload,
-            ),
             Self::RepoMetaReceipt(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
                 11,
@@ -517,9 +490,6 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcResponseVisitor {
             "StructuralReceipt" => Ok(SearchPlaneIngestIpcResponse::StructuralReceipt(
                 variant.newtype_variant()?,
             )),
-            "RepoMapTerminalReceiptV2" => Ok(
-                SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(variant.newtype_variant()?),
-            ),
             "RepoMetaReceipt" => Ok(SearchPlaneIngestIpcResponse::RepoMetaReceipt(
                 variant.newtype_variant()?,
             )),

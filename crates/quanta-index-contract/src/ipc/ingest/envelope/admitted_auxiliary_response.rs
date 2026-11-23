@@ -67,7 +67,6 @@ impl Visitor<'_> for AuxiliaryVariantSeed {
             "FileContributorReceipt" => Ok("FileContributorReceipt"),
             "DirtyReceipt" => Ok("DirtyReceipt"),
             "StructuralReceipt" => Ok("StructuralReceipt"),
-            "RepoMapTerminalReceiptV2" => Ok("RepoMapTerminalReceiptV2"),
             "Error" => Ok("Error"),
             other => Err(E::unknown_variant(
                 other,
@@ -187,14 +186,6 @@ impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> Visitor<'de>
             "StructuralReceipt" => variant
                 .newtype_variant_seed(receipt())
                 .map(SearchPlaneIngestIpcResponse::StructuralReceipt),
-            "RepoMapTerminalReceiptV2" => variant
-                .newtype_variant_seed(
-                    crate::RepoMapTerminalReceiptV2::deserialize_seed_with_admission_v3(
-                        self.admission,
-                        self.max_text_bytes,
-                    ),
-                )
-                .map(SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2),
             "Error" => variant
                 .newtype_variant_seed(admitted_auxiliary_error_seed_v1(
                     self.admission,

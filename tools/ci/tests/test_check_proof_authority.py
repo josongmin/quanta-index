@@ -1601,10 +1601,10 @@ def test_p12a_python_owner_refuses_missing_scope_target_and_recipe(monkeypatch) 
     monkeypatch.setattr(
         MODULE,
         "_just_recipe_body",
-        lambda root, recipe: (
+        lambda root, recipe, **kwargs: (
             "python3 -m pytest tools/ci/tests/test_write_proof_manifest.py -q"
             if recipe == "proof-p12a-proof-infrastructure"
-            else original_body(root, recipe)
+            else original_body(root, recipe, **kwargs)
         ),
     )
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
@@ -1613,10 +1613,10 @@ def test_p12a_python_owner_refuses_missing_scope_target_and_recipe(monkeypatch) 
     monkeypatch.setattr(
         MODULE,
         "_just_recipe_body",
-        lambda root, recipe: (
+        lambda root, recipe, **kwargs: (
             "python3 -m pytest tools/ci/tests/test_write_proof_aggregate.py -k selected -q"
             if recipe == "proof-p12a-proof-infrastructure"
-            else original_body(root, recipe)
+            else original_body(root, recipe, **kwargs)
         ),
     )
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
@@ -1730,10 +1730,10 @@ def test_p12a_registry_refuses_last_failed_recipe(monkeypatch) -> None:
     monkeypatch.setattr(
         MODULE,
         "_just_recipe_body",
-        lambda root, recipe: (
+        lambda root, recipe, **kwargs: (
             f"python3 tools/ci/proof_execution_result.py run-p12a {selectors} --lf"
             if recipe == "proof-p12a-proof-infrastructure"
-            else original_body(root, recipe)
+            else original_body(root, recipe, **kwargs)
         ),
     )
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))

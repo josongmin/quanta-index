@@ -70,6 +70,7 @@ pub(crate) struct HeldPreviousNativeV1 {
     observed: NativeBootQuiescentCatalogV1,
     authority: NativeBootAuthority,
     selected: FundedSelectedConfigV1,
+    selection_sha256: quanta_index_core::index::Digest,
 }
 
 /// Physical Q/settled Source row correspondence only. The fresh initial FULL
@@ -84,6 +85,10 @@ pub(in crate::native_product::boot) struct PreviousNativeSourceRowsV1 {
 impl HeldPreviousNativeV1 {
     pub(crate) fn selected_config_v1(&self) -> &super::super::super::ValidatedConfig {
         &self.selected.config
+    }
+
+    pub(crate) fn selection_sha256_v1(&self) -> quanta_index_core::index::Digest {
+        self.selection_sha256
     }
 
     pub(in crate::native_product::boot) fn acquire_v1(
@@ -158,6 +163,7 @@ impl HeldPreviousNativeV1 {
             observed,
             authority,
             selected: funded,
+            selection_sha256: selected.fingerprint_v1(),
         })
     }
 
@@ -184,6 +190,7 @@ impl HeldPreviousNativeV1 {
             registry,
             config.resources.physical.inventory.max_entries,
             None,
+            false,
             false,
             budget,
         )?;
@@ -247,6 +254,64 @@ impl HeldPreviousNativeV1 {
         self.with_protected_routes_and_quiescence_v1(budget, |routes, reader, _, budget| {
             visit(routes, reader, budget)
         })
+    }
+
+    /// Lend the selected current Source under the retained old root even when
+    /// BOOT has no additional protected historical route.
+    pub(crate) fn with_current_source_reader_v1<T>(
+        &self,
+        budget: &mut WorkBudget,
+        visit: impl FnOnce(
+            &quanta_index_core::index::CatalogView,
+            &FileObjectReader,
+            &mut WorkBudget,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        if self
+            .observed
+            .snapshot
+            .selected
+            .as_ref()
+            .and_then(|selected| selected.protected_source_routes)
+            .is_some()
+        {
+            return self.with_protected_routes_v1(budget, |_routes, reader, budget| {
+                visit(&self.observed.current_head, reader, budget)
+            });
+        }
+        let root = self.authority.lease.state_root_identity_v1();
+        let objects = root.join("native-objects");
+        let io = Arc::new(NativeObjectReadIo::new(Arc::clone(
+            &self.authority.physical,
+        )));
+        let lock = io.open(&objects.join(".object-namespace.lease"), budget)?;
+        let reader = FileObjectReader::open_existing(&objects, lock, io, budget)?;
+        if self.observed.snapshot.namespace != Some(reader.namespace_binding()?) {
+            return Err(IndexError::DigestConflict.into());
+        }
+        let workspace = self
+            .observed
+            .snapshot
+            .selected
+            .as_ref()
+            .ok_or(IndexError::SnapshotUnavailable)?
+            .operation
+            .key
+            .workspace;
+        let current = verify_native_source_root_quiescence_v1(
+            root,
+            self.authority.io.as_ref(),
+            workspace,
+            budget,
+        )?;
+        if current.snapshot.root_nonce != self.observed.snapshot.root_nonce
+            || current.snapshot.selected != self.observed.snapshot.selected
+            || current.snapshot.namespace != self.observed.snapshot.namespace
+            || current.current_head != self.observed.current_head
+        {
+            return Err(IndexError::DigestConflict.into());
+        }
+        visit(&self.observed.current_head, &reader, budget)
     }
 
     fn with_protected_routes_and_quiescence_v1<T>(
@@ -459,10 +524,10 @@ impl HeldPreviousNativeV1 {
                 source_count = source_count
                     .checked_add(1)
                     .ok_or(IndexError::ResourceLimited)?;
-                if latest_source
-                    .is_none_or(|(event, _): (u64, OperationKey)| target.event_sequence > event)
+                let cursor = (target.operation.stream_epoch, target.event_sequence);
+                if latest_source.is_none_or(|(prior, _): ((u64, u64), OperationKey)| cursor > prior)
                 {
-                    latest_source = Some((target.event_sequence, target.operation));
+                    latest_source = Some((cursor, target.operation));
                 }
             }
         }

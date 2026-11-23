@@ -222,6 +222,7 @@ struct LoadedAnnManifest {
 
 pub(super) struct LoadedAnnFileSet {
     pub seal: RegionSeal,
+    #[cfg(test)]
     pub total_length: u64,
     pub files: Vec<LoadedAnnFile>,
     // The descriptor and decoded metadata remain funded alongside file data.
@@ -811,16 +812,39 @@ pub(super) fn inspect_fileset_manifest(
 /// Verify a selected immutable descriptor and retain each chunk's original
 /// storage grant. A caller may replay the ordered chunks into its admitted
 /// filesystem without assembling a second dataset buffer.
+#[cfg(test)]
 pub(super) fn load_fileset(
     objects: &dyn ImmutableObjectPort,
     reference: ObjectRef,
     budget: &mut WorkBudget,
 ) -> Result<LoadedAnnFileSet, IndexError> {
+    load_fileset_if_admitted(objects, reference, budget, |_, _, _, _| Ok(Some(())))?
+        .map(|(fileset, ())| fileset)
+        .ok_or_else(|| corrupt("unconditional fileset load refused admission"))
+}
+
+/// Authenticate the manifest first so a caller can decline the fileset
+/// before reading or retaining its chunks.
+pub(super) fn load_fileset_if_admitted<T>(
+    objects: &dyn ImmutableObjectPort,
+    reference: ObjectRef,
+    budget: &mut WorkBudget,
+    admit: impl FnOnce(&RegionSeal, u64, usize, &WorkBudget) -> Result<Option<T>, IndexError>,
+) -> Result<Option<(LoadedAnnFileSet, T)>, IndexError> {
     let LoadedAnnManifest {
         manifest,
         descriptor,
         metadata_memory,
     } = load_manifest(objects, reference, budget)?;
+    let Some(admission) = admit(
+        &manifest.seal,
+        manifest.total_length,
+        manifest.files.len(),
+        budget,
+    )?
+    else {
+        return Ok(None);
+    };
     let mut loaded = Vec::new();
     loaded
         .try_reserve_exact(manifest.files.len())
@@ -849,13 +873,15 @@ pub(super) fn load_fileset(
             chunks,
         });
     }
-    Ok(LoadedAnnFileSet {
+    let fileset = LoadedAnnFileSet {
         seal: manifest.seal,
+        #[cfg(test)]
         total_length: manifest.total_length,
         files: loaded,
         _descriptor: descriptor,
         _metadata_memory: metadata_memory,
-    })
+    };
+    Ok(Some((fileset, admission)))
 }
 
 #[cfg(test)]

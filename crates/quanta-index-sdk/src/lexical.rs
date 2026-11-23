@@ -401,8 +401,8 @@ impl<'a> SearchCorpusNamespace<'a> {
             }
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+
+
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -605,8 +605,8 @@ fn dispatch_activation_request_v1(
         SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) => Ok(ack),
         other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
         | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-        | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-        | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+
+
         | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
         | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
         | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -759,7 +759,7 @@ fn dispatch_search_corpus_publish_outcome_v1<const SEALED: bool>(
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
         | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -1138,7 +1138,7 @@ fn dispatch_text_query_request_inner(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
-        | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)

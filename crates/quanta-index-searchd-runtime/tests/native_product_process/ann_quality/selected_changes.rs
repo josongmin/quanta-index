@@ -75,21 +75,7 @@ pub(super) fn check_exact_path_query(
     )?;
     require_equal(&result.view, &selected, "ANN exact-path selected view")?;
     require_equal(&result.instance, &instance, "ANN exact-path instance")?;
-    require_equal(
-        &result.coverage.status,
-        &CoverageStatus::Complete,
-        "ANN exact-path source coverage",
-    )?;
-    require_equal(
-        &result.coverage.covered,
-        &Some(result.coverage.desired),
-        "ANN exact-path covered binding",
-    )?;
-    require_equal(
-        &result.coverage.desired.root,
-        &selected_view.source.owners,
-        "ANN exact-path selected owner root",
-    )?;
+    check_complete_ann_coverage(&result.coverage, instance, selected_view.source.owners)?;
     check_exact_path_completion(result.traversal, result.exhaustive, result.skipped_stale)?;
     require(
         result.scanned_owners <= u32::try_from(QUALITY_MAX_OWNERS)?,
@@ -285,6 +271,7 @@ fn check_overlay_fast(
         &text_instance,
         "ANN overlay Fast text instance",
     )?;
+    require(result.exhaustive, "ANN overlay Fast coverage is incomplete")?;
     require_equal(
         &result.matched,
         &u64::from(expected_owner.is_some()),
@@ -357,6 +344,12 @@ fn overlay_fast_oracle_rejects_empty_and_durable_replacement_hits() -> TestResul
         }],
     };
     check_overlay_fast(&result, view, instance, Some(owner))?;
+    result.exhaustive = false;
+    require(
+        check_overlay_fast(&result, view, instance, Some(owner)).is_err(),
+        "ANN overlay Fast accepted a non-exhaustive replacement page",
+    )?;
+    result.exhaustive = true;
     require(
         check_overlay_fast(&result, view, instance, None).is_err(),
         "ANN overlay Fast accepted a replacement outside the selected path",
@@ -490,20 +483,10 @@ fn check_overlay_quality_result(
         &selection.instance,
         "ANN overlay instance",
     )?;
-    require_equal(
-        &result.coverage.status,
-        &CoverageStatus::Complete,
-        "ANN overlay source coverage",
-    )?;
-    require_equal(
-        &result.coverage.covered,
-        &Some(result.coverage.desired),
-        "ANN overlay covered input binding",
-    )?;
-    require_equal(
-        &result.coverage.desired.root,
-        &selection.source_owners,
-        "ANN overlay selected source root",
+    check_complete_ann_coverage(
+        &result.coverage,
+        selection.instance,
+        selection.source_owners,
     )?;
     require(
         matches!(
@@ -721,6 +704,23 @@ fn overlay_quality_oracle_rejects_misordered_page_and_foreign_revision() -> Test
         &2,
         "valid overlay quality page",
     )?;
+    let valid_coverage = result.coverage;
+    result.coverage.instance = IndexInstanceId([11; 16]);
+    let rejected_foreign_coverage =
+        check_overlay_quality_result(&result, &selection, 0, overlay_owner, deleted_owner, 1)
+            .is_err();
+    result.coverage.instance = valid_coverage.instance;
+    result.coverage.searchable = None;
+    let rejected_absent_root =
+        check_overlay_quality_result(&result, &selection, 0, overlay_owner, deleted_owner, 1)
+            .is_err();
+    require(
+        rejected_foreign_coverage && rejected_absent_root,
+        format!(
+            "ANN overlay coverage refusals: foreign instance={rejected_foreign_coverage}, absent searchable root={rejected_absent_root}"
+        ),
+    )?;
+    result.coverage = valid_coverage;
     result.hits.swap(0, 1);
     let refusal =
         check_overlay_quality_result(&result, &selection, 0, overlay_owner, deleted_owner, 1)

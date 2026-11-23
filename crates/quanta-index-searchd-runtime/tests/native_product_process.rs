@@ -1916,12 +1916,14 @@ fn product_daemon_owns_openai_semantic_materialization_query_scope_and_reopen() 
     };
     let mut scoped_query = query.clone();
     scoped_query.lexical_scope = Some(text_query.clone());
-    let scoped = client.search_semantic(
-        ViewSelection::Exact(materialized),
-        semantic.instance,
-        scoped_query.clone(),
-        &budget(),
-    )?;
+    let scoped = client
+        .search_semantic(
+            ViewSelection::Exact(materialized),
+            semantic.instance,
+            scoped_query.clone(),
+            &budget(),
+        )
+        .map_err(|error| format!("lexical-scoped Semantic query: {error:?}"))?;
     require_equal(&scoped.view, &materialized, "lexical scope selected view")?;
     require_equal(&scoped.hits.len(), &1, "lexical scope hit count")?;
     require_equal(
@@ -2038,31 +2040,33 @@ fn product_daemon_owns_openai_semantic_materialization_query_scope_and_reopen() 
         "mismatched scope provider calls",
     )?;
     let mut stages = Vec::new();
-    let deep_done = client.query_effort_stream(
-        NativeEffortStreamQuery {
-            selection: ViewSelection::Exact(materialized),
-            text_instance: text_spec().instance,
-            semantic_instance: semantic.instance,
-            text_query: text_query.clone(),
-            semantic_query: query.clone(),
-            preference: NativeEffortPreference::Deep,
-            overlay: None,
-        },
-        &budget(),
-        &mut |stage| {
-            stages.push(match stage {
-                NativeEffortStreamStage::Fast(_) => 1_u8,
-                NativeEffortStreamStage::Deep(_) => 2_u8,
-                NativeEffortStreamStage::OverlayFast(_)
-                | NativeEffortStreamStage::OverlayDeep(_) => {
-                    return Err(NativeUdsError::Protocol(
-                        "durable product query returned overlay stage".into(),
-                    ));
-                }
-            });
-            Ok(())
-        },
-    )?;
+    let deep_done = client
+        .query_effort_stream(
+            NativeEffortStreamQuery {
+                selection: ViewSelection::Exact(materialized),
+                text_instance: text_spec().instance,
+                semantic_instance: semantic.instance,
+                text_query: text_query.clone(),
+                semantic_query: query.clone(),
+                preference: NativeEffortPreference::Deep,
+                overlay: None,
+            },
+            &budget(),
+            &mut |stage| {
+                stages.push(match stage {
+                    NativeEffortStreamStage::Fast(_) => 1_u8,
+                    NativeEffortStreamStage::Deep(_) => 2_u8,
+                    NativeEffortStreamStage::OverlayFast(_)
+                    | NativeEffortStreamStage::OverlayDeep(_) => {
+                        return Err(NativeUdsError::Protocol(
+                            "durable product query returned overlay stage".into(),
+                        ));
+                    }
+                });
+                Ok(())
+            },
+        )
+        .map_err(|error| format!("explicit Deep query: {error:?}"))?;
     require_equal(&stages, &vec![1, 2], "product explicit Deep stream stages")?;
     require(
         deep_done.deep_delivered,

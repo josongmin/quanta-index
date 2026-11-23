@@ -4,11 +4,11 @@ use std::borrow::Cow;
 use std::collections::TryReserveError;
 use std::fmt;
 
-use unicode_normalization::{
-    IsNormalized, NativeNormalizationAdmissionV1, NativeNormalizationErrorV1,
-    NativeNormalizationScratchDemandV1, NativeNormalizationScratchOwnerV1, UnicodeNormalization,
-    is_nfc_quick, try_for_each_nfc_with_native_admission_v1,
+use quanta_index_unicode::{
+    NativeNormalizationAdmissionV1, NativeNormalizationErrorV1, NativeNormalizationScratchDemandV1,
+    NativeNormalizationScratchOwnerV1, try_for_each_nfc_with_native_admission_v1,
 };
+use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NfcAdmissionError {

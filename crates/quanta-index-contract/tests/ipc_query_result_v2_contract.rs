@@ -3207,20 +3207,6 @@ fn top_k_bearing_requests(top_k: u32) -> Vec<(&'static str, SearchPlaneQueryIpcR
                 cursor: None,
             }),
         ),
-        (
-            "repo-map",
-            SearchPlaneQueryIpcRequest::RepoMapQuery(quanta_index_contract::RepoMapQueryRequest {
-                repo_id: RepoId::new("repo-x")
-                    .expect("static fixture ID satisfies canonical policy"),
-                revision_id: RevisionId::new("rev-y")
-                    .expect("static fixture ID satisfies canonical policy"),
-                manifest_generation: ManifestGeneration::new(1),
-                query_text: "needle".to_owned(),
-                top_k,
-                token_budget: 100,
-                focus_subjects: Vec::new(),
-            }),
-        ),
     ]
 }
 

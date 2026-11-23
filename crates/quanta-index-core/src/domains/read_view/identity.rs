@@ -56,7 +56,6 @@ pub enum ReadResourceGroupV2 {
     HistoryEpoch,
     RuntimeEpoch,
     StructuralEpoch,
-    RepoMapSnapshot,
 }
 
 impl ReadResourceGroupV2 {
@@ -69,7 +68,6 @@ impl ReadResourceGroupV2 {
             Self::HistoryEpoch => "history-epoch",
             Self::RuntimeEpoch => "runtime-epoch",
             Self::StructuralEpoch => "structural-epoch",
-            Self::RepoMapSnapshot => "repo-map-snapshot",
         }
     }
 }
@@ -92,11 +90,9 @@ impl fmt::Display for ReadResourceGroupV2 {
 pub struct DomainReadEvidenceV2 {
     pub domain: ReadDomainV1,
     pub resource_group: ReadResourceGroupV2,
-    /// The pinned artifact's identity (manifest digest, or the `RepoMap`
-    /// candidate commitment as its wire string).
+    /// The pinned artifact's manifest digest.
     pub artifact: Option<String>,
-    /// The activation epoch the acquisition observed, when the group has
-    /// one (the `RepoMap` snapshot).
+    /// The activation epoch the acquisition observed, when applicable.
     pub activation_epoch: Option<u64>,
     /// The auxiliary epoch pinned, when the domain is an epoch-named
     /// auxiliary snapshot.
@@ -126,10 +122,6 @@ pub struct ReadIdentityV2 {
     pub normalizer_version: Option<TextNormalizerVersionV1>,
     /// The semantic generation's embedding profile.
     pub profile: Option<SemanticProfileV1>,
-    /// The `RepoMap` candidate commitment the pinned snapshot proved.
-    pub repomap_commitment: Option<String>,
-    /// The `RepoMap` activation epoch the pinned snapshot observed.
-    pub repomap_activation_epoch: Option<u64>,
     /// Exactly one evidence entry per declared domain.
     pub evidence: BTreeMap<ReadDomainV1, DomainReadEvidenceV2>,
 }
@@ -260,8 +252,6 @@ mod tests {
                 model_id: "model".to_string(),
                 model_revision: None,
             }),
-            repomap_commitment: None,
-            repomap_activation_epoch: None,
             evidence: domains
                 .iter()
                 .map(|domain| {
@@ -282,8 +272,7 @@ mod tests {
                         },
                         // The declared set is fixed above; the remaining
                         // variants cannot occur in this test's set.
-                        ReadDomainV1::RepoMap
-                        | ReadDomainV1::RuntimeOverlay
+                        ReadDomainV1::RuntimeOverlay
                         | ReadDomainV1::StructuralChunkUniverse
                         | ReadDomainV1::RepoMetadata(_) => {
                             evidence(domain, ReadResourceGroupV2::LexicalTrack, None)
@@ -309,53 +298,16 @@ mod tests {
     }
 
     #[test]
-    fn an_identity_without_auxiliary_reads_says_so() {
-        let identity = ReadIdentityV2 {
-            pin: GenerationPin::new(
-                RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
-                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
-                ManifestGeneration::new(1),
-            ),
-            domains: RequiredDomainsV1::of(ReadDomainV1::RepoMap),
-            lexical_artifact: None,
-            semantic_artifact: None,
-            aux_epochs: BTreeMap::new(),
-            normalizer_version: None,
-            profile: None,
-            repomap_commitment: Some("commitment".to_string()),
-            repomap_activation_epoch: Some(2),
-            evidence: BTreeMap::from([(
-                ReadDomainV1::RepoMap,
-                evidence(
-                    ReadDomainV1::RepoMap,
-                    ReadResourceGroupV2::RepoMapSnapshot,
-                    Some("commitment"),
-                ),
-            )]),
-        };
-        assert_eq!(
-            identity.trace_details(),
-            vec![
-                "read_view.domains=repo-map".to_string(),
-                "read_view.epochs=-".to_string(),
-                "read_view.pin=repo@rev#1".to_string(),
-            ]
-        );
-        assert!(identity.evidence_is_exact());
-    }
-
-    #[test]
-    fn evidence_is_exact_rejects_a_missing_or_extra_domain() {
+    fn evidence_is_exact_rejects_missing_and_extra_domains() {
         let mut identity = ReadIdentityV2 {
             pin: pin(),
-            domains: RequiredDomainsV1::of(ReadDomainV1::LexicalTrack).with(ReadDomainV1::RepoMap),
+            domains: RequiredDomainsV1::of(ReadDomainV1::LexicalTrack)
+                .with(ReadDomainV1::SemanticTrack),
             lexical_artifact: Some("lex-digest".to_string()),
-            semantic_artifact: None,
+            semantic_artifact: Some("sem-digest".to_string()),
             aux_epochs: BTreeMap::new(),
             normalizer_version: None,
             profile: None,
-            repomap_commitment: Some("commitment".to_string()),
-            repomap_activation_epoch: Some(1),
             evidence: BTreeMap::from([
                 (
                     ReadDomainV1::LexicalTrack,
@@ -366,28 +318,22 @@ mod tests {
                     ),
                 ),
                 (
-                    ReadDomainV1::RepoMap,
+                    ReadDomainV1::SemanticTrack,
                     evidence(
-                        ReadDomainV1::RepoMap,
-                        ReadResourceGroupV2::RepoMapSnapshot,
-                        Some("commitment"),
+                        ReadDomainV1::SemanticTrack,
+                        ReadResourceGroupV2::SemanticTrack,
+                        Some("sem-digest"),
                     ),
                 ),
             ]),
         };
         assert!(identity.evidence_is_exact());
-        // A declared domain without evidence breaks exactness.
-        let _removed = identity.evidence.remove(&ReadDomainV1::RepoMap);
+        let semantic = identity
+            .evidence
+            .remove(&ReadDomainV1::SemanticTrack)
+            .expect("semantic evidence");
         assert!(!identity.evidence_is_exact());
-        // Evidence for an undeclared domain breaks exactness.
-        let _inserted = identity.evidence.insert(
-            ReadDomainV1::RepoMap,
-            evidence(
-                ReadDomainV1::RepoMap,
-                ReadResourceGroupV2::RepoMapSnapshot,
-                Some("commitment"),
-            ),
-        );
+        let _previous = identity.evidence.insert(ReadDomainV1::SemanticTrack, semantic);
         identity.domains = RequiredDomainsV1::of(ReadDomainV1::LexicalTrack);
         assert!(!identity.evidence_is_exact());
     }
@@ -411,8 +357,6 @@ mod tests {
             aux_epochs: BTreeMap::new(),
             normalizer_version: None,
             profile: None,
-            repomap_commitment: None,
-            repomap_activation_epoch: None,
             evidence: domains
                 .iter()
                 .map(|domain| {

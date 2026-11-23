@@ -27,7 +27,6 @@ use crate::query_dispatcher::tests::support::common::{
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState, RejectLexicalOpener, recording_lexical_candidate,
 };
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
 use crate::query_dispatcher::tests::support::structural::{
     PatternRoutingStructuralProducer, RecordingStructuralProducer,
@@ -104,7 +103,6 @@ fn structural_dispatch_success_emits_closed_obs_metrics() -> TestResult {
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
         SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(RecordingStructuralProducer::ready_with(vec![
             structural_match_candidate("chunk-tree"),
         ])),
@@ -148,7 +146,7 @@ fn structural_dispatch_success_emits_closed_obs_metrics() -> TestResult {
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Structural response, got {other:?}").into());
@@ -240,7 +238,7 @@ fn structural_dispatch_routes_happy_path_through_structural_service() -> TestRes
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Structural response, got {other:?}").into());
@@ -428,7 +426,7 @@ fn structural_dispatch_routes_repo_and_file_filters_to_producer() -> TestResult 
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Structural response, got {other:?}").into());
@@ -537,7 +535,7 @@ fn structural_dispatch_routes_sourcegraph_structural_subset_to_producer() -> Tes
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!(
@@ -660,7 +658,7 @@ fn structural_dispatch_executes_structural_boolean_and_with_canonical_projection
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Structural response, got {other:?}").into());
@@ -730,7 +728,7 @@ fn structural_dispatch_executes_structural_boolean_or() -> TestResult {
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Structural response, got {other:?}").into());
@@ -791,7 +789,7 @@ fn structural_dispatch_executes_bounded_not() -> TestResult {
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Structural response, got {other:?}").into());
@@ -861,7 +859,7 @@ fn structural_dispatch_memoizes_identical_leaf_execution() -> TestResult {
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Structural response, got {other:?}").into());
@@ -1034,7 +1032,7 @@ fn structural_dispatch_executes_mixed_lexical_and_structural_and() -> TestResult
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Structural response, got {other:?}").into());
@@ -1150,7 +1148,7 @@ fn structural_dispatch_executes_pure_negative_root_from_pinned_universe() -> Tes
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Structural response, got {other:?}").into());
@@ -1249,7 +1247,7 @@ fn structural_page(
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             Err(format!("expected a structural page, got {other:?}").into())

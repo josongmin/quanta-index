@@ -35,7 +35,6 @@ use crate::query_dispatcher::tests::support::history_text::{
     MemoryHistoryTextIndex, reference_bm25, tokens,
 };
 use crate::query_dispatcher::tests::support::lexical::RejectLexicalOpener;
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
 
@@ -148,7 +147,6 @@ fn dispatcher_over(
     Ok(SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ledger,
         test_activation_catalog()?,

@@ -8,6 +8,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::owned_fd_close::close_owned_file;
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::{
     CoreError,
@@ -15,7 +16,6 @@ use quanta_index_core::{
         IndexError, MemoryLease, MemoryLifetime, ObjectReadFile, ObjectReadIoPort, WorkBudget,
     },
 };
-use rusqlite::ffi::quanta_capacity_vfs::close_owned_file;
 use rustix::fs::OFlags;
 
 use crate::publication_file_capacity::{

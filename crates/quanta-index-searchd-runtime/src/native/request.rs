@@ -7,7 +7,7 @@ use quanta_index_contract::{
     index::{Digest, IndexInstanceId, ViewSelection},
     native_protocol::{
         NativeCandidateInstallationV1, NativeIndexRequest, NativeIndexResponse,
-        NativeProjectionRead, NativeRepoMapEventFrontierV1, NativeRepoMapGraphInstallationV1,
+        NativeProjectionRead,
         NativeRootScopedViewV1,
     },
 };
@@ -209,18 +209,24 @@ impl NativeDispatcher {
                 primary,
                 ingress,
                 routes,
-            } => self.seal_source_routes_v1(primary, ingress, routes, budget),
+            } => self.seal_source_routes_v1(primary, ingress, routes, None, budget),
+            NativeIndexRequest::SealCandidateWithSourceRoutesAndRetiredPolicyV1 {
+                primary,
+                ingress,
+                routes,
+                retired_policy,
+            } => self.seal_source_routes_v1(
+                primary, ingress, routes, Some(retired_policy), budget,
+            ),
+            NativeIndexRequest::SealCandidateWithRetiredPolicyOnlyV1 {
+                primary,
+                ingress,
+                retired_policy,
+            } => self.seal_retired_policy_only_v1(primary, ingress, retired_policy, budget),
             NativeIndexRequest::ResolveProtectedSourceHead {
                 repo_id,
                 revision_id,
             } => self.resolve_protected_source_head_v1(&repo_id, &revision_id, budget),
-            NativeIndexRequest::ResolveProtectedRepoMapHead {
-                repo_id,
-                revision_id,
-            } => self.resolve_protected_repomap_head_v1(&repo_id, &revision_id, budget),
-            NativeIndexRequest::ReadImportedRepoMapMember { view, instance } => {
-                self.read_imported_repomap_member_v1(view, instance, budget)
-            }
             NativeIndexRequest::CreateWorkspace { workspace, epoch } => self
                 .kernel
                 .create_workspace(workspace, epoch, budget)
@@ -424,9 +430,6 @@ impl NativeDispatcher {
             | NativeIndexRequest::BindOverlaySave(_)
             | NativeIndexRequest::CompleteOverlaySave(_)
             | NativeIndexRequest::QueryGraph { .. }
-            | NativeIndexRequest::ReadRepoMapPriorFileV1 { .. }
-            | NativeIndexRequest::QueryImportedRepoMap { .. }
-            | NativeIndexRequest::QueryRepoMap { .. }
             | NativeIndexRequest::LookupSourceOwners { .. }
             | NativeIndexRequest::LookupProjectionOwners { .. }
             | NativeIndexRequest::ListProducerProjectionOwnersV1 { .. }
@@ -489,43 +492,6 @@ impl NativeDispatcher {
             NativeIndexRequest::ObserveCandidateInstallationV1 => self
                 .observe_candidate_installation(budget)
                 .map(NativeIndexResponse::CandidateInstallationV1),
-            NativeIndexRequest::ObserveRepoMapGraphInstallationV1(selection) => {
-                let &descriptor = self
-                    .repomap_graph_installation
-                    .get()
-                    .ok_or(IndexError::SnapshotUnavailable)?;
-                let config_sha256 = self.loaded_config_sha256()?;
-                let root = self.observe_root_scoped_view(selection, budget)?;
-                Ok(NativeIndexResponse::RepoMapGraphInstallationV1(
-                    NativeRepoMapGraphInstallationV1 {
-                        root,
-                        config_sha256,
-                        descriptor,
-                    },
-                ))
-            }
-            NativeIndexRequest::ObserveRepoMapEventFrontierV1 {
-                view,
-                producer,
-                stream,
-            } => {
-                if self.repomap_graph_installation.get().is_none() {
-                    return Err(IndexError::SnapshotUnavailable);
-                }
-                let root = self.observe_root_scoped_view(ViewSelection::Exact(view), budget)?;
-                let cursor = self
-                    .catalog
-                    .observe_native_event_frontier_v1(view, producer, stream, budget)?;
-                Ok(NativeIndexResponse::RepoMapEventFrontierV1(
-                    NativeRepoMapEventFrontierV1 {
-                        view: root.view.identity,
-                        root_nonce: root.root_nonce,
-                        producer,
-                        stream,
-                        cursor,
-                    },
-                ))
-            }
             NativeIndexRequest::ReadyWork {
                 workspace,
                 epoch,

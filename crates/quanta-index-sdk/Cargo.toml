@@ -16,6 +16,7 @@ workspace = true
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 ciborium.workspace = true
+quanta-index-cbor = { version = "0.1.0", path = "../quanta-index-cbor" }
 serde.workspace = true
 sha2.workspace = true
 thiserror.workspace = true

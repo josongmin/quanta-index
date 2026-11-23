@@ -150,21 +150,7 @@ fn verify_scope(
         )?;
         require_equal(&result.view, &selected, "filtered selected view")?;
         require_equal(&result.instance, &instance, "filtered selected instance")?;
-        require_equal(
-            &result.coverage.status,
-            &CoverageStatus::Complete,
-            "filtered coverage",
-        )?;
-        require_equal(
-            &result.coverage.covered,
-            &Some(result.coverage.desired),
-            "filtered covered binding",
-        )?;
-        require_equal(
-            &result.coverage.desired.root,
-            &selection.source_owners,
-            "filtered selected source root",
-        )?;
+        check_complete_ann_coverage(&result.coverage, instance, selection.source_owners)?;
         require_equal(
             &result.traversal,
             &NativeSemanticTraversal::ExactExhausted,

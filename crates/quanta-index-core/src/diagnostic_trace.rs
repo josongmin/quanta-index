@@ -459,14 +459,6 @@ pub enum DiagnosticCounterV1 {
     SqliteWriteLowerEnvelopeElapsedNs,
     SqliteWritePostCallbackElapsedNs,
     SqliteWritePostCallbackRefusals,
-    /// Same-connection pager deltas during one Catalog connection lock or one
-    /// sampled native Posting SQL execution. Posting samples are not totals.
-    /// Cache writes/spills count dirty pages, not VFS calls, bytes, or commits.
-    /// All four keys are present together only after two successful snapshots.
-    SqliteCacheHits,
-    SqliteCacheMisses,
-    SqliteCacheWrites,
-    SqliteCacheSpills,
     /// Actual connection-opening settings. Cache size magnitude is paired with
     /// `IsKib` (0: pages, 1: KiB); these are not allocation or RSS measurements.
     /// A settings observation carries all five keys together.

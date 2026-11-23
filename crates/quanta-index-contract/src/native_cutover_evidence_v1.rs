@@ -5,9 +5,9 @@
 //! authority while holding the actual root lease.
 
 use crate::index::{
-    Digest, HistorySourceCutV1, IndexInstanceId, NativeImportedSourceHeadV1, ObjectRef,
-    OperationKey, ProducerId, Refusal, SourceCut, SourceTextAdmission, StreamId, UpdateRequest,
-    ViewRef, WorkspaceKey,
+    Digest, HistorySourceCutV1, IndexInstanceId, NativeImportedNativeSourceCompactV1,
+    NativeImportedSourceHeadV1, ObjectRef, OperationKey, ProducerId, Refusal, SourceCut,
+    SourceTextAdmission, StreamId, UpdateRequest, ViewRef, WorkspaceKey,
 };
 pub use quanta_index_contract_base::NativeCutoverDigest64V1;
 
@@ -306,6 +306,12 @@ pub enum NativeCutoverEvidenceSourceFactV1 {
     Allocator {
         next_operation_sequence: u64,
     },
+    /// Later Source stream epochs retain their own exact allocator head.
+    /// The baseline epoch keeps the original `Allocator` wire unchanged.
+    AllocatorLease {
+        stream_epoch: u64,
+        next_operation_sequence: u64,
+    },
     Reservation {
         target: NativeCutoverEvidenceTargetV1,
         evidence: NativeCutoverReservationEvidenceV1,
@@ -488,6 +494,13 @@ pub enum NativeCutoverEvidenceSourceFactV1 {
         /// Borrowed after SourceJoin checks the genuine settled V9 fact.
         request: UpdateRequest,
     },
+    /// One completed sibling Source FULL issued from an authenticated Native
+    /// predecessor inventory under a retained producer Original.
+    ImportedNativeSource {
+        head: NativeImportedNativeSourceCompactV1,
+        target: NativeCutoverEvidenceTargetV1,
+        request: UpdateRequest,
+    },
 }
 crate::native_serde_enum!(NativeCutoverEvidenceSourceFactV1 {
     units {}
@@ -662,6 +675,12 @@ crate::native_serde_enum!(NativeCutoverEvidenceSourceFactV1 {
             head: NativeImportedSourceHeadV1,
             target: NativeCutoverEvidenceTargetV1,
             request: UpdateRequest
+        },
+        AllocatorLease = 17 { stream_epoch: u64, next_operation_sequence: u64 },
+        ImportedNativeSource = 18 {
+            head: NativeImportedNativeSourceCompactV1,
+            target: NativeCutoverEvidenceTargetV1,
+            request: UpdateRequest
         }
     }
 });
@@ -675,16 +694,39 @@ impl NativeCutoverEvidenceSourceFactV1 {
         selected: &NativeCutoverEvidenceSelectedSourceV1,
     ) -> Result<(), NativeCutoverEvidenceSyntaxErrorV1> {
         let (operation, source) = match self {
-            Self::ImportedLegacySource { head, target, request } => {
+            Self::ImportedLegacySource {
+                head,
+                target,
+                request,
+            } => {
                 return if head.matches_completed_binding_v1(target, request)
                     && target.operation == head.source_operation.key
-                    && request.operation == target.operation {
+                    && request.operation == target.operation
+                {
                     Ok(())
                 } else {
                     Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical)
                 };
             }
-            Self::CompletedSourceRequest { native_operation, source, event_ids } => {
+            Self::ImportedNativeSource {
+                head,
+                target,
+                request,
+            } => {
+                return if head.matches_request_v1(target, request)
+                    && target.operation == head.source_operation.key
+                    && request.operation == target.operation
+                {
+                    Ok(())
+                } else {
+                    Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical)
+                };
+            }
+            Self::CompletedSourceRequest {
+                native_operation,
+                source,
+                event_ids,
+            } => {
                 if event_ids.len() > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1 {
                     return Err(NativeCutoverEvidenceSyntaxErrorV1::SequenceTooLarge);
                 }
@@ -693,10 +735,20 @@ impl NativeCutoverEvidenceSourceFactV1 {
                 }
                 (native_operation.as_ref(), source)
             }
-            Self::NativeInitialSourceBinding { operation, aggregate_identity_digest, source }
-            | Self::NativeSdkSourceBinding { operation, aggregate_identity_digest, source } => {
+            Self::NativeInitialSourceBinding {
+                operation,
+                aggregate_identity_digest,
+                source,
+            }
+            | Self::NativeSdkSourceBinding {
+                operation,
+                aggregate_identity_digest,
+                source,
+            } => {
                 if aggregate_identity_digest.len() != 64
-                    || !aggregate_identity_digest.as_bytes().iter()
+                    || !aggregate_identity_digest
+                        .as_bytes()
+                        .iter()
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
                 {
                     return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
@@ -710,7 +762,7 @@ impl NativeCutoverEvidenceSourceFactV1 {
                 || operation.epoch != selected.workspace_epoch
                 || operation.producer != selected.producer
                 || operation.stream != selected.stream
-                || operation.stream_epoch != selected.stream_epoch
+                || operation.stream_epoch < selected.stream_epoch
         }) || source.target_snapshot_id == 0
             || !canonical_digest64(&source.transition_digest)
             || !canonical_digest64(&source.completion_pointer_digest)
@@ -931,26 +983,48 @@ impl NativeCutoverEvidenceHostRecoveryReceiptV1 {
         if self.operation_id.trim().is_empty()
             || self.canonical_workspace_root.trim().is_empty()
             || self.tail_event_ids.len() > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1
-            || self.tail_event_ids.windows(2).any(|pair| pair[0] >= pair[1])
-            || !matches!(self.reason.as_str(),
-                "UntrustedRatioExceeded" | "BatchHintEstimateExceeded" | "QuarantineThreshold"
-                | "WorkspaceInvalidation" | "BackpressureBurst" | "WatcherStreamClosed"
-                | "WatcherIngestPermanentRejected" | "WatcherIngestUnclassifiedRejected"
-                | "WatcherIngestRetryExhausted" | "WatcherSourceReconciliationRequired"
-                | "WatcherStartupRegistrationGap" | "WatcherStartupRecovery"
-                | "SourceAuthorityRefreshFailed" | "InvalidationIndexUpdateFailed"
-                | "InvalidationFactStoreError" | "InvalidationStaleSnapshot"
-                | "InvalidationBatchEmpty" | "InvalidationBackendFailed"
-                | "InvalidationCheckpointFailed" | "InvalidationAdmissionFailed"
-                | "OperatorRequested")
+            || self
+                .tail_event_ids
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || !matches!(
+                self.reason.as_str(),
+                "UntrustedRatioExceeded"
+                    | "BatchHintEstimateExceeded"
+                    | "QuarantineThreshold"
+                    | "WorkspaceInvalidation"
+                    | "BackpressureBurst"
+                    | "WatcherStreamClosed"
+                    | "WatcherIngestPermanentRejected"
+                    | "WatcherIngestUnclassifiedRejected"
+                    | "WatcherIngestRetryExhausted"
+                    | "WatcherSourceReconciliationRequired"
+                    | "WatcherStartupRegistrationGap"
+                    | "WatcherStartupRecovery"
+                    | "SourceAuthorityRefreshFailed"
+                    | "InvalidationIndexUpdateFailed"
+                    | "InvalidationFactStoreError"
+                    | "InvalidationStaleSnapshot"
+                    | "InvalidationBatchEmpty"
+                    | "InvalidationBackendFailed"
+                    | "InvalidationCheckpointFailed"
+                    | "InvalidationAdmissionFailed"
+                    | "OperatorRequested"
+            )
         {
             return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
         }
         fn append(hasher: &mut blake3::Hasher, bytes: &[u8]) {
-            let _hasher = hasher.update(&(bytes.len() as u64).to_be_bytes()).update(bytes);
+            let _hasher = hasher
+                .update(&(bytes.len() as u64).to_be_bytes())
+                .update(bytes);
         }
         fn raw_digest(text: &str) -> Result<[u8; 32], NativeCutoverEvidenceSyntaxErrorV1> {
-            if text.len() != 64 || !text.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+            if text.len() != 64
+                || !text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
                 return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
             }
             let hash = blake3::Hash::from_hex(text)
@@ -981,13 +1055,19 @@ impl NativeCutoverEvidenceHostRecoveryReceiptV1 {
             append(&mut request, bytes);
         }
         match self.failure_revision {
-            Some(revision) => { append(&mut request, &[1]); append(&mut request, &revision.to_be_bytes()); }
+            Some(revision) => {
+                append(&mut request, &[1]);
+                append(&mut request, &revision.to_be_bytes());
+            }
             None => append(&mut request, &[0]),
         }
         append(&mut request, &count.to_be_bytes());
         append(&mut request, &tail_digest);
         match self.observation_cut_digest.as_deref() {
-            Some(cut) => { append(&mut request, &[1]); append(&mut request, &raw_digest(cut)?); }
+            Some(cut) => {
+                append(&mut request, &[1]);
+                append(&mut request, &raw_digest(cut)?);
+            }
             None => append(&mut request, &[0]),
         }
         if raw_digest(&self.request_identity_digest)? != *request.finalize().as_bytes() {
@@ -1348,18 +1428,28 @@ crate::native_serde_enum!(NativeCutoverEvidenceLegacyRepoMapV1 {
 impl NativeCutoverEvidenceLegacyRepoMapV1 {
     fn validate_structure_v1(&self) -> Result<(), NativeCutoverEvidenceSyntaxErrorV1> {
         let valid = match self {
-            Self::Required { state_root, locator_digest, .. } => {
+            Self::Required {
+                state_root,
+                locator_digest,
+                ..
+            } => {
                 state_root.starts_with('/')
                     && !state_root.contains('\0')
                     && canonical_digest64(locator_digest)
             }
-            Self::NotApplicable { reason_code, policy_digest, product_scope_digest } => {
+            Self::NotApplicable {
+                reason_code,
+                policy_digest,
+                product_scope_digest,
+            } => {
                 !reason_code.is_empty()
                     && canonical_digest64(policy_digest)
                     && canonical_digest64(product_scope_digest)
             }
         };
-        valid.then_some(()).ok_or(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical)
+        valid
+            .then_some(())
+            .ok_or(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical)
     }
 }
 
@@ -1371,7 +1461,8 @@ pub struct NativeCutoverEvidenceV1 {
     pub baseline: NativeCutoverEvidenceTargetV1,
     pub before_selection: NativeCutoverEvidenceBeforeSelectionV1,
     pub fresh_sdk: NativeCutoverEvidenceFreshSdkV1,
-    pub previous_native_source_coverage: Option<NativeCutoverEvidencePreviousNativeSourceCoverageV1>,
+    pub previous_native_source_coverage:
+        Option<NativeCutoverEvidencePreviousNativeSourceCoverageV1>,
     pub v5_artifacts: Vec<NativeCutoverEvidenceV5ArtifactV1>,
     pub legacy_publication: Option<NativeCutoverEvidenceLegacyPublicationV1>,
     /// Retained terminal DATA for independent Q reconciliation. A completed
@@ -1422,12 +1513,19 @@ impl NativeCutoverEvidenceV1 {
             return Err(NativeCutoverEvidenceSyntaxErrorV1::SequenceTooLarge);
         }
         for fact in &self.source_facts {
-            if let NativeCutoverEvidenceSourceFactV1::NativeInitialSourceBinding { operation, .. } = fact
+            if let NativeCutoverEvidenceSourceFactV1::NativeInitialSourceBinding {
+                operation, ..
+            } = fact
                 && operation.workspace != self.header.selected_source.workspace
             {
-                let imported = self.source_facts.iter().any(|other| matches!(other,
+                let imported = self.source_facts.iter().any(|other| {
+                    matches!(other,
                     NativeCutoverEvidenceSourceFactV1::ImportedLegacySource { head, .. }
-                        if head.source_operation.key == *operation));
+                        if head.source_operation.key == *operation)
+                        || matches!(other,
+                        NativeCutoverEvidenceSourceFactV1::ImportedNativeSource { head, .. }
+                            if head.source_operation.key == *operation)
+                });
                 if !imported {
                     return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
                 }
@@ -1702,7 +1800,9 @@ impl NativeCutoverControlTerminalV1 {
     #[must_use]
     pub const fn installed_history_v1(&self) -> Option<&NativeCutoverInstalledHistoryV1> {
         match self {
-            Self::AppliedHistory { history, .. } | Self::ReconciledHistory { history, .. } => Some(history),
+            Self::AppliedHistory { history, .. } | Self::ReconciledHistory { history, .. } => {
+                Some(history)
+            }
             _ => None,
         }
     }
@@ -1712,9 +1812,7 @@ impl NativeCutoverControlTerminalV1 {
             Self::Applied { operation_id, .. }
             | Self::Reconciled { operation_id, .. }
             | Self::AppliedHistory { operation_id, .. }
-            | Self::ReconciledHistory { operation_id, .. } => {
-                (operation_id.as_str(), None, None)
-            }
+            | Self::ReconciledHistory { operation_id, .. } => (operation_id.as_str(), None, None),
             Self::RefusedBeforeRename {
                 operation_id,
                 code,
@@ -2052,10 +2150,17 @@ mod tests {
         use crate::index::{CollectionId, SlotId, TenantId, WorktreeId};
         NativeCutoverEvidenceSourceFactV1::CompletedSourceRequest {
             native_operation: Some(OperationKey {
-                workspace: WorkspaceKey { tenant: TenantId([1; 16]), collection: CollectionId([2; 16]),
-                    worktree: WorktreeId([3; 16]), slot: SlotId([4; 16]) },
-                epoch: 7, producer: ProducerId([5; 16]), stream: StreamId([6; 16]),
-                stream_epoch: 8, sequence: 9,
+                workspace: WorkspaceKey {
+                    tenant: TenantId([1; 16]),
+                    collection: CollectionId([2; 16]),
+                    worktree: WorktreeId([3; 16]),
+                    slot: SlotId([4; 16]),
+                },
+                epoch: 7,
+                producer: ProducerId([5; 16]),
+                stream: StreamId([6; 16]),
+                stream_epoch: 8,
+                sequence: 9,
             }),
             source: NativeCutoverEvidenceSourcePublicationBindingV1 {
                 transition_digest: NativeCutoverDigest64V1([b'a'; 64]),
@@ -2063,16 +2168,30 @@ mod tests {
                 physical_target_source_digest: NativeCutoverDigest64V1([b'c'; 64]),
                 target_snapshot_id: 42,
             },
-            event_ids: vec![0, u128::from(u64::MAX), 1_u128 << 64, 1_u128 << 127, u128::MAX],
+            event_ids: vec![
+                0,
+                u128::from(u64::MAX),
+                1_u128 << 64,
+                1_u128 << 127,
+                u128::MAX,
+            ],
         }
     }
 
     fn watch_scope_v1() -> NativeCutoverEvidenceSelectedSourceV1 {
-        let NativeCutoverEvidenceSourceFactV1::CompletedSourceRequest { native_operation: Some(operation), .. } = completed_watch_v1()
-            else { unreachable!() };
+        let NativeCutoverEvidenceSourceFactV1::CompletedSourceRequest {
+            native_operation: Some(operation),
+            ..
+        } = completed_watch_v1()
+        else {
+            unreachable!()
+        };
         NativeCutoverEvidenceSelectedSourceV1 {
-            workspace: operation.workspace, workspace_epoch: operation.epoch,
-            producer: operation.producer, stream: operation.stream, stream_epoch: operation.stream_epoch,
+            workspace: operation.workspace,
+            workspace_epoch: operation.epoch,
+            producer: operation.producer,
+            stream: operation.stream,
+            stream_epoch: operation.stream_epoch,
             text_admission: SourceTextAdmission::Excluded,
         }
     }
@@ -2085,7 +2204,10 @@ mod tests {
         V::Map(vec![
             (V::Text("transition_digest".into()), digest_v1(b'a')),
             (V::Text("completion_pointer_digest".into()), digest_v1(b'b')),
-            (V::Text("physical_target_source_digest".into()), digest_v1(b'c')),
+            (
+                V::Text("physical_target_source_digest".into()),
+                digest_v1(b'c'),
+            ),
             (V::Text("target_snapshot_id".into()), V::Integer(42.into())),
         ])
     }
@@ -2094,26 +2216,40 @@ mod tests {
         use ciborium::value::Value as V;
         let id_v1 = |byte: u8| V::Array(vec![V::Integer(byte.into()); 16]);
         let workspace_v1 = V::Map(vec![
-            (V::Text("tenant".into()), id_v1(1)), (V::Text("collection".into()), id_v1(2)),
-            (V::Text("worktree".into()), id_v1(3)), (V::Text("slot".into()), id_v1(4)),
+            (V::Text("tenant".into()), id_v1(1)),
+            (V::Text("collection".into()), id_v1(2)),
+            (V::Text("worktree".into()), id_v1(3)),
+            (V::Text("slot".into()), id_v1(4)),
         ]);
         let operation_v1 = V::Map(vec![
-            (V::Text("workspace".into()), workspace_v1), (V::Text("epoch".into()), V::Integer(7.into())),
-            (V::Text("producer".into()), id_v1(5)), (V::Text("stream".into()), id_v1(6)),
-            (V::Text("stream_epoch".into()), V::Integer(8.into())), (V::Text("sequence".into()), V::Integer(9.into())),
+            (V::Text("workspace".into()), workspace_v1),
+            (V::Text("epoch".into()), V::Integer(7.into())),
+            (V::Text("producer".into()), id_v1(5)),
+            (V::Text("stream".into()), id_v1(6)),
+            (V::Text("stream_epoch".into()), V::Integer(8.into())),
+            (V::Text("sequence".into()), V::Integer(9.into())),
         ]);
-        let mut first_bignum_v1 = vec![0; 9]; first_bignum_v1[0] = 1;
-        let mut high_bignum_v1 = vec![0; 16]; high_bignum_v1[0] = 0x80;
-        V::Map(vec![(V::Text("CompletedSourceRequest".into()), V::Map(vec![
-            (V::Text("native_operation".into()), operation_v1),
-            (V::Text("source".into()), binding_golden_v1()),
-            (V::Text("event_ids".into()), V::Array(vec![
-                V::Integer(0.into()), V::Integer(u64::MAX.into()),
-                V::Tag(2, Box::new(V::Bytes(first_bignum_v1))),
-                V::Tag(2, Box::new(V::Bytes(high_bignum_v1))),
-                V::Tag(2, Box::new(V::Bytes(vec![0xff; 16]))),
-            ])),
-        ]))])
+        let mut first_bignum_v1 = vec![0; 9];
+        first_bignum_v1[0] = 1;
+        let mut high_bignum_v1 = vec![0; 16];
+        high_bignum_v1[0] = 0x80;
+        V::Map(vec![(
+            V::Text("CompletedSourceRequest".into()),
+            V::Map(vec![
+                (V::Text("native_operation".into()), operation_v1),
+                (V::Text("source".into()), binding_golden_v1()),
+                (
+                    V::Text("event_ids".into()),
+                    V::Array(vec![
+                        V::Integer(0.into()),
+                        V::Integer(u64::MAX.into()),
+                        V::Tag(2, Box::new(V::Bytes(first_bignum_v1))),
+                        V::Tag(2, Box::new(V::Bytes(high_bignum_v1))),
+                        V::Tag(2, Box::new(V::Bytes(vec![0xff; 16]))),
+                    ]),
+                ),
+            ]),
+        )])
     }
 
     fn cbor_v1(value: &impl serde::Serialize) -> Vec<u8> {
@@ -2124,29 +2260,104 @@ mod tests {
 
     #[test]
     fn source_publication_binding_preserves_original_four_field_wire_v1() {
-        let NativeCutoverEvidenceSourceFactV1::CompletedSourceRequest { source, .. } = completed_watch_v1()
-            else { unreachable!() };
+        let NativeCutoverEvidenceSourceFactV1::CompletedSourceRequest { source, .. } =
+            completed_watch_v1()
+        else {
+            unreachable!()
+        };
         assert_eq!(cbor_v1(&source), cbor_v1(&binding_golden_v1()));
     }
 
     fn initial_source_fact_v1() -> NativeCutoverEvidenceSourceFactV1 {
-        let NativeCutoverEvidenceSourceFactV1::CompletedSourceRequest { native_operation: Some(operation), source, .. } = completed_watch_v1()
-            else { unreachable!() };
+        let NativeCutoverEvidenceSourceFactV1::CompletedSourceRequest {
+            native_operation: Some(operation),
+            source,
+            ..
+        } = completed_watch_v1()
+        else {
+            unreachable!()
+        };
         NativeCutoverEvidenceSourceFactV1::NativeInitialSourceBinding {
-            operation, aggregate_identity_digest: "d".repeat(64), source,
+            operation,
+            aggregate_identity_digest: "d".repeat(64),
+            source,
         }
+    }
+
+    #[test]
+    fn source_allocator_epoch_lease_is_additive_to_original_wire_v1() {
+        use ciborium::value::Value as V;
+        let old = NativeCutoverEvidenceSourceFactV1::Allocator {
+            next_operation_sequence: 8,
+        };
+        let old_golden = V::Map(vec![(
+            V::Text("Allocator".into()),
+            V::Map(vec![(
+                V::Text("next_operation_sequence".into()),
+                V::Integer(8.into()),
+            )]),
+        )]);
+        assert_eq!(cbor_v1(&old), cbor_v1(&old_golden));
+        let lease = NativeCutoverEvidenceSourceFactV1::AllocatorLease {
+            stream_epoch: 2,
+            next_operation_sequence: 3,
+        };
+        let lease_golden = V::Map(vec![(
+            V::Text("AllocatorLease".into()),
+            V::Map(vec![
+                (V::Text("stream_epoch".into()), V::Integer(2.into())),
+                (
+                    V::Text("next_operation_sequence".into()),
+                    V::Integer(3.into()),
+                ),
+            ]),
+        )]);
+        assert_eq!(cbor_v1(&lease), cbor_v1(&lease_golden));
+        assert_eq!(
+            ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(
+                cbor_v1(&lease_golden).as_slice(),
+            )
+            .expect("closed allocator lease"),
+            lease,
+        );
+        let V::Map(mut malformed) = lease_golden else {
+            unreachable!()
+        };
+        let V::Map(fields) = &mut malformed[0].1 else {
+            unreachable!()
+        };
+        fields.push((V::Text("extra".into()), V::Null));
+        assert!(
+            ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(
+                cbor_v1(&V::Map(malformed)).as_slice(),
+            )
+            .is_err()
+        );
     }
 
     fn initial_source_golden_v1() -> ciborium::value::Value {
         use ciborium::value::Value as V;
         // Reuse only the independent literal OperationKey and Source4 golden.
         // No encoded implementation value contributes to this expected wire.
-        let V::Map(mut variants) = completed_watch_golden_v1() else { unreachable!() };
-        let (_, V::Map(mut fields)) = variants.pop().expect("one literal variant") else { unreachable!() };
+        let V::Map(mut variants) = completed_watch_golden_v1() else {
+            unreachable!()
+        };
+        let (_, V::Map(mut fields)) = variants.pop().expect("one literal variant") else {
+            unreachable!()
+        };
         drop(fields.pop());
         fields[0].0 = V::Text("operation".into());
-        fields.insert(1, (V::Text("aggregate_identity_digest".into()), V::Text("d".repeat(64))));
-        V::Map(vec![(V::Text("NativeInitialSourceBinding".into()), V::Map(fields))])
+        fields.insert(
+            1,
+            (
+                V::Text("aggregate_identity_digest".into()),
+                V::Text("d".repeat(64)),
+            ),
+        );
+        V::Map(vec![(
+            V::Text("NativeInitialSourceBinding".into()),
+            V::Map(fields),
+        )])
     }
 
     #[test]
@@ -2154,19 +2365,33 @@ mod tests {
         let fact = initial_source_fact_v1();
         let bytes = cbor_v1(&initial_source_golden_v1());
         assert_eq!(cbor_v1(&fact), bytes);
-        assert_eq!(ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(bytes.as_slice())
-            .expect("independent initial record wire"), fact);
+        assert_eq!(
+            ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(bytes.as_slice())
+                .expect("independent initial record wire"),
+            fact
+        );
         for mutation in 0..3 {
             use ciborium::value::Value as V;
-            let V::Map(mut variants) = initial_source_golden_v1() else { unreachable!() };
-            let V::Map(fields) = &mut variants[0].1 else { unreachable!() };
+            let V::Map(mut variants) = initial_source_golden_v1() else {
+                unreachable!()
+            };
+            let V::Map(fields) = &mut variants[0].1 else {
+                unreachable!()
+            };
             match mutation {
-                0 => { drop(fields.pop()); }
+                0 => {
+                    drop(fields.pop());
+                }
                 1 => fields.push((V::Text("permission".into()), V::Bool(true))),
                 _ => fields.push(fields[1].clone()),
             }
             let malformed = cbor_v1(&V::Map(variants));
-            assert!(ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(malformed.as_slice()).is_err());
+            assert!(
+                ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(
+                    malformed.as_slice()
+                )
+                .is_err()
+            );
         }
     }
 
@@ -2174,33 +2399,64 @@ mod tests {
     fn native_sdk_source_has_distinct_closed_wire_and_no_compat_alias_v1() {
         use ciborium::value::Value as V;
         let NativeCutoverEvidenceSourceFactV1::NativeInitialSourceBinding {
-            operation, aggregate_identity_digest, source,
-        } = initial_source_fact_v1() else { unreachable!() };
-        let fact = NativeCutoverEvidenceSourceFactV1::NativeSdkSourceBinding {
-            operation, aggregate_identity_digest, source,
+            operation,
+            aggregate_identity_digest,
+            source,
+        } = initial_source_fact_v1()
+        else {
+            unreachable!()
         };
-        let V::Map(mut variants) = initial_source_golden_v1() else { unreachable!() };
+        let fact = NativeCutoverEvidenceSourceFactV1::NativeSdkSourceBinding {
+            operation,
+            aggregate_identity_digest,
+            source,
+        };
+        let V::Map(mut variants) = initial_source_golden_v1() else {
+            unreachable!()
+        };
         variants[0].0 = V::Text("NativeSdkSourceBinding".into());
         let golden = V::Map(variants);
         assert_eq!(cbor_v1(&fact), cbor_v1(&golden));
-        assert_eq!(ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(
-            cbor_v1(&golden).as_slice()).unwrap(), fact);
+        assert_eq!(
+            ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(
+                cbor_v1(&golden).as_slice()
+            )
+            .unwrap(),
+            fact
+        );
         let mut malformed = golden;
-        let V::Map(variants) = &mut malformed else { unreachable!() };
-        let V::Map(fields) = &mut variants[0].1 else { unreachable!() };
+        let V::Map(variants) = &mut malformed else {
+            unreachable!()
+        };
+        let V::Map(fields) = &mut variants[0].1 else {
+            unreachable!()
+        };
         drop(fields.pop());
-        assert!(ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(
-            cbor_v1(&malformed).as_slice()).is_err());
+        assert!(
+            ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(
+                cbor_v1(&malformed).as_slice()
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn native_initial_source_shape_refuses_foreign_or_partial_axes_v1() {
         let selected = watch_scope_v1();
-        assert_eq!(initial_source_fact_v1().validate_source_publication_v1(&selected), Ok(()));
+        assert_eq!(
+            initial_source_fact_v1().validate_source_publication_v1(&selected),
+            Ok(())
+        );
         for mutation in 0..6 {
             let mut fact = initial_source_fact_v1();
-            let NativeCutoverEvidenceSourceFactV1::NativeInitialSourceBinding { operation, aggregate_identity_digest, source } = &mut fact
-                else { unreachable!() };
+            let NativeCutoverEvidenceSourceFactV1::NativeInitialSourceBinding {
+                operation,
+                aggregate_identity_digest,
+                source,
+            } = &mut fact
+            else {
+                unreachable!()
+            };
             match mutation {
                 0 => operation.epoch += 1,
                 1 => aggregate_identity_digest.clear(),
@@ -2219,41 +2475,72 @@ mod tests {
         let bytes = cbor_v1(&completed_watch_golden_v1());
         assert_eq!(cbor_v1(&expected), bytes);
         assert_eq!(validate_native_cutover_evidence_cbor_v1(&bytes), Ok(()));
-        let actual: NativeCutoverEvidenceSourceFactV1 = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+        let actual: NativeCutoverEvidenceSourceFactV1 =
+            ciborium::de::from_reader(bytes.as_slice()).unwrap();
         assert_eq!(actual, expected);
-        assert_eq!(actual.validate_source_publication_v1(&watch_scope_v1()), Ok(()));
+        assert_eq!(
+            actual.validate_source_publication_v1(&watch_scope_v1()),
+            Ok(())
+        );
     }
 
     #[test]
     fn source_only_completed_request_wire_has_null_native_operation_v1() {
         use ciborium::value::Value as V;
         let mut fact = completed_watch_v1();
-        let NativeCutoverEvidenceSourceFactV1::CompletedSourceRequest { native_operation, .. } = &mut fact
-            else { unreachable!() };
+        let NativeCutoverEvidenceSourceFactV1::CompletedSourceRequest {
+            native_operation, ..
+        } = &mut fact
+        else {
+            unreachable!()
+        };
         *native_operation = None;
         let mut golden = completed_watch_golden_v1();
-        let V::Map(variants) = &mut golden else { unreachable!() };
-        let V::Map(fields) = &mut variants[0].1 else { unreachable!() };
+        let V::Map(variants) = &mut golden else {
+            unreachable!()
+        };
+        let V::Map(fields) = &mut variants[0].1 else {
+            unreachable!()
+        };
         fields[0].1 = V::Null;
         assert_eq!(cbor_v1(&fact), cbor_v1(&golden));
-        assert_eq!(ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(
-            cbor_v1(&golden).as_slice()).unwrap(), fact);
-        assert_eq!(fact.validate_source_publication_v1(&watch_scope_v1()), Ok(()));
+        assert_eq!(
+            ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(
+                cbor_v1(&golden).as_slice()
+            )
+            .unwrap(),
+            fact
+        );
+        assert_eq!(
+            fact.validate_source_publication_v1(&watch_scope_v1()),
+            Ok(())
+        );
     }
 
     #[test]
     fn host_recovery_request_identity_matches_independent_s_contract_golden_v1() {
         let receipt = NativeCutoverEvidenceHostRecoveryReceiptV1 {
-            operation_id: "op-1".into(), canonical_workspace_root: "/repo".into(),
-            request_identity_digest: "c9682b0f4169c569c2af8d707c53fd3f53a7db7fcfe1688941131c22d6282c5c".into(),
-            reason: "WatcherStartupRecovery".into(), snapshot_before: 4, required_snapshot_floor: 5,
+            operation_id: "op-1".into(),
+            canonical_workspace_root: "/repo".into(),
+            request_identity_digest:
+                "c9682b0f4169c569c2af8d707c53fd3f53a7db7fcfe1688941131c22d6282c5c".into(),
+            reason: "WatcherStartupRecovery".into(),
+            snapshot_before: 4,
+            required_snapshot_floor: 5,
             failure_revision: Some(17),
-            tail_event_ids: vec![u128::from_be_bytes([0x0c; 16]), u128::from_be_bytes([0x0d; 16])],
-            tail_custody_digest: "98d1d2368b0d4c44f11dfc2e7c927bec75e8e2a9e3c97103de047dd45b1d9669".into(),
+            tail_event_ids: vec![
+                u128::from_be_bytes([0x0c; 16]),
+                u128::from_be_bytes([0x0d; 16]),
+            ],
+            tail_custody_digest: "98d1d2368b0d4c44f11dfc2e7c927bec75e8e2a9e3c97103de047dd45b1d9669"
+                .into(),
             observation_cut_digest: Some("0a".repeat(32)),
-            checkpoint_generation: 3, checkpoint_payload_digest: "ab".repeat(32),
-            published_snapshot_id: 5, applied_operation_id: "op-1".into(),
-            applied_request_identity_digest: "c9682b0f4169c569c2af8d707c53fd3f53a7db7fcfe1688941131c22d6282c5c".into(),
+            checkpoint_generation: 3,
+            checkpoint_payload_digest: "ab".repeat(32),
+            published_snapshot_id: 5,
+            applied_operation_id: "op-1".into(),
+            applied_request_identity_digest:
+                "c9682b0f4169c569c2af8d707c53fd3f53a7db7fcfe1688941131c22d6282c5c".into(),
             applied_source_owner_identity: "source-owner".into(),
             applied_source_execution_authority_digest: "source-execution".into(),
             applied_source_view_digest: "source-view".into(),
@@ -2281,15 +2568,24 @@ mod tests {
         use ciborium::value::Value as V;
         for mode in 0..3 {
             let mut value = completed_watch_golden_v1();
-            let V::Map(outer) = &mut value else { unreachable!() };
-            let V::Map(fields) = &mut outer[0].1 else { unreachable!() };
+            let V::Map(outer) = &mut value else {
+                unreachable!()
+            };
+            let V::Map(fields) = &mut outer[0].1 else {
+                unreachable!()
+            };
             match mode {
-                0 => { drop(fields.pop()); }
+                0 => {
+                    drop(fields.pop());
+                }
                 1 => fields.push((V::Text("permission".into()), V::Bool(true))),
                 _ => fields.push(fields[2].clone()),
             }
             let bytes = cbor_v1(&value);
-            assert!(ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(bytes.as_slice()).is_err());
+            assert!(
+                ciborium::de::from_reader::<NativeCutoverEvidenceSourceFactV1, _>(bytes.as_slice())
+                    .is_err()
+            );
         }
     }
 
@@ -2298,8 +2594,14 @@ mod tests {
         let scope = watch_scope_v1();
         for mode in 0..8 {
             let mut fact = completed_watch_v1();
-            let NativeCutoverEvidenceSourceFactV1::CompletedSourceRequest { native_operation: Some(operation), source, event_ids } = &mut fact
-                else { unreachable!() };
+            let NativeCutoverEvidenceSourceFactV1::CompletedSourceRequest {
+                native_operation: Some(operation),
+                source,
+                event_ids,
+            } = &mut fact
+            else {
+                unreachable!()
+            };
             match mode {
                 0 => operation.epoch += 1,
                 1 => operation.producer = ProducerId([9; 16]),
@@ -2308,7 +2610,11 @@ mod tests {
                 4 => event_ids.clear(),
                 5 => *event_ids = vec![1, 1],
                 6 => *event_ids = vec![2, 1],
-                _ => *event_ids = (0..=MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1).map(|id| id as u128).collect(),
+                _ => {
+                    *event_ids = (0..=MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1)
+                        .map(|id| id as u128)
+                        .collect()
+                }
             }
             assert!(fact.validate_source_publication_v1(&scope).is_err());
         }
@@ -2341,12 +2647,20 @@ mod tests {
     #[test]
     fn v5_artifact_requires_exact_repomap_disposition_wire_v1() {
         use ciborium::value::Value as V;
-        let V::Map(mut completed) = completed_watch_golden_v1() else { unreachable!() };
-        let (_, V::Map(mut source_fields)) = completed.pop().unwrap() else { unreachable!() };
+        let V::Map(mut completed) = completed_watch_golden_v1() else {
+            unreachable!()
+        };
+        let (_, V::Map(mut source_fields)) = completed.pop().unwrap() else {
+            unreachable!()
+        };
         let (_, operation_wire) = source_fields.remove(0);
         let NativeCutoverEvidenceSourceFactV1::CompletedSourceRequest {
-            native_operation: Some(operation), ..
-        } = completed_watch_v1() else { unreachable!() };
+            native_operation: Some(operation),
+            ..
+        } = completed_watch_v1()
+        else {
+            unreachable!()
+        };
         let disposition = NativeCutoverEvidenceLegacyRepoMapV1::NotApplicable {
             reason_code: "no-repomap".to_string(),
             policy_digest: NativeCutoverDigest64V1([b'd'; 64]),
@@ -2365,27 +2679,45 @@ mod tests {
         let digest = |byte: u8| V::Array(vec![V::Integer(byte.into()); 64]);
         let expected = V::Map(vec![
             (V::Text("operation".into()), operation_wire),
-            (V::Text("published_snapshot_id".into()), V::Integer(42.into())),
+            (
+                V::Text("published_snapshot_id".into()),
+                V::Integer(42.into()),
+            ),
             (V::Text("lexical_revision_digest".into()), digest(b'a')),
             (V::Text("prepared_artifact_digest".into()), digest(b'b')),
             (V::Text("aggregate_receipt_digest".into()), digest(b'c')),
             (V::Text("previous_transition_digest".into()), V::Null),
             (V::Text("base_source_digest".into()), V::Null),
-            (V::Text("repomap".into()), V::Map(vec![(
-                V::Text("NotApplicable".into()), V::Map(vec![
-                    (V::Text("reason_code".into()), V::Text("no-repomap".into())),
-                    (V::Text("policy_digest".into()), digest(b'd')),
-                    (V::Text("product_scope_digest".into()), digest(b'e')),
-                ]),
-            )])),
+            (
+                V::Text("repomap".into()),
+                V::Map(vec![(
+                    V::Text("NotApplicable".into()),
+                    V::Map(vec![
+                        (V::Text("reason_code".into()), V::Text("no-repomap".into())),
+                        (V::Text("policy_digest".into()), digest(b'd')),
+                        (V::Text("product_scope_digest".into()), digest(b'e')),
+                    ]),
+                )]),
+            ),
         ]);
         assert_eq!(cbor_v1(&artifact), cbor_v1(&expected));
-        assert_eq!(ciborium::de::from_reader::<NativeCutoverEvidenceV5ArtifactV1, _>(
-            cbor_v1(&expected).as_slice()).unwrap(), artifact);
-        let V::Map(mut missing) = expected else { unreachable!() };
+        assert_eq!(
+            ciborium::de::from_reader::<NativeCutoverEvidenceV5ArtifactV1, _>(
+                cbor_v1(&expected).as_slice()
+            )
+            .unwrap(),
+            artifact
+        );
+        let V::Map(mut missing) = expected else {
+            unreachable!()
+        };
         drop(missing.pop());
-        assert!(ciborium::de::from_reader::<NativeCutoverEvidenceV5ArtifactV1, _>(
-            cbor_v1(&V::Map(missing)).as_slice()).is_err());
+        assert!(
+            ciborium::de::from_reader::<NativeCutoverEvidenceV5ArtifactV1, _>(
+                cbor_v1(&V::Map(missing)).as_slice()
+            )
+            .is_err()
+        );
         let mut malformed = artifact;
         malformed.repomap = NativeCutoverEvidenceLegacyRepoMapV1::NotApplicable {
             reason_code: String::new(),
@@ -2624,32 +2956,51 @@ mod tests {
     fn installed_history_terminal_preserves_the_exact_membership_binding() {
         use crate::index::{AuxiliaryGenerationKeyV1, CollectionId, SlotId, TenantId, WorktreeId};
         let workspace = WorkspaceKey {
-            tenant: TenantId([4; 16]), collection: CollectionId([5; 16]),
-            worktree: WorktreeId([6; 16]), slot: SlotId([7; 16]),
+            tenant: TenantId([4; 16]),
+            collection: CollectionId([5; 16]),
+            worktree: WorktreeId([6; 16]),
+            slot: SlotId([7; 16]),
         };
         let mut history = NativeCutoverInstalledHistoryV1 {
             operation: OperationKey {
-                workspace, epoch: 1, producer: ProducerId([8; 16]),
-                stream: StreamId([9; 16]), stream_epoch: 1, sequence: 3,
+                workspace,
+                epoch: 1,
+                producer: ProducerId([8; 16]),
+                stream: StreamId([9; 16]),
+                stream_epoch: 1,
+                sequence: 3,
             },
-            view: ViewRef { workspace, epoch: 1, sequence: 6, digest: Digest([10; 32]) },
+            view: ViewRef {
+                workspace,
+                epoch: 1,
+                sequence: 6,
+                digest: Digest([10; 32]),
+            },
             instance: IndexInstanceId([11; 16]),
             member: ObjectRef(Digest([12; 32])),
             source_input: ObjectRef(Digest([13; 32])),
             cut: HistorySourceCutV1 {
                 generation: AuxiliaryGenerationKeyV1 {
-                    repo_id: crate::RepoId::new("r".repeat(crate::RepoId::MAX_UTF8_BYTES_V1)).expect("repo"),
-                    revision_id: crate::RevisionId::new("v".repeat(crate::RevisionId::MAX_UTF8_BYTES_V1)).expect("revision"),
+                    repo_id: crate::RepoId::new("r".repeat(crate::RepoId::MAX_UTF8_BYTES_V1))
+                        .expect("repo"),
+                    revision_id: crate::RevisionId::new(
+                        "v".repeat(crate::RevisionId::MAX_UTF8_BYTES_V1),
+                    )
+                    .expect("revision"),
                     generation: crate::ManifestGeneration::new(1),
                 },
                 durable_epoch: crate::AuxEpochV1::new(2),
-                snapshot_digest: Digest([14; 32]), replay_start: Digest([15; 32]),
+                snapshot_digest: Digest([14; 32]),
+                replay_start: Digest([15; 32]),
             },
         };
         let mut bytes = Vec::new();
         let good = NativeCutoverControlTerminalV1::AppliedHistory {
-            operation_id: "installed-history".to_owned(), nonce: Digest([1; 32]),
-            before_sha256: Digest([2; 32]), after_sha256: Digest([3; 32]), history: history.clone(),
+            operation_id: "installed-history".to_owned(),
+            nonce: Digest([1; 32]),
+            before_sha256: Digest([2; 32]),
+            after_sha256: Digest([3; 32]),
+            history: history.clone(),
         };
         ciborium::ser::into_writer(&good, &mut bytes).expect("terminal encode");
         let decoded = decode_native_cutover_control_terminal_v1(&bytes).expect("terminal decode");
@@ -2658,11 +3009,15 @@ mod tests {
 
         history.view.epoch = 2;
         let mismatched = NativeCutoverControlTerminalV1::ReconciledHistory {
-            operation_id: "installed-history".to_owned(), nonce: Digest([1; 32]),
-            before_sha256: Digest([2; 32]), after_sha256: Digest([3; 32]), history,
+            operation_id: "installed-history".to_owned(),
+            nonce: Digest([1; 32]),
+            before_sha256: Digest([2; 32]),
+            after_sha256: Digest([3; 32]),
+            history,
         };
         bytes.clear();
-        ciborium::ser::into_writer(&mismatched, &mut bytes).expect("invalid terminal fixture encode");
+        ciborium::ser::into_writer(&mismatched, &mut bytes)
+            .expect("invalid terminal fixture encode");
         assert!(decode_native_cutover_control_terminal_v1(&bytes).is_err());
     }
 }

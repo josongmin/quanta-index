@@ -14,7 +14,6 @@ use crate::query_dispatcher::tests::support::history::history_query_request;
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState, RejectLexicalOpener,
 };
-use crate::query_dispatcher::tests::support::repo_map::repo_map_request;
 use crate::query_dispatcher::tests::support::runtime_metadata::runtime_query_request;
 use crate::query_dispatcher::tests::support::semantic::{
     RecordingSemanticOpener, RecordingSemanticState, RejectSemanticOpener, semantic_focus_request,
@@ -82,10 +81,6 @@ fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestR
                 text_query: text(),
                 cursor: None,
             }),
-        ),
-        (
-            "repo-map:entry",
-            SearchPlaneQueryIpcRequest::RepoMapQuery(repo_map_request()),
         ),
     ];
     let cancelled = RequestBudgetV1::unbounded();

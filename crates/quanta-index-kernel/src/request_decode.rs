@@ -146,6 +146,7 @@ enum KindTag {
     SourceAdvance,
     SourceHistoryAdvance,
     SourceResync,
+    SourceHistoryResync,
     ProjectionAdvance,
     HistoryAdvance,
     HistoryAppend,
@@ -157,7 +158,7 @@ quanta_index_contract::native_serde_enum!(KindTag {
     units {
         SourceAdvance = 0, SourceHistoryAdvance = 1, SourceResync = 2,
         ProjectionAdvance = 3, HistoryAdvance = 4, HistoryAppend = 5,
-        Reconfigure = 6, CompactSourceLocal = 7, Materialize = 8,
+        Reconfigure = 6, CompactSourceLocal = 7, Materialize = 8, SourceHistoryResync = 9,
     }
     newtypes { }
     records { }
@@ -200,6 +201,7 @@ impl<'de: 'a, 'a> Deserialize<'de> for RawKind<'a> {
                 "Reconfigure",
                 "CompactSourceLocal",
                 "Materialize",
+                "SourceHistoryResync",
             ],
             KindVisitor,
         )
@@ -233,6 +235,15 @@ struct ResyncParts<'a> {
 request_record_codec!(['de: 'a, 'a] ResyncParts<'a>, ResyncParts, closed {
     prior_epoch: u64,
     transition: SourceParts<'a>,
+});
+
+struct HistoryResyncParts<'a> {
+    prior_epoch: u64,
+    transition: SourceHistoryParts<'a>,
+}
+request_record_codec!(['de: 'a, 'a] HistoryResyncParts<'a>, HistoryResyncParts, closed {
+    prior_epoch: u64,
+    transition: SourceHistoryParts<'a>,
 });
 
 // Copy is a compile-time constraint on these heap-free variant payloads.
@@ -464,6 +475,31 @@ fn events(
     Ok((event_rows, memory))
 }
 
+fn source_history(
+    parts: SourceHistoryParts<'_>,
+    budget: &WorkBudget,
+) -> Result<(Box<SourceHistoryTransitionV1>, Option<MemoryLease>), IndexError> {
+    let history_raw = parts.history.get().as_bytes();
+    let layout: HistoryAppendNameLayout = read(history_raw, budget)?;
+    let backing = std::mem::size_of::<SourceHistoryTransitionV1>()
+        .checked_add(layout.expected.generation.repo_id.0)
+        .and_then(|size| size.checked_add(layout.expected.generation.revision_id.0))
+        .ok_or(IndexError::ResourceLimited)?;
+    let (events, memory) = events(parts.source.events, backing, budget)?;
+    let history: HistoryGenerationAdvanceV1 = read(history_raw, budget)?;
+    Ok((
+        Box::new(SourceHistoryTransitionV1 {
+            source: SourceTransition {
+                expected_source: parts.source.expected_source,
+                owners: parts.source.owners,
+                events,
+            },
+            history,
+        }),
+        memory,
+    ))
+}
+
 pub(crate) fn decode(bytes: &[u8], budget: &WorkBudget) -> Result<LoadedRequest, IndexError> {
     budget.checkpoint()?;
     // This parser allowance funds copied/escaped serde keys and scratch. It
@@ -493,26 +529,8 @@ pub(crate) fn decode(bytes: &[u8], budget: &WorkBudget) -> Result<LoadedRequest,
             )
         }
         KindTag::SourceHistoryAdvance => {
-            let parts: SourceHistoryParts<'_> = read(raw, budget)?;
-            let history_raw = parts.history.get().as_bytes();
-            let layout: HistoryAppendNameLayout = read(history_raw, budget)?;
-            let backing = std::mem::size_of::<SourceHistoryTransitionV1>()
-                .checked_add(layout.expected.generation.repo_id.0)
-                .and_then(|size| size.checked_add(layout.expected.generation.revision_id.0))
-                .ok_or(IndexError::ResourceLimited)?;
-            let (events, memory) = events(parts.source.events, backing, budget)?;
-            let history: HistoryGenerationAdvanceV1 = read(history_raw, budget)?;
-            (
-                UpdateKind::SourceHistoryAdvance(Box::new(SourceHistoryTransitionV1 {
-                    source: SourceTransition {
-                        expected_source: parts.source.expected_source,
-                        owners: parts.source.owners,
-                        events,
-                    },
-                    history,
-                })),
-                memory,
-            )
+            let (transition, memory) = source_history(read(raw, budget)?, budget)?;
+            (UpdateKind::SourceHistoryAdvance(transition), memory)
         }
         KindTag::SourceResync => {
             let parts: ResyncParts<'_> = read(raw, budget)?;
@@ -528,6 +546,11 @@ pub(crate) fn decode(bytes: &[u8], budget: &WorkBudget) -> Result<LoadedRequest,
                 },
                 memory,
             )
+        }
+        KindTag::SourceHistoryResync => {
+            let parts: HistoryResyncParts<'_> = read(raw, budget)?;
+            let (transition, memory) = source_history(parts.transition, budget)?;
+            (UpdateKind::SourceHistoryResync { prior_epoch: parts.prior_epoch, transition }, memory)
         }
         KindTag::ProjectionAdvance => {
             let parts: ProjectionParts<'_> = read(raw, budget)?;
@@ -722,7 +745,8 @@ pub(crate) mod tests {
                     .checked_add(std::mem::size_of_val(transition.as_ref()))
                     .ok_or(IndexError::ResourceLimited)?
             }
-            UpdateKind::SourceHistoryAdvance(transition) => {
+            UpdateKind::SourceHistoryAdvance(transition)
+            | UpdateKind::SourceHistoryResync { transition, .. } => {
                 let generation = &transition.history.expected.generation;
                 std::mem::size_of_val(transition.source.events.as_slice())
                     .checked_add(std::mem::size_of_val(transition.as_ref()))
@@ -757,6 +781,13 @@ pub(crate) mod tests {
         Ok(u64::try_from(bytes)?)
     }
 
+    fn parser_floor(bytes: &[u8]) -> Result<u64, Box<dyn std::error::Error>> {
+        u64::try_from(bytes.len())?
+            .checked_mul(8)
+            .and_then(|bytes| bytes.checked_add(512))
+            .ok_or_else(|| IndexError::ResourceLimited.into())
+    }
+
     #[test]
     fn all_request_kinds_match_old_codec_and_keep_only_actual_retained_backing()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -788,10 +819,7 @@ pub(crate) mod tests {
         transition.events = vec![event; 65];
         let bytes = serde_json::to_vec(&request)?;
         // The parser is admitted; no byte remains for the independent event Vec.
-        let parser_floor = u64::try_from(bytes.len())?
-            .checked_mul(8)
-            .and_then(|bytes| bytes.checked_add(512))
-            .ok_or(IndexError::ResourceLimited)?;
+        let parser_floor = parser_floor(&bytes)?;
         let (denied, ledger) = scoped(parser_floor, false)?;
         require(matches!(
             decode(&bytes, &denied),
@@ -846,26 +874,91 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn initial_and_post_reservation_original_cancel_never_become_corruption()
+    fn source_history_resync_refunds_retained_backing_when_history_input_is_missing()
     -> Result<(), Box<dyn std::error::Error>> {
         let request = requests()
             .into_iter()
-            .find(|request| matches!(request.kind, UpdateKind::ProjectionAdvance(_)))
+            .find(|request| matches!(request.kind, UpdateKind::SourceHistoryResync { .. }))
+            .ok_or(IndexError::Conflict)?;
+        let mut wire = serde_json::to_value(request)?;
+        // Keep the name layout and Source events valid so decoding reaches
+        // retained admission before discovering the missing History input.
+        let history = wire
+            .pointer_mut("/kind/SourceHistoryResync/transition/history")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or(IndexError::Conflict)?;
+        let _removed = history.remove("input").ok_or(IndexError::Conflict)?;
+        let bytes = serde_json::to_vec(&wire)?;
+        require(serde_json::from_slice::<UpdateRequest>(&bytes).is_err())?;
+
+        let (budget, ledger) = scoped(u64::MAX, false)?;
+        require(matches!(
+            decode(&bytes, &budget),
+            Err(IndexError::CorruptObject(_))
+        ))?;
+        require(ledger.retained_attempts.load(Ordering::SeqCst) == 1)?;
+        require(ledger.live() == 0)?;
+        Ok(())
+    }
+
+    #[test]
+    fn source_history_resync_requires_exact_decode_budget_and_refunds_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = requests()
+            .into_iter()
+            .find(|request| matches!(request.kind, UpdateKind::SourceHistoryResync { .. }))
             .ok_or(IndexError::Conflict)?;
         let bytes = serde_json::to_vec(&request)?;
-        let (budget, ledger) = scoped(0, false)?;
-        budget.request().cancel_handle().cancel();
+        let retained = retained_gold(&request)?;
+        let exact = parser_floor(&bytes)?
+            .checked_add(retained)
+            .ok_or(IndexError::ResourceLimited)?;
+
+        let (budget, ledger) = scoped(exact - 1, false)?;
         require(matches!(
             decode(&bytes, &budget),
-            Err(IndexError::Cancelled)
+            Err(IndexError::ResourceLimited)
         ))?;
-        require(ledger.live() == 0 && ledger.retained_attempts.load(Ordering::SeqCst) == 0)?;
-        let (budget, ledger) = scoped(u64::MAX, true)?;
-        require(matches!(
-            decode(&bytes, &budget),
-            Err(IndexError::Cancelled)
-        ))?;
-        require(ledger.live() == 0 && ledger.retained_attempts.load(Ordering::SeqCst) == 1)?;
+        require(ledger.retained_attempts.load(Ordering::SeqCst) == 1)?;
+        require(ledger.live() == 0)?;
+
+        let (budget, ledger) = scoped(exact, false)?;
+        let loaded = decode(&bytes, &budget)?;
+        require(*loaded == request && ledger.live() == retained)?;
+        drop(loaded);
+        require(ledger.live() == 0)?;
+        Ok(())
+    }
+
+    #[test]
+    fn initial_and_post_reservation_original_cancel_never_become_corruption()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = requests();
+        let advance = fixture
+            .iter()
+            .find(|request| matches!(request.kind, UpdateKind::ProjectionAdvance(_)))
+            .ok_or(IndexError::Conflict)?;
+        let resync = fixture
+            .iter()
+            .find(|request| matches!(request.kind, UpdateKind::SourceHistoryResync { .. }))
+            .ok_or(IndexError::Conflict)?;
+        for request in [advance, resync] {
+            let bytes = serde_json::to_vec(request)?;
+            let (budget, ledger) = scoped(0, false)?;
+            budget.request().cancel_handle().cancel();
+            require(matches!(
+                decode(&bytes, &budget),
+                Err(IndexError::Cancelled)
+            ))?;
+            require(ledger.live() == 0 && ledger.retained_attempts.load(Ordering::SeqCst) == 0)?;
+
+            let (budget, ledger) = scoped(u64::MAX, true)?;
+            require(matches!(
+                decode(&bytes, &budget),
+                Err(IndexError::Cancelled)
+            ))?;
+            require(ledger.live() == 0 && ledger.retained_attempts.load(Ordering::SeqCst) == 1)?;
+        }
         Ok(())
     }
 }

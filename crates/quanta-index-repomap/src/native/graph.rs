@@ -8,7 +8,6 @@ mod affected;
 mod contribution;
 mod prior_file;
 mod query;
-mod rank_query;
 
 #[cfg(test)]
 mod tests;
@@ -24,9 +23,12 @@ use quanta_index_core::index::{
 use sha2::{Digest as _, Sha256};
 
 pub use contribution::{GraphEdge, GraphNode, GraphOwnerOutput};
+pub use prior_file::{
+    NativeRepoMapPriorEndpointOwnerV1, NativeRepoMapPriorEndpointOwnersV1,
+    NativeRepoMapPriorEndpointReaderV1, NativeRepoMapPriorFileContextV1,
+    NativeRepoMapPriorFileReaderV1,
+};
 pub use query::{GraphPage, GraphQuery, GraphRow, NativeGraphReader};
-pub use prior_file::{NativeRepoMapPriorFileContextV1, NativeRepoMapPriorFileReaderV1};
-pub use rank_query::{NativeRepoMapRankPage, NativeRepoMapRankReader};
 
 const MAX_AFFECTED_GRAPH_ITEMS: usize = 4096;
 const TYPED_FACTS_ROOT_EPOCH: u8 = 1;

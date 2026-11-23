@@ -3,9 +3,8 @@
 //! Producer / search-plane integration surface for batch publishes. The
 //! producer sends a [`SearchPlaneIngestIpcRequestEnvelope`] over UDS
 //! `ingest.sock`; searchd's ingest dispatcher applies the typed batch through
-//! direct authority stores / builders and forwards repo-map bundles to the
-//! repo-map owner. The producer never opens an internal transport adapter
-//! directly.
+//! direct authority stores / builders. The producer never opens an internal
+//! transport adapter directly.
 //!
 //! Wire shape: every DTO in this module implements `Serialize` /
 //! `Deserialize` manually. Workspace bans proc-macro serde derives

@@ -11,6 +11,8 @@ use quanta_index_core::{
 #[cfg(unix)]
 pub mod canonical_publication_admission;
 #[cfg(unix)]
+mod catalog_lock_files;
+#[cfg(unix)]
 mod deployment_selection;
 #[cfg(unix)]
 pub mod durable_control_admission;
@@ -24,7 +26,6 @@ pub mod native_effort;
 mod native_effort_ports;
 mod native_effort_transport;
 mod native_graph_transport;
-mod native_imported_repomap_transport;
 mod native_interaction;
 mod native_interaction_transport;
 mod native_lexical_scope;
@@ -51,8 +52,6 @@ mod native_reclaim_driver;
 #[cfg(unix)]
 pub mod native_recovery;
 mod native_reply;
-mod native_repomap_prior_file_transport;
-mod native_repomap_transport;
 mod native_repository_path_transport;
 mod native_resources;
 mod native_result;
@@ -69,6 +68,8 @@ mod native_text_result;
 mod native_wal_reclaim;
 mod native_work_diagnostic;
 mod native_worker;
+#[cfg(unix)]
+mod owned_fd_close;
 #[cfg(unix)]
 pub mod publication_control_files;
 #[cfg(unix)]

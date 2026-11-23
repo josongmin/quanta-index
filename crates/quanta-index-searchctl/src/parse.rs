@@ -3,11 +3,11 @@ use quanta_index_contract::{
     ContinuationTokenV2, ExplainCandidateV1, GenerationPin, GoTestTraceFileQueryRequestV1,
     HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryRequest,
     HybridSeedQueryRequest, LexicalCandidate, ManifestGeneration, ProcessRequestEventPlaneV1,
-    QueryConstraintSetV1, RepoId, RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest,
+    QueryConstraintSetV1, RepoId,
     RevisionId, RuntimeMetadataQueryRequest, SemanticQueryRequest, StructuralQueryRequest,
     SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
     ipc::{
-        QuarantineTargetV1, QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1,
+        QuarantineTargetV1, QuarantinedGenerationEntryV1,
         SearchPlaneTrackKind,
     },
 };
@@ -47,7 +47,6 @@ pub(super) enum CommandKind {
     GoTestTraceFileV1,
     HybridSeed,
     Explain,
-    RepoMap,
     RuntimeMetadata,
     History,
     Structural,
@@ -128,7 +127,6 @@ pub(super) enum CliRequest {
         /// QI-BB-022: the dense query a hybrid row is re-derived under.
         semantic_query_text: Option<String>,
     },
-    RepoMap(RepoMapQueryRequest),
     RuntimeMetadata(RuntimeMetadataQueryRequest),
     History(HistoryQueryRequest),
     Structural(StructuralQueryRequest),
@@ -198,9 +196,6 @@ impl ParsedCommand {
                 parse_hybrid_seed(&mut common, &mut rest)?,
             ),
             "explain" => (CommandKind::Explain, parse_explain(&mut common, &mut rest)?),
-            "repomap" | "repomap-query" => {
-                (CommandKind::RepoMap, parse_repomap(&mut common, &mut rest)?)
-            }
             "runtime-metadata" => (
                 CommandKind::RuntimeMetadata,
                 parse_runtime_metadata(&mut common, &mut rest)?,
@@ -230,7 +225,7 @@ impl ParsedCommand {
             ),
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|go-test-trace-file|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|events|generation-status|doctor|metrics|quarantine"
+                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|go-test-trace-file|hybrid-seed|explain|runtime-metadata|history|structural|readiness|events|generation-status|doctor|metrics|quarantine"
                 )));
             }
         };
@@ -602,7 +597,7 @@ fn parse_metrics(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
 ///
 /// A discard names one entry the way `quarantine list` printed it: a
 /// generation directory by track, path and reason (the detail is optional
-/// and echoed back), or a `RepoMap` file by name. Every value is required
+/// and echoed back). Every value is required
 /// so the daemon can refuse a stale listing typed; nothing is defaulted.
 fn parse_quarantine(
     common: &mut CommonOptions,
@@ -646,7 +641,6 @@ fn parse_quarantine_discard(
     let mut path: Option<String> = None;
     let mut reason: Option<String> = None;
     let mut detail: Option<String> = None;
-    let mut repomap_file: Option<String> = None;
     while let Some(current) = rest.pop_front() {
         if common.parse_flag(&current, rest)? {
             continue;
@@ -656,7 +650,6 @@ fn parse_quarantine_discard(
             "--path" => path = Some(take_value(rest, "--path")?),
             "--reason" => reason = Some(take_value(rest, "--reason")?),
             "--detail" => detail = Some(take_value(rest, "--detail")?),
-            "--repomap-file" => repomap_file = Some(take_value(rest, "--repomap-file")?),
             other => {
                 return Err(CliError::usage(format!(
                     "unknown quarantine discard flag `{other}`"
@@ -664,16 +657,8 @@ fn parse_quarantine_discard(
             }
         }
     }
-    let target = match (repomap_file, track, path) {
-        (Some(file_name), None, None) => {
-            QuarantineTargetV1::RepoMapFile(QuarantinedRepoMapFileEntryV1 {
-                file_name,
-                reason: reason.ok_or_else(|| {
-                    CliError::usage("--repomap-file requires --reason as listed".to_string())
-                })?,
-            })
-        }
-        (None, Some(track), Some(path)) => {
+    let target = match (track, path) {
+        (Some(track), Some(path)) => {
             let track = match track.as_str() {
                 "lexical" => SearchPlaneTrackKind::Lexical,
                 "semantic" => SearchPlaneTrackKind::Semantic,
@@ -692,15 +677,10 @@ fn parse_quarantine_discard(
                 detail: detail.unwrap_or_default(),
             })
         }
-        (None, _, _) => {
+        _ => {
             return Err(CliError::usage(
-                "quarantine discard needs --track and --path (a generation directory) or --repomap-file"
+                "quarantine discard needs --track and --path (a generation directory)"
                     .to_string(),
-            ));
-        }
-        (Some(_), _, _) => {
-            return Err(CliError::usage(
-                "--repomap-file cannot be combined with --track/--path".to_string(),
             ));
         }
     };
@@ -1110,51 +1090,6 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
     })
 }
 
-fn parse_repomap(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
-    let mut generation_args = PinnedGenerationArgs::default();
-    let mut query_text: Option<String> = None;
-    let mut top_k: Option<u32> = None;
-    let mut token_budget: Option<u32> = None;
-    let mut focus_subjects: Vec<RepoMapFocusSubjectDto> = Vec::new();
-    parse_query_command_flags(
-        common,
-        &mut generation_args,
-        rest,
-        "repomap",
-        |current, rest| match current {
-            "--query-text" => {
-                query_text = Some(take_value(rest, "--query-text")?);
-                Ok(true)
-            }
-            "--top-k" => {
-                top_k = Some(parse_u32_flag(rest, "--top-k")?);
-                Ok(true)
-            }
-            "--token-budget" => {
-                token_budget = Some(parse_u32_flag(rest, "--token-budget")?);
-                Ok(true)
-            }
-            "--focus-subject" => {
-                focus_subjects.push(parse_focus_subject(&take_value(rest, "--focus-subject")?)?);
-                Ok(true)
-            }
-            _ => Ok(false),
-        },
-    )?;
-    let generation = generation_args.into_generation_pin()?;
-    Ok(CliRequest::RepoMap(RepoMapQueryRequest {
-        repo_id: generation.repo_id,
-        revision_id: generation.revision_id,
-        manifest_generation: generation.manifest_generation,
-        query_text: query_text
-            .ok_or_else(|| CliError::usage("missing --query-text".to_string()))?,
-        top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
-        token_budget: token_budget
-            .ok_or_else(|| CliError::usage("missing --token-budget".to_string()))?,
-        focus_subjects,
-    }))
-}
-
 fn parse_generation_pin(
     repo_id: Option<String>,
     revision_id: Option<String>,
@@ -1202,35 +1137,6 @@ fn parse_syntax(value: &str) -> CliResult<TextQuerySyntax> {
         CliError::usage(format!(
             "unsupported syntax `{value}`; expected `code_search`, `native` or `sourcegraph`"
         ))
-    })
-}
-
-fn parse_repomap_doc_type(value: &str) -> CliResult<RepoMapDocType> {
-    match value {
-        "File" | "file" => Ok(RepoMapDocType::File),
-        "Module" | "module" => Ok(RepoMapDocType::Module),
-        "Symbol" | "symbol" => Ok(RepoMapDocType::Symbol),
-        "Chunk" | "chunk" => Ok(RepoMapDocType::Chunk),
-        other => Err(CliError::usage(format!(
-            "unsupported repo-map doc type `{other}`; expected file|module|symbol|chunk"
-        ))),
-    }
-}
-
-pub(super) fn parse_focus_subject(value: &str) -> CliResult<RepoMapFocusSubjectDto> {
-    let (subject_identity, subject_doc_type) = value.split_once(':').ok_or_else(|| {
-        CliError::usage(format!(
-            "--focus-subject expects <subject_identity>:<subject_doc_type>, got `{value}`"
-        ))
-    })?;
-    if subject_identity.is_empty() || subject_doc_type.is_empty() {
-        return Err(CliError::usage(format!(
-            "--focus-subject requires non-empty identity and doc type, got `{value}`"
-        )));
-    }
-    Ok(RepoMapFocusSubjectDto {
-        subject_identity: subject_identity.to_string(),
-        subject_doc_type: parse_repomap_doc_type(subject_doc_type)?,
     })
 }
 

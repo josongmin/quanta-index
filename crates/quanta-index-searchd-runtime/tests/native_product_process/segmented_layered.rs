@@ -964,7 +964,7 @@ fn layered_text_sixteen_live_layers_compact_without_losing_owners() -> TestResul
         repacked_artifact != prior_artifact,
         "layered repack reused its prior artifact",
     )?;
-    let rank = |view| {
+    let rank = |client: &NativeUdsClient, view| {
         client.search_text(
             ViewSelection::Exact(view),
             layered_text_spec().instance,
@@ -980,8 +980,8 @@ fn layered_text_sixteen_live_layers_compact_without_losing_owners() -> TestResul
             &budget(),
         )
     };
-    let before = rank(view)?;
-    let after = rank(repacked)?;
+    let before = rank(&client, view)?;
+    let after = rank(&client, repacked)?;
     require_equal(&before.matched, &15, "repack shared term match count")?;
     require_equal(
         &after.matched,
@@ -1061,6 +1061,139 @@ fn layered_text_sixteen_live_layers_compact_without_losing_owners() -> TestResul
         ),
         format!("stale repack artifact was accepted: {stale:?}"),
     )?;
+    // The source frontier remains at event 16: compaction and its refused
+    // stale replay consume operation IDs but do not advance source events.
+    let ingress = client.begin_input(operation(20), &budget())?;
+    let replacement = stage_sources(
+        &client,
+        ingress,
+        vec![source(&paths[15], b"newowner15 revised")],
+    )?;
+    let [replacement] = replacement.as_slice() else {
+        return Err("layered post-compaction replacement count differs".into());
+    };
+    let mut request = prepare_advance(
+        &client,
+        ingress,
+        repacked,
+        [
+            OwnerMutation {
+                owner: owner(1),
+                expected: Some(latest[0]),
+                next: None,
+            },
+            OwnerMutation {
+                owner: owner(16),
+                expected: Some(latest[15]),
+                next: Some(*replacement),
+            },
+        ],
+    )?;
+    let UpdateKind::SourceAdvance(ref mut transition) = request.kind else {
+        return Err("layered post-compaction request is not a source advance".into());
+    };
+    let event = transition
+        .events
+        .first_mut()
+        .ok_or("missing source event")?;
+    event.predecessor = 16;
+    event.sequence = 17;
+    let removed = published(&client.submit(request, &budget())?)?;
+
+    let ingress = client.begin_input(operation(21), &budget())?;
+    let revived = stage_sources(
+        &client,
+        ingress,
+        vec![source(&paths[0], b"revivedowner00 returned")],
+    )?;
+    let [revived] = revived.as_slice() else {
+        return Err("layered post-compaction re-add count differs".into());
+    };
+    let mut request = prepare_advance(
+        &client,
+        ingress,
+        removed,
+        [OwnerMutation {
+            owner: owner(1),
+            expected: None,
+            next: Some(*revived),
+        }],
+    )?;
+    let UpdateKind::SourceAdvance(ref mut transition) = request.kind else {
+        return Err("layered re-add request is not a source advance".into());
+    };
+    let event = transition
+        .events
+        .first_mut()
+        .ok_or("missing source event")?;
+    event.predecessor = 17;
+    event.sequence = 18;
+    let revived_view = published(&client.submit(request, &budget())?)?;
+    let mut final_paths = expected_paths.clone();
+    final_paths[0].2 = *revived;
+    final_paths[15].2 = *replacement;
+    let verify_final = |reader: &NativeUdsClient| -> TestResult {
+        verify_paths(reader, revived_view, &final_paths)?;
+        for (query, expected) in [
+            ("newowner00", None),
+            ("oldowner15", None),
+            (
+                "revivedowner00",
+                Some((paths[0].as_str(), owner(1), *revived)),
+            ),
+            (
+                "newowner15",
+                Some((paths[15].as_str(), owner(16), *replacement)),
+            ),
+        ] {
+            verify_text(reader, revived_view, query, expected)?;
+        }
+        Ok(())
+    };
+    verify_final(&client)?;
+    // A writer that still holds the pre-delete source cannot erase the
+    // re-added owner, even when the new posting lives beside compacted layers.
+    let ingress = client.begin_input(operation(22), &budget())?;
+    let mut request = prepare_advance(
+        &client,
+        ingress,
+        revived_view,
+        [OwnerMutation {
+            owner: owner(1),
+            expected: Some(latest[0]),
+            next: None,
+        }],
+    )?;
+    let UpdateKind::SourceAdvance(ref mut transition) = request.kind else {
+        return Err("layered stale CAS request is not a source advance".into());
+    };
+    let event = transition
+        .events
+        .first_mut()
+        .ok_or("missing source event")?;
+    event.predecessor = 18;
+    event.sequence = 19;
+    let stale_source = client.submit(request, &budget())?;
+    require(
+        matches!(
+            &stale_source,
+            SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::Conflict))
+        ),
+        format!("stale source CAS erased the re-added owner: {stale_source:?}"),
+    )?;
+    require_equal(
+        &client
+            .read_view(
+                ViewSelection::Latest {
+                    workspace: workspace(),
+                    epoch: 1,
+                },
+                &budget(),
+            )?
+            .identity,
+        &revived_view,
+        "stale source CAS changed the head",
+    )?;
     daemon.stop()?;
     let reopened = Daemon::start(&config_path, &socket)?;
     let reader = NativeUdsClient::new(socket);
@@ -1082,6 +1215,13 @@ fn layered_text_sixteen_live_layers_compact_without_losing_owners() -> TestResul
         "\"newowner00 revised\"",
         Some((paths[0].as_str(), owner(1), latest[0])),
     )?;
+    require_equal(
+        &rank(&reader, repacked)?.hits,
+        &after.hits,
+        "cold old exact rank after source advances",
+    )?;
+    verify_text(&reader, removed, "newowner00", None)?;
+    verify_final(&reader)?;
     reopened.stop()
 }
 

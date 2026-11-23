@@ -4,6 +4,7 @@ use super::{
     AuxiliaryGenerationKeyV1, BatchPublishReceipt, HistorySnapshotExportFrameV1,
     HistorySourceCutV1, ObjectRef, RepoId,
 };
+use crate::index::source_restore::FrameJsonValueCheckV1;
 
 use serde::{
     Deserialize, Deserializer,
@@ -109,8 +110,15 @@ enum BodyReplay<'de> {
     Map(Vec<(Self, Self)>),
 }
 
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static BODY_REPLAY_ENTRY_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl<'de> Deserialize<'de> for BodyReplay<'de> {
     fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        #[cfg(test)]
+        BODY_REPLAY_ENTRY_COUNT.with(|count| count.set(count.get() + 1));
         struct Capture;
 
         macro_rules! capture_scalar {
@@ -286,7 +294,7 @@ impl<'de> Deserializer<'de> for BodyReplay<'de> {
     }
 }
 
-struct HistoryFrameVisitor;
+struct HistoryFrameVisitor(Option<HistoryFrameKindV1>);
 
 impl<'de> Visitor<'de> for HistoryFrameVisitor {
     type Value = HistorySnapshotExportFrameV1;
@@ -306,6 +314,9 @@ impl<'de> Visitor<'de> for HistoryFrameVisitor {
                         return Err(Error::duplicate_field("kind"));
                     }
                     let read_kind = map.next_value_seed(HistoryKindTag)?;
+                    if self.0.is_some_and(|expected| expected != read_kind) {
+                        return Err(Error::custom("History frame kind changed between passes"));
+                    }
                     if let Some(body) = deferred.take() {
                         frame = Some(
                             HistoryFrameBodySeedV1(read_kind)
@@ -319,7 +330,7 @@ impl<'de> Visitor<'de> for HistoryFrameVisitor {
                     if frame.is_some() || deferred.is_some() {
                         return Err(Error::duplicate_field("body"));
                     }
-                    if let Some(kind) = kind {
+                    if let Some(kind) = kind.or(self.0) {
                         frame = Some(map.next_value_seed(HistoryFrameBodySeedV1(kind))?);
                     } else {
                         deferred = Some(map.next_value::<BodyReplay<'de>>()?);
@@ -340,6 +351,9 @@ impl<'de> Visitor<'de> for HistoryFrameVisitor {
         let kind = seq
             .next_element()?
             .ok_or_else(|| Error::invalid_length(0, &self))?;
+        if self.0.is_some_and(|expected| expected != kind) {
+            return Err(Error::custom("History frame kind changed between passes"));
+        }
         seq.next_element_seed(HistoryFrameBodySeedV1(kind))?
             .ok_or_else(|| Error::invalid_length(1, &self))
     }
@@ -347,9 +361,116 @@ impl<'de> Visitor<'de> for HistoryFrameVisitor {
 
 impl<'de> Deserialize<'de> for HistorySnapshotExportFrameV1 {
     fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
-        decoder.deserialize_struct(FRAME_NAME, FRAME_FIELDS, HistoryFrameVisitor)
+        decoder.deserialize_struct(FRAME_NAME, FRAME_FIELDS, HistoryFrameVisitor(None))
     }
 }
+
+struct HistoryFrameKindReadV1;
+
+impl HistoryFrameKindReadV1 {
+    fn decode(bytes: &[u8]) -> Result<HistoryFrameKindV1, serde_json::Error> {
+        struct KindReader;
+
+        impl<'de> DeserializeSeed<'de> for KindReader {
+            type Value = HistoryFrameKindV1;
+
+            fn deserialize<D: Deserializer<'de>>(
+                self,
+                decoder: D,
+            ) -> Result<Self::Value, D::Error> {
+                struct KindVisitor;
+
+                impl<'de> Visitor<'de> for KindVisitor {
+                    type Value = HistoryFrameKindV1;
+
+                    fn expecting(
+                        &self,
+                        formatter: &mut core::fmt::Formatter<'_>,
+                    ) -> core::fmt::Result {
+                        write!(formatter, "adjacently tagged enum {FRAME_NAME}")
+                    }
+
+                    fn visit_map<A: MapAccess<'de>>(
+                        self,
+                        mut map: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        let mut kind = None;
+                        let mut body_seen = false;
+                        while let Some(key) = map.next_key_seed(FieldKey(FRAME_FIELDS))? {
+                            match key {
+                                Some("kind") => {
+                                    if kind.is_some() {
+                                        return Err(Error::duplicate_field("kind"));
+                                    }
+                                    kind = Some(map.next_value_seed(HistoryKindTag)?);
+                                }
+                                Some("body") => {
+                                    if body_seen {
+                                        return Err(Error::duplicate_field("body"));
+                                    }
+                                    if kind.is_none() {
+                                        let _: FrameJsonValueCheckV1 = map.next_value()?;
+                                    } else {
+                                        let _: IgnoredAny = map.next_value()?;
+                                    }
+                                    body_seen = true;
+                                }
+                                _ => {
+                                    let _: IgnoredAny = map.next_value()?;
+                                }
+                            }
+                        }
+                        let kind = kind.ok_or_else(|| Error::missing_field("kind"))?;
+                        if !body_seen {
+                            return Err(Error::missing_field("body"));
+                        }
+                        Ok(kind)
+                    }
+
+                    fn visit_seq<A: SeqAccess<'de>>(
+                        self,
+                        mut seq: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        let kind = seq
+                            .next_element_seed(HistoryKindTag)?
+                            .ok_or_else(|| Error::invalid_length(0, &self))?;
+                        let _: IgnoredAny = seq
+                            .next_element()?
+                            .ok_or_else(|| Error::invalid_length(1, &self))?;
+                        if seq.next_element::<IgnoredAny>()?.is_some() {
+                            return Err(Error::invalid_length(3, &self));
+                        }
+                        Ok(kind)
+                    }
+                }
+
+                decoder.deserialize_struct(FRAME_NAME, FRAME_FIELDS, KindVisitor)
+            }
+        }
+
+        let mut decoder = serde_json::Deserializer::from_slice(bytes);
+        let kind = KindReader.deserialize(&mut decoder)?;
+        decoder.end()?;
+        Ok(kind)
+    }
+}
+
+impl HistorySnapshotExportFrameV1 {
+    /// Decode one admitted JSON frame without retaining an untyped body tree.
+    /// The caller owns frame-length and memory admission before this call.
+    pub fn decode_json_v1(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        let kind = HistoryFrameKindReadV1::decode(bytes)?;
+        let mut decoder = serde_json::Deserializer::from_slice(bytes);
+        let frame = (&mut decoder).deserialize_struct(
+            FRAME_NAME,
+            FRAME_FIELDS,
+            HistoryFrameVisitor(Some(kind)),
+        )?;
+        decoder.end()?;
+        Ok(frame)
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum HistoryFrameKindV1 {
     NativeProtectedComplete,

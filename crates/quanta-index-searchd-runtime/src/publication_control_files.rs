@@ -5,6 +5,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path};
 use std::sync::Arc;
 
+use crate::owned_fd_close::close_owned_file;
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::CoreError;
 use quanta_index_core::publication_admission::{
@@ -12,7 +13,6 @@ use quanta_index_core::publication_admission::{
     PublicationControlOutputAdmission, PublicationControlReader, PublicationObjectLifetimePort,
     validate_control_object_lifetime,
 };
-use rusqlite::ffi::quanta_capacity_vfs::close_owned_file;
 
 use crate::publication_file_capacity::{
     FileMutation, OpenGuard, PublicationFileCapacity, ReaderLease,

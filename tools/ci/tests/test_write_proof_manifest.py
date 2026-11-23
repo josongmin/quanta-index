@@ -79,9 +79,10 @@ def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
     source = script.read_text()
     # The typed runner owns the exact list/run selectors. Its independent
     # literal and behavior oracles live in test_paired_r5_result.py.
-    target = '"$paired_python" "$quanta_root/tools/ci/paired_r5_result.py"'
+    target = "run_paired_result " + "\\\n"
     assert source.count(target) == 2
-    build = source.index("just rust-build-release-native-daemon")
+    assert '"$paired_python" -I -S -B ' in source
+    build = source.index("rust-build-release-native-daemon)")
     assert source.index("--verify-resolution-only") < build
     assert "rust-build-release-daemon-fresh" not in source
     recipes = subprocess.check_output(["just", "--summary"], cwd=REPO_ROOT, text=True).split()

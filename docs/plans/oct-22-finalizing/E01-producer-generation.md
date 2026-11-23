@@ -93,6 +93,8 @@ Python은 기존 SDK 유료 evidence ref → Source B의 generic paid parts/hand
 
 ### 검증 인계
 
+Facts의 변경 경로 본문은 이전 세대 Original까지 exact path로 빌린다. Facts·disk target 발급은 V1이며, Runtime publisher가 전체 identity를 검증하고 V1 digest를 계산한다. 실제 V2 target 발급과 두 SDK 호출부의 변경 상태, 소유 회귀는 [INC-01 코드 단위 현황](../../bugbash/nov-20-native-delta-cost/tickets/INC-01-source-closure.md#코드-단위-현황과-검증)에서 관리한다.
+
 I는 QBC의 `owner resolve`로 **통합 source의 실제 feature/compile policy**를 먼저 확인한다. 그 뒤 동일 통합 source/feature cohort의 정식 snapshot·lease에서 **selector마다 별도 owning 요청/receipt**로 실행하고 본문 분모도 따로 기록한다. host의 heavy build/제품 부하는 직렬화한다. raw Cargo 결과나 class8304의 고정1079 cohort는 새 producer 경로의 자격 증명이 아니다.
 
 ```text

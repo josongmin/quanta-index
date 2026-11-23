@@ -584,8 +584,14 @@ fn inspect_file(
                         report.diagnostics_total > report.diagnostics.len();
                     return Ok((report, ExtractedSymbols::default()));
                 }
-                let symbols =
-                    extract_parsed_symbols(language, path, &file.text, &tree, Some(&control))?;
+                let symbols = extract_parsed_symbols(
+                    language,
+                    path,
+                    &file.text,
+                    &tree,
+                    Some(&control),
+                    None,
+                )?;
                 let symbol_count = u64::try_from(symbols.records.len()).map_err(|_overflow| {
                     SymbolExtractError::ResourceLimit {
                         path: path.to_string(),

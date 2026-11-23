@@ -1,7 +1,9 @@
 //! Published-source preview through the ordinary Native SDK and UDS.
 
 use super::*;
-use quanta_index_contract::native_protocol::{NativeTextExcerpt, NativeTextPreviewEvidence};
+use quanta_index_contract::native_protocol::{
+    NativeTextExcerpt, NativeTextPathResultV1, NativeTextPreviewEvidence,
+};
 use quanta_index_contract::{HighlightSpan, PreviewByteRange, PreviewUnavailableReason};
 
 #[test]
@@ -850,6 +852,219 @@ fn native_select_path_rename_and_delete_survive_published_cold_reopen() -> TestR
             assert!(stale.ranked.ranking.hits.is_empty());
             assert!(stale.ranked.repositories.is_empty());
         }
+        Ok(())
+    })();
+    let stopped = reopened.stop();
+    replay?;
+    stopped
+}
+
+fn assert_select_path_rows(
+    result: &NativeTextPathResultV1,
+    expected: &[(&quanta_index_contract::RepoId, &str, u8, ObjectRef)],
+) -> TestResult {
+    let ranking = &result.ranked.ranking;
+    assert_eq!(ranking.matched, u64::try_from(expected.len())?);
+    assert_eq!(ranking.hits.len(), expected.len());
+    assert_eq!(result.ranked.repositories.len(), expected.len());
+    for &(repository, path, stable_id, source) in expected {
+        assert!(
+            ranking
+                .hits
+                .iter()
+                .zip(&result.ranked.repositories)
+                .any(|(hit, actual_repository)| {
+                    actual_repository == repository
+                        && hit.path == path
+                        && hit.owner.stable_id == StableOwnerId([stable_id; 16])
+                        && hit.source == source
+                }),
+            "select:path group missing: {repository:?} {path}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn native_select_path_retained_pages_survive_successor_rename_delete_and_reopen() -> TestResult {
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let running = NativeServiceGuard::start(read_session_service(
+        root.path(),
+        &socket,
+        Duration::from_secs(30),
+    )?);
+    let primary = (|| -> TestResult<_> {
+        let client = NativeUdsClient::new(socket.clone());
+        let repo_a = quanta_index_contract::RepoId::try_from("corp-a")?;
+        let repo_b = quanta_index_contract::RepoId::try_from("corp-b")?;
+        let instance = native_text_spec().instance;
+        let query = native_text_request("select:path needle", 4);
+        let mut view = create_text_workspace(&client)?;
+        let mut sources = Vec::new();
+        for (sequence, stable_id, repository, path) in [
+            (2, 1, &repo_a, "src/a/needle.rs"),
+            (3, 2, &repo_a, "src/b/needle.rs"),
+            (4, 3, &repo_b, "src/a/needle.rs"),
+            (5, 4, &repo_b, "src/z/needle.rs"),
+        ] {
+            let ingress = client.begin_input(operation(sequence), &budget())?;
+            let (request, source) = prepare_text_owner_in_repository(
+                &client,
+                view,
+                ingress,
+                stable_id,
+                path,
+                "bodyneutral",
+                Some(repository.clone()),
+            )?;
+            view = published(&client.submit(request, &budget())?)?;
+            sources.push(source);
+        }
+        let [first_a, old_b, deleted_a, last_z] = sources.as_slice() else {
+            return Err("four retained path sources required".into());
+        };
+        let held = client.open_read_session(ViewSelection::Exact(view), [86; 32], &budget())?;
+        let original =
+            client.search_text_paths_in_read_session(&held, instance, query.clone(), &budget())?;
+        assert_eq!(original.ranked.ranking.view, view);
+        assert_select_path_rows(
+            &original,
+            &[
+                (&repo_a, "src/a/needle.rs", 1, *first_a),
+                (&repo_a, "src/b/needle.rs", 2, *old_b),
+                (&repo_b, "src/a/needle.rs", 3, *deleted_a),
+                (&repo_b, "src/z/needle.rs", 4, *last_z),
+            ],
+        )?;
+
+        let page_query = native_text_request("select:path needle", 1);
+        let first = client.search_text_path_page_in_read_session(
+            &held,
+            instance,
+            page_query.clone(),
+            None,
+            &budget(),
+        )?;
+        assert_eq!(first.ranked.ranking.view, view);
+        assert_eq!(first.ranked.ranking.hits.len(), 1);
+        assert_eq!(first.ranked.repositories.len(), 1);
+        assert_eq!(
+            first.ranked.ranking.hits.first(),
+            original.ranked.ranking.hits.first()
+        );
+        assert_eq!(
+            first.ranked.repositories.first(),
+            original.ranked.repositories.first()
+        );
+        assert_eq!(first.remaining, 4);
+        let first_cursor = first
+            .after
+            .ok_or("first retained path page omitted cursor")?;
+
+        let (renamed_view, new_source) = publish_path_source_change(
+            &client,
+            view,
+            6,
+            2,
+            *old_b,
+            Some((&repo_a, "src/c/needle.rs", "bodyneutral")),
+        )?;
+        let new_source = new_source.ok_or("renamed path source is absent")?;
+        let (latest, _) =
+            publish_path_source_change(&client, renamed_view, 7, 3, *deleted_a, None)?;
+        let current =
+            client.open_read_session(ViewSelection::Exact(latest), [87; 32], &budget())?;
+        let wrong_view = client.request(
+            NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchTextPathPageV1 {
+                session: current.session,
+                instance,
+                query: page_query.clone(),
+                after: Some(first_cursor.clone()),
+            }),
+            &budget(),
+        );
+        assert!(
+            matches!(&wrong_view, Err(NativeUdsError::Refused(error))
+                if error.code == NativeIndexErrorCode::InvalidInput),
+            "old-view path cursor was accepted by a successor session: {wrong_view:?}"
+        );
+
+        let current_paths = client.search_text_paths_in_read_session(
+            &current,
+            instance,
+            query.clone(),
+            &budget(),
+        )?;
+        assert_eq!(current_paths.ranked.ranking.view, latest);
+        assert_select_path_rows(
+            &current_paths,
+            &[
+                (&repo_a, "src/a/needle.rs", 1, *first_a),
+                (&repo_a, "src/c/needle.rs", 2, new_source),
+                (&repo_b, "src/z/needle.rs", 4, *last_z),
+            ],
+        )?;
+
+        assert_eq!(
+            client.search_text_paths_in_read_session(&held, instance, query, &budget())?,
+            original
+        );
+        let mut after = Some(first_cursor);
+        for ((expected_hit, expected_repo), remaining) in original
+            .ranked
+            .ranking
+            .hits
+            .iter()
+            .zip(&original.ranked.repositories)
+            .skip(1)
+            .zip([3, 2, 1])
+        {
+            let page = client.search_text_path_page_in_read_session(
+                &held,
+                instance,
+                page_query.clone(),
+                after,
+                &budget(),
+            )?;
+            assert_eq!(page.ranked.ranking.view, view);
+            assert_eq!(page.ranked.ranking.matched, 4);
+            assert_eq!(page.remaining, remaining);
+            assert_eq!(
+                page.ranked.ranking.hits.as_slice(),
+                std::slice::from_ref(expected_hit)
+            );
+            assert_eq!(
+                page.ranked.repositories.as_slice(),
+                std::slice::from_ref(expected_repo)
+            );
+            after = page.after;
+            assert_eq!(after.is_some(), remaining > 1);
+        }
+        let _released = client.release_read_session(&current, &budget())?;
+        let _released = client.release_read_session(&held, &budget())?;
+        Ok((latest, current_paths))
+    })();
+    let stopped = running.stop();
+    let (latest, current_paths) = primary?;
+    stopped?;
+
+    let reopened = NativeServiceGuard::start(read_session_service(
+        root.path(),
+        &socket,
+        Duration::from_secs(30),
+    )?);
+    let replay = (|| -> TestResult {
+        let client = NativeUdsClient::new(socket);
+        assert_eq!(
+            client.search_text_paths(
+                ViewSelection::Exact(latest),
+                native_text_spec().instance,
+                native_text_request("select:path needle", 4),
+                &budget(),
+            )?,
+            current_paths
+        );
         Ok(())
     })();
     let stopped = reopened.stop();

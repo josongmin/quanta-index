@@ -16,11 +16,7 @@ pub(crate) fn request_authorized(
         NativeIndexRequest::ReadSession(_)
         | NativeIndexRequest::ReadView(_)
         | NativeIndexRequest::ObserveRootView(_)
-        | NativeIndexRequest::ObserveRepoMapGraphInstallationV1(_)
-        | NativeIndexRequest::ObserveRepoMapEventFrontierV1 { .. }
         | NativeIndexRequest::ResolveProtectedSourceHead { .. }
-        | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
-        | NativeIndexRequest::ReadImportedRepoMapMember { .. }
         | NativeIndexRequest::PublishedViewMetadata(_)
         | NativeIndexRequest::ReadProjection { .. }
         | NativeIndexRequest::LookupSourceOwners { .. }
@@ -34,13 +30,9 @@ pub(crate) fn request_authorized(
         | NativeIndexRequest::SearchTextPreview { .. }
         | NativeIndexRequest::SearchSemantic { .. }
         | NativeIndexRequest::QueryGraph { .. }
-        | NativeIndexRequest::QueryImportedRepoMap { .. }
-        | NativeIndexRequest::QueryRepoMap { .. }
         | NativeIndexRequest::QueryEffortStream { .. } => {
             matches!(plane, IpcPlane::Query | IpcPlane::Control)
         }
-        // This also covers ReadRepoMapPriorFileV1. Typed facts can contain
-        // preview text and must stay on the producer's owner-only plane.
         _ => plane == IpcPlane::Control && (peer.uid == owner_uid || peer.uid == 0),
     }
 }

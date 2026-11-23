@@ -174,6 +174,26 @@ pub(super) fn require_fresh_source_parity_v1(
     if let Some(NativeCutoverEvidenceSourceFactV1::PendingStoreSdkAck { binding, .. }) = sdk_fact {
         require_sdk_source_binding_v1(binding, fresh, budget)?;
     }
+    if matches!(
+        joined.current_native_target.source_mode,
+        quanta_index_core::index::SourceOperationMode::Resync { .. }
+    ) {
+        let (source, _) = joined
+            .native_sdk_source_for_operation_v1(joined.current_native_target.operation)
+            .ok_or(FreshSourceParityRefusalV1::SdkTargetMismatch)?;
+        budget.charge(WorkUsage {
+            reads: 1,
+            bytes: 3 * 64 + 8,
+            ..WorkUsage::default()
+        })?;
+        if source.transition_digest != fresh.source_manifest_digest
+            || source.completion_pointer_digest != fresh.source_pointer_digest
+            || source.physical_target_source_digest != fresh.physical_target_source_digest
+            || source.target_snapshot_id != fresh.target_snapshot_id
+        {
+            return Err(FreshSourceParityRefusalV1::SdkTargetMismatch.into());
+        }
+    }
     // S's retained Original reader compares its closed physical scan with the
     // durable pointer before reading the manifest/heads and both finishers.
     // The admitted signed peer and retained descriptors remain necessary;

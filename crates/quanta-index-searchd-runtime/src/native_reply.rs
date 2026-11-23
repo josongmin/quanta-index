@@ -86,9 +86,6 @@ pub(crate) enum NativeReply {
     OverlaySemantic(crate::native_semantic_result::ScopedOverlaySemanticResult),
     EffortDone(ScopedNativeEffortDone),
     Graph(crate::native_graph_transport::ScopedNativeGraphResult),
-    RepoMapPriorFile(crate::native_repomap_prior_file_transport::ScopedPriorFileResponse),
-    ImportedRepoMap(crate::native_imported_repomap_transport::ScopedImportedRepoMapResultV1),
-    RepoMapRanked(crate::native_repomap_transport::ScopedNativeRepoMapRankResult),
     Overlay(crate::native_overlay_transport::ScopedOverlayReply),
     Stub(crate::native_stub_transport::ScopedStubReply),
     SourceOwners(ScopedNativeSourceOwnerLookup),
@@ -152,9 +149,6 @@ impl NativeReply {
             | Self::ProducerSourceOwners(_)
             | Self::ProjectionSourceDiff(_)
             | Self::Graph(_)
-            | Self::RepoMapPriorFile(_)
-            | Self::ImportedRepoMap(_)
-            | Self::RepoMapRanked(_)
             | Self::Overlay(_)
             | Self::Stub(_)
             | Self::Literal(_)
@@ -188,9 +182,6 @@ impl NativeReply {
             | Self::ProducerSourceOwners(_)
             | Self::ProjectionSourceDiff(_)
             | Self::Graph(_)
-            | Self::RepoMapPriorFile(_)
-            | Self::ImportedRepoMap(_)
-            | Self::RepoMapRanked(_)
             | Self::Overlay(_)
             | Self::Stub(_)
             | Self::StagedSources(_)
@@ -285,11 +276,6 @@ impl Serialize for NativeReply {
                 NativeIndexResponse::serialize_producer_source_owners_ref(result, serializer)
             }
             Self::Graph(result) => NativeIndexResponse::serialize_graph_ref(result, serializer),
-            Self::RepoMapPriorFile(result) => result.serialize(serializer),
-            Self::ImportedRepoMap(result) => serializer.serialize_newtype_variant(
-                "NativeIndexResponse", 43, "ImportedRepoMap", &**result,
-            ),
-            Self::RepoMapRanked(result) => result.serialize(serializer),
             Self::Overlay(result) => NativeIndexResponse::serialize_overlay_ref(result, serializer),
             Self::Stub(result) => NativeIndexResponse::serialize_stub_ref(result, serializer),
             Self::StagedSources(result) => {
@@ -368,9 +354,6 @@ impl ResponseEnvelope<NativeReply> for NativeReplyEnvelope {
             | NativeReply::OverlaySemantic(_)
             | NativeReply::EffortDone(_)
             | NativeReply::Graph(_)
-            | NativeReply::RepoMapPriorFile(_)
-            | NativeReply::ImportedRepoMap(_)
-            | NativeReply::RepoMapRanked(_)
             | NativeReply::Overlay(_)
             | NativeReply::Stub(_)
             | NativeReply::SourceOwners(_)

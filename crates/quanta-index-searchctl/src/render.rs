@@ -34,7 +34,6 @@ pub(super) fn validate_response_kind(
         | (CommandKind::GoTestTraceFileV1, SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_))
         | (CommandKind::HybridSeed, SearchPlaneQueryIpcResponse::HybridSeed(_))
         | (CommandKind::Explain, SearchPlaneQueryIpcResponse::Explain(_))
-        | (CommandKind::RepoMap, SearchPlaneQueryIpcResponse::RepoMapQuery(_))
         | (CommandKind::RuntimeMetadata, SearchPlaneQueryIpcResponse::RuntimeMetadata(_))
         | (CommandKind::History, SearchPlaneQueryIpcResponse::History(_))
         | (CommandKind::Structural, SearchPlaneQueryIpcResponse::Structural(_)) => Ok(()),
@@ -445,14 +444,6 @@ pub(super) fn render_quarantine_inventory(
                     ))?;
                 }
             }
-            fmt_ok(writeln!(rendered, "repo_map: {}", inventory.repo_map.len()))?;
-            for entry in &inventory.repo_map {
-                fmt_ok(writeln!(
-                    rendered,
-                    "  --repomap-file {} --reason {:?}",
-                    entry.file_name, entry.reason
-                ))?;
-            }
             Ok(rendered)
         }
     }
@@ -482,7 +473,6 @@ pub(super) fn render_quarantine_discard(
                         entry.path
                     )
                 }
-                QuarantineTargetV1::RepoMapFile(entry) => format!("repo_map {}", entry.file_name),
             };
             let outcome = match ack.outcome {
                 QuarantineDiscardOutcomeDtoV1::Discarded { bytes } => {
@@ -628,65 +618,6 @@ fn render_pretty(
                 payload.presence.as_str()
             ))?;
             render_explanation(&payload.explanation, rendered)?;
-            Ok(())
-        }
-        SearchPlaneQueryIpcResponse::RepoMapQuery(payload) => {
-            fmt_ok(writeln!(rendered, "kind: repomap"))?;
-            fmt_ok(writeln!(
-                rendered,
-                "generation: repo_id={} revision_id={} manifest_generation={}",
-                payload.repo_id.as_str(),
-                payload.revision_id.as_str(),
-                payload.manifest_generation.get()
-            ))?;
-            let meta = &payload.snapshot_meta;
-            fmt_ok(writeln!(
-                rendered,
-                "snapshot: id={} projection_version={} authority_digest={}",
-                meta.snapshot_id, meta.projection_version, meta.authority_digest
-            ))?;
-            fmt_ok(writeln!(
-                rendered,
-                "entries: {} dropped_entries_count={} drop_reason_codes={} degraded_reason_codes={}",
-                payload.entries.len(),
-                payload.dropped_entries_count,
-                payload.drop_reason_codes.join(","),
-                payload.degraded_reason_codes.join(",")
-            ))?;
-            for (index, entry) in payload.entries.iter().enumerate() {
-                let display_index = index.checked_add(1).ok_or_else(|| {
-                    CliError::protocol("repomap entry index overflow".to_string())
-                })?;
-                fmt_ok(writeln!(
-                    rendered,
-                    "{}. subject_identity={} doc_type={} kind={} owner_path={} rank={} score={} final_score_millis={}",
-                    display_index,
-                    entry.subject_identity,
-                    entry.subject_doc_type.as_code_str(),
-                    entry.subject_kind,
-                    entry.owner_path,
-                    entry.rank,
-                    entry.score,
-                    entry.final_score_millis
-                ))?;
-                fmt_ok(writeln!(
-                    rendered,
-                    "   authority: artifact_id={} digest={} projection_status={} redaction_state={}",
-                    entry.projection_authority_artifact_id,
-                    entry.projection_authority_digest,
-                    entry.projection_status,
-                    entry.redaction_state.as_code_str()
-                ))?;
-                if !entry.contributing_signals.is_empty() {
-                    let pairs = entry
-                        .contributing_signals
-                        .iter()
-                        .map(|(name, value)| format!("{name}={value}"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    fmt_ok(writeln!(rendered, "   contributing_signals: {pairs}"))?;
-                }
-            }
             Ok(())
         }
         SearchPlaneQueryIpcResponse::Error(error) => Err(CliError::remote(
@@ -1232,7 +1163,6 @@ fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
         SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed",
         SearchPlaneQueryIpcResponse::History(_) => "History",
         SearchPlaneQueryIpcResponse::Structural(_) => "Structural",
-        SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "RepoMapQuery",
         SearchPlaneQueryIpcResponse::Explain(_) => "Explain",
         SearchPlaneQueryIpcResponse::Error(_) => "Error",
         SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => "RuntimeMetadata",
@@ -1249,7 +1179,6 @@ fn command_kind_name(kind: CommandKind) -> &'static str {
         CommandKind::GoTestTraceFileV1 => "go-test-trace-file",
         CommandKind::HybridSeed => "hybrid-seed",
         CommandKind::Explain => "explain",
-        CommandKind::RepoMap => "repomap",
         CommandKind::RuntimeMetadata => "runtime-metadata",
         CommandKind::History => "history",
         CommandKind::Structural => "structural",

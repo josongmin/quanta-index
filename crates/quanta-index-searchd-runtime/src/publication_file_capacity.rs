@@ -26,7 +26,7 @@ use quanta_index_core::{
     index::ObjectWriteSyncDirectories,
 };
 use quanta_index_searchd::app::runtime::{StateRootDirectoryV1, StateRootLease};
-use rusqlite::ffi::quanta_capacity_vfs::close_owned_file;
+use crate::owned_fd_close::close_owned_file;
 use rustix::fs::{
     AtFlags, FileType, Mode, OFlags, RenameFlags, linkat, mkdirat, openat, renameat_with, statat,
     unlinkat,

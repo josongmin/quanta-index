@@ -2,8 +2,8 @@ use core::fmt;
 use std::collections::BTreeMap;
 
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMapDocType, RepoMapEntryDto, RepoMapRedactionState,
-    RepoMapSnapshotMeta, RevisionId,
+    ManifestGeneration, RepoId, RepoMapDocType, RepoMapRedactionState, RepoMapSnapshotMeta,
+    RevisionId,
 };
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -368,33 +368,6 @@ impl<'de> Deserialize<'de> for RepoMapEntry {
     }
 }
 
-impl RepoMapEntry {
-    #[must_use]
-    /// The wire row for this entry at query-time `rank`.
-    pub fn to_dto(&self, rank: u32) -> RepoMapEntryDto {
-        RepoMapEntryDto {
-            subject_identity: self.subject_identity.clone(),
-            subject_doc_type: self.subject_doc_type,
-            subject_kind: self.subject_kind.clone(),
-            owner_path: self.owner_path.clone(),
-            score: self.score,
-            final_score_millis: self.final_score_millis,
-            rank,
-            importance_score_millis: self.importance_score_millis,
-            utility_score_millis: self.utility_score_millis,
-            freshness_score_millis: self.freshness_score_millis,
-            evidence_priority_millis: self.evidence_priority_millis,
-            token_budget_hint: self.token_budget_hint,
-            contributing_signals: self.contributing_signals.clone(),
-            projection_evidence_kind: self.projection_evidence_kind.clone(),
-            projection_authority_artifact_id: self.projection_authority_artifact_id.clone(),
-            projection_authority_digest: self.projection_authority_digest.clone(),
-            projection_status: self.projection_status.clone(),
-            redaction_state: self.redaction_state,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct RepoMapSnapshot {
     pub repo_id: RepoId,
@@ -402,64 +375,6 @@ pub struct RepoMapSnapshot {
     pub manifest_generation: ManifestGeneration,
     pub snapshot_meta: RepoMapSnapshotMeta,
     pub entries: Vec<RepoMapEntry>,
-}
-
-/// A snapshot with what a query needs precomputed once (QI-BB-008): the
-/// folded search text of every entry, the position of every subject and the
-/// positions under every owner path.
-#[derive(Debug)]
-pub struct RepoMapIndexedSnapshot {
-    pub snapshot: RepoMapSnapshot,
-    pub index: RepoMapSnapshotIndex,
-}
-
-/// Query-time lookups over a snapshot's entries, by position.
-#[derive(Debug, Default)]
-pub struct RepoMapSnapshotIndex {
-    /// `search_text` lower-cased, one per entry, so a query matches terms
-    /// without allocating per entry.
-    pub folded_search_text: Vec<String>,
-    /// Entry position by subject identity, then document type, so a lookup
-    /// borrows the request's strings instead of allocating a key.
-    pub by_subject: BTreeMap<String, BTreeMap<RepoMapDocType, usize>>,
-    pub by_owner_path: BTreeMap<String, Vec<usize>>,
-}
-
-impl RepoMapIndexedSnapshot {
-    #[must_use]
-    pub fn new(snapshot: RepoMapSnapshot) -> Self {
-        let index = RepoMapSnapshotIndex::build(&snapshot.entries);
-        Self { snapshot, index }
-    }
-}
-
-impl RepoMapSnapshotIndex {
-    #[must_use]
-    pub fn build(entries: &[RepoMapEntry]) -> Self {
-        let mut index = Self {
-            folded_search_text: Vec::with_capacity(entries.len()),
-            by_subject: BTreeMap::new(),
-            by_owner_path: BTreeMap::new(),
-        };
-        for (position, entry) in entries.iter().enumerate() {
-            index
-                .folded_search_text
-                .push(quanta_index_lq_text_normalizer::fold(
-                    entry.search_text.as_str(),
-                ));
-            let _prior = index
-                .by_subject
-                .entry(entry.subject_identity.clone())
-                .or_default()
-                .insert(entry.subject_doc_type, position);
-            index
-                .by_owner_path
-                .entry(entry.owner_path.clone())
-                .or_default()
-                .push(position);
-        }
-        index
-    }
 }
 
 const REPOMAP_SNAPSHOT_FIELDS: &[&str] = &[

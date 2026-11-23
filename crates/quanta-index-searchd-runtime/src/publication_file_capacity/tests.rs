@@ -888,7 +888,7 @@ fn supplied_copy_and_resize_use_parent_without_top_up() -> TestResult {
         common.begin_resize_with_allowance(&path, &opened, 12, Arc::clone(&resize_parent))?;
     require_eq!(authority.snapshot()?.used_bytes, charged.used_bytes)?;
     drop(resize);
-    rusqlite::ffi::quanta_capacity_vfs::close_owned_file(opened)?;
+    crate::owned_fd_close::close_owned_file(opened)?;
     drop(resize_parent);
     require_eq!(authority.snapshot()?.used_bytes, 4)?;
     Ok(())
@@ -1235,7 +1235,7 @@ fn live_control_create_writer_cannot_be_recovered_or_refunded() -> TestResult {
             .ok_or("pending overflow")?
     )?;
     require!(!common.is_quiescent()?)?;
-    rusqlite::ffi::quanta_capacity_vfs::close_owned_file(writer)?;
+    crate::owned_fd_close::close_owned_file(writer)?;
     Ok(())
 }
 
@@ -1543,7 +1543,7 @@ fn started_short_write_keeps_charge_until_anchored_recovery() -> TestResult {
     let recovered = common.recover_pending_with_fd(&final_path, &temp_path, file)?;
     let reopened = File::open(&temp_path)?;
     let observed = InodeObservation::from_file(&reopened)?;
-    rusqlite::ffi::quanta_capacity_vfs::close_owned_file(reopened)?;
+    crate::owned_fd_close::close_owned_file(reopened)?;
     require_eq!(
         authority.retained_inode(observed.inode, observed.bytes)?,
         Some(recovered)
@@ -1593,7 +1593,7 @@ fn cloned_writer_fd_cannot_retire_or_recover_the_original() -> TestResult {
     let recovered = common.recover_pending_with_fd(&final_path, &temp_path, writer)?;
     let reopened = File::open(&temp_path)?;
     let observed = InodeObservation::from_file(&reopened)?;
-    rusqlite::ffi::quanta_capacity_vfs::close_owned_file(reopened)?;
+    crate::owned_fd_close::close_owned_file(reopened)?;
     require_eq!(
         authority.retained_inode(observed.inode, observed.bytes)?,
         Some(recovered)
@@ -1610,7 +1610,7 @@ fn poisoned_authority_refuses_previously_reserved_write_boundary() -> TestResult
     publish_file(&common, &known_path, b"four")?;
     let known = File::open(&known_path)?;
     let observed = InodeObservation::from_file(&known)?;
-    rusqlite::ffi::quanta_capacity_vfs::close_owned_file(known)?;
+    crate::owned_fd_close::close_owned_file(known)?;
 
     let final_path = root.join("poisoned-write");
     let mut ticket = common.begin_create(&final_path)?;
@@ -2146,7 +2146,7 @@ fn final_common_drop_quarantines_pending_owned_writer_fd() -> TestResult {
 
     // The final path now matches the born inode. Only the unwitnessed retained
     // writer pin can keep this root from being handed to a new owner.
-    rusqlite::ffi::quanta_capacity_vfs::close_owned_file(writer)?;
+    crate::owned_fd_close::close_owned_file(writer)?;
     drop(ticket);
     drop(common);
     drop(authority);
@@ -2632,10 +2632,22 @@ fn safe_reader_last_pin_rearms_hint_and_new_marker_is_not_hidden() -> TestResult
 
 #[test]
 fn empty_retirement_hint_never_hides_an_unwitnessed_close() -> TestResult {
-    let (_dir, _root, _lease, _authority, common) = fixture()?;
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let path = root.join("unwitnessed-close");
+    publish_file(&common, &path, b"four")?;
+    let charged = authority.snapshot()?;
+    let reader = common
+        .begin_reader_open(&path)?
+        .opened_owned(File::open(&path)?)?;
+    common.begin_delete(&path)?.perform_and_sync()?;
     common.sweep_retired()?;
+    require_eq!(authority.snapshot()?, charged)?;
+    // Model an ambiguous close outcome before this reader can prove retirement.
     common.mark_close_unwitnessed();
     require!(matches!(common.sweep_retired(), Err(CoreError::Storage(_))))?;
+    require_eq!(authority.snapshot()?, charged)?;
+    require!(!common.is_quiescent()?)?;
+    drop(reader);
     Ok(())
 }
 

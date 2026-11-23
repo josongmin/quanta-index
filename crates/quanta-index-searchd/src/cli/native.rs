@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-use quanta_index_contract::index::{Digest, ObjectRef, OperationKey};
+use quanta_index_contract::index::{Digest, ObjectRef, OperationKey, RetiredProjectionPolicyRefV1};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeCommandModeV1 {
@@ -13,6 +13,7 @@ pub enum NativeCommandModeV1 {
         root_nonce: [u8; 32],
         source_cut_digest: Digest,
         protected_source_routes: Option<ObjectRef>,
+        retired_projection_policy: Option<RetiredProjectionPolicyRefV1>,
     },
     ServeCandidate,
 }
@@ -24,6 +25,7 @@ pub struct NativeBootIdentityV1 {
     pub manifest_object: ObjectRef,
     pub source_cut_digest: Digest,
     pub protected_source_routes: Option<ObjectRef>,
+    pub retired_projection_policy: Option<RetiredProjectionPolicyRefV1>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,6 +59,9 @@ impl NativeStateCommandV1 {
         }) {
             bail!("protected Source route reference must be nonzero");
         }
+        if let Some(policy) = self.identity.and_then(|identity| identity.retired_projection_policy) {
+            policy.validate_v1().map_err(|reason| anyhow::anyhow!(reason))?;
+        }
         match self.mode {
             NativeCommandModeV1::Select | NativeCommandModeV1::SelectCandidate { .. } => {
                 if self.identity.is_some()
@@ -77,12 +82,15 @@ impl NativeStateCommandV1 {
                     root_nonce,
                     source_cut_digest,
                     protected_source_routes,
+                    retired_projection_policy,
                 } = self.mode
                     && (self.config_digest.is_none()
                         || root_nonce == [0; 32]
                         || source_cut_digest == Digest([0; 32])
                         || protected_source_routes
-                            .is_some_and(|reference| reference.0 == Digest([0; 32])))
+                            .is_some_and(|reference| reference.0 == Digest([0; 32]))
+                        || retired_projection_policy
+                            .is_some_and(|reference| reference.validate_v1().is_err()))
                 {
                     bail!(
                         "select-native-candidate requires pinned config, root and SourceCut digests"
@@ -133,6 +141,9 @@ pub(super) struct NativeCommandInput {
     pub manifest_object: Option<String>,
     pub source_cut_digest: Option<String>,
     pub protected_source_routes: Option<String>,
+    pub retired_policy_object: Option<String>,
+    pub retired_policy_sha256: Option<String>,
+    pub retired_policy_identity_count: Option<String>,
     pub config_digest: Option<String>,
     pub install_catalog_digest: Option<String>,
     pub receipt_path: Option<PathBuf>,
@@ -146,6 +157,9 @@ impl NativeCommandInput {
             || self.manifest_object.is_some()
             || self.source_cut_digest.is_some()
             || self.protected_source_routes.is_some()
+            || self.retired_policy_object.is_some()
+            || self.retired_policy_sha256.is_some()
+            || self.retired_policy_identity_count.is_some()
             || self.config_digest.is_some()
             || self.install_catalog_digest.is_some()
             || self.receipt_path.is_some()
@@ -171,10 +185,16 @@ impl NativeCommandInput {
             .take()
             .map(|value| parse_digest(&value, "--protected-source-routes").map(ObjectRef))
             .transpose()?;
+        let retired_projection_policy = parse_retired_policy(
+            input.retired_policy_object.take(),
+            input.retired_policy_sha256.take(),
+            input.retired_policy_identity_count.take(),
+        )?;
         input.finish(NativeCommandModeV1::SelectCandidate {
             root_nonce,
             source_cut_digest,
             protected_source_routes,
+            retired_projection_policy,
         })
     }
 
@@ -202,6 +222,9 @@ impl NativeCommandInput {
                 || self.manifest_object.is_some()
                 || self.source_cut_digest.is_some()
                 || self.protected_source_routes.is_some()
+                || self.retired_policy_object.is_some()
+                || self.retired_policy_sha256.is_some()
+                || self.retired_policy_identity_count.is_some()
                 || self.install_catalog_digest.is_some()
             {
                 bail!(
@@ -244,7 +267,10 @@ impl NativeCommandInput {
             || manifest_operation.is_some()
             || self.manifest_object.is_some()
             || self.source_cut_digest.is_some()
-            || self.protected_source_routes.is_some();
+            || self.protected_source_routes.is_some()
+            || self.retired_policy_object.is_some()
+            || self.retired_policy_sha256.is_some()
+            || self.retired_policy_identity_count.is_some();
         if mode == NativeCommandModeV1::ServeCandidate && has_identity {
             bail!("serve-native-candidate cannot name an installed BOOT identity");
         }
@@ -316,6 +342,11 @@ impl NativeCommandInput {
                     .protected_source_routes
                     .map(|value| parse_digest(&value, "--protected-source-routes").map(ObjectRef))
                     .transpose()?,
+                retired_projection_policy: parse_retired_policy(
+                    self.retired_policy_object,
+                    self.retired_policy_sha256,
+                    self.retired_policy_identity_count,
+                )?,
             }),
             config_digest: Some(config_digest),
             install_catalog_digest,
@@ -325,6 +356,25 @@ impl NativeCommandInput {
         command.validate()?;
         Ok(command)
     }
+}
+
+fn parse_retired_policy(
+    object: Option<String>,
+    sha256: Option<String>,
+    count: Option<String>,
+) -> Result<Option<RetiredProjectionPolicyRefV1>> {
+    let (object, sha256, count) = match (object, sha256, count) {
+        (None, None, None) => return Ok(None),
+        (Some(object), Some(sha256), Some(count)) => (object, sha256, count),
+        _ => bail!("retired policy requires object, SHA-256 and identity count together"),
+    };
+    let reference = RetiredProjectionPolicyRefV1 {
+        object: ObjectRef(parse_digest(&object, "--retired-policy-object")?),
+        sha256: parse_digest(&sha256, "--retired-policy-sha256")?,
+        identity_count: count.parse()?,
+    };
+    reference.validate_v1().map_err(|reason| anyhow::anyhow!(reason))?;
+    Ok(Some(reference))
 }
 
 fn parse_operation(value: &str) -> Result<OperationKey> {

@@ -592,8 +592,8 @@ fn native_trained_ninth_region_quality_separates_routing_loss()
     let spec = instance(&recipe);
     let runtime = test_runtime()?;
     let query_vector = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-    // The selected region has ten separated winners. The ninth centroid is
-    // negative although it contains the global exact winner.
+    // The eighth region has separated winners. The ninth centroid is negative
+    // although that region contains the global exact winner.
     let vectors: Vec<Vec<f32>> = (0..REGIONS)
         .flat_map(|region| {
             (0..ROWS_PER_REGION).map(move |row| {
@@ -717,57 +717,56 @@ fn native_trained_ninth_region_quality_separates_routing_loss()
     check_eq!(routed_top.len(), TOP_K);
     check_eq!(global_top.intersection(&routed_top).count(), TOP_K - 1);
 
-    let mut query_work = profile_work(60)?;
-    let result = search_selected_lancedb(
-        &SearchQuery {
-            source_files: true,
-            lexical_eligibility: None,
-            exact_path: None,
-            coverage: &coverage,
-            projection: None,
-            source_owners: sources,
-            source_paths: MapRoot(None),
-            instance: spec.instance,
-            format: spec.format,
-            recipe: &recipe,
-            vector: &query_vector,
-            top_k: u32::try_from(TOP_K)?,
-            page_size: 64,
-            max_owners: 1024,
-            overlay: None,
-        },
-        &mut ReadContext {
-            objects: &store,
-            maps: &maps,
-            budget: &mut query_work,
-        },
-        &runtime,
-    )?;
-    check_eq!(
-        result.traversal,
-        NativeSemanticTraversal::Approximate { capped: true }
-    );
-    check!(!result.exhaustive);
-    let mut hits = Vec::new();
-    for hit in &result.hits {
-        let file = hit.source_file().ok_or("trained ANN file witness absent")?;
-        hits.push(ObservedFileHit {
-            owner: hit.owner,
-            file_owner: file.owner,
-            source: file.source,
-            path: file.path(),
-            vector_id: &hit.vector_id,
-            cosine: hit.cosine,
-        });
+    // The smaller owner window is below nine legacy 64-row prefixes. The
+    // newest region must still receive a first pass before refill spends it.
+    for max_owners in [1024, 192] {
+        let mut query_work = profile_work(60)?;
+        let result = search_selected_lancedb(
+            &SearchQuery {
+                source_files: true,
+                lexical_eligibility: None,
+                exact_path: None,
+                coverage: &coverage,
+                projection: None,
+                source_owners: sources,
+                source_paths: MapRoot(None),
+                instance: spec.instance,
+                format: spec.format,
+                recipe: &recipe,
+                vector: &query_vector,
+                top_k: u32::try_from(TOP_K)?,
+                page_size: 64,
+                max_owners,
+                overlay: None,
+            },
+            &mut ReadContext {
+                objects: &store,
+                maps: &maps,
+                budget: &mut query_work,
+            },
+            &runtime,
+        )?;
+        check!(matches!(
+            result.traversal,
+            NativeSemanticTraversal::Approximate { .. }
+        ));
+        check!(!result.exhaustive);
+        let mut hits = Vec::new();
+        for hit in &result.hits {
+            let file = hit.source_file().ok_or("trained ANN file witness absent")?;
+            hits.push(ObservedFileHit {
+                owner: hit.owner,
+                file_owner: file.owner,
+                source: file.source,
+                path: file.path(),
+                vector_id: &hit.vector_id,
+                cosine: hit.cosine,
+            });
+        }
+        let observed = verify_file_hits(&hits, &expected_files, &vectors, &query_vector, TOP_K)?;
+        check!(observed.contains(&profile_owner(8 * ROWS_PER_REGION)));
+        check_eq!(observed.intersection(&global_top).count(), TOP_K);
     }
-    let observed = verify_file_hits(&hits, &expected_files, &vectors, &query_vector, TOP_K)?;
-    check!(
-        observed
-            .iter()
-            .all(|owner| selected_regions.contains(&(expected_files[owner].2 / ROWS_PER_REGION)))
-    );
-    check_eq!(observed.intersection(&global_top).count(), TOP_K - 1);
-    check_eq!(observed.intersection(&routed_top).count(), TOP_K);
     Ok(())
 }
 

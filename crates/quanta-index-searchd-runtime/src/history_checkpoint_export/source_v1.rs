@@ -320,11 +320,22 @@ pub fn run_source_v1(
         |_context, budget| {
             let stdout = io::stdout();
             let mut output = stdout.lock();
-            deployment_selection::with_locked_legacy_export_selection_v1(
+            deployment_selection::with_locked_export_selection_v1(
                 &command.selection_path,
                 command.expected_current_sha256,
                 budget,
                 |selection, budget| {
+                    if command.source_only_native {
+                        ensure!(
+                            selection.native_command_v1().is_some(),
+                            "Source-only Native export requires selected Native root"
+                        );
+                        return super::native_source_v1::export_v1(selection, &mut output, budget);
+                    }
+                    ensure!(
+                        selection.native_command_v1().is_none(),
+                        "Legacy Source export requires selected Legacy root"
+                    );
                     boot::with_legacy_source_export_v1(
                         selection,
                         budget,

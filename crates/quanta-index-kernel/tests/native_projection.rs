@@ -7,6 +7,10 @@
     clippy::panic_in_result_fn,
     reason = "integration assertions are independent behavior oracles inside Result-returning test functions"
 )]
+#[path = "native_projection/sealed_retry.rs"]
+mod sealed_retry;
+#[path = "native_projection/retired_policy.rs"]
+mod retired_policy;
 use futures::executor::block_on;
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::index::{
@@ -44,6 +48,12 @@ const PROJECTION: ProjectionId = ProjectionId([14; 16]);
 const INSTANCE: IndexInstanceId = IndexInstanceId([15; 16]);
 
 fn budget() -> WorkBudget {
+    budget_with_request(quanta_index_core::RequestBudgetV1::for_duration(
+        Duration::from_secs(30),
+    ))
+}
+
+fn budget_with_request(request: quanta_index_core::RequestBudgetV1) -> WorkBudget {
     WorkBudget::with_request(
         WorkLimits {
             reads: 1_000_000,
@@ -51,7 +61,7 @@ fn budget() -> WorkBudget {
             bytes: 128 * 1024 * 1024,
             mutations: 1_000_000,
         },
-        quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        request,
     )
 }
 
@@ -862,6 +872,268 @@ fn unchanged_source_owner_can_be_replaced_by_producer_certified_dependency_delta
         SubmitOutcome::Terminal(OperationStatus::Published(materialized))
     );
     assert_eq!(current(&kernel)?.identity, second);
+    Ok(())
+}
+
+#[test]
+fn pre_execution_lookup_cancellation_keeps_its_error_after_a_prior_denial() -> TestResult {
+    use quanta_index_core::{
+        CancelHandleV1, DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1,
+        DiagnosticEmitV1, DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1,
+        DiagnosticRootKindV1, DiagnosticStageV1, RequestBudgetV1,
+        index::{AttemptRef, Refusal, WorkBudgetDenial, WorkUsage},
+    };
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[derive(Debug, Default)]
+    struct TraceClock(AtomicU64);
+    impl DiagnosticClockV1 for TraceClock {
+        fn now_ns(&self) -> u64 {
+            self.0.fetch_add(1, Ordering::Relaxed)
+        }
+    }
+
+    struct CancelAtJournalRead {
+        cancel: CancelHandleV1,
+        terminal_race: Option<(Arc<SqliteCatalog>, AttemptRef)>,
+    }
+    impl std::fmt::Debug for CancelAtJournalRead {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("CancelAtJournalRead")
+        }
+    }
+    impl DiagnosticEventSinkV1 for CancelAtJournalRead {
+        fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+            if !matches!(
+                event.kind,
+                DiagnosticEventKindV1::SpanBegin {
+                    stage: DiagnosticStageV1::SqliteWork,
+                    lane: DiagnosticLaneV1(14),
+                    ..
+                }
+            ) {
+                return true;
+            }
+            // This span begins before Kernel acquires the Catalog connection.
+            // A competing caller may already have settled the pending attempt.
+            if let Some((catalog, attempt)) = &self.terminal_race
+                && catalog.refuse(*attempt, Refusal::Conflict).is_err()
+            {
+                return false;
+            }
+            self.cancel.cancel();
+            true
+        }
+    }
+
+    for preview in [true, false] {
+        let directory = tempfile::tempdir()?;
+        let (kernel, objects, catalog) = setup(directory.path())?;
+        let genesis = kernel.create_workspace(workspace(), 1, &mut budget())?;
+        let key = source_operation(1);
+        let profile = stage_profile(&kernel, key, vec![spec()])?;
+        let input = kernel.begin_input(key)?;
+        let request = UpdateRequest {
+            operation: key,
+            expected_view: genesis,
+            kind: UpdateKind::Reconfigure { profile },
+        };
+        let stored = objects.put(&serde_json::to_vec(&request)?, &[profile], &mut budget())?;
+        catalog.reserve_inputs(input, std::slice::from_ref(&stored))?;
+        catalog.confirm_inputs(input, std::slice::from_ref(&stored))?;
+        catalog.seal_inputs(input, stored.reference)?;
+        let AdmissionOutcome::New(attempt) = catalog.admit(
+            ImmutableOperation {
+                key,
+                request: stored.reference,
+                source_mode: request.kind.source_mode(),
+            },
+            input,
+            &[],
+            &mut budget(),
+        )?
+        else {
+            return Err("expected a newly admitted pending operation".into());
+        };
+
+        let request = RequestBudgetV1::for_duration(Duration::from_secs(30));
+        let trace = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([100; 16]),
+            Arc::new(TraceClock::default()),
+            Arc::new(CancelAtJournalRead {
+                cancel: request.cancel_handle(),
+                terminal_race: preview.then(|| (Arc::clone(&catalog), attempt)),
+            }),
+        );
+        let root = trace.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
+        let mut limited = WorkBudget::with_request(
+            WorkLimits {
+                reads: 0,
+                writes: 10,
+                bytes: 4096,
+                mutations: 10,
+            },
+            request.with_diagnostic_context(trace.child_context(&root)),
+        );
+        assert_eq!(
+            limited.charge(WorkUsage {
+                reads: 1,
+                ..WorkUsage::default()
+            }),
+            Err(IndexError::ResourceLimited)
+        );
+
+        let error = if preview {
+            kernel.resume_dispatch(key, &mut limited).err()
+        } else {
+            block_on(kernel.resume(key, &mut limited)).err()
+        };
+        assert!(
+            limited.request().is_cancelled(),
+            "lookup probe did not fire"
+        );
+        assert_eq!(limited.first_denial(), Some(WorkBudgetDenial::Reads));
+        let status = kernel.status(
+            key,
+            quanta_index_core::index::ports::OperationInspectAccess::Request(&budget()),
+        )?;
+        if preview {
+            assert_eq!(status, OperationStatus::Refused(Refusal::Conflict));
+        } else {
+            assert!(matches!(status, OperationStatus::Pending(_)));
+        }
+        assert_eq!(error, Some(IndexError::Cancelled), "preview={preview}");
+    }
+    Ok(())
+}
+
+#[test]
+fn cancellation_during_failed_lookup_recheck_is_returned_to_resume_callers() -> TestResult {
+    use quanta_index_core::{
+        CancelHandleV1, DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1,
+        DiagnosticEmitV1, DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1,
+        DiagnosticRootKindV1, DiagnosticSpanIdV1, DiagnosticStageV1, RequestBudgetV1,
+    };
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    #[derive(Debug, Default)]
+    struct TraceClock(AtomicU64);
+    impl DiagnosticClockV1 for TraceClock {
+        fn now_ns(&self) -> u64 {
+            self.0.fetch_add(1, Ordering::Relaxed)
+        }
+    }
+
+    #[derive(Debug)]
+    struct FaultDuringJournalLookup {
+        catalog_path: std::path::PathBuf,
+        cancel: CancelHandleV1,
+        damaged_span: Mutex<Option<DiagnosticSpanIdV1>>,
+    }
+    impl DiagnosticEventSinkV1 for FaultDuringJournalLookup {
+        fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+            let Ok(mut damaged_span) = self.damaged_span.try_lock() else {
+                return false;
+            };
+            match event.kind {
+                DiagnosticEventKindV1::SpanBegin {
+                    span_id,
+                    stage: DiagnosticStageV1::SqliteWork,
+                    lane: DiagnosticLaneV1(14),
+                    ..
+                } if damaged_span.is_none() => {
+                    // The isolated Catalog has one admitted operation. Damage
+                    // its digest after the initial status check, before lookup.
+                    let damage = rusqlite::Connection::open(&self.catalog_path).and_then(|db| {
+                        db.execute(
+                            "UPDATE native_operation_v1 SET row_digest = zeroblob(32)",
+                            [],
+                        )
+                    });
+                    if damage.ok() != Some(1) {
+                        return false;
+                    }
+                    *damaged_span = Some(span_id);
+                }
+                DiagnosticEventKindV1::SpanEnd { span_id, .. }
+                    if *damaged_span == Some(span_id) =>
+                {
+                    self.cancel.cancel();
+                }
+                _ => {}
+            }
+            true
+        }
+    }
+
+    let mut errors = Vec::new();
+    for preview in [true, false] {
+        let directory = tempfile::tempdir()?;
+        let (kernel, objects, catalog) = setup(directory.path())?;
+        let genesis = kernel.create_workspace(workspace(), 1, &mut budget())?;
+        let key = source_operation(1);
+        let profile = stage_profile(&kernel, key, vec![spec()])?;
+        let input = kernel.begin_input(key)?;
+        let request = UpdateRequest {
+            operation: key,
+            expected_view: genesis,
+            kind: UpdateKind::Reconfigure { profile },
+        };
+        let stored = objects.put(&serde_json::to_vec(&request)?, &[profile], &mut budget())?;
+        catalog.reserve_inputs(input, std::slice::from_ref(&stored))?;
+        catalog.confirm_inputs(input, std::slice::from_ref(&stored))?;
+        catalog.seal_inputs(input, stored.reference)?;
+        assert!(matches!(
+            catalog.admit(
+                ImmutableOperation {
+                    key,
+                    request: stored.reference,
+                    source_mode: request.kind.source_mode(),
+                },
+                input,
+                &[],
+                &mut budget(),
+            )?,
+            AdmissionOutcome::New(_)
+        ));
+        let request_budget = RequestBudgetV1::for_duration(Duration::from_secs(30));
+        let trace = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([101; 16]),
+            Arc::new(TraceClock::default()),
+            Arc::new(FaultDuringJournalLookup {
+                catalog_path: catalog.path().to_owned(),
+                cancel: request_budget.cancel_handle(),
+                damaged_span: Mutex::new(None),
+            }),
+        );
+        let root = trace.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
+        let mut request_budget =
+            budget_with_request(request_budget.with_diagnostic_context(trace.child_context(&root)));
+        errors.push(if preview {
+            kernel.resume_dispatch(key, &mut request_budget).err()
+        } else {
+            block_on(kernel.resume(key, &mut request_budget)).err()
+        });
+        assert!(
+            request_budget.request().is_cancelled(),
+            "lookup probe did not fire"
+        );
+        assert!(matches!(
+            kernel.status(
+                key,
+                quanta_index_core::index::ports::OperationInspectAccess::Request(&budget())
+            ),
+            Err(IndexError::Storage(_))
+        ));
+        assert_eq!(current(&kernel)?.identity, genesis);
+    }
+    assert_eq!(
+        errors,
+        [Some(IndexError::Cancelled), Some(IndexError::Cancelled)]
+    );
     Ok(())
 }
 

@@ -392,11 +392,7 @@ pub(super) fn query_effort_on_dispatcher(
     let fast_result_limit = fast_request.result_limit()?;
     let view = session.view();
     let fast_stage = {
-        let _control = quanta_index_core::index::effort::ReservationGuard::try_acquire(
-            Arc::clone(&dispatcher.control_scheduler),
-            dispatcher.control_need,
-        )
-        .ok_or_else(|| dispatcher.control_scheduler.denial())?;
+        let _control = dispatcher.admit_query_control(&mut session)?;
         session.prepare_stage(&dispatcher.text_queries, text_instance, fast_request)?
     };
     let fast_offer = StageOffer {
@@ -519,7 +515,7 @@ pub(super) fn query_effort_on_dispatcher(
             reason: intention.reason,
         };
         check_original(&original_request)?;
-        session.renew()?;
+        dispatcher.renew_query_ticket(&mut session)?;
         check_original(&original_request)?;
         validate_overlay(overlay_execution.as_ref())?;
         observer.finish(NativeEffortSummary {
@@ -548,15 +544,7 @@ pub(super) fn query_effort_on_dispatcher(
     // exact ticket, captured corpus, and original request budget.
     let lexical_eligibility = if let Some(scope) = semantic_query.lexical_scope.as_ref() {
         let attempted = (|| {
-            let preparation = quanta_index_core::index::effort::ReservationGuard::try_acquire(
-                Arc::clone(&dispatcher.control_scheduler),
-                dispatcher.control_need,
-            )
-            .ok_or_else(|| dispatcher.control_scheduler.denial())?;
-            let memory = preparation.memory_scope().ok_or_else(|| {
-                IndexError::BackendViolation("Deep scope preparation has no memory scope".into())
-            })?;
-            session.bind_query_memory_scope(memory)?;
+            let preparation = dispatcher.admit_query_control(&mut session)?;
             validate_overlay(overlay_execution.as_ref())?;
             let eligible = if scope == &text_query {
                 let eligible = match (&fast, &snapshot) {
@@ -638,7 +626,7 @@ pub(super) fn query_effort_on_dispatcher(
                     deep: None,
                     reason: DecisionReason::ResourceDenied,
                 };
-                session.renew()?;
+                dispatcher.renew_query_ticket(&mut session)?;
                 check_original(&original_request)?;
                 validate_overlay(overlay_execution.as_ref())?;
                 observer.finish(NativeEffortSummary {
@@ -658,31 +646,31 @@ pub(super) fn query_effort_on_dispatcher(
     };
 
     let deep_stage = {
-        let Some(preparation) = quanta_index_core::index::effort::ReservationGuard::try_acquire(
-            Arc::clone(&dispatcher.control_scheduler),
-            dispatcher.control_need,
-        ) else {
-            check_original(&original_request)?;
-            optional_capacity_denial(dispatcher.control_scheduler.denial())?;
-            let result = NativeEffortResult {
-                view,
-                fast,
-                deep: None,
-                reason: DecisionReason::ResourceDenied,
-            };
-            check_original(&original_request)?;
-            session.renew()?;
-            check_original(&original_request)?;
-            validate_overlay(overlay_execution.as_ref())?;
-            observer.finish(NativeEffortSummary {
-                corpus: result.fast.corpus(),
-                view,
-                reason: result.reason,
-                deep_delivered: false,
-            })?;
-            session.close()?;
-            check_original(&original_request)?;
-            return Ok(result);
+        let preparation = match dispatcher.admit_query_control(&mut session) {
+            Ok(preparation) => preparation,
+            Err(error) => {
+                check_original(&original_request)?;
+                optional_capacity_denial(error)?;
+                let result = NativeEffortResult {
+                    view,
+                    fast,
+                    deep: None,
+                    reason: DecisionReason::ResourceDenied,
+                };
+                check_original(&original_request)?;
+                dispatcher.renew_query_ticket(&mut session)?;
+                check_original(&original_request)?;
+                validate_overlay(overlay_execution.as_ref())?;
+                observer.finish(NativeEffortSummary {
+                    corpus: result.fast.corpus(),
+                    view,
+                    reason: result.reason,
+                    deep_delivered: false,
+                })?;
+                session.close()?;
+                check_original(&original_request)?;
+                return Ok(result);
+            }
         };
         session.renew()?;
         validate_overlay(overlay_execution.as_ref())?;
@@ -740,7 +728,7 @@ pub(super) fn query_effort_on_dispatcher(
             reason: DecisionReason::ProviderUnavailable,
         };
         check_original(&original_request)?;
-        session.renew()?;
+        dispatcher.renew_query_ticket(&mut session)?;
         check_original(&original_request)?;
         validate_overlay(overlay_execution.as_ref())?;
         observer.finish(NativeEffortSummary {
@@ -801,7 +789,7 @@ pub(super) fn query_effort_on_dispatcher(
             reason: admitted.reason,
         };
         check_original(&original_request)?;
-        session.renew()?;
+        dispatcher.renew_query_ticket(&mut session)?;
         check_original(&original_request)?;
         validate_overlay(overlay_execution.as_ref())?;
         observer.finish(NativeEffortSummary {
@@ -903,7 +891,7 @@ pub(super) fn query_effort_on_dispatcher(
         reason: admitted.reason,
     };
     check_original(&original_request)?;
-    session.renew()?;
+    dispatcher.renew_query_ticket(&mut session)?;
     check_original(&original_request)?;
     validate_overlay(overlay_execution.as_ref())?;
     observer.finish(NativeEffortSummary {

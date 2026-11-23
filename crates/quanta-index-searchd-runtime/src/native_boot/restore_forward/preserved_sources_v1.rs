@@ -58,7 +58,7 @@ pub(super) fn verify_preserved_sources_v1(
         return Err(IndexError::DigestConflict.into());
     }
     authenticate(
-        native, &snapshot, selected, registry, maximum, None, false, budget,
+        native, &snapshot, selected, registry, maximum, None, false, true, budget,
     )?;
     let route = selected
         .protected_source_routes

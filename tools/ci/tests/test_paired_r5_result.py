@@ -24,7 +24,7 @@ from tools.ci.paired_r5_result import (
     validate_locator,
     validate_selected,
 )
-from tools.ci.tests.p11_test_issuer import nextest_bytes
+from tools.ci.tests.p11_test_issuer import cache_old_python_source, nextest_bytes
 
 
 def test_paired_runner_imports_its_owner_from_foreign_cwd(tmp_path: Path) -> None:
@@ -45,6 +45,45 @@ def test_paired_runner_imports_its_owner_from_foreign_cwd(tmp_path: Path) -> Non
     )
     assert result.returncode == 0, result.stderr
     assert "--qbc-lane" in result.stdout
+
+
+@pytest.mark.parametrize("isolated", [True, False])
+def test_signed_paired_cli_isolates_signer_across_site_lifecycle(tmp_path: Path, isolated: bool):
+    root = Path(__file__).resolve().parents[3]
+    runner = root / "tools/ci/paired_r5_result.py"
+    marker = tmp_path / "site-lifecycle"
+    signer = str(tmp_path / "fixture-signer")
+    environment = {
+        **os.environ, RUNNER.SOCKET_ENV: signer, "SSH_AUTH_SOCK": signer,
+    }
+    # Exercise interpreter lifecycle hooks without touching installed site files.
+    probe = (
+        "import atexit, os, runpy, site, sys\n"
+        "from pathlib import Path\n"
+        "def observe():\n"
+        "    exposed = bool(os.environ.get('QUANTA_P11_SIGNER_SOCKET') "
+        "or os.environ.get('SSH_AUTH_SOCK'))\n"
+        f"    with Path({str(marker)!r}).open('a') as stream:\n"
+        "        stream.write(('exposed' if exposed else 'clear') + '\\n')\n"
+        "def activate_site():\n"
+        "    observe()\n"
+        "    atexit.register(observe)\n"
+        "site.main = activate_site\n"
+        f"sys.path.insert(0, {str(root)!r})\n"
+        f"runpy.run_path({str(runner)!r}, run_name='__main__')\n"
+    )
+    flags = ["-I", "-S"] if isolated else ["-S"]
+    completed = subprocess.run(
+        [sys.executable, *flags, "-B", "-c", probe, "--help"],
+        cwd=tmp_path, env=environment, text=True, capture_output=True, check=False,
+    )
+    if isolated:
+        assert completed.returncode == 0, completed.stderr
+        assert marker.is_file() and marker.read_text() == "clear\nclear\n"
+    else:
+        assert completed.returncode != 0
+        assert "P11 signing requires the isolated paired R5 launcher" in completed.stderr
+        assert not marker.exists()
 
 
 SELECTED_CASE = ("caller", "pkg", "feature", "binary", "test", "selected")
@@ -458,7 +497,7 @@ def test_default_recipe_uses_typed_selected_runner_and_same_cargo_target_floor()
     assert set(required.split(",")).issubset(caller[2].split(","))
     assert 'resolved_pair "$runtime_package" "$runtime_features"' in script
     assert '--qbc-lane "$r5_lane"' in script
-    assert '"$paired_python" "$quanta_root/tools/ci/paired_r5_result.py"' in script
+    assert '"$quanta_root/tools/ci/paired_r5_result.py" "$@"' in script
     assert "--list" not in script
     assert "| rg '^index_sdk_ingress" not in script
     assert "--all-features" not in script
@@ -549,7 +588,8 @@ def test_paired_lock_path_refuses_another_anchor(tmp_path: Path, lock_path: str)
 
 
 @pytest.mark.parametrize(
-    "state", ["clean", "dirty", "wrong-head", "foreign-module", "import-error", "wrong-lock"]
+    "state",
+    ["clean", "dirty", "wrong-head", "foreign-module", "import-error", "wrong-lock", "stale-cache"],
 )
 def test_resolution_preflight_cli_checks_nested_lock_without_runner(
     tmp_path: Path, state: str
@@ -583,6 +623,8 @@ def test_resolution_preflight_cli_checks_nested_lock_without_runner(
         qbc_module.write_text("raise RuntimeError('QBC runtime unavailable')\n")
     else:
         qbc_module.write_text(observe_import)
+    if state == "stale-cache":
+        (paired / ".gitignore").write_text("__pycache__/\n")
 
     heads = {}
     for checkout in (root, paired):
@@ -600,6 +642,8 @@ def test_resolution_preflight_cli_checks_nested_lock_without_runner(
         heads[paired] = "f" * 40
     elif state == "wrong-lock":
         resolutions["runtime"]["dependency_lock"]["sha256"] = "sha256:" + "f" * 64
+    elif state == "stale-cache":
+        cache_old_python_source(qbc_module, b"raise RuntimeError('stale QBC module')\n")
 
     command = [
         sys.executable,
@@ -623,10 +667,11 @@ def test_resolution_preflight_cli_checks_nested_lock_without_runner(
         (str(Path(RUNNER.__file__).resolve().parents[2]), str(foreign))
     )
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment.pop("PYTHONPYCACHEPREFIX", None)
     result = subprocess.run(
         command, cwd=tmp_path, env=environment, capture_output=True, text=True, check=False
     )
-    if state == "clean":
+    if state in {"clean", "stale-cache"}:
         assert result.returncode == 0, result.stderr
         assert marker.exists()
     else:
@@ -952,6 +997,16 @@ def test_qbc_children_do_not_inherit_the_producer_signing_agent(tmp_path, monkey
     monkeypatch.setenv("SSH_AUTH_SOCK", ordinary)
     monkeypatch.setenv(RUNNER.WITNESS_DIR_ENV, str(tmp_path / "old-witness"))
     monkeypatch.setenv(RUNNER.WITNESS_NONCE_ENV, "b" * 32)
+    startup_overrides = {"BASH_ENV": str(tmp_path / "bash-env"), "PYTHONPATH": str(tmp_path)}
+    for name, value in startup_overrides.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("PYTHONNOUSERSITE", "0")
+    old_cache = str(tmp_path / "existing-cache")
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", old_cache)
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+    monkeypatch.setattr(sys, "pycache_prefix", old_cache)
+    old_write_setting = sys.dont_write_bytecode
+    cache_paths = []
 
     def run(socket):
         assert socket == signer
@@ -959,6 +1014,12 @@ def test_qbc_children_do_not_inherit_the_producer_signing_agent(tmp_path, monkey
         assert RUNNER.WITNESS_DIR_ENV not in os.environ
         assert RUNNER.WITNESS_NONCE_ENV not in os.environ
         assert os.environ.get("SSH_AUTH_SOCK") == (ordinary if variant == "distinct" else None)
+        assert all(name not in os.environ for name in startup_overrides)
+        assert os.environ["PYTHONNOUSERSITE"] == "1"
+        prefix = Path(os.environ["PYTHONPYCACHEPREFIX"])
+        assert str(prefix) != old_cache and prefix.is_dir() and not list(prefix.iterdir())
+        assert sys.pycache_prefix == str(prefix) and sys.dont_write_bytecode is True
+        cache_paths.append(prefix)
         return 0
 
     monkeypatch.setattr(RUNNER, "_main", run)
@@ -967,6 +1028,12 @@ def test_qbc_children_do_not_inherit_the_producer_signing_agent(tmp_path, monkey
     assert os.environ["SSH_AUTH_SOCK"] == ordinary
     assert os.environ[RUNNER.WITNESS_DIR_ENV] == str(tmp_path / "old-witness")
     assert os.environ[RUNNER.WITNESS_NONCE_ENV] == "b" * 32
+    assert {name: os.environ[name] for name in startup_overrides} == startup_overrides
+    assert os.environ["PYTHONNOUSERSITE"] == "0"
+    assert os.environ["PYTHONPYCACHEPREFIX"] == sys.pycache_prefix == old_cache
+    assert "PYTHONDONTWRITEBYTECODE" not in os.environ
+    assert sys.dont_write_bytecode is old_write_setting
+    assert len(cache_paths) == 1 and not cache_paths[0].exists()
 
 
 @pytest.mark.parametrize(

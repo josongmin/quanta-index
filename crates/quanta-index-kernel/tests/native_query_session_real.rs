@@ -205,6 +205,7 @@ impl TextEmbeddingProvider for FixedProvider {
 struct Fixture {
     kernel: Kernel<SqliteCatalog>,
     catalog: Arc<SqliteCatalog>,
+    objects: Arc<FileObjectStore>,
     text: QueryAdapterRegistry<PlannedTextRead, TextReadResult>,
     semantic: QueryAdapterRegistry<SemanticReadRequest, SearchResult>,
     recipe: quanta_index_semantic::native::EmbeddingRecipe,
@@ -216,17 +217,25 @@ fn fixture(root: &Path) -> TestResult<Fixture> {
 }
 
 fn fixture_with_clock(root: &Path, clock: Arc<dyn CatalogClockPort>) -> TestResult<Fixture> {
-    fixture_with_options(root, clock, false)
+    fixture_with_options(root, clock, false, None)
 }
 
 fn fixture_with_ann(root: &Path) -> TestResult<Fixture> {
-    fixture_with_options(root, Arc::new(SystemCatalogClock), true)
+    fixture_with_options(root, Arc::new(SystemCatalogClock), true, None)
+}
+
+fn fixture_with_lancedb_ann(
+    root: &Path,
+    runtime: Arc<tokio::runtime::Runtime>,
+) -> TestResult<Fixture> {
+    fixture_with_options(root, Arc::new(SystemCatalogClock), true, Some(runtime))
 }
 
 fn fixture_with_options(
     root: &Path,
     clock: Arc<dyn CatalogClockPort>,
     ann_enabled: bool,
+    lance_runtime: Option<Arc<tokio::runtime::Runtime>>,
 ) -> TestResult<Fixture> {
     let read_lease = if ann_enabled {
         Duration::from_secs(120)
@@ -237,11 +246,16 @@ fn fixture_with_options(
         root.join("scratch"),
         16 * 1024 * 1024 * 1024,
     )?);
-    let objects = Arc::new(FileObjectStore::open_with_scratch(
-        root.join("objects"),
-        scratch.clone(),
-    )?);
     let catalog = Arc::new(SqliteCatalog::open_with_clock(root, read_lease, clock)?);
+    let objects = Arc::new(if lance_runtime.is_some() {
+        FileObjectStore::open_managed_with_scratch(
+            root.join("objects"),
+            scratch.clone(),
+            catalog.clone(),
+        )?
+    } else {
+        FileObjectStore::open_with_scratch(root.join("objects"), scratch.clone())?
+    });
     let calls = Arc::new(AtomicUsize::new(0));
     let bridge = Arc::new(TextEmbeddingBridge::new(FixedProvider {
         calls: Arc::clone(&calls),
@@ -267,26 +281,31 @@ fn fixture_with_options(
         |delta| Ok(delta.clone()),
     )?;
     let semantic_builder = NativeSemantic::new(Arc::clone(&bridge), recipe.clone())?;
-    let semantic_builder = if ann_enabled {
+    let semantic_builder = if lance_runtime.is_some() {
+        semantic_builder.with_lancedb_ann()
+    } else if ann_enabled {
         semantic_builder.with_ann()
     } else {
         semantic_builder
     };
     builders.register_owner(semantic_descriptor, semantic_builder)?;
-    let kernel = Kernel::new(
-        KernelServices::new(
-            objects.clone(),
-            objects,
-            catalog.clone(),
-            scratch,
-            if ann_enabled {
-                read_lease
-            } else {
-                Duration::from_secs(30)
-            },
-        )?,
-        builders,
-    );
+    let services = KernelServices::new(
+        objects.clone(),
+        objects.clone(),
+        catalog.clone(),
+        scratch,
+        if ann_enabled {
+            read_lease
+        } else {
+            Duration::from_secs(30)
+        },
+    )?;
+    let services = if lance_runtime.is_some() {
+        services.with_object_map_backend(objects.clone())
+    } else {
+        services
+    };
+    let kernel = Kernel::new(services, builders);
     let text_need = ResourceNeed {
         cpu_units: 1,
         io_bytes: 64 * 1024,
@@ -314,7 +333,9 @@ fn fixture_with_options(
             need: semantic_need,
         },
     )?;
-    let semantic_reader = if ann_enabled {
+    let semantic_reader = if let Some(runtime) = lance_runtime {
+        semantic_reader.with_lancedb_ann(runtime)
+    } else if ann_enabled {
         semantic_reader.with_ann()
     } else {
         semantic_reader
@@ -323,6 +344,7 @@ fn fixture_with_options(
     Ok(Fixture {
         kernel,
         catalog,
+        objects,
         text,
         semantic,
         recipe,

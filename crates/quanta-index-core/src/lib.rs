@@ -152,8 +152,8 @@ pub use domains::reclaim_area::{
 };
 pub use domains::repomap::{
     PinnedRepoMapSnapshot, QuarantinedRepoMapFileV1, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapMutationCommit, RepoMapOpenReportV1, RepoMapPolicy,
-    RepoMapQuarantinePort, RepoMapService, RepoMapSnapshotAcquirePort, RepoMapSnapshotAcquireV1,
+    RepoMapGenerationActivatePort, RepoMapMutationCommit, RepoMapOpenReportV1,
+    RepoMapQuarantinePort, RepoMapSnapshotAcquirePort, RepoMapSnapshotAcquireV1,
     RepoMapSnapshotEvidenceV1,
 };
 pub use domains::semantic::{

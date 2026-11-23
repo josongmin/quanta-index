@@ -31,14 +31,14 @@ where
 
 #[test]
 fn legacy_repo_map_publish_and_receipt_tags_are_refused() -> TestRes {
-    let old_request = serde_json::json!({"PublishRepoMapBundle": {}});
+    let old_request = serde_json::json!({"PublishRepoMapBundleV2": {}});
     let old_request_cbor = encode(&old_request)?;
     let error = serde_json::from_value::<SearchPlaneIngestIpcRequest>(old_request)
         .expect_err("removed publish opcode must refuse");
     assert!(error.to_string().contains("unknown variant"), "{error}");
     assert!(decode::<SearchPlaneIngestIpcRequest>(&old_request_cbor).is_err());
 
-    let old_response = serde_json::json!({"RepoMapReceipt": {}});
+    let old_response = serde_json::json!({"RepoMapTerminalReceiptV2": {}});
     let old_response_cbor = encode(&old_response)?;
     let error = serde_json::from_value::<SearchPlaneIngestIpcResponse>(old_response)
         .expect_err("removed receipt opcode must refuse");

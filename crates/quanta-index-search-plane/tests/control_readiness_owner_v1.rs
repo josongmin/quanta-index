@@ -16,8 +16,8 @@
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusRequest, ManifestGeneration,
     MetricsSnapshotRequest, ProcessReadinessRequest, QuarantineDiscardRequest,
-    QuarantineInventoryRequest, QuarantineTargetV1, QuarantinedRepoMapFileEntryV1, RepoId,
-    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2, RevisionId,
+    QuarantineInventoryRequest, QuarantineTargetV1, QuarantinedGenerationEntryV1, RepoId,
+    RevisionId,
     SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneErrorCodeV2, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
@@ -100,25 +100,12 @@ fn admin_requests() -> Vec<SearchPlaneControlIpcRequest> {
                 expected_active: head(),
             },
         ),
-        SearchPlaneControlIpcRequest::RepoMapActivateV2(RepoMapActivateGenerationRequestV2 {
-            repo_id: RepoId::new("r").expect("static fixture ID"),
-            revision_id: RevisionId::new("v").expect("static fixture ID"),
-            manifest_generation: quanta_index_contract::ManifestGeneration::new(1),
-            manifest_digest: "a".repeat(64),
-            snapshot_id: "snapshot-1".to_string(),
-            projection_version: 1,
-            authority_digest: format!("sha256:{}", "b".repeat(64)),
-            source_bundle_digest: format!("sha256:{}", "c".repeat(64)),
-            expected_active: None,
-        }),
-        SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(RepoMapActiveHeadRequestV2 {
-            repo_id: fixture_repo(),
-            revision_id: fixture_revision(),
-        }),
         SearchPlaneControlIpcRequest::QuarantineDiscard(QuarantineDiscardRequest {
-            target: QuarantineTargetV1::RepoMapFile(QuarantinedRepoMapFileEntryV1 {
-                file_name: "f".to_string(),
-                reason: "r".to_string(),
+            target: QuarantineTargetV1::Generation(QuarantinedGenerationEntryV1 {
+                track: SearchPlaneTrackKind::Lexical,
+                path: "/state/quarantine/g1".to_string(),
+                reason: "GENERATION_QUARANTINE_IDENTITY_UNREADABLE".to_string(),
+                detail: String::new(),
             }),
         }),
     ]

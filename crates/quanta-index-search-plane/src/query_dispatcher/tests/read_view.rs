@@ -37,7 +37,6 @@ use crate::query_dispatcher::tests::support::common::{
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState, StubLexicalSearcher,
 };
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::{
     RecordingSemanticOpener, RecordingSemanticState,
 };
@@ -58,7 +57,6 @@ fn recording_dispatcher(
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(semantic_state),
         }),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ledger,
         test_activation_catalog()?,
@@ -123,7 +121,6 @@ fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() 
         Arc::new(RecordingSemanticOpener {
             state: semantic_state,
         }),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         Arc::clone(&ledger),
         Arc::clone(&catalog),
@@ -459,7 +456,6 @@ fn a_history_read_on_a_generation_without_history_is_refused_before_any_lane() -
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&semantic_state),
         }),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         lexical_only_ledger(),
         activation_catalog_with_generations(&[corpus_generation(
@@ -523,7 +519,6 @@ fn a_history_read_ahead_of_the_lexical_track_is_not_ready() -> TestResult {
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&semantic_state),
         }),
-        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         lexical_only_ledger(),
         test_activation_catalog()?,

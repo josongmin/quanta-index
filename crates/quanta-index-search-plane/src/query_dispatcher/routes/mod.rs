@@ -9,7 +9,6 @@ mod history_relevance;
 mod hybrid;
 mod hybrid_seed;
 mod lexical;
-mod repo_map;
 pub(crate) mod runtime_metadata;
 mod semantic;
 pub(crate) mod structural;

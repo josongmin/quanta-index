@@ -23,7 +23,7 @@ use quanta_index_core::index::{
     OwnedWorkGrant, OwnedWorkPolicy, OwnedWorkReport, OwnerCoverage, OwnerInputBinding, OwnerKey,
     OwnerMemberBinding, OwnerMutation, OwnerMutationCursor, OwnerMutationSet, PlanContext,
     PreparedPublication,
-    ProjectionBinding, ProjectionCertificate, ProjectionId, ProjectionOwnerContribution,
+    ProducerId, ProjectionBinding, ProjectionCertificate, ProjectionId, ProjectionOwnerContribution,
     ProjectionTransition, Refusal, RegisteredObject, SourceCut, SourceInput, SourceOperationMode,
     SourceRecord, SourceTextAdmission, StagedObjectReferences, SubmitOutcome, UpdateKind,
     UpdateRequest, ViewRef, ViewSelection, WorkAction, WorkBudget, WorkClaim, WorkIntent,
@@ -57,6 +57,58 @@ use crate::{
     ticket::{ReadTicket, TicketCatalog, TicketReadAttempt},
 };
 
+// Fixed by Semantica's NativeRepoMapRouteV1; its projection and instance IDs
+// vary by repository/revision, while this producer remains stable.
+const RETIRED_REPOMAP_PRODUCER: ProducerId = ProducerId(*b"semantica-r5-v1!");
+
+fn reject_retired_repomap_identity(
+    policy: Digest,
+    producer: ProducerId,
+) -> Result<(), IndexError> {
+    if policy == quanta_index_contract::native_protocol::native_repomap_rank_policy()
+        || producer == RETIRED_REPOMAP_PRODUCER
+    {
+        return Err(IndexError::InvalidInput(
+            "retired RepoMap projection identity".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn reject_retired_repomap_request(request: &UpdateRequest) -> Result<(), IndexError> {
+    if request.operation.producer == RETIRED_REPOMAP_PRODUCER {
+        return Err(IndexError::InvalidInput(
+            "retired RepoMap projection identity".into(),
+        ));
+    }
+    if let UpdateKind::ProjectionAdvance(transition) = &request.kind {
+        reject_retired_repomap_identity(transition.producer_policy, transition.producer)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn reject_retired_repomap_profile(
+    profile: &IndexProfile,
+    budget: &WorkBudget,
+) -> Result<(), IndexError> {
+    budget.checkpoint()?;
+    if profile.instances.len() > MAX_PROFILE_INSTANCES {
+        return Err(IndexError::ResourceLimited);
+    }
+    for instance in &profile.instances {
+        budget.checkpoint()?;
+        if instance.policy == quanta_index_contract::native_protocol::native_repomap_rank_policy()
+            || matches!(instance.input_domain, InputDomain::Projection { producer, .. }
+                if producer == RETIRED_REPOMAP_PRODUCER)
+        {
+            return Err(IndexError::InvalidInput(
+                "retired RepoMap projection identity".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Execution lane hint derived from the immutable operation kind. It does not
 /// change journal admission, publication ordering, or correctness gates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +125,7 @@ impl OperationExecutionClass {
             UpdateKind::SourceAdvance(_)
             | UpdateKind::SourceHistoryAdvance(_)
             | UpdateKind::SourceResync { .. }
+            | UpdateKind::SourceHistoryResync { .. }
             | UpdateKind::ProjectionAdvance(_)
             | UpdateKind::HistoryAdvance(_)
             | UpdateKind::HistoryAppend(_)
@@ -1282,6 +1335,8 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         children: &[ObjectRef],
         budget: &mut WorkBudget,
     ) -> Result<ObjectRef, IndexError> {
+        // Output bytes have no policy identity. Admission checks the certificate,
+        // profile and immutable request before these bytes can be published.
         Self::validate_projection_output_children(children)?;
         self.stage_object(ingress, output, children, budget)
     }
@@ -1322,6 +1377,11 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         contribution: ProjectionOwnerContribution,
         budget: &mut WorkBudget,
     ) -> Result<ObjectRef, IndexError> {
+        if contribution.producer == RETIRED_REPOMAP_PRODUCER {
+            return Err(IndexError::InvalidInput(
+                "retired RepoMap projection identity".into(),
+            ));
+        }
         if contribution.source_owner.is_some() != contribution.source.is_some()
             || contribution.owner.producer != contribution.producer
         {
@@ -1353,6 +1413,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         certificate: &ProjectionCertificate,
         budget: &mut WorkBudget,
     ) -> Result<ObjectRef, IndexError> {
+        reject_retired_repomap_identity(certificate.producer_policy, certificate.producer)?;
         let payload = binding_metadata::encode_projection_certificate(certificate, budget)?;
         self.stage_object(
             ingress,
@@ -1368,9 +1429,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         profile: &IndexProfile,
         budget: &mut WorkBudget,
     ) -> Result<ObjectRef, IndexError> {
-        if profile.instances.len() > MAX_PROFILE_INSTANCES {
-            return Err(IndexError::ResourceLimited);
-        }
+        reject_retired_repomap_profile(profile, budget)?;
         self.registry.validate_profile(&profile.instances, budget)?;
         let payload = binding_metadata::encode_profile(profile, budget)?;
         self.stage_object(ingress, &payload.bytes, &[], budget)
@@ -1518,6 +1577,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 self.services.objects.as_ref(),
                 budget,
             )?;
+            reject_retired_repomap_profile(&profile, budget)?;
             budget.checkpoint()?;
             ticket.validate_for_request(budget)?;
             budget.checkpoint()?;
@@ -1626,6 +1686,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             self.services.objects.as_ref(),
             budget,
         )?;
+        reject_retired_repomap_profile(&profile, budget)?;
         budget.checkpoint()?;
         ticket.validate_for_request(budget)?;
         budget.checkpoint()?;
@@ -1809,6 +1870,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             self.services.objects.as_ref(),
             budget,
         )?;
+        reject_retired_repomap_profile(&profile, budget)?;
         let instance = profile
             .instances
             .iter()
@@ -1936,6 +1998,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 self.services.objects.as_ref(),
                 budget,
             )?;
+            reject_retired_repomap_profile(&profile, budget)?;
             let instance = profile
                 .instances
                 .iter()
@@ -2066,6 +2129,21 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         self.services.catalog.inspect(key, access)
     }
 
+    fn operation_request(
+        &self,
+        key: OperationKey,
+        budget: &mut WorkBudget,
+    ) -> Result<ImmutableOperation, IndexError> {
+        let span = diagnostic::begin(budget, DiagnosticStageV1::SqliteWork);
+        let result = {
+            let scoped = diagnostic::phase_budget(budget, span.as_ref());
+            diagnostic::catalog_call(self.services.catalog.as_ref(), &scoped, || {
+                self.services.catalog.operation_request(key, &scoped)
+            })
+        };
+        diagnostic::finish(span, result)
+    }
+
     /// Preview the exact immutable operation identity without publishing or
     /// staging it. Consumers can bind a local intent to the journal's later
     /// request reference even after terminal request bytes are reclaimed.
@@ -2113,33 +2191,25 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         }
         budget.checkpoint()?;
         let request = (|| {
-            let immutable = self.services.catalog.operation(key)?;
+            let immutable = self.operation_request(key, budget)?;
             if immutable.key != key {
                 return Err(IndexError::BackendViolation(
                     "journal operation key mismatch".into(),
                 ));
             }
             let request = self.load_request(immutable, budget)?;
+            reject_retired_repomap_request(&request)?;
             Ok(OperationExecutionClass::for_request(&request))
         })();
         match request {
             Ok(class) => Ok(ResumeDispatch::Execute(class)),
-            Err(error) => match self
-                .services
-                .catalog
-                .inspect(key, OperationInspectAccess::PostFailureReconcile)
-            {
-                Ok(OperationStatus::Published(view)) => Ok(ResumeDispatch::Reply(
-                    SubmitOutcome::Terminal(OperationStatus::Published(view)),
-                )),
-                Ok(OperationStatus::Refused(reason)) => Ok(ResumeDispatch::Reply(
-                    SubmitOutcome::Terminal(OperationStatus::Refused(reason)),
-                )),
-                Ok(OperationStatus::Pending(_)) => Err(error),
-                Ok(OperationStatus::Unknown) => {
-                    Ok(ResumeDispatch::Reply(SubmitOutcome::Unknown(key)))
-                }
-                Err(status_error) => Err(status_error),
+            // A preview may race a terminal publication. Its observation
+            // still belongs to the original live request.
+            Err(error) => match self.status(key, OperationInspectAccess::Request(budget))? {
+                OperationStatus::Pending(_) => Err(error),
+                status => Ok(ResumeDispatch::Reply(Self::outcome_from_status(
+                    key, status,
+                ))),
             },
         }
     }
@@ -2230,25 +2300,51 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         self.services.catalog.finish_owned_work(grant, report)
     }
 
-    /// Internal execution requires the exact live catalog-owned request.
+    /// Execute or recover the exact catalog-owned request after dispatch.
+    pub async fn execute_owned_work(
+        &self,
+        request: UpdateRequest,
+        budget: &mut WorkBudget,
+    ) -> Result<SubmitOutcome, IndexError> {
+        match self.validate_owned_entry(&request, budget)? {
+            OperationStatus::Unknown => {
+                self.submit_authorized(request, budget, Some(OperationStatus::Unknown))
+                    .await
+            }
+            OperationStatus::Pending(_) => self.resume_validated_owned_work(&request, budget).await,
+            status @ (OperationStatus::Published(_) | OperationStatus::Refused(_)) => {
+                Ok(SubmitOutcome::Terminal(status))
+            }
+        }
+    }
+
+    /// Internal submission requires the exact live catalog-owned request.
     pub async fn submit_owned_work(
         &self,
         request: UpdateRequest,
         budget: &mut WorkBudget,
     ) -> Result<SubmitOutcome, IndexError> {
+        let status = self.validate_owned_entry(&request, budget)?;
+        self.submit_authorized(request, budget, Some(status)).await
+    }
+
+    fn validate_owned_entry(
+        &self,
+        request: &UpdateRequest,
+        budget: &WorkBudget,
+    ) -> Result<OperationStatus, IndexError> {
         if request.operation.producer != OWNED_WORK_PRODUCER {
             return Err(IndexError::InvalidInput(
                 "owned request producer mismatch".into(),
             ));
         }
         let span = diagnostic::begin(budget, DiagnosticStageV1::SqliteWork);
-        let status = diagnostic::finish(
+        diagnostic::finish(
             span,
             diagnostic::catalog_call(self.services.catalog.as_ref(), budget, || {
-                self.services.catalog.validate_owned_work(&request)
+                self.services.catalog.validate_owned_work(request, budget)
             }),
-        )?;
-        self.submit_authorized(request, budget, Some(status)).await
+        )
     }
 
     /// Store one immutable request and submit its operation key. Already
@@ -2272,6 +2368,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         budget: &mut WorkBudget,
         owned_entry_status: Option<OperationStatus>,
     ) -> Result<SubmitOutcome, IndexError> {
+        reject_retired_repomap_request(&request)?;
         if request.operation.workspace != request.expected_view.workspace
             || request.operation.epoch != request.expected_view.epoch
         {
@@ -2316,7 +2413,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             existing @ (OperationStatus::Pending(_)
             | OperationStatus::Published(_)
             | OperationStatus::Refused(_)) => {
-                let prior = self.services.catalog.operation(request.operation)?;
+                let prior = self.operation_request(request.operation, budget)?;
                 if prior.source_mode != request.kind.source_mode() {
                     return Err(IndexError::CorruptObject(
                         "journal source mode differs from request kind".into(),
@@ -2362,34 +2459,52 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         let (payload, children) = diagnostic::finish(preflight, prepared)?;
         // Catalog API scopes include lock/row work, not SQL statements alone.
         let ingress_span = diagnostic::begin(budget, DiagnosticStageV1::SqliteWork);
-        let ingress = diagnostic::finish(
+        let (ingress, sealed) = diagnostic::finish(
             ingress_span,
             diagnostic::catalog_call(self.services.catalog.as_ref(), budget, || {
-                self.services.catalog.open_ingress(request.operation)
+                self.services
+                    .catalog
+                    .open_submission_ingress(request.operation, budget)
             }),
         )?;
-        let sink = IngressSink {
-            ingress,
-            catalog: self.services.catalog.as_ref(),
-        };
-        let stored =
+        // A prior submission can have sealed the input before Catalog admission.
+        let reference = if let Some(reference) = sealed {
+            let stored = self.services.objects.get(reference, budget)?;
+            if stored.registration.reference != reference {
+                return Err(IndexError::CorruptObject(
+                    "sealed ingress request reference mismatch".into(),
+                ));
+            }
+            if stored.payload.as_slice() != payload.bytes.as_slice()
+                || stored.registration.children.as_slice() != children.as_slice()
+            {
+                return Err(IndexError::DigestConflict);
+            }
+            reference
+        } else {
+            let sink = IngressSink {
+                ingress,
+                catalog: self.services.catalog.as_ref(),
+            };
             self.services
                 .objects
-                .install(&payload.bytes, children.as_slice(), &sink, budget)?;
+                .install(&payload.bytes, children.as_slice(), &sink, budget)?
+                .reference
+        };
         drop(payload);
         let operation = ImmutableOperation {
             key: request.operation,
-            request: stored.reference,
+            request: reference,
             source_mode: request.kind.source_mode(),
         };
         // Owned admission performs the original seal and admission atomically.
         // Ordinary admission retains its explicit seal contract.
-        if request.operation.producer != OWNED_WORK_PRODUCER {
+        if sealed.is_none() && request.operation.producer != OWNED_WORK_PRODUCER {
             let seal_span = diagnostic::begin(budget, DiagnosticStageV1::SqliteWork);
             diagnostic::finish(
                 seal_span,
                 diagnostic::catalog_call(self.services.catalog.as_ref(), budget, || {
-                    self.services.catalog.seal_inputs(ingress, stored.reference)
+                    self.services.catalog.seal_inputs(ingress, reference)
                 }),
             )?;
         }
@@ -2448,17 +2563,16 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         request: &UpdateRequest,
         budget: &mut WorkBudget,
     ) -> Result<SubmitOutcome, IndexError> {
-        if request.operation.producer != OWNED_WORK_PRODUCER {
-            return Err(IndexError::InvalidInput(
-                "owned request producer mismatch".into(),
-            ));
-        }
-        budget.checkpoint()?;
-        let _validated_status =
-            diagnostic::catalog_call(self.services.catalog.as_ref(), budget, || {
-                self.services.catalog.validate_owned_work(request)
-            })?;
-        let immutable = self.services.catalog.operation(request.operation)?;
+        let _validated_status = self.validate_owned_entry(request, budget)?;
+        self.resume_validated_owned_work(request, budget).await
+    }
+
+    async fn resume_validated_owned_work(
+        &self,
+        request: &UpdateRequest,
+        budget: &mut WorkBudget,
+    ) -> Result<SubmitOutcome, IndexError> {
+        let immutable = self.operation_request(request.operation, budget)?;
         match self
             .services
             .catalog
@@ -2510,8 +2624,18 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             OperationStatus::Pending(_) => {}
         }
         budget.checkpoint()?;
+        // A persisted pre-retirement request must be rejected before claim
+        // rotation, publication or refusal changes the journal.
+        let immutable = self.operation_request(key, budget)?;
+        if immutable.key != key {
+            return Err(IndexError::BackendViolation(
+                "journal operation key mismatch".into(),
+            ));
+        }
+        let request = self.load_request(immutable, budget)?;
+        reject_retired_repomap_request(&request)?;
         match diagnostic::catalog_call(self.services.catalog.as_ref(), budget, || {
-            self.services.catalog.claim_recovery(key)
+            self.services.catalog.claim_recovery(key, budget)
         }) {
             Ok(attempt) => self.drive(attempt, budget).await,
             Err(IndexError::FenceLost | IndexError::Conflict | IndexError::Storage(_)) => {
@@ -2522,17 +2646,18 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
     }
 
     fn reconcile(&self, key: OperationKey) -> SubmitOutcome {
-        match self
-            .services
-            .catalog
-            .inspect(key, OperationInspectAccess::PostFailureReconcile)
-        {
-            Ok(status @ (OperationStatus::Published(_) | OperationStatus::Refused(_))) => {
+        let status = self
+            .status(key, OperationInspectAccess::PostFailureReconcile)
+            .unwrap_or(OperationStatus::Unknown);
+        Self::outcome_from_status(key, status)
+    }
+
+    fn outcome_from_status(key: OperationKey, status: OperationStatus) -> SubmitOutcome {
+        match status {
+            status @ (OperationStatus::Published(_) | OperationStatus::Refused(_)) => {
                 SubmitOutcome::Terminal(status)
             }
-            Ok(OperationStatus::Pending(_) | OperationStatus::Unknown) | Err(_) => {
-                SubmitOutcome::Unknown(key)
-            }
+            OperationStatus::Pending(_) | OperationStatus::Unknown => SubmitOutcome::Unknown(key),
         }
     }
 
@@ -2542,7 +2667,25 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         budget: &mut WorkBudget,
     ) -> Result<SubmitOutcome, IndexError> {
         let key = attempt.operation;
-        let result = self.prepare_and_commit(attempt, budget).await;
+        // Lookup has no publication to settle. If custody cannot be read,
+        // any recheck must use the same request budget.
+        let durable = match self.operation_request(key, budget) {
+            Ok(durable) => durable,
+            Err(error @ (IndexError::Cancelled | IndexError::ResourceLimited)) => {
+                return Err(error);
+            }
+            Err(_) => {
+                let status = match self.status(key, OperationInspectAccess::Request(budget)) {
+                    Ok(status) => status,
+                    Err(error @ (IndexError::Cancelled | IndexError::ResourceLimited)) => {
+                        return Err(error);
+                    }
+                    Err(_) => OperationStatus::Unknown,
+                };
+                return Ok(Self::outcome_from_status(key, status));
+            }
+        };
+        let result = self.prepare_and_commit(attempt, durable, budget).await;
         match result {
             Ok(OperationStatus::Published(view)) => {
                 Ok(SubmitOutcome::Terminal(OperationStatus::Published(view)))
@@ -2577,15 +2720,16 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
     async fn prepare_and_commit(
         &self,
         attempt: AttemptRef,
+        durable: ImmutableOperation,
         budget: &mut WorkBudget,
     ) -> Result<OperationStatus, IndexError> {
-        let durable = self.services.catalog.operation(attempt.operation)?;
         if durable.key != attempt.operation {
             return Err(IndexError::BackendViolation(
                 "journal operation key mismatch".into(),
             ));
         }
         let request = self.load_request(durable, budget)?;
+        reject_retired_repomap_request(&request)?;
         let source = request.kind.source_transition_v1();
         let source_count = source.map_or(0, |transition| transition.owners.count);
         let mut reads = crate::attempt_reads::AttemptObjectReads::for_source_attempt(
@@ -2608,11 +2752,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             Some(self.pin_materialization(&request, context.budget)?)
         } else {
             if request.operation.producer == OWNED_WORK_PRODUCER {
-                let _validated_status = diagnostic::catalog_call(
-                    self.services.catalog.as_ref(),
-                    context.budget,
-                    || self.services.catalog.validate_owned_work(&request),
-                )?;
+                let _validated_status = self.validate_owned_entry(&request, context.budget)?;
             }
             None
         };
@@ -2669,10 +2809,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 .projection_advance(attempt, base, transition, &mut context)
                 .await;
         }
-        let generation_advance = match &request.kind {
-            UpdateKind::SourceHistoryAdvance(transition) => Some(&transition.history),
-            _ => None,
-        };
+        let generation_advance = request.kind.history_generation_advance_v1();
         let compaction = match &request.kind {
             UpdateKind::CompactSourceLocal {
                 instance,
@@ -2683,7 +2820,10 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         };
         let (next_source, target_profile, delta, mut events, expected_source) = match &request.kind
         {
-            UpdateKind::SourceAdvance(_) | UpdateKind::SourceHistoryAdvance(_) | UpdateKind::SourceResync { .. } => {
+            UpdateKind::SourceAdvance(_)
+            | UpdateKind::SourceHistoryAdvance(_)
+            | UpdateKind::SourceResync { .. }
+            | UpdateKind::SourceHistoryResync { .. } => {
                 let transition = source.ok_or_else(|| IndexError::BackendViolation("source dispatch".into()))?;
                 let delta = source::apply_source(
                     base.identity,
@@ -2880,6 +3020,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         context: &mut AttemptContext<'_>,
     ) -> Result<LoadedProfile, IndexError> {
         let profile = load_profile_object(reference, context.objects, context.budget)?;
+        reject_retired_repomap_profile(&profile, context.budget)?;
         self.registry
             .validate_profile(&profile.instances, context.budget)?;
         Ok(profile)
@@ -4108,7 +4249,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         let prepared = diagnostic::finish(
             reuse_span,
             diagnostic::catalog_call(self.services.catalog.as_ref(), context.budget, || {
-                self.services.catalog.prepared_work(claim)
+                self.services.catalog.prepared_work(claim, context.budget)
             }),
         )?;
         let (binding, newly_prepared) = if let Some(binding) = prepared {
@@ -4181,16 +4322,19 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             diagnostic::finish(
                 stage_span,
                 diagnostic::catalog_call(self.services.catalog.as_ref(), context.budget, || {
-                    self.services.catalog.stage_work(claim, binding.clone())
+                    self.services
+                        .catalog
+                        .stage_work(claim, binding.clone(), context.budget)
                 }),
             )?;
         }
         // Finalize observes owner metadata preparation and the paired coverage
         // map edit only; searchable preparation and publication have their own
         // stages below.
-        let finalize_span = diagnostic::begin(context.budget, DiagnosticStageV1::Finalize);
+        let finalize_stage =
+            diagnostic::WorkStage::begin(context.budget, DiagnosticStageV1::Finalize);
         let owner_metadata = {
-            let mut phase_budget = diagnostic::phase_budget(context.budget, finalize_span.as_ref());
+            let mut phase_budget = diagnostic::phase_budget(context.budget, finalize_stage.span());
             let mut phase_context = AttemptContext {
                 attempt: context.attempt,
                 objects: context.objects,
@@ -4285,12 +4429,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             owners,
             missing,
             scope: owner_scope,
-        } = diagnostic::finish_work(
-            context.budget,
-            DiagnosticStageV1::Finalize,
-            finalize_span,
-            owner_metadata,
-        )?;
+        } = finalize_stage.finish(context.budget, owner_metadata)?;
         let status = if missing.0.is_some() {
             CoverageStatus::Partial { missing }
         } else {
@@ -4311,9 +4450,10 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         let semantic_writer = scoped_writer
             .as_ref()
             .or(self.services.object_maps.as_ref());
-        let prepare_span = diagnostic::begin(context.budget, DiagnosticStageV1::SemanticPrepare);
+        let prepare_stage =
+            diagnostic::WorkStage::begin(context.budget, DiagnosticStageV1::SemanticPrepare);
         let prepared = {
-            let mut phase_budget = diagnostic::phase_budget(context.budget, prepare_span.as_ref());
+            let mut phase_budget = diagnostic::phase_budget(context.budget, prepare_stage.span());
             let mut phase_context = AttemptContext {
                 attempt: context.attempt,
                 objects: semantic_objects,
@@ -4334,12 +4474,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 Err(error) => Err(error),
             }
         };
-        let mut searchable = diagnostic::finish_work(
-            context.budget,
-            DiagnosticStageV1::SemanticPrepare,
-            prepare_span,
-            prepared,
-        )?;
+        let mut searchable = prepare_stage.finish(context.budget, prepared)?;
         if let Some(scope) = owner_scope.as_ref() {
             use quanta_index_core::index::ports::OwnerMapCompletion;
             let installed = match scope.take_prepared(context.attempt, context.budget)? {
@@ -4364,9 +4499,10 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             status,
             owners,
         };
-        let save_span = diagnostic::begin(context.budget, DiagnosticStageV1::NativeCoverageSave);
+        let save_stage =
+            diagnostic::WorkStage::begin(context.budget, DiagnosticStageV1::NativeCoverageSave);
         let coverage_root = {
-            let mut phase_budget = diagnostic::phase_budget(context.budget, save_span.as_ref());
+            let mut phase_budget = diagnostic::phase_budget(context.budget, save_stage.span());
             let mut phase_context = AttemptContext {
                 attempt: context.attempt,
                 objects: context.objects,
@@ -4404,12 +4540,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 }
             })()
         };
-        let coverage_root = diagnostic::finish_work(
-            context.budget,
-            DiagnosticStageV1::NativeCoverageSave,
-            save_span,
-            coverage_root,
-        )?;
+        let coverage_root = save_stage.finish(context.budget, coverage_root)?;
         let sequence = base
             .identity
             .sequence
@@ -4431,6 +4562,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         let (work_actions, mut actions) =
             WorkSpool::seal_lazy(None, context.objects, context.budget)?;
         let publish_span = diagnostic::begin(context.budget, DiagnosticStageV1::NativePublish);
+        let publish_before = publish_span.as_ref().map(|_span| context.budget.usage());
         let published = self.services.catalog.commit_transition(
             PreparedPublication {
                 attempt,
@@ -4446,6 +4578,9 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             &mut actions,
             context.budget,
         );
+        if let (Some(span), Some(before)) = (publish_span.as_ref(), publish_before) {
+            context.budget.record_diagnostic_usage_delta(before, span);
+        }
         if !matches!(&published, Ok(OperationStatus::Published(_))) {
             context
                 .budget
@@ -5259,7 +5394,8 @@ fn charge_request_metadata(
                 .ok_or(IndexError::ResourceLimited)?;
             (mutations, bytes)
         }
-        UpdateKind::SourceHistoryAdvance(transition) => {
+        UpdateKind::SourceHistoryAdvance(transition)
+        | UpdateKind::SourceHistoryResync { transition, .. } => {
             let events = u64::try_from(transition.source.events.len())
                 .map_err(|_| IndexError::ResourceLimited)?;
             let names = &transition.history.expected.generation;

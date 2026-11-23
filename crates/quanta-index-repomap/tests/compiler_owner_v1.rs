@@ -861,6 +861,25 @@ fn native_file_owners_preserve_global_ranks_and_cross_file_edges()
     assert_eq!(selected[0].owner_path().as_str(), "src/a.rs");
     assert_eq!(selected[0].output_stamp_v1()?, a_stamp);
     assert_eq!(bind(selected.remove(0))?, (a_output.clone(), a_commitments));
+    let mut permuted = original.clone();
+    permuted.nodes.reverse();
+    permuted.edges.reverse();
+    let mut selected_permuted = compiler.compile_native_selected_file_owners_v1(&permuted, &only_a)?;
+    assert_eq!(selected_permuted.len(), 1);
+    assert_eq!(bind(selected_permuted.remove(0))?, (a_output.clone(), a_commitments));
+
+    // An omitted owner's outgoing edge still has to pass complete-graph validation.
+    let invalid_omitted_owner = original.clone().with_edge(RepoMapEdge::DependsOn(
+        RepoMapDependsOnEdge {
+            dependent: b_symbol.clone(),
+            dependency: RepoMapNodeRef::Symbol(SymbolId::new("src/b.rs::absent")),
+        },
+    ));
+    assert!(matches!(
+        compiler.compile_native_selected_file_owners_v1(&invalid_omitted_owner, &only_a),
+        Err(quanta_index_repomap::materializer::NativeRepoMapOwnerError::Compile(refusal))
+            if refusal.code() == Code::DanglingEdgeEndpoint
+    ));
     assert!(
         compiler
             .compile_native_selected_file_owners_v1(&original, &std::collections::BTreeSet::new())?

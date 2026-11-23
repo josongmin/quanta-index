@@ -170,7 +170,6 @@ lane = "test-p02a-repomap-compiler-lane"
 test_threads = 4
 targets = [
   "repomap-compiler-owner-v1",
-  "repomap-bounded-query",
   "repomap-owner-surface",
 ]
 
@@ -389,7 +388,6 @@ targets = [
   "searchd-runtime-restart-replay-determinism",
   "searchd-runtime-perf-chaos-legacy-routes",
   "searchd-runtime-explain",
-  "searchd-runtime-repo-map-end-to-end",
   "searchd-runtime-e2e-history-relevance",
   "searchd-runtime-e2e-aux-epoch",
   "searchd-runtime-e2e-keyset-cursors",
@@ -1316,12 +1314,6 @@ owner = "quanta-index-repomap"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
-id = "repomap-bounded-query"
-path = "crates/quanta-index-repomap/tests/bounded_query.rs"
-owner = "quanta-index-repomap"
-rail = "pr-workspace-nextest"
-
-[[integration_targets]]
 id = "repomap-store-durability"
 path = "crates/quanta-index-repomap/tests/store_durability.rs"
 owner = "quanta-index-repomap"
@@ -1749,13 +1741,6 @@ target = "process_readiness_owner_v1"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
-id = "searchd-runtime-repo-map-end-to-end"
-path = "crates/quanta-index-searchd-runtime/tests/repo_map_end_to_end.rs"
-owner = "quanta-index-searchd-runtime"
-target = "process_readiness_owner_v1"
-rail = "pr-workspace-nextest"
-
-[[integration_targets]]
 id = "searchd-runtime-legacy-sdk-code-search-frontdoor"
 path = "crates/quanta-index-searchd-runtime/tests/legacy_sdk_code_search_frontdoor.rs"
 owner = "quanta-index-searchd-runtime"
@@ -1979,12 +1964,6 @@ owner = "quanta-index-searchd-runtime"
 source = "crates/quanta-index-searchd-runtime/src/lib.rs"
 
 [[invariant_universe]]
-id = "REPOMAP-ACTIVATION-FAIL-CLOSED-01"
-risk = "P1"
-owner = "quanta-index-repomap"
-source = "crates/quanta-index-repomap/src/lib.rs"
-
-[[invariant_universe]]
 id = "DSL-CAPABILITY-TRUTH-01"
 risk = "P1"
 owner = "quanta-index-searchd-runtime"
@@ -2066,19 +2045,6 @@ source = "crates/quanta-index-searchd-runtime/src/lib.rs"
 positive_target = "searchd-runtime-sdk-frontdoor"
 negative_target = "searchd-runtime-composite-generation-authority-restart"
 recovery_target = "searchd-runtime-restart-replay-determinism"
-consumer_target = "searchd-runtime-end-to-end"
-pr_rail = "pr-workspace-nextest"
-main_rail = "main-workspace-nextest"
-manual_heavy_rail = "manual-heavy-workspace-nextest"
-
-[[invariants]]
-id = "REPOMAP-ACTIVATION-FAIL-CLOSED-01"
-risk = "P1"
-owner = "quanta-index-repomap"
-source = "crates/quanta-index-repomap/src/lib.rs"
-positive_target = "repomap-bootstrap-owner-flow"
-negative_target = "repomap-owner-surface"
-recovery_target = "searchd-runtime-repo-map-end-to-end"
 consumer_target = "searchd-runtime-end-to-end"
 pr_rail = "pr-workspace-nextest"
 main_rail = "main-workspace-nextest"

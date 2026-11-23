@@ -701,23 +701,23 @@ impl<'de> serde::de::DeserializeSeed<'de> for SourceFrameBodySeedV1 {
     }
 }
 
-// With the body first, the previous adjacent-tag decoder validated JSON
-// scalars before retaining its buffered body. Validate the same input while
-// discarding each value, so field order never requires a temporary DOM.
-struct SourceFrameValueCheckV1;
+// A body-first adjacent-tag decoder validates JSON scalars before retaining
+// its buffered body. Validate the same input while discarding each value, so
+// field order never requires a temporary DOM.
+pub(super) struct FrameJsonValueCheckV1;
 
-impl<'de> serde::Deserialize<'de> for SourceFrameValueCheckV1 {
+impl<'de> serde::Deserialize<'de> for FrameJsonValueCheckV1 {
     fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
         struct ValueVisitor;
         impl<'de> serde::de::Visitor<'de> for ValueVisitor {
-            type Value = SourceFrameValueCheckV1;
+            type Value = FrameJsonValueCheckV1;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str("a valid JSON value")
             }
 
             fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
-                Ok(SourceFrameValueCheckV1)
+                Ok(FrameJsonValueCheckV1)
             }
 
             fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
@@ -744,10 +744,7 @@ impl<'de> serde::Deserialize<'de> for SourceFrameValueCheckV1 {
                 self,
                 mut sequence: A,
             ) -> Result<Self::Value, A::Error> {
-                while sequence
-                    .next_element::<SourceFrameValueCheckV1>()?
-                    .is_some()
-                {}
+                while sequence.next_element::<FrameJsonValueCheckV1>()?.is_some() {}
                 self.visit_unit()
             }
 
@@ -756,7 +753,7 @@ impl<'de> serde::Deserialize<'de> for SourceFrameValueCheckV1 {
                 mut map: A,
             ) -> Result<Self::Value, A::Error> {
                 while map
-                    .next_entry::<SourceFrameValueCheckV1, SourceFrameValueCheckV1>()?
+                    .next_entry::<FrameJsonValueCheckV1, FrameJsonValueCheckV1>()?
                     .is_some()
                 {}
                 self.visit_unit()
@@ -807,7 +804,7 @@ impl SourceFrameKindReadV1 {
                                         return Err(serde::de::Error::duplicate_field("body"));
                                     }
                                     if kind.is_none() {
-                                        let _: SourceFrameValueCheckV1 = map.next_value()?;
+                                        let _: FrameJsonValueCheckV1 = map.next_value()?;
                                     } else {
                                         let _: serde::de::IgnoredAny = map.next_value()?;
                                     }

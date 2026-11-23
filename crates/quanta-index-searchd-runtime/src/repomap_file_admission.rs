@@ -10,6 +10,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use crate::owned_fd_close::close_owned_file;
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::publication_admission::{
     PublicationObjectReader, PublicationOutputClass, PublicationOutputPermit,
@@ -23,7 +24,6 @@ use quanta_index_repomap::{
     CandidateObjectAddressV1, QuarantineIncidentAddressV1, QuarantinePayloadAddressV1,
 };
 use quanta_index_searchd::app::runtime::StateRootDirectoryV1;
-use rusqlite::ffi::quanta_capacity_vfs::close_owned_file;
 use rustix::fs::{
     AtFlags, Dir, Mode, OFlags, RenameFlags, fstat, openat, renameat_with, statat, unlinkat,
 };

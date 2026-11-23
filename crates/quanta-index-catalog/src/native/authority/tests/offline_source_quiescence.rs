@@ -1,4 +1,50 @@
 use super::*;
+use super::offline_protected_routes::protected_budget_v1;
+
+#[test]
+fn policy_only_boot_seal_preserves_empty_source_routes_and_rejects_extra_ingress() -> TestResult {
+    use quanta_index_contract::index::RetiredProjectionPolicyRefV1;
+
+    for extra in [false, true] {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let primary = operation(32_090, 209);
+        let attempt = admit_new(&catalog, primary)?;
+        let published = view(1, genesis.profile, None);
+        check_eq!(
+            publish(&catalog, attempt, &genesis, published.clone())?,
+            OperationStatus::Published(published.identity)
+        );
+        let ingress = catalog.open_ingress(operation(32_091, 210).key)?;
+        let policy_object = object(241, vec![]);
+        catalog.reserve_inputs(ingress, std::slice::from_ref(&policy_object))?;
+        catalog.confirm_inputs(ingress, std::slice::from_ref(&policy_object))?;
+        if extra {
+            let unexpected = object(242, vec![]);
+            catalog.reserve_inputs(ingress, std::slice::from_ref(&unexpected))?;
+            catalog.confirm_inputs(ingress, std::slice::from_ref(&unexpected))?;
+        }
+        let policy = RetiredProjectionPolicyRefV1 {
+            object: policy_object.reference,
+            sha256: Digest([243; 32]),
+            identity_count: 1,
+        };
+        let outcome = catalog.select_native_boot_manifest_with_retired_policy_ingress_if_current(
+            primary.key, ingress, policy, &mut protected_budget_v1(),
+        );
+        if extra {
+            check!(outcome.is_err());
+            check_eq!(catalog.native_boot_manifest(&mut protected_budget_v1())?, None);
+        } else {
+            let selected = outcome?;
+            check_eq!(selected.protected_source_routes, None);
+            check_eq!(selected.retired_projection_policy, Some(policy));
+            check_eq!(selected.format_version, NativeBootManifest::FORMAT_VERSION_V2);
+            check_eq!(catalog.native_boot_manifest(&mut protected_budget_v1())?, Some(selected));
+        }
+    }
+    Ok(())
+}
 
 fn selected_catalog(root: &Path) -> Result<(SqliteCatalog, NativeBootManifest), Box<dyn Error>> {
     let (catalog, genesis) = setup(root)?;
@@ -372,53 +418,80 @@ fn offline_head_checks_charge_current_and_history_payloads_before_decode() -> Te
         let root = tempfile::tempdir()?;
         let (catalog, selected) = selected_catalog(root.path())?;
         let guard = catalog.lock()?;
-        // Corrupt a persisted body beyond the Original byte allowance. The
-        // old direct current_view decoder materialized it before checking the
-        // caller's budget; the admitted view preflight must refuse first.
-        let changed = if historical {
-            guard.execute(
-                "UPDATE native_view_v1 SET payload=zeroblob(1048576)
-                 WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
-                params![
-                    workspace_key(workspace())?,
-                    int(selected.publication.identity.epoch)?,
-                    int(selected.publication.identity.sequence)?
-                ],
-            )?
-        } else {
-            guard.execute(
-                "UPDATE native_workspace_v1 SET payload=zeroblob(1048576) WHERE workspace=?1",
-                params![workspace_key(workspace())?],
-            )?
-        };
-        check_eq!(changed, 1);
-        let tight = || {
+        let workspace_blob = workspace_key(workspace())?;
+        let replace_payload =
+            |size: i64| {
+                if historical {
+                    guard
+                        .execute(
+                            "UPDATE native_view_v1 SET payload=zeroblob(?1)
+                     WHERE workspace=?2 AND epoch=?3 AND sequence=?4",
+                            params![
+                                size,
+                                &workspace_blob,
+                                int(selected.publication.identity.epoch)?,
+                                int(selected.publication.identity.sequence)?
+                            ],
+                        )
+                        .map_err(|error| sql(&error))
+                } else {
+                    guard.execute(
+                    "UPDATE native_workspace_v1 SET payload=zeroblob(?1) WHERE workspace=?2",
+                    params![size, &workspace_blob],
+                ).map_err(|error| sql(&error))
+                }
+            };
+        let budget = |bytes| {
             WorkBudget::with_request(
                 WorkLimits {
                     reads: 100_000,
                     writes: 0,
-                    bytes: 256 * 1024,
+                    bytes,
                     mutations: 0,
                 },
                 quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(30)),
             )
         };
-        check!(matches!(
-            read_only::check_source_root_quiescence(&guard, &selected, workspace(), &mut tight()),
-            Err(IndexError::ResourceLimited)
-        ));
-        if historical {
-            check!(matches!(
-                read_only::check_rollback(&guard, &selected, &mut tight()),
-                Err(IndexError::ResourceLimited)
-            ));
+        let source = |budget: &mut WorkBudget| {
+            read_only::check_source_root_quiescence(&guard, &selected, workspace(), budget)
+                .map(|_| ())
+        };
+        let rollback =
+            |budget: &mut WorkBudget| read_only::check_rollback(&guard, &selected, budget);
+        let checks: [&dyn Fn(&mut WorkBudget) -> Result<(), IndexError>; 2] = [&source, &rollback];
+        for check in checks.into_iter().take(if historical { 2 } else { 1 }) {
+            // Both corrupt payloads pass the width preflight. Keeping the other
+            // row fields fixed isolates the charge for the payload itself.
+            check_eq!(replace_payload(1)?, 1);
+            let mut small = budget(u64::MAX);
+            let result = check(&mut small);
+            check!(
+                matches!(result, Err(IndexError::Storage(ref reason)) if reason.contains("digest mismatch")),
+                "small corrupt payload reached an unexpected boundary: {result:?}"
+            );
+
+            check_eq!(replace_payload(MAX_VIEW_PAYLOAD_BYTES)?, 1);
+            let mut large = budget(u64::MAX);
+            let result = check(&mut large);
+            check!(
+                matches!(result, Err(IndexError::Storage(ref reason)) if reason.contains("digest mismatch")),
+                "large corrupt payload reached an unexpected boundary: {result:?}"
+            );
+            let payload_delta = u64::try_from(MAX_VIEW_PAYLOAD_BYTES - 1)?;
+            check_eq!(large.usage().bytes, small.usage().bytes + payload_delta);
+
+            let result = check(&mut budget(small.usage().bytes));
+            check!(
+                matches!(result, Err(IndexError::ResourceLimited)),
+                "the larger payload was not refused at admission: {result:?}"
+            );
         }
         let size: i64 = if historical {
             guard.query_row(
                 "SELECT length(payload) FROM native_view_v1
                  WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
                 params![
-                    workspace_key(workspace())?,
+                    &workspace_blob,
                     int(selected.publication.identity.epoch)?,
                     int(selected.publication.identity.sequence)?
                 ],
@@ -427,11 +500,11 @@ fn offline_head_checks_charge_current_and_history_payloads_before_decode() -> Te
         } else {
             guard.query_row(
                 "SELECT length(payload) FROM native_workspace_v1 WHERE workspace=?1",
-                params![workspace_key(workspace())?],
+                params![&workspace_blob],
                 |row| row.get(0),
             )?
         };
-        check_eq!(size, 1_048_576);
+        check_eq!(size, MAX_VIEW_PAYLOAD_BYTES);
     }
     Ok(())
 }

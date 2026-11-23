@@ -67,13 +67,48 @@ fn bind_grammar(grammar: &Path, tag: &str, environment_key: &str) -> Result<(), 
     Ok(())
 }
 
+fn bind_registry_grammar(
+    lock_path: &Path,
+    lock: &toml::Value,
+    tag: &str,
+    version: &str,
+    environment_key: &str,
+) -> Result<(), Box<dyn Error>> {
+    let name = format!("tree-sitter-{tag}");
+    let packages = lock["package"]
+        .as_array()
+        .ok_or("Cargo.lock package list missing")?;
+    let matches = packages
+        .iter()
+        .filter(|package| package["name"].as_str() == Some(name.as_str()))
+        .collect::<Vec<_>>();
+    if matches.len() != 1 || matches[0]["version"].as_str() != Some(version) {
+        return Err(format!("{name} lock identity differs").into());
+    }
+    let package = matches[0];
+    if package["source"].as_str() != Some("registry+https://github.com/rust-lang/crates.io-index") {
+        return Err(format!("{name} must resolve from crates.io").into());
+    }
+    let checksum = package["checksum"]
+        .as_str()
+        .ok_or("registry grammar checksum missing")?;
+    if checksum.len() != 64
+        || !checksum
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!("{name} registry checksum malformed").into());
+    }
+    println!("cargo:rerun-if-changed={}", lock_path.display());
+    println!("cargo:rustc-env={environment_key}={checksum}");
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     for (tag, environment_key) in [
         ("typescript", "QI_TYPESCRIPT_GRAMMAR_SHA256"),
         ("go", "QI_GO_GRAMMAR_SHA256"),
-        ("rust", "QI_RUST_GRAMMAR_SHA256"),
-        ("python", "QI_PYTHON_GRAMMAR_SHA256"),
         ("javascript", "QI_JAVASCRIPT_GRAMMAR_SHA256"),
     ] {
         bind_grammar(
@@ -81,6 +116,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             tag,
             environment_key,
         )?;
+    }
+    let lock_path = manifest.join("../../Cargo.lock");
+    let lock: toml::Value = std::fs::read_to_string(&lock_path)?.parse()?;
+    for (tag, version, environment_key) in [
+        ("rust", "0.24.2", "QI_RUST_GRAMMAR_SHA256"),
+        ("python", "0.25.0", "QI_PYTHON_GRAMMAR_SHA256"),
+    ] {
+        bind_registry_grammar(&lock_path, &lock, tag, version, environment_key)?;
     }
     Ok(())
 }

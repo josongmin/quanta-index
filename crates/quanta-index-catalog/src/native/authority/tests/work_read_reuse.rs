@@ -82,7 +82,11 @@ fn warmed_work_reads_reject_each_missing_or_corrupt_root_custody() -> TestResult
 
         let artifact_attempt = admit_new(&catalog, operation(12_233, 233))?;
         reserve_confirm(&catalog, artifact_attempt, std::slice::from_ref(&artifact))?;
-        catalog.stage_work(&claim, owner_result(&intent, artifact.reference)?)?;
+        catalog.stage_work(
+            &claim,
+            owner_result(&intent, artifact.reference)?,
+            &admission_budget(),
+        )?;
         check_eq!(
             catalog.work_status(&intent, &admission_budget())?,
             WorkStatus::Claimed(claim)

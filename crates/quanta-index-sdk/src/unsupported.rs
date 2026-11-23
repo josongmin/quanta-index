@@ -24,7 +24,6 @@ pub enum LegacyQueryCapabilityV1 {
     History,
     RuntimeMetadata,
     Structural,
-    RepoMapQuery,
     Explain,
     ClusterMembershipRead,
 }
@@ -51,7 +50,6 @@ impl LegacyQueryCapabilityV1 {
             Self::History => "legacy.history",
             Self::RuntimeMetadata => "legacy.runtime_metadata",
             Self::Structural => "legacy.structural",
-            Self::RepoMapQuery => "legacy.repomap",
             Self::Explain => "legacy.explain",
             Self::ClusterMembershipRead => "legacy.cluster_membership",
         }
@@ -76,7 +74,6 @@ impl LegacyQueryCapabilityV1 {
             SearchPlaneQueryIpcRequest::History(_) => Self::History,
             SearchPlaneQueryIpcRequest::RuntimeMetadata(_) => Self::RuntimeMetadata,
             SearchPlaneQueryIpcRequest::Structural(_) => Self::Structural,
-            SearchPlaneQueryIpcRequest::RepoMapQuery(_) => Self::RepoMapQuery,
             SearchPlaneQueryIpcRequest::Explain(_) => Self::Explain,
             SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => Self::ClusterMembershipRead,
         }

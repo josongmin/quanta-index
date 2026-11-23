@@ -52,6 +52,13 @@ impl FixtureV1 {
         write_v1(&release_v1.join("share/quanta/release-manifest.json"), &manifest_bytes_v1, 0o444);
         let server_v1 = release_v1.join("libexec/quanta/quanta-cli-server");
         write_v1(&server_v1, server_bytes_v1, 0o555);
+        for (relative_v1, bytes_v1) in [
+            ("bin/quanta", b"cli-image".as_slice()),
+            ("libexec/quanta/quanta-sql-rulepack-worker", b"sql-image".as_slice()),
+            ("libexec/quanta/quanta_native_worker_v3", b"parser-image".as_slice()),
+        ] {
+            write_v1(&release_v1.join(relative_v1), bytes_v1, 0o555);
+        }
         let active_record_v1 = serde_json::json!({"payload": {
             "generation": 1,
             "active_manifest_sha256": manifest_sha_v1,
@@ -93,6 +100,151 @@ impl FixtureV1 {
             peer_v1, admission_v1, &self.trust_v1, &self.anchor_v1,
             self.owner_uid_v1, use_verified_v1,
         )
+    }
+
+    fn resign_active_v2(&self, recovery_v2: Value, domain_v2: &[u8]) {
+        self.resign_active_with_grant_v1(
+            ACTIVE_SCHEMA_V2, "native_recovery", recovery_v2, domain_v2,
+        );
+    }
+
+    fn resign_active_v3(&self, publication_v3: Value, domain_v3: &[u8]) {
+        self.resign_active_with_grant_v1(
+            ACTIVE_SCHEMA_V3, "native_facts_publication", publication_v3, domain_v3,
+        );
+    }
+
+    fn resign_active_with_grant_v1(
+        &self, schema_v1: &str, grant_name_v1: &str, grant_v1: Value, domain_v1: &[u8],
+    ) {
+        let active_v1 = self.trust_v1.join("active-generation.json");
+        let mut envelope_v1: Value =
+            serde_json::from_slice(&fs::read(&active_v1).expect("active envelope"))
+                .expect("active JSON");
+        envelope_v1["payload"]["schema_version"] = Value::String(schema_v1.to_owned());
+        envelope_v1["payload"][grant_name_v1] = grant_v1;
+        let mut signed_v1 = domain_v1.to_vec();
+        signed_v1.extend(canonical_value_v1(&envelope_v1["payload"]).expect("signed payload"));
+        let signer_v1 = SigningKey::from_bytes(&[7u8; 32]);
+        envelope_v1["signature_hex"] = Value::String(
+            signer_v1.sign(&signed_v1).to_bytes().iter()
+                .map(|byte_v1| format!("{byte_v1:02x}"))
+                .collect(),
+        );
+        let mut bytes_v1 = canonical_value_v1(&envelope_v1).expect("signed envelope");
+        bytes_v1.push(b'\n');
+        fs::set_permissions(&active_v1, fs::Permissions::from_mode(0o644)).expect("mutable active");
+        fs::write(&active_v1, bytes_v1).expect("write signed active");
+        fs::set_permissions(&active_v1, fs::Permissions::from_mode(0o444)).expect("seal active");
+    }
+}
+
+fn native_recovery_fixture_v2() -> Value {
+    serde_json::json!({
+        "analysis_family": "taint_rows_ifds",
+        "repository_root": "/srv/semantica/repo",
+        "q_image_sha256": sha256_v1(b"Q image"),
+        "q_config_sha256": sha256_v1(b"Q config"),
+    })
+}
+
+fn native_facts_publication_fixture_v3() -> Value {
+    serde_json::json!({
+        "repository_root": "/srv/semantica/facts-repo",
+        "q_image_sha256": sha256_v1(b"Facts Q image"),
+        "q_config_sha256": sha256_v1(b"Facts Q config"),
+    })
+}
+
+#[test]
+fn signed_v3_native_facts_publication_issues_only_exact_typed_token() {
+    let fixture_v3 = FixtureV1::new_v1();
+    fixture_v3.resign_active_v3(native_facts_publication_fixture_v3(), ACTIVE_DOMAIN_V3);
+    let installed_v3 = verify_full_installed_artifacts_fixture_v1(
+        &fixture_v3.trust_v1, &fixture_v3.anchor_v1, fixture_v3.owner_uid_v1,
+    ).expect("verified V3 installation");
+    assert!(installed_v3.native_recovery_v2.is_none());
+    let facts_v3 = installed_v3.native_facts_publication_v3.expect("V3 Facts authority");
+    assert_eq!(facts_v3.repository_root_v3(), "/srv/semantica/facts-repo");
+    let q_image_v3: [u8; 32] = Sha256::digest(b"Facts Q image").into();
+    let q_config_v3: [u8; 32] = Sha256::digest(b"Facts Q config").into();
+    assert_eq!(facts_v3.q_image_sha256_v3(), &q_image_v3);
+    assert_eq!(facts_v3.q_config_sha256_v3(), &q_config_v3);
+}
+
+#[test]
+fn signed_v3_native_facts_publication_refuses_v2_domain_and_dual_grants() {
+    let fixture_v3 = FixtureV1::new_v1();
+    fixture_v3.resign_active_v3(native_facts_publication_fixture_v3(), ACTIVE_DOMAIN_V2);
+    assert!(matches!(verify_full_installed_artifacts_fixture_v1(
+        &fixture_v3.trust_v1, &fixture_v3.anchor_v1, fixture_v3.owner_uid_v1,
+    ), Err(InstalledTrustErrorV1::InvalidSignature)));
+
+    let fixture_v3 = FixtureV1::new_v1();
+    let mut both_v3 = native_facts_publication_fixture_v3();
+    both_v3["analysis_family"] = Value::String("taint_rows_ifds".to_owned());
+    fixture_v3.resign_active_v3(both_v3, ACTIVE_DOMAIN_V3);
+    assert!(matches!(verify_full_installed_artifacts_fixture_v1(
+        &fixture_v3.trust_v1, &fixture_v3.anchor_v1, fixture_v3.owner_uid_v1,
+    ), Err(InstalledTrustErrorV1::InvalidActiveGeneration)));
+
+    let fixture_v3 = FixtureV1::new_v1();
+    fixture_v3.resign_active_v2(native_recovery_fixture_v2(), ACTIVE_DOMAIN_V2);
+    fixture_v3.resign_active_v3(native_facts_publication_fixture_v3(), ACTIVE_DOMAIN_V3);
+    assert!(matches!(verify_full_installed_artifacts_fixture_v1(
+        &fixture_v3.trust_v1, &fixture_v3.anchor_v1, fixture_v3.owner_uid_v1,
+    ), Err(InstalledTrustErrorV1::InvalidActiveGeneration)));
+}
+
+#[test]
+fn signed_v3_native_facts_publication_refuses_invalid_root_digest_and_extra_field() {
+    for (field_v3, value_v3) in [
+        ("repository_root", Value::String("/srv/../foreign".to_owned())),
+        ("q_image_sha256", Value::String("0".repeat(64))),
+        ("q_config_sha256", Value::String("A".repeat(64))),
+        ("foreign", Value::String("unexpected".to_owned())),
+    ] {
+        let fixture_v3 = FixtureV1::new_v1();
+        let mut publication_v3 = native_facts_publication_fixture_v3();
+        publication_v3[field_v3] = value_v3;
+        fixture_v3.resign_active_v3(publication_v3, ACTIVE_DOMAIN_V3);
+        assert!(matches!(verify_full_installed_artifacts_fixture_v1(
+            &fixture_v3.trust_v1, &fixture_v3.anchor_v1, fixture_v3.owner_uid_v1,
+        ), Err(InstalledTrustErrorV1::InvalidActiveGeneration)), "accepted {field_v3}");
+    }
+}
+
+#[test]
+fn signed_v2_native_recovery_issues_exact_typed_token() {
+    let fixture_v2 = FixtureV1::new_v1();
+    fixture_v2.resign_active_v2(native_recovery_fixture_v2(), ACTIVE_DOMAIN_V2);
+    let installed_v2 = verify_full_installed_artifacts_fixture_v1(
+        &fixture_v2.trust_v1, &fixture_v2.anchor_v1, fixture_v2.owner_uid_v1,
+    ).expect("verified V2 installation");
+    let recovery_v2 = installed_v2.native_recovery_v2.expect("V2 recovery authority");
+    assert_eq!(recovery_v2.repository_root_v2(), "/srv/semantica/repo");
+    let q_image_v2: [u8; 32] = Sha256::digest(b"Q image").into();
+    let q_config_v2: [u8; 32] = Sha256::digest(b"Q config").into();
+    assert_eq!(recovery_v2.q_image_sha256_v2(), &q_image_v2);
+    assert_eq!(recovery_v2.q_config_sha256_v2(), &q_config_v2);
+}
+
+#[test]
+fn signed_v2_native_recovery_rejects_v1_domain_and_invalid_fields() {
+    let fixture_v2 = FixtureV1::new_v1();
+    fixture_v2.resign_active_v2(native_recovery_fixture_v2(), ACTIVE_DOMAIN_V1);
+    assert!(matches!(verify_full_installed_artifacts_fixture_v1(
+        &fixture_v2.trust_v1, &fixture_v2.anchor_v1, fixture_v2.owner_uid_v1,
+    ), Err(InstalledTrustErrorV1::InvalidSignature)));
+
+    for bad_root_v2 in ["/", "/srv//repo", "/srv/../repo", "/srv/repo/", "/srv/./repo", "relative", "/srv/repo\n"] {
+        let fixture_v2 = FixtureV1::new_v1();
+        let mut recovery_v2 = native_recovery_fixture_v2();
+        recovery_v2["repository_root"] = Value::String(bad_root_v2.to_owned());
+        fixture_v2.resign_active_v2(recovery_v2, ACTIVE_DOMAIN_V2);
+        assert!(matches!(verify_full_installed_artifacts_fixture_v1(
+            &fixture_v2.trust_v1, &fixture_v2.anchor_v1, fixture_v2.owner_uid_v1,
+        ), Err(InstalledTrustErrorV1::InvalidActiveGeneration)), "accepted {bad_root_v2:?}");
     }
 }
 

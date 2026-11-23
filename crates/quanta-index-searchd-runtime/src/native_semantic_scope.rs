@@ -2,11 +2,13 @@
 
 use std::sync::Arc;
 
+use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
     SemanticQueryRequest,
     index::{IndexInstanceId, ViewSelection},
 };
 use quanta_index_core::index::{IndexError, WorkBudget, effort::ReservationGuard};
+use quanta_index_kernel::PinnedQuerySession;
 use quanta_index_semantic::native::SemanticReadRequest;
 
 use crate::{
@@ -15,9 +17,35 @@ use crate::{
     },
     native_lexical_scope,
     native_provider_custody::NativeProviderExecutionCustody,
+    native_resources::NativeClassScheduler,
 };
 
 impl NativeDispatcher {
+    /// Fund the next control operation of an existing pinned query. Ticket
+    /// validation needs temporary memory under this guard, even if the
+    /// query's earlier preparation or execution grant already ended.
+    pub(super) fn admit_query_control(
+        &self,
+        session: &mut PinnedQuerySession<'_, SqliteCatalog>,
+    ) -> Result<ReservationGuard<NativeClassScheduler>, IndexError> {
+        let control =
+            ReservationGuard::try_acquire(Arc::clone(&self.control_scheduler), self.control_need)
+                .ok_or_else(|| self.control_scheduler.denial())?;
+        let memory = control.memory_scope().ok_or_else(|| {
+            IndexError::BackendViolation("query control has no memory scope".into())
+        })?;
+        session.bind_query_memory_scope(memory)?;
+        Ok(control)
+    }
+
+    pub(super) fn renew_query_ticket(
+        &self,
+        session: &mut PinnedQuerySession<'_, SqliteCatalog>,
+    ) -> Result<(), IndexError> {
+        let _control = self.admit_query_control(session)?;
+        session.renew()
+    }
+
     pub(super) fn search_semantic_scoped(
         &self,
         selection: ViewSelection,
@@ -54,11 +82,7 @@ impl NativeDispatcher {
         let result = (|| {
             let view = session.view();
             let text = {
-                let _control = ReservationGuard::try_acquire(
-                    Arc::clone(&self.control_scheduler),
-                    self.control_need,
-                )
-                .ok_or_else(|| self.control_scheduler.denial())?;
+                let _control = self.admit_query_control(&mut session)?;
                 let text_instance = session.unique_compatible_instance(&self.text_queries)?;
                 session.prepare_stage(&self.text_queries, text_instance, planned)?
             };
@@ -79,11 +103,7 @@ impl NativeDispatcher {
             let mut request = SemanticReadRequest::from(query);
             request.lexical_eligibility = Some(eligible);
             let semantic = {
-                let _control = ReservationGuard::try_acquire(
-                    Arc::clone(&self.control_scheduler),
-                    self.control_need,
-                )
-                .ok_or_else(|| self.control_scheduler.denial())?;
+                let _control = self.admit_query_control(&mut session)?;
                 session.prepare_stage(&self.semantic_queries, instance, request)?
             };
             let need = semantic.required_resources();

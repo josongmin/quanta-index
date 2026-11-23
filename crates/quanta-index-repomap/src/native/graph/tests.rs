@@ -1205,18 +1205,20 @@ mod projection_retention {
             limit: u32,
             _: &mut WorkBudget,
         ) -> Result<MapPage, IndexError> {
-            if root != self.root || limit != 1 {
+            if root != self.root || (limit != 1 && limit != 128) {
                 return Err(IndexError::BackendViolation(
                     "unexpected variant probe shape".into(),
                 ));
             }
-            let first = self
+            let selected: Vec<_> = self
                 .entries
                 .iter()
-                .find(|(key, _)| after.is_none_or(|cursor| key.as_slice() > cursor))
-                .cloned();
+                .filter(|(key, _)| after.is_none_or(|cursor| key.as_slice() > cursor))
+                .take(limit as usize)
+                .cloned()
+                .collect();
             Ok(MapPage::new(
-                first
+                selected
                     .into_iter()
                     .map(|(key, value)| (key, value.into()))
                     .collect(),
@@ -1254,6 +1256,99 @@ mod projection_retention {
         ) -> Result<quanta_index_core::index::StagedMapRoots, IndexError> {
             <EmptyMaps as PersistentMapPort>::apply_stream(&EmptyMaps, roots, cursor, sink, budget)
         }
+    }
+
+    #[test]
+    fn cross_file_endpoint_scan_resolves_only_its_exact_graph_supporter()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::{ChunkId, SymbolId};
+
+        use super::super::prior_file::scan_prior_endpoint_supports_v1;
+
+        let remote = super::RepoMapNodeRef::Symbol(SymbolId::new("src/a.rs::A"));
+        let chunk = super::RepoMapNodeRef::Chunk(ChunkId::new("src/b.rs::chunk"));
+        let cross_file = super::GraphEdge {
+            kind: quanta_index_contract::RepoMapEdgeKind::OwnsChunk,
+            source: remote.clone(),
+            target: chunk.clone(),
+        };
+        let nodes = MapRoot(Some(reference(60)));
+        let objects = Objects::default();
+        let remote_support = GraphSupport {
+            owner: super::owner(1),
+            element: GraphElement::Node(super::GraphNode {
+                identity: cross_file.source.clone(),
+                payload_digest: Digest([61; 32]),
+            }),
+            projection: Some(reference(62)),
+        };
+        let chunk_support = GraphSupport {
+            owner: super::owner(2),
+            element: GraphElement::Node(super::GraphNode {
+                identity: cross_file.target.clone(),
+                payload_digest: Digest([63; 32]),
+            }),
+            projection: None,
+        };
+        let remote_ref = objects
+            .store(
+                &serde_json::to_vec(&remote_support)
+                    .map_err(|error| IndexError::Storage(error.to_string()))?,
+                &[reference(62)],
+            )?
+            .reference;
+        let chunk_ref = objects
+            .store(
+                &serde_json::to_vec(&chunk_support)
+                    .map_err(|error| IndexError::Storage(error.to_string()))?,
+                &[],
+            )?
+            .reference;
+        let mut entries = vec![
+            (node_key(&remote, super::owner(1))?, remote_ref),
+            (node_key(&chunk, super::owner(2))?, chunk_ref),
+        ];
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        let maps = PrefixMaps {
+            root: nodes,
+            entries,
+        };
+        let mut work = budget()?;
+        let scanned =
+            scan_prior_endpoint_supports_v1(nodes, &cross_file.source, &maps, &objects, &mut work)?;
+        check_equal(
+            &scanned.owners,
+            &vec![(super::owner(1), Some(reference(62)))],
+            "cross-file source owner",
+        )?;
+        let chunk_scanned =
+            scan_prior_endpoint_supports_v1(nodes, &cross_file.target, &maps, &objects, &mut work)?;
+        check_equal(
+            &chunk_scanned.owners,
+            &vec![(super::owner(2), None)],
+            "cross-file target owner",
+        )?;
+        let foreign = GraphSupport {
+            owner: super::owner(3),
+            ..remote_support
+        };
+        let foreign_ref = objects
+            .store(
+                &serde_json::to_vec(&foreign)
+                    .map_err(|error| IndexError::Storage(error.to_string()))?,
+                &[reference(62)],
+            )?
+            .reference;
+        let foreign_maps = PrefixMaps {
+            root: nodes,
+            entries: vec![(node_key(&remote, super::owner(1))?, foreign_ref)],
+        };
+        if scan_prior_endpoint_supports_v1(nodes, &remote, &foreign_maps, &objects, &mut work)
+            .is_ok()
+        {
+            return Err("foreign graph supporter owner passed exact endpoint lookup".into());
+        }
+        Ok(())
     }
 
     #[test]

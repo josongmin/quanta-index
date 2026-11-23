@@ -23,13 +23,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, FileId, GenerationPin, ManifestGeneration, MetricsSnapshotV1,
+    ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, MetricsSnapshotV1,
     QuarantineDiscardOutcomeDtoV1, QuarantineTargetV1, QuarantinedGenerationEntryV1, RepoId,
-    RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
-    RepoMapItemIndexAvailability, RepoMapNode, RepoMapPublishBundleRequestV2,
-    RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
+    RepoRelativePath, RevisionId,
     SearchCorpusActiveHeadV1, SearchPlaneErrorCodeV2,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind, TextQueryResponse,
     lex::LanguageCode,
@@ -37,7 +34,6 @@ use quanta_index_contract::{
 use quanta_index_core::{
     GenerationQuarantineReasonV1, GenerationStorageKeyV1, IntegrityScrubPolicyV1,
 };
-use quanta_index_repomap::RepoMapGenerationStore;
 use quanta_index_sdk::{QuantaIndex, SdkError};
 use quanta_index_searchd_harness::{
     legacy_reference::{
@@ -1256,47 +1252,6 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
     )?;
     let semantic_legacy = state_root.join("indexes/semantic").join("repo-legacy");
     std::fs::create_dir_all(semantic_legacy.join("rev-legacy/g1"))?;
-    // Seed a real catalog-backed candidate, then corrupt its sealed object.
-    // Legacy V1 snapshot roots are intentionally left for the P10 importer.
-    let repo_map_root = state_root.join("repo-map");
-    let catalog = Arc::new(SqliteCatalog::open(&state_root, Duration::from_secs(5))?);
-    let store = RepoMapGenerationStore::open(&repo_map_root, catalog)?.store;
-    let bundle = RepoMapSourceBundle::new(
-        active.repo_id.clone(),
-        active.revision_id.clone(),
-        ManifestGeneration::new(1),
-        "ab".repeat(32),
-        "snap-quarantine-e2e".to_string(),
-        1,
-        "d".repeat(64),
-        RepoMapGraphCoverage {
-            item_index_availability: RepoMapItemIndexAvailability::Available,
-            graph_coverage_class: RepoMapGraphCoverageClass::Complete,
-        },
-        RepoMapExactnessSummary::Exact,
-        RepoMapRedactionState::Unredacted,
-    )
-    .with_node(RepoMapNode::File(RepoMapFileNode {
-        file_id: FileId::new("file://src/quarantine.rs"),
-        repo_relative_path: RepoRelativePath::new("src/quarantine.rs"),
-        line_count: 1,
-    }));
-    let _receipt = store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle)?)?;
-    let object_root = repo_map_root.join("objects/sha256");
-    let mut objects = Vec::new();
-    for first in std::fs::read_dir(&object_root)? {
-        for second in std::fs::read_dir(first?.path())? {
-            for object in std::fs::read_dir(second?.path())? {
-                objects.push(object?.path());
-            }
-        }
-    }
-    let [object_path] = objects.as_slice() else {
-        return Err(format!("expected one sealed repo-map object, found {objects:?}").into());
-    };
-    std::fs::write(object_path, b"not json at all")?;
-    drop(store);
-
     let daemon = SearchdBinaryProcess::start_with_pinned_command(
         root.path(),
         dormant_command(&binary, root.path())?,
@@ -1338,30 +1293,6 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
     {
         return Err(format!("semantic quarantine listing drifted: {semantic:?}").into());
     }
-    let repo_map: Vec<&str> = inventory
-        .repo_map
-        .iter()
-        .map(|entry| entry.file_name.as_str())
-        .collect();
-    if repo_map.len() != 1
-        || repo_map
-            .first()
-            .is_none_or(|name| !name.starts_with("incident-"))
-        || repo_map.first().is_none_or(|name| {
-            std::path::Path::new(name).extension() != Some(std::ffi::OsStr::new("cbor"))
-        })
-        || object_path.exists()
-    {
-        return Err(format!("repo-map quarantine listing drifted: {repo_map:?}").into());
-    }
-    if inventory
-        .repo_map
-        .first()
-        .is_some_and(|entry| entry.reason.is_empty())
-    {
-        return Err("the repo-map entry carries the reason it was set aside".into());
-    }
-
     // A stale entry (wrong reason for a listed path) removes nothing.
     let Some(listed_garbage) = inventory
         .lexical
@@ -1434,46 +1365,6 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
             return Err(format!("{} is gone after its discard", entry.path).into());
         }
     }
-    let Some(repo_map_entry) = inventory.repo_map.first().cloned() else {
-        return Err("the repo-map entry is listed".into());
-    };
-    let mut stale_file = repo_map_entry.clone();
-    stale_file.reason = "some other reason".to_string();
-    match client
-        .quarantine()
-        .discard(&QuarantineTargetV1::RepoMapFile(stale_file))
-    {
-        Err(SdkError::Remote {
-            code: SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
-            ..
-        }) => {}
-        other => return Err(format!("a stale repo-map reason is refused typed: {other:?}").into()),
-    }
-    if client.quarantine().inventory()?.repo_map != inventory.repo_map {
-        return Err("a refused repo-map discard removes nothing".into());
-    }
-    let ack = client
-        .quarantine()
-        .discard(&QuarantineTargetV1::RepoMapFile(repo_map_entry.clone()))
-        .map_err(|error| format!("discard the repo-map file: {error:?}"))?;
-    if ack.outcome != (QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 15 }) {
-        return Err(format!(
-            "the repo-map file's 15 bytes are reported: {:?}",
-            ack.outcome
-        )
-        .into());
-    }
-    if !client.quarantine().inventory()?.repo_map.is_empty() {
-        return Err("the repo-map file is gone after its discard".into());
-    }
-    // Discarding again is idempotent: nothing is there.
-    let again = client
-        .quarantine()
-        .discard(&QuarantineTargetV1::RepoMapFile(repo_map_entry))
-        .map_err(|error| format!("a second repo-map discard: {error:?}"))?;
-    if again.outcome != QuarantineDiscardOutcomeDtoV1::Absent {
-        return Err(format!("a second discard is Absent, got {:?}", again.outcome).into());
-    }
     let again = client
         .quarantine()
         .discard(&QuarantineTargetV1::Generation(listed_garbage))
@@ -1484,7 +1375,7 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
 
     // The live listing and a fresh boot agree: nothing is quarantined.
     let after = client.quarantine().inventory()?;
-    if !(after.lexical.is_empty() && after.semantic.is_empty() && after.repo_map.is_empty()) {
+    if !(after.lexical.is_empty() && after.semantic.is_empty()) {
         return Err(format!("nothing is quarantined after the discards: {after:?}").into());
     }
     drop(client);
@@ -1498,7 +1389,6 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
     for (name, count) in [
         ("boot_lexical_quarantined_generations", 0.0),
         ("boot_semantic_quarantined_generations", 0.0),
-        ("boot_repomap_quarantined_files", 0.0),
         ("boot_lexical_sealed_generations", 2.0),
         ("boot_semantic_sealed_generations", 2.0),
     ] {
@@ -1507,7 +1397,6 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
     let after_reopen = client.quarantine().inventory()?;
     if !after_reopen.lexical.is_empty()
         || !after_reopen.semantic.is_empty()
-        || !after_reopen.repo_map.is_empty()
     {
         return Err(format!("discarded entries reappeared after reboot: {after_reopen:?}").into());
     }

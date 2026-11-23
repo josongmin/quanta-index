@@ -367,6 +367,34 @@ def declaration_census(
     if root.has_error:
         prefix = "Go" if language == "go" else language
         raise SourceOracleError(f"{prefix} source oracle parse error: {path}")
+    return _declaration_rows(language, path, raw, root)
+
+
+def candidate_go_declaration_census(path: str, raw: bytes, projector, *, timeout_seconds: float):
+    """Opt-in released Go grammar census; errors are coverage failures.
+
+    This does not change the bound default census or benchmark producer.
+    """
+    if not path.endswith(".go"):
+        raise SourceOracleError(f"Go census does not admit file suffix: {path}")
+    from tools.benchmark.retrieval.declaration_parsers import get_released_go_candidate_parser
+    from tools.benchmark.retrieval.go_projection import GoProjectionError
+
+    try:
+        projection = projector.project(raw, timeout_seconds=timeout_seconds)
+        parser, extension_sha256 = get_released_go_candidate_parser()
+    except (GoProjectionError, ImportError, LookupError, ValueError) as exc:
+        raise SourceOracleError(f"Go candidate producer failure: {path}: {exc}") from exc
+    root = parser.parse(projection.projected).root_node
+    if root.has_error:
+        raise SourceOracleError(f"Go candidate grammar parse error: {path}")
+    rows = _declaration_rows("go", path, raw, root)
+    if any(projection.overlaps_name(start, end) for start, end, *_ in rows):
+        raise SourceOracleError(f"Go candidate projected declaration name: {path}")
+    return rows, projection, extension_sha256
+
+
+def _declaration_rows(language: str, path: str, raw: bytes, root):
     rows = []
     nodes = [root]
     while nodes:
@@ -434,6 +462,10 @@ def census_parser_identity() -> str:
         "grammar_sources": declaration_parsers.component_source_digests(),
         "tree_sitter": importlib.metadata.version("tree-sitter"),
         "tree_sitter_language_pack": importlib.metadata.version("tree-sitter-language-pack"),
+        "released_grammar_versions": {
+            grammar: importlib.metadata.version("tree-sitter-" + grammar)
+            for grammar in sorted(declaration_parsers.RELEASED_GRAMMARS)
+        },
         "tree_sitter_binary_sha256": hashlib.sha256(
             Path(tree_sitter_binding.__file__).read_bytes()
         ).hexdigest(),

@@ -595,7 +595,6 @@ impl RequestEnvelope<quanta_index_contract::SearchPlaneQueryIpcRequest>
                 structural.text_query.generation.as_ref(),
                 structural.text_query.generation_selector.as_ref(),
             ),
-            Request::RepoMapQuery(repo_map) => Some(repo_map.repo_id.as_str().to_string()),
             Request::Explain(explain) => Some(explain.generation.repo_id.as_str().to_string()),
             Request::ClusterMembershipRead(read) => {
                 Some(read.generation.repo_id.as_str().to_string())

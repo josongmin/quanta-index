@@ -3,11 +3,32 @@
 from __future__ import annotations
 
 import os
+import py_compile
 import subprocess
+import sys
 import tempfile
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
+
+
+def cache_old_python_source(source: Path, older: bytes) -> None:
+    """Leave a timestamp cache from an equal-sized earlier module version."""
+    current = source.read_bytes()
+    timestamp = source.stat()
+    assert len(older) <= len(current)
+    cache = source.parent / "__pycache__" / f"{source.stem}.{sys.implementation.cache_tag}.pyc"
+    cache.parent.mkdir(exist_ok=True)
+    source.write_bytes(older.ljust(len(current), b"\n"))
+    os.utime(source, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
+    try:
+        py_compile.compile(
+            str(source), cfile=str(cache), doraise=True,
+            invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP,
+        )
+    finally:
+        source.write_bytes(current)
+        os.utime(source, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
 
 
 @lru_cache(maxsize=1)
