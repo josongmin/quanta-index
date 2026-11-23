@@ -262,8 +262,14 @@ def changed_production_lines(root: Path, base: str) -> set[tuple[str, int]]:
     changed: dict[str, set[int]] = {}
     inserted: dict[str, set[int]] = {}
     current_path: str | None = None
+    destination_pending = False
     for line in result.stdout.split("\n"):
-        if line.startswith("+++ "):
+        if line.startswith("diff --git "):
+            current_path = None
+            destination_pending = True
+            continue
+        if destination_pending and line.startswith("+++ "):
+            destination_pending = False
             destination = line.removeprefix("+++ ").removesuffix("\t")
             if destination.startswith('"'):
                 if not destination.endswith('"'):

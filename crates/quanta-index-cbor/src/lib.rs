@@ -87,6 +87,11 @@ impl From<&'static str> for FiniteSemanticReasonV3 {
         Self::Static(reason)
     }
 }
+impl SemanticReasonV3 for String {
+    fn custom_v3<T: Display>(message: T) -> Self {
+        message.to_string()
+    }
+}
 impl SemanticReasonV3 for FiniteSemanticReasonV3 {
     fn custom_v3<T: Display>(_message: T) -> Self {
         Self::CustomRefused
@@ -124,8 +129,8 @@ impl<E: Debug, S: SemanticReasonV3> de::Error for Error<E, S> {
     }
 }
 
-fn invalid_type<E>() -> Error<E> {
-    Error::Semantic(None, FiniteSemanticReasonV3::CustomRefused)
+fn invalid_type<E, P: SemanticReasonV3>() -> Error<E, P> {
+    Error::Semantic(None, P::custom_v3("invalid CBOR value"))
 }
 
 struct ChargedReader<'a, E, F> {
@@ -199,6 +204,7 @@ where
             owner: Some(&mut *attempt.owner),
             depth: 0,
             definite_bound: None,
+            reason: std::marker::PhantomData,
         };
         let value = seed.deserialize(&mut decoder)?;
         work(0).map_err(|e| Error::Io(FiniteReadErrorV3::Work(e)))?;
@@ -242,6 +248,7 @@ where
         owner: None,
         depth: 0,
         definite_bound: None,
+        reason: std::marker::PhantomData,
     };
     let value = T::deserialize(&mut decoder)?;
     work(0).map_err(|e| Error::Io(FiniteReadErrorV3::Work(e)))?;
@@ -252,7 +259,7 @@ where
 /// lengths are checked against the remaining slice before allocation.
 pub fn from_slice_with_definite_scalars<T: de::DeserializeOwned>(
     bytes: &[u8],
-) -> Result<(T, usize), Error<<&[u8] as Read>::Error>> {
+) -> Result<(T, usize), Error<<&[u8] as Read>::Error, String>> {
     let mut scratch = [0_u8; 4096];
     let mut decoder = FiniteDecoder {
         tokens: Decoder::from(bytes),
@@ -260,31 +267,33 @@ pub fn from_slice_with_definite_scalars<T: de::DeserializeOwned>(
         owner: None,
         depth: 0,
         definite_bound: Some(bytes.len()),
+        reason: std::marker::PhantomData,
     };
     let value = T::deserialize(&mut decoder)?;
     Ok((value, decoder.tokens.offset()))
 }
 
-struct FiniteDecoder<'a, R: Read> {
+struct FiniteDecoder<'a, R: Read, P: SemanticReasonV3> {
     tokens: Decoder<R>,
     scratch: &'a mut [u8],
     owner: Option<&'a mut dyn FiniteParserAllocationAdmissionV3>,
     depth: usize,
     definite_bound: Option<usize>,
+    reason: std::marker::PhantomData<P>,
 }
 
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "unknown future CBOR token variants must use the generic typed refusal path"
 )]
-impl<R: Read> FiniteDecoder<'_, R>
+impl<R: Read, P: SemanticReasonV3> FiniteDecoder<'_, R, P>
 where
     R::Error: Debug,
 {
-    fn pull(&mut self) -> Result<Header, Error<R::Error>> {
+    fn pull(&mut self) -> Result<Header, Error<R::Error, P>> {
         self.tokens.pull().map_err(Into::into)
     }
-    fn next_plain(&mut self) -> Result<Header, Error<R::Error>> {
+    fn next_plain(&mut self) -> Result<Header, Error<R::Error, P>> {
         loop {
             match self.pull()? {
                 Header::Tag(_) => {}
@@ -294,8 +303,8 @@ where
     }
     fn step<T>(
         &mut self,
-        run: impl FnOnce(&mut Self) -> Result<T, Error<R::Error>>,
-    ) -> Result<T, Error<R::Error>> {
+        run: impl FnOnce(&mut Self) -> Result<T, Error<R::Error, P>>,
+    ) -> Result<T, Error<R::Error, P>> {
         if self.depth >= 256 {
             return Err(Error::RecursionLimitExceeded);
         }
@@ -307,7 +316,7 @@ where
         self.depth = self.depth.saturating_sub(1);
         result
     }
-    fn check_length(&mut self, length: Option<usize>, kind: u8) -> Result<(), Error<R::Error>> {
+    fn check_length(&mut self, length: Option<usize>, kind: u8) -> Result<(), Error<R::Error, P>> {
         if let (Some(bound), Some(length)) = (self.definite_bound, length)
             && kind <= 1
             && length > bound.saturating_sub(self.tokens.offset())
@@ -332,7 +341,7 @@ where
         }
         Ok(())
     }
-    fn read_text(&mut self, length: Option<usize>) -> Result<String, Error<R::Error>> {
+    fn read_text(&mut self, length: Option<usize>) -> Result<String, Error<R::Error, P>> {
         self.check_length(length, 0)?;
         let mut value = String::new();
         let mut parts = self.tokens.text(length);
@@ -360,7 +369,7 @@ where
         }
         Ok(value)
     }
-    fn read_bytes(&mut self, length: Option<usize>) -> Result<Vec<u8>, Error<R::Error>> {
+    fn read_bytes(&mut self, length: Option<usize>) -> Result<Vec<u8>, Error<R::Error, P>> {
         self.check_length(length, 1)?;
         self.read_bytes_segments(length, false)
     }
@@ -368,7 +377,7 @@ where
         &mut self,
         length: Option<usize>,
         sequence: bool,
-    ) -> Result<Vec<u8>, Error<R::Error>> {
+    ) -> Result<Vec<u8>, Error<R::Error, P>> {
         let mut value = Vec::new();
         let mut parts = self.tokens.bytes(length);
         while let Some(mut part) = parts.pull()? {
@@ -406,7 +415,7 @@ where
         }
         Ok(value)
     }
-    fn natural(&mut self) -> Result<(bool, u128), Error<R::Error>> {
+    fn natural(&mut self) -> Result<(bool, u128), Error<R::Error, P>> {
         loop {
             match self.pull()? {
                 Header::Positive(x) => return Ok((false, x.into())),
@@ -418,7 +427,7 @@ where
             }
         }
     }
-    fn bigint(&mut self, negative: bool) -> Result<(bool, u128), Error<R::Error>> {
+    fn bigint(&mut self, negative: bool) -> Result<(bool, u128), Error<R::Error, P>> {
         let Header::Bytes(length) = self.pull()? else {
             return Err(invalid_type());
         };
@@ -444,11 +453,11 @@ where
     clippy::wildcard_enum_match_arm,
     reason = "unknown future CBOR token variants must use the generic typed refusal path"
 )]
-impl<'de, R: Read> de::Deserializer<'de> for &mut FiniteDecoder<'_, R>
+impl<'de, R: Read, P: SemanticReasonV3> de::Deserializer<'de> for &mut FiniteDecoder<'_, R, P>
 where
     R::Error: Debug,
 {
-    type Error = Error<R::Error>;
+    type Error = Error<R::Error, P>;
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         let header = self.pull()?;
         self.tokens.push(header);
@@ -805,15 +814,15 @@ where
     }
 }
 
-struct Items<'a, 'b, R: Read> {
-    parser: &'a mut FiniteDecoder<'b, R>,
+struct Items<'a, 'b, R: Read, P: SemanticReasonV3> {
+    parser: &'a mut FiniteDecoder<'b, R, P>,
     remaining: Option<usize>,
 }
-impl<'de, R: Read> de::SeqAccess<'de> for Items<'_, '_, R>
+impl<'de, R: Read, P: SemanticReasonV3> de::SeqAccess<'de> for Items<'_, '_, R, P>
 where
     R::Error: Debug,
 {
-    type Error = Error<R::Error>;
+    type Error = Error<R::Error, P>;
     fn next_element_seed<S: DeserializeSeed<'de>>(
         &mut self,
         seed: S,
@@ -835,11 +844,11 @@ where
         self.remaining
     }
 }
-impl<'de, R: Read> de::MapAccess<'de> for Items<'_, '_, R>
+impl<'de, R: Read, P: SemanticReasonV3> de::MapAccess<'de> for Items<'_, '_, R, P>
 where
     R::Error: Debug,
 {
-    type Error = Error<R::Error>;
+    type Error = Error<R::Error, P>;
     fn next_key_seed<S: DeserializeSeed<'de>>(
         &mut self,
         seed: S,
@@ -867,11 +876,11 @@ where
         self.remaining
     }
 }
-impl<'de, R: Read> de::EnumAccess<'de> for Items<'_, '_, R>
+impl<'de, R: Read, P: SemanticReasonV3> de::EnumAccess<'de> for Items<'_, '_, R, P>
 where
     R::Error: Debug,
 {
-    type Error = Error<R::Error>;
+    type Error = Error<R::Error, P>;
     type Variant = Self;
     fn variant_seed<S: DeserializeSeed<'de>>(
         self,
@@ -881,11 +890,11 @@ where
         Ok((name, self))
     }
 }
-impl<'de, R: Read> de::VariantAccess<'de> for Items<'_, '_, R>
+impl<'de, R: Read, P: SemanticReasonV3> de::VariantAccess<'de> for Items<'_, '_, R, P>
 where
     R::Error: Debug,
 {
-    type Error = Error<R::Error>;
+    type Error = Error<R::Error, P>;
     fn unit_variant(self) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -911,13 +920,13 @@ where
     }
 }
 
-struct ByteItems<E> {
+struct ByteItems<E, P: SemanticReasonV3> {
     bytes: Vec<u8>,
     index: usize,
-    error: std::marker::PhantomData<E>,
+    error: std::marker::PhantomData<(E, P)>,
 }
-impl<'de, E: Debug> de::SeqAccess<'de> for ByteItems<E> {
-    type Error = Error<E>;
+impl<'de, E: Debug, P: SemanticReasonV3> de::SeqAccess<'de> for ByteItems<E, P> {
+    type Error = Error<E, P>;
     fn next_element_seed<S: DeserializeSeed<'de>>(
         &mut self,
         seed: S,
@@ -933,16 +942,16 @@ impl<'de, E: Debug> de::SeqAccess<'de> for ByteItems<E> {
     }
 }
 
-struct TagCursor<'a, 'b, R: Read> {
-    parser: Option<&'a mut FiniteDecoder<'b, R>>,
+struct TagCursor<'a, 'b, R: Read, P: SemanticReasonV3> {
+    parser: Option<&'a mut FiniteDecoder<'b, R, P>>,
     tag: Option<u64>,
     index: usize,
 }
-impl<'de, R: Read> de::Deserializer<'de> for &mut TagCursor<'_, '_, R>
+impl<'de, R: Read, P: SemanticReasonV3> de::Deserializer<'de> for &mut TagCursor<'_, '_, R, P>
 where
     R::Error: Debug,
 {
-    type Error = Error<R::Error>;
+    type Error = Error<R::Error, P>;
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         self.index = self.index.saturating_add(1);
         if self.index == 1 {
@@ -957,11 +966,11 @@ where
     }
     forward_to_deserialize_any! { bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum identifier ignored_any }
 }
-impl<'de, R: Read> de::EnumAccess<'de> for TagCursor<'_, '_, R>
+impl<'de, R: Read, P: SemanticReasonV3> de::EnumAccess<'de> for TagCursor<'_, '_, R, P>
 where
     R::Error: Debug,
 {
-    type Error = Error<R::Error>;
+    type Error = Error<R::Error, P>;
     type Variant = Self;
     fn variant_seed<S: DeserializeSeed<'de>>(
         mut self,
@@ -971,11 +980,11 @@ where
         Ok((variant, self))
     }
 }
-impl<'de, R: Read> de::VariantAccess<'de> for TagCursor<'_, '_, R>
+impl<'de, R: Read, P: SemanticReasonV3> de::VariantAccess<'de> for TagCursor<'_, '_, R, P>
 where
     R::Error: Debug,
 {
-    type Error = Error<R::Error>;
+    type Error = Error<R::Error, P>;
     fn unit_variant(self) -> Result<(), Self::Error> {
         Err(invalid_type())
     }
@@ -1000,11 +1009,11 @@ where
         Err(invalid_type())
     }
 }
-impl<'de, R: Read> de::SeqAccess<'de> for TagCursor<'_, '_, R>
+impl<'de, R: Read, P: SemanticReasonV3> de::SeqAccess<'de> for TagCursor<'_, '_, R, P>
 where
     R::Error: Debug,
 {
-    type Error = Error<R::Error>;
+    type Error = Error<R::Error, P>;
     fn next_element_seed<S: DeserializeSeed<'de>>(
         &mut self,
         seed: S,
