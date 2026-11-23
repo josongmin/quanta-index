@@ -2,7 +2,10 @@
 
 use super::*;
 use quanta_index_contract::index::{IngressRef, MapRoot, OwnerMutationSet, ViewRef};
-use quanta_index_contract::native_protocol::{NativeReadSessionStatus, NativeTextCursor};
+use quanta_index_contract::native_protocol::{
+    NativeIndexRequestEnvelope, NativeIndexResponseEnvelope, NativeReadSessionStatus,
+    NativeTextCursor,
+};
 use quanta_index_core::index::OwnerMutationDigest;
 use std::{collections::BTreeMap, os::unix::process::ExitStatusExt as _};
 
@@ -18,6 +21,19 @@ fn text_instance() -> InstanceSpec {
     spec.policy = TextRecipe::segmented_layered(Digest([31; 32])).output_policy();
     spec.format = StorageFormatId([77; 16]);
     spec
+}
+
+fn literal_instance() -> InstanceSpec {
+    InstanceSpec {
+        instance: IndexInstanceId([7; 16]),
+        kind: IndexKind([8; 16]),
+        group: PublicationGroupId([9; 16]),
+        activation: GroupActivation::CoreRequired,
+        input_domain: InputDomain::SourceLocal,
+        schema: SchemaId([10; 16]),
+        policy: Digest([11; 32]),
+        format: StorageFormatId([12; 16]),
+    }
 }
 
 fn fixture_config(root: &Path, socket: &Path) -> TestResult<serde_json::Value> {
@@ -70,6 +86,13 @@ fn fixture_source(path: String, body: String) -> SourceInput {
 }
 
 fn configure(client: &NativeUdsClient) -> TestResult<ViewRef> {
+    configure_instances(client, vec![text_instance()])
+}
+
+fn configure_instances(
+    client: &NativeUdsClient,
+    instances: Vec<InstanceSpec>,
+) -> TestResult<ViewRef> {
     let NativeIndexResponse::Created(genesis) = client.request(
         NativeIndexRequest::CreateWorkspace {
             workspace: workspace(),
@@ -81,13 +104,7 @@ fn configure(client: &NativeUdsClient) -> TestResult<ViewRef> {
         return Err("text boundary workspace creation failed".into());
     };
     let ingress = client.begin_input(operation(1), &budget())?;
-    let profile = client.stage_profile(
-        ingress,
-        IndexProfile {
-            instances: vec![text_instance()],
-        },
-        &budget(),
-    )?;
+    let profile = client.stage_profile(ingress, IndexProfile { instances }, &budget())?;
     published(&client.submit(
         UpdateRequest {
             operation: operation(1),
@@ -197,6 +214,18 @@ fn observed_owners(
     Ok(owners)
 }
 
+fn text_query(query: &str, top_k: u32) -> TextQueryRequest {
+    TextQueryRequest {
+        syntax: TextQuerySyntax::Native,
+        query_text: query.into(),
+        constraints: QueryConstraintSetV1::unconstrained(),
+        generation: None,
+        generation_selector: None,
+        top_k,
+        cursor: None,
+    }
+}
+
 fn ranked_files(
     client: &NativeUdsClient,
     view: ViewRef,
@@ -206,15 +235,7 @@ fn ranked_files(
     let result = client.search_text(
         ViewSelection::Exact(view),
         text_instance().instance,
-        TextQueryRequest {
-            syntax: TextQuerySyntax::Native,
-            query_text: query.into(),
-            constraints: QueryConstraintSetV1::unconstrained(),
-            generation: None,
-            generation_selector: None,
-            top_k,
-            cursor: None,
-        },
+        text_query(query, top_k),
         &budget(),
     )?;
     require_equal(&result.view, &view, "text boundary view")?;
@@ -799,7 +820,14 @@ fn publish_crash_fixture_full(
     client: &NativeUdsClient,
     files: &CrashFiles,
 ) -> TestResult<(ViewRef, BTreeMap<usize, ObjectRef>)> {
-    let base = configure(client)?;
+    publish_crash_fixture_sources(client, configure(client)?, files)
+}
+
+fn publish_crash_fixture_sources(
+    client: &NativeUdsClient,
+    base: ViewRef,
+    files: &CrashFiles,
+) -> TestResult<(ViewRef, BTreeMap<usize, ObjectRef>)> {
     let ingress = client.begin_input(operation(2), &budget())?;
     let sources = stage(
         client,
@@ -870,27 +898,19 @@ fn prepare_crash_fixture_delta(
     prepare_advance(client, ingress, prior, mutations)
 }
 
-fn verify_tied_page(
+fn verify_text_page(
     client: &NativeUdsClient,
     session: &NativeReadSessionStatus,
+    query: &TextQueryRequest,
     prior: Option<NativeTextCursor>,
     expected: &[(OwnerKey, String, u64)],
     offset: usize,
 ) -> TestResult<Option<NativeTextCursor>> {
-    const PAGE: u32 = 31;
     let remaining = expected.get(offset..).ok_or("invalid held page offset")?;
     let page = client.search_text_page_in_read_session(
         session,
         text_instance().instance,
-        TextQueryRequest {
-            syntax: TextQuerySyntax::Native,
-            query_text: "stressanchor".into(),
-            constraints: QueryConstraintSetV1::unconstrained(),
-            generation: None,
-            generation_selector: None,
-            top_k: PAGE,
-            cursor: None,
-        },
+        query.clone(),
         prior,
         &budget(),
     )?;
@@ -911,11 +931,11 @@ fn verify_tied_page(
         .into_iter()
         .map(|hit| (hit.owner, hit.path, hit.score.get().to_bits()))
         .collect();
-    let limit = usize::try_from(PAGE)?;
+    let limit = usize::try_from(query.top_k)?;
     let count = remaining.len().min(limit);
     require_equal(
         &actual.as_slice(),
-        &remaining.get(..count).ok_or("missing tied page gold")?,
+        &remaining.get(..count).ok_or("missing text page gold")?,
         "held page rank and score",
     )?;
     require_equal(
@@ -1015,6 +1035,13 @@ fn native_multipage_lexical_delta_survives_sigkill_and_matches_full() -> TestRes
         .collect();
     let (base, mut refs) = publish_crash_fixture_full(&client, &files)?;
     let mut held = client.open_read_session(ViewSelection::Exact(base), [91; 32], &budget())?;
+    let page_query = text_query("stressanchor", 31);
+    let zero_score_query = text_query("NOT seedterm", 2);
+    require_equal(
+        &verify_text_page(&client, &held, &zero_score_query, None, &[], 0)?,
+        &None,
+        "initial FULL has no negative matches",
+    )?;
     let gold = ranked_files(&client, base, "stressanchor", 256)?;
     require_equal(&gold.len(), &OWNERS, "partition-crossing tie count")?;
     let (_, _, score) = gold.first().ok_or("missing initial tie")?;
@@ -1026,10 +1053,10 @@ fn native_multipage_lexical_delta_survives_sigkill_and_matches_full() -> TestRes
         )?;
     }
 
-    let after = verify_tied_page(&client, &held, None, &gold, 0)?;
+    let after = verify_text_page(&client, &held, &page_query, None, &gold, 0)?;
     let first = prepare_crash_fixture_delta(&client, base, 3, ROUNDS[0], &mut files, &mut refs)?;
     let first_view = published(&client.submit(first.clone(), &budget())?)?;
-    let after = verify_tied_page(&client, &held, after, &gold, 31)?;
+    let after = verify_text_page(&client, &held, &page_query, after, &gold, 31)?;
     let second =
         prepare_crash_fixture_delta(&client, first_view, 4, ROUNDS[1], &mut files, &mut refs)?;
     require_equal(
@@ -1037,7 +1064,7 @@ fn native_multipage_lexical_delta_survives_sigkill_and_matches_full() -> TestRes
         &OperationStatus::Unknown,
         "sealed DELTA must not be published before the crash",
     )?;
-    let after = verify_tied_page(&client, &held, after, &gold, 62)?;
+    let after = verify_text_page(&client, &held, &page_query, after, &gold, 62)?;
 
     let old_pid = kill_fixture_daemon(daemon)?;
     let reopened = Daemon::start(&config, &socket)?;
@@ -1045,7 +1072,7 @@ fn native_multipage_lexical_delta_survives_sigkill_and_matches_full() -> TestRes
         reopened.0.id() != old_pid,
         "crash did not replace the daemon PID",
     )?;
-    let client = NativeUdsClient::new(socket);
+    let client = NativeUdsClient::new(socket.clone());
     let latest = ViewSelection::Latest {
         workspace: workspace(),
         epoch: 1,
@@ -1071,7 +1098,7 @@ fn native_multipage_lexical_delta_survives_sigkill_and_matches_full() -> TestRes
         "sealed operation is still unpublished",
     )?;
     held = client.open_read_session(ViewSelection::Exact(base), [92; 32], &budget())?;
-    let after = verify_tied_page(&client, &held, after, &gold, 93)?;
+    let after = verify_text_page(&client, &held, &page_query, after, &gold, 93)?;
 
     let second_view = published(&client.submit(second, &budget())?)?;
     let third =
@@ -1083,7 +1110,7 @@ fn native_multipage_lexical_delta_survives_sigkill_and_matches_full() -> TestRes
         "final DELTA is current",
     )?;
     require_equal(
-        &verify_tied_page(&client, &held, after, &gold, 124)?,
+        &verify_text_page(&client, &held, &page_query, after, &gold, 124)?,
         &None,
         "last held page across the partition boundary",
     )?;
@@ -1112,8 +1139,43 @@ fn native_multipage_lexical_delta_survives_sigkill_and_matches_full() -> TestRes
             &format!("post-SIGKILL DELTA vs independent FULL rank and score bits: {query}"),
         )?;
     }
+    let full_rank = ranked_files(&full_client, full_view, &page_query.query_text, 256)?;
+    let zero_rank = [0, 128, 129, 130, 131]
+        .into_iter()
+        .map(|id| {
+            let (path, _) = files
+                .get(&id)
+                .ok_or("negative match owner missing from model")?;
+            Ok((fixture_owner(id)?, path.clone(), 0.0_f64.to_bits()))
+        })
+        .collect::<TestResult<Vec<_>>>()?;
+    require_equal(
+        &ranked_files(&full_client, full_view, &zero_score_query.query_text, 256)?,
+        &zero_rank,
+        "independent FULL negative-match score and owner order",
+    )?;
+    let selection = ViewSelection::Exact(final_view);
+    let session = client.open_read_session(selection, [93; 32], &budget())?;
+    let full_after = verify_text_page(&client, &session, &page_query, None, &full_rank, 0)?;
+    let zero_after = verify_text_page(&client, &session, &zero_score_query, None, &zero_rank, 0)?;
+    let _released = client.release_read_session(&session, &budget())?;
+    reopened.stop()?;
+    let cold = Daemon::start(&config, &socket)?;
+    let cold_client = NativeUdsClient::new(socket);
+    let session = cold_client.open_read_session(selection, [94; 32], &budget())?;
+    for (query, rank, mut after) in [
+        (&page_query, &full_rank, full_after),
+        (&zero_score_query, &zero_rank, zero_after),
+    ] {
+        let limit = usize::try_from(query.top_k)?;
+        for offset in (limit..rank.len()).step_by(limit) {
+            after = verify_text_page(&cold_client, &session, query, after, rank, offset)?;
+        }
+        require_equal(&after, &None, "last final DELTA page after cold reopen")?;
+    }
+    let _released = cold_client.release_read_session(&session, &budget())?;
     full_daemon.stop()?;
-    reopened.stop()
+    cold.stop()
 }
 
 fn write_mutation_page(
@@ -1132,7 +1194,7 @@ fn write_mutation_page(
     )
 }
 
-fn require_mutation_refusal(
+fn require_wire_refusal(
     reply: Result<NativeIndexResponse, NativeUdsError>,
     code: NativeIndexErrorCode,
     label: &str,
@@ -1236,7 +1298,7 @@ fn native_lexical_partial_mutation_page_recovers_after_sigkill() -> TestResult {
             &budget(),
         )
     };
-    require_mutation_refusal(
+    require_wire_refusal(
         reopen(foreign.operation),
         NativeIndexErrorCode::InvalidInput,
         "foreign ingress must not acquire the ACK root",
@@ -1250,12 +1312,12 @@ fn native_lexical_partial_mutation_page_recovers_after_sigkill() -> TestResult {
         recovered.fence > ingress.fence,
         "reopened input did not advance its fence",
     )?;
-    require_mutation_refusal(
+    require_wire_refusal(
         write_mutation_page(&client, ingress, prefix, lower),
         NativeIndexErrorCode::FenceLost,
         "old fence must not write the tail",
     )?;
-    require_mutation_refusal(
+    require_wire_refusal(
         write_mutation_page(
             &client,
             recovered,
@@ -1275,7 +1337,7 @@ fn native_lexical_partial_mutation_page_recovers_after_sigkill() -> TestResult {
             &budget(),
         )
     };
-    require_mutation_refusal(
+    require_wire_refusal(
         seal(prefix, MUTATIONS),
         NativeIndexErrorCode::InvalidInput,
         "a prefix cannot seal as the whole set",
@@ -1356,4 +1418,537 @@ fn native_lexical_partial_mutation_page_recovers_after_sigkill() -> TestResult {
     }
     full_daemon.stop()?;
     reopened.stop()
+}
+
+fn fixture_body_ref(body: &str) -> TestResult<ObjectRef> {
+    quanta_index_contract::index::native_immutable_object_ref_v1(body.as_bytes(), &[])
+        .ok_or_else(|| "fixture body could not produce an immutable ref".into())
+}
+
+fn verify_commit_file_inventory(
+    client: &NativeUdsClient,
+    view: ViewRef,
+    files: &CrashFiles,
+    refs: &BTreeMap<usize, ObjectRef>,
+) -> TestResult {
+    let repository = quanta_index_contract::RepoId::try_from(REPOSITORY)?;
+    let selection = ViewSelection::Exact(view);
+    let mut expected = files
+        .iter()
+        .map(|(&index, (path, body))| {
+            let source = refs.get(&index).ok_or("missing expected file source")?;
+            Ok((
+                path.clone(),
+                fixture_owner(index)?,
+                *source,
+                fixture_body_ref(body)?,
+                u64::try_from(body.len())?,
+            ))
+        })
+        .collect::<TestResult<Vec<_>>>()?;
+    expected.sort_unstable();
+    let mut after = None;
+    let mut actual = Vec::new();
+    loop {
+        let page = client.query_repository_paths(
+            selection,
+            file_spec().instance,
+            String::new(),
+            after,
+            128,
+            &budget(),
+        )?;
+        require_equal(&page.view, &view, "commit file inventory view")?;
+        for entry in page.entries {
+            require_equal(
+                &entry.repository.as_ref(),
+                &Some(&repository),
+                "commit file inventory repository",
+            )?;
+            let entry = entry.file;
+            actual.push((
+                entry.path,
+                entry.owner,
+                entry.source,
+                entry.bytes,
+                entry.byte_len,
+            ));
+        }
+        require(
+            actual.len() <= expected.len(),
+            "commit file inventory exceeded the model",
+        )?;
+        if page.next_after.is_none() {
+            break;
+        }
+        after = page.next_after;
+    }
+    require_equal(&actual, &expected, "commit file inventory across pages")?;
+
+    for pattern in ["commitanchor", "original", "carried", "newleaf"] {
+        let expected = files
+            .iter()
+            .filter(|(_, (_, body))| body.contains(pattern))
+            .map(|(&index, (path, body))| {
+                Ok((
+                    fixture_owner(index)?,
+                    path.clone(),
+                    fixture_body_ref(body)?,
+                    u64::try_from(body.len())?,
+                ))
+            })
+            .collect::<TestResult<Vec<_>>>()?;
+        let mut after = None;
+        let mut actual = Vec::new();
+        loop {
+            let page = client.search_literal(
+                selection,
+                literal_instance().instance,
+                pattern.as_bytes(),
+                after.as_deref(),
+                128,
+                &budget(),
+            )?;
+            require_equal(&page.view, &view, "commit literal view")?;
+            for hit in page.hits {
+                require_equal(
+                    &hit.record.source_repo_id.as_ref(),
+                    &Some(&repository),
+                    "commit literal repository",
+                )?;
+                require_equal(
+                    &hit.record.text,
+                    &SourceTextAdmission::Utf8 {
+                        policy: Digest([31; 32]),
+                    },
+                    "commit literal text admission",
+                )?;
+                require_equal(
+                    &hit.record.language,
+                    &None,
+                    "commit literal source language",
+                )?;
+                actual.push((
+                    hit.owner,
+                    hit.record.path,
+                    hit.record.bytes,
+                    hit.record.byte_len,
+                ));
+            }
+            require(
+                actual.len() <= expected.len(),
+                "commit literal exceeded the model",
+            )?;
+            if page.after.is_none() {
+                break;
+            }
+            after = page.after;
+        }
+        require_equal(
+            &actual,
+            &expected,
+            &format!("commit literal matches: {pattern}"),
+        )?;
+    }
+    Ok(())
+}
+
+struct RecordedFrame<R> {
+    reader: R,
+    bytes: Vec<u8>,
+}
+
+impl<R: std::io::Read> std::io::Read for RecordedFrame<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.reader.read(buffer)?;
+        self.bytes.extend_from_slice(&buffer[..read]);
+        Ok(read)
+    }
+}
+
+fn resume_with_truncated_publish_reply(
+    proxy: &Path,
+    socket: &Path,
+    daemon: Daemon,
+    key: OperationKey,
+) -> TestResult<(u32, ViewRef)> {
+    use std::io::{ErrorKind, Write as _};
+    use std::net::Shutdown;
+
+    let listener = UnixListener::bind(proxy)?;
+    listener.set_nonblocking(true)?;
+    thread::scope(|scope| -> TestResult<_> {
+        let caller =
+            scope.spawn(|| NativeUdsClient::new(proxy.to_path_buf()).resume(key, &budget()));
+        let deadline = daemon_phase_deadline(Duration::from_secs(5), None)?;
+        let mut peer = loop {
+            match listener.accept() {
+                Ok((peer, _)) => break peer,
+                Err(error)
+                    if error.kind() == ErrorKind::WouldBlock && Instant::now() < deadline =>
+                {
+                    thread::sleep(NATIVE_LIFECYCLE_POLL);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        peer.set_nonblocking(false)?;
+        peer.set_read_timeout(Some(Duration::from_secs(5)))?;
+        peer.set_write_timeout(Some(Duration::from_secs(5)))?;
+        let mut request_frame = RecordedFrame {
+            reader: &mut peer,
+            bytes: Vec::new(),
+        };
+        let request: NativeIndexRequestEnvelope =
+            quanta_index_ipc::decode_request(&mut request_frame)?;
+        require_equal(
+            &request.payload,
+            &NativeIndexRequest::Resume(key),
+            "proxied exact Resume",
+        )?;
+
+        let mut backend = UnixStream::connect(socket)?;
+        backend.set_read_timeout(Some(Duration::from_secs(30)))?;
+        backend.set_write_timeout(Some(Duration::from_secs(5)))?;
+        backend.write_all(&request_frame.bytes)?;
+        let mut reply_frame = RecordedFrame {
+            reader: backend,
+            bytes: Vec::new(),
+        };
+        let reply: NativeIndexResponseEnvelope =
+            quanta_index_ipc::decode_response(&mut reply_frame)?;
+        require_equal(
+            &reply.request_id,
+            &request.request_id,
+            "forwarded request ID",
+        )?;
+        let NativeIndexResponse::Submitted(receipt) = &reply.payload else {
+            return Err(format!("daemon did not return a publication receipt: {reply:?}").into());
+        };
+        require_equal(&receipt.operation, &key, "daemon receipt operation")?;
+        let published = published(&receipt.payload)?;
+
+        // Only the proxy receives the complete frame. Keep the SDK peer open
+        // until after the real daemon dies, then expose EOF one byte early.
+        let (_, prefix) = reply_frame
+            .bytes
+            .split_last()
+            .ok_or("empty terminal response frame")?;
+        peer.write_all(prefix)?;
+        let pid = kill_fixture_daemon(daemon)?;
+        peer.shutdown(Shutdown::Write)?;
+        drop(peer);
+        let result = caller.join().map_err(|_| "Resume client thread panicked")?;
+        require(
+            matches!(&result, Err(NativeUdsError::Unknown(operation)) if *operation == key),
+            format!("partial terminal response must preserve the unknown operation: {result:?}"),
+        )?;
+        Ok((pid, published))
+    })
+}
+
+#[test]
+fn native_lexical_commit_rollback_and_truncated_published_ack_preserve_one_operation() -> TestResult
+{
+    const OWNERS: usize = 131;
+    const EDITS: &[CrashEdit] = &[
+        (
+            0,
+            Some(("src/boundary000.rs", "commitanchor rebound rebound")),
+        ),
+        (127, Some(("src/renamed-127.rs", "commitanchor carried"))),
+        (128, None),
+        (144, Some(("src/inserted-144.rs", "commitanchor newleaf"))),
+    ];
+    let temp = tempfile::tempdir()?;
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let (config, socket) = create_crash_fixture(temp.path(), "commit-delta")?;
+    let catalog_path = temp
+        .path()
+        .join("commit-delta/catalog")
+        .join(quanta_index_catalog::CATALOG_FILE_NAME);
+    let first_daemon = Daemon::start(&config, &socket)?;
+    let client = NativeUdsClient::new(socket.clone());
+    let instances = vec![literal_instance(), file_spec(), text_instance()];
+    let mut files = (0..OWNERS)
+        .map(|index| (index, (fixture_path(index), "commitanchor original".into())))
+        .collect();
+    let configured = configure_instances(&client, instances.clone())?;
+    let (base, mut refs) = publish_crash_fixture_sources(&client, configured, &files)?;
+    let original_files = files.clone();
+    let original_refs = refs.clone();
+    let original_source = client
+        .read_view(ViewSelection::Exact(base), &budget())?
+        .source;
+    let initial_rank = ranked_files(&client, base, "original", 256)?;
+    require_equal(&initial_rank.len(), &OWNERS, "initial rank count")?;
+    let update = prepare_crash_fixture_delta(&client, base, 3, EDITS, &mut files, &mut refs)?;
+    let key = update.operation;
+    let next_sequence = base
+        .sequence
+        .checked_add(1)
+        .ok_or("view sequence overflow")?;
+    let latest = ViewSelection::Latest {
+        workspace: workspace(),
+        epoch: 1,
+    };
+    let initial_literal = client.search_literal(
+        latest,
+        literal_instance().instance,
+        b"commitanchor",
+        None,
+        128,
+        &budget(),
+    )?;
+    require_equal(
+        &initial_literal.view,
+        &base,
+        "initial Literal selects the current view",
+    )?;
+    let old_literal_cursor = initial_literal
+        .after
+        .ok_or("missing initial Literal continuation")?;
+    let catalog_workspace = serde_json::to_vec(&base.workspace)?;
+    let catalog_operation = serde_json::to_vec(&key)?;
+    let catalog_epoch = i64::try_from(base.epoch)?;
+    let catalog_sequence = i64::try_from(base.sequence)?;
+    let read_catalog = || {
+        rusqlite::Connection::open_with_flags(
+            &catalog_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+    };
+    let successor_rows = || -> TestResult<i64> {
+        Ok(read_catalog()?.query_row(
+            "SELECT COUNT(*) FROM native_view_v1 WHERE workspace=?1 AND epoch=?2 AND sequence>?3",
+            rusqlite::params![&catalog_workspace, catalog_epoch, catalog_sequence],
+            |row| row.get(0),
+        )?)
+    };
+    let operation_row = || -> TestResult<i64> {
+        Ok(read_catalog()?.query_row(
+            "SELECT operation_id FROM native_operation_v1 WHERE operation=?1",
+            [&catalog_operation],
+            |row| row.get(0),
+        )?)
+    };
+
+    {
+        let catalog = rusqlite::Connection::open(&catalog_path)?;
+        catalog.busy_timeout(Duration::from_secs(5))?;
+        // Only the fixture's final operation write is refused. The matching
+        // successor head is visible inside that transaction after write_view,
+        // but the pending admission is already in a different transaction.
+        catalog.execute_batch(&format!(
+            "CREATE TRIGGER fixture_abort_terminal BEFORE UPDATE OF payload ON native_operation_v1
+             WHEN EXISTS (SELECT 1 FROM native_workspace_v1
+                          WHERE workspace=OLD.workspace AND epoch=OLD.epoch AND sequence={next_sequence})
+             BEGIN SELECT RAISE(ABORT, 'fixture refuses the publication terminal write'); END;"
+        ))?;
+    }
+    require_equal(
+        &client.submit_borrowed(&update, &budget())?,
+        &SubmitOutcome::Unknown(key),
+        "injected commit fault leaves uncertainty",
+    )?;
+    let OperationStatus::Pending(attempt) = client.status(key, &budget())? else {
+        return Err("failed publication did not retain its admitted operation".into());
+    };
+    require_equal(&attempt.operation, &key, "durable pending operation")?;
+    let admitted_row = operation_row()?;
+    require_equal(
+        &client.read_view(latest, &budget())?.identity,
+        &base,
+        "failed terminal write rolled back the head",
+    )?;
+    require_equal(
+        &successor_rows()?,
+        &0,
+        "failed terminal write rolled back the successor row",
+    )?;
+    let first_pid = kill_fixture_daemon(first_daemon)?;
+    rusqlite::Connection::open(&catalog_path)?
+        .execute_batch("DROP TRIGGER fixture_abort_terminal")?;
+
+    let second_daemon = Daemon::start(&config, &socket)?;
+    require(
+        second_daemon.0.id() != first_pid,
+        "pending recovery reused the old daemon PID",
+    )?;
+    let client = NativeUdsClient::new(socket.clone());
+    require_equal(
+        &client.status(key, &budget())?,
+        &OperationStatus::Pending(attempt),
+        "same attempt after failed commit and death",
+    )?;
+    require_equal(
+        &client.submit_borrowed(&update, &budget())?,
+        &SubmitOutcome::Accepted(attempt),
+        "duplicate Submit does not create an attempt",
+    )?;
+    require_equal(
+        &successor_rows()?,
+        &0,
+        "pending Submit replay does not publish a view",
+    )?;
+    let (second_pid, published_view) = resume_with_truncated_publish_reply(
+        &temp.path().join("ack-proxy.sock"),
+        &socket,
+        second_daemon,
+        key,
+    )?;
+    require_equal(
+        &published_view.sequence,
+        &next_sequence,
+        "single publication sequence",
+    )?;
+
+    let third_daemon = Daemon::start(&config, &socket)?;
+    require(
+        third_daemon.0.id() != second_pid,
+        "ACK-loss recovery reused the old daemon PID",
+    )?;
+    let client = NativeUdsClient::new(socket);
+    let terminal = OperationStatus::Published(published_view);
+    require_equal(
+        &client.status(key, &budget())?,
+        &terminal,
+        "durable answer after the truncated ACK",
+    )?;
+    require_equal(
+        &client.resume(key, &budget())?,
+        &SubmitOutcome::Terminal(terminal.clone()),
+        "Resume replays the same publication",
+    )?;
+    require_equal(
+        &client.submit_borrowed(&update, &budget())?,
+        &SubmitOutcome::Terminal(terminal),
+        "Submit replays the same publication",
+    )?;
+    require_equal(
+        &client.read_view(latest, &budget())?.identity,
+        &published_view,
+        "terminal retries preserve the exact head",
+    )?;
+    require_equal(
+        &successor_rows()?,
+        &1,
+        "only one view survived the two faults and all retries",
+    )?;
+    require_equal(
+        &operation_row()?,
+        &admitted_row,
+        "same admission row across recovery and retries",
+    )?;
+    require_equal(
+        &ranked_files(&client, base, "original", 256)?,
+        &initial_rank,
+        "prior exact rank survives both SIGKILLs",
+    )?;
+    verify_commit_file_inventory(&client, base, &original_files, &original_refs)?;
+    verify_commit_file_inventory(&client, published_view, &files, &refs)?;
+    let exact_tail = client.search_literal(
+        ViewSelection::Exact(base),
+        literal_instance().instance,
+        b"commitanchor",
+        Some(&old_literal_cursor),
+        128,
+        &budget(),
+    )?;
+    let expected_tail = (128..OWNERS)
+        .map(|id| Ok((fixture_owner(id)?, fixture_path(id))))
+        .collect::<TestResult<Vec<_>>>()?;
+    let actual_tail = exact_tail
+        .hits
+        .into_iter()
+        .map(|hit| (hit.owner, hit.record.path))
+        .collect::<Vec<_>>();
+    require_equal(
+        &actual_tail,
+        &expected_tail,
+        "old Literal cursor continues against its exact view",
+    )?;
+    require(
+        !exact_tail.has_more,
+        "old Literal cursor did not reach its last page",
+    )?;
+    require_wire_refusal(
+        client.request(
+            NativeIndexRequest::SearchLiteral {
+                selection: latest,
+                instance: literal_instance().instance,
+                literal: b"commitanchor".to_vec(),
+                after: Some(old_literal_cursor),
+                limit: 128,
+            },
+            &budget(),
+        ),
+        NativeIndexErrorCode::InvalidInput,
+        "Literal continuation refuses Latest after a publication",
+    )?;
+
+    let (full_config, full_socket) = create_crash_fixture(temp.path(), "commit-full")?;
+    let full_daemon = Daemon::start(&full_config, &full_socket)?;
+    let full_client = NativeUdsClient::new(full_socket);
+    let configured = configure_instances(&full_client, instances)?;
+    let (full, full_refs) = publish_crash_fixture_sources(&full_client, configured, &files)?;
+    verify_commit_file_inventory(&full_client, full, &files, &full_refs)?;
+    for (query, expected_count) in [
+        ("commitanchor", OWNERS),
+        ("original", OWNERS - 3),
+        ("carried", 1),
+        ("newleaf", 1),
+        ("\"commitanchor rebound\"", 1),
+    ] {
+        let delta_rank = ranked_files(&client, published_view, query, 256)?;
+        require_equal(
+            &delta_rank.len(),
+            &expected_count,
+            &format!("commit and ACK-loss DELTA match count: {query}"),
+        )?;
+        require_equal(
+            &delta_rank,
+            &ranked_files(&full_client, full, query, 256)?,
+            &format!("commit and ACK-loss DELTA versus independent FULL: {query}"),
+        )?;
+    }
+    // Use the current ViewRef and owner ref with the old SourceCut to isolate
+    // the Source CAS from view, owner, and producer frontier checks.
+    let ingress = client.begin_input(operation(4), &budget())?;
+    let source = *refs.get(&0).ok_or("missing current owner ref")?;
+    let mut stale = prepare_advance(
+        &client,
+        ingress,
+        published_view,
+        [OwnerMutation {
+            owner: fixture_owner(0)?,
+            expected: Some(source),
+            next: None,
+        }],
+    )?;
+    let UpdateKind::SourceAdvance(transition) = &mut stale.kind else {
+        return Err("source CAS fixture did not prepare a SourceAdvance".into());
+    };
+    require(
+        transition.expected_source != original_source,
+        "source CAS fixture retained the old source",
+    )?;
+    transition.expected_source = original_source;
+    require_equal(
+        &client.submit(stale, &budget())?,
+        &SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::Conflict)),
+        "stale SourceCut is refused with a current view and owner ref",
+    )?;
+    require_equal(
+        &client.read_view(latest, &budget())?.identity,
+        &published_view,
+        "stale SourceCut preserves the head",
+    )?;
+    require_equal(
+        &successor_rows()?,
+        &1,
+        "stale SourceCut cannot add a successor row",
+    )?;
+    full_daemon.stop()?;
+    third_daemon.stop()
 }

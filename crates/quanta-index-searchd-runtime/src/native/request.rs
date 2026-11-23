@@ -497,12 +497,17 @@ impl NativeDispatcher {
                 epoch,
                 limit,
             } => {
-                if limit == 0 || limit > 1024 {
+                if limit == 0 || limit > 256 {
                     return Err(IndexError::ResourceLimited);
                 }
-                self.kernel
-                    .ready_work(workspace, epoch, limit, budget)
-                    .map(NativeIndexResponse::ReadyWork)
+                let ready = match &self.retirement_approval {
+                    Some(retirement) => self.kernel.ready_work_filtered_v2(
+                        workspace, epoch, limit,
+                        &|intent| retirement.check_work_intent(intent).is_ok(), budget,
+                    )?,
+                    None => self.kernel.ready_work(workspace, epoch, limit, budget)?,
+                };
+                Ok(NativeIndexResponse::ReadyWork(ready))
             }
             NativeIndexRequest::ClaimWork {
                 intent,

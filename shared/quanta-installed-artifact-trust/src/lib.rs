@@ -73,6 +73,12 @@ impl InstalledNativeRecoveryV2 {
 }
 
 mod native_facts_publication_v3;
+#[cfg(all(target_os = "linux", feature = "s-product-startup-v1"))]
+mod native_q_retirement_approval_v2;
+#[cfg(all(target_os = "linux", feature = "s-product-startup-v1"))]
+pub use native_q_retirement_approval_v2::{
+    VerifiedNativeQRetirementApprovalV2, verify_native_q_retirement_approval_v2,
+};
 pub use native_facts_publication_v3::InstalledNativeFactsPublicationV3;
 #[cfg(target_os = "linux")]
 use native_facts_publication_v3::{parse_native_facts_publication_v3, parse_native_install_axes_v3};

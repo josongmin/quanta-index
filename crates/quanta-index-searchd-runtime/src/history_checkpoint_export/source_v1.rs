@@ -9,7 +9,7 @@ use std::{
     path::Path,
 };
 
-use anyhow::{Result, ensure};
+use anyhow::{Result, anyhow, ensure};
 use quanta_index_catalog::CatalogReadOnlyIoAdmission;
 use quanta_index_contract::{
     CandidateCommitmentV1, ManifestGeneration, RepoId, RepoMapExpectedActiveV2, RevisionId,
@@ -326,9 +326,12 @@ pub fn run_source_v1(
                 budget,
                 |selection, budget| {
                     if command.source_only_native {
+                        let selected = selection.native_command_v1()
+                            .ok_or_else(|| anyhow!("Source-only Native export requires selected Native root"))?;
                         ensure!(
-                            selection.native_command_v1().is_some(),
-                            "Source-only Native export requires selected Native root"
+                            selected.config_path == command.config_path
+                                && selected.config_digest == Some(command.config_digest),
+                            "Source-only Native export config differs from the held selection"
                         );
                         return super::native_source_v1::export_v1(selection, &mut output, budget);
                     }

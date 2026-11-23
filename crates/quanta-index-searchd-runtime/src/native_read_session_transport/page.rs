@@ -165,7 +165,7 @@ fn convert(
         || !outcome.exhaustive()
         || raw.remaining > raw.matched
         || count != raw.remaining.min(u64::from(limit))
-        || (after.is_none() && raw.remaining != raw.matched)
+        || (after.is_none() != (raw.remaining == raw.matched))
     {
         return Err(IndexError::BackendViolation(
             "text page scan or artifact differs".into(),
@@ -202,6 +202,7 @@ fn convert(
                 .as_ref()
                 .is_some_and(|expected| expected.as_str() != hit.path)
             || hit.score.get() < 0.0
+            || after.is_some_and(|cursor| hit.owner == cursor.owner)
             || prior.is_some_and(|(score, owner)| {
                 score.get().total_cmp(&hit.score.get()).is_lt()
                     || (score == hit.score && owner >= hit.owner)

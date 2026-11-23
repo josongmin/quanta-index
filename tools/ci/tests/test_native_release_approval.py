@@ -203,9 +203,10 @@ def test_retirement_approval_binds_schema3_policy_and_uses_distinct_domain(tmp_p
     active = signed_product_active(key, tmp_path, sha(manifest))
     payload = approval.binding(
         selected, request["selection_sha256"], request["decision_policy_sha256"],
-        sha(active), sha(manifest),
+        sha(active), sha(manifest), selection_path=request["selection_path"],
     )
     assert payload["schema_version"] == approval.RETIREMENT_SCHEMA
+    assert payload["selection_path"] == request["selection_path"]
     assert payload["retired_projection_policy"] == {
         "object_hex": "e" * 64, "sha256_hex": "f" * 64, "identity_count": 2,
     }
@@ -218,7 +219,28 @@ def test_retirement_approval_binds_schema3_policy_and_uses_distinct_domain(tmp_p
     monkeypatch.setattr(approval, "_installed_bytes", lambda path, _limit: installed[path.name])
     approval.verify_installed_approval(
         receipt, selected, request["selection_sha256"], request["decision_policy_sha256"],
+        selection_path=request["selection_path"],
     )
+    approval_file = tmp_path / "approved-native-q.json"
+    approval_file.write_bytes(approval._canonical_bytes(receipt) + b"\n")
+    approval_file.chmod(0o600)
+    launched = Mock(return_value=0)
+    monkeypatch.setattr(launcher, "_run_selected_command", launched)
+    with pytest.raises(launcher.SelectionError, match="requires signed release approval"):
+        launcher.serve_selection(request["selection_path"])
+    assert launcher.serve_selection(
+        request["selection_path"], approval_path=approval_file,
+        decision_policy_path=Path(request["decision_policy_path"]),
+    ) == 0
+    launched.assert_called_once()
+    assert launched.call_args.kwargs["retirement_approval"] == (
+        approval_file, Path(request["decision_policy_path"]),
+    )
+    with pytest.raises(launcher.SelectionError, match="release approval differs"):
+        launcher.serve_selection(
+            request["selection_path"], approval_path=approval_file,
+            decision_policy_path=Path(request["selection_path"]),
+        )
     wrong_domain = {
         "payload": payload,
         "signature_hex": key.sign(approval.DOMAIN + approval._canonical_bytes(payload)).hex(),
@@ -226,7 +248,7 @@ def test_retirement_approval_binds_schema3_policy_and_uses_distinct_domain(tmp_p
     with pytest.raises(ValueError, match="signature differs"):
         approval.verify_installed_approval(
             wrong_domain, selected, request["selection_sha256"],
-            request["decision_policy_sha256"],
+            request["decision_policy_sha256"], selection_path=request["selection_path"],
         )
     for changed in (
         {**payload, "retired_projection_policy": {**payload["retired_projection_policy"], "identity_count": 1}},
@@ -236,7 +258,91 @@ def test_retirement_approval_binds_schema3_policy_and_uses_distinct_domain(tmp_p
             approval.verify_installed_approval(
                 {"payload": changed, "signature_hex": receipt["signature_hex"]},
                 selected, request["selection_sha256"], request["decision_policy_sha256"],
+                selection_path=request["selection_path"],
             )
+    with pytest.raises(ValueError, match="selection path differs"):
+        approval.verify_installed_approval(
+            receipt, selected, request["selection_sha256"], request["decision_policy_sha256"],
+            selection_path=tmp_path / "missing-selection.json",
+        )
+
+
+def test_retired_serve_child_inherits_exact_deployment_lock_and_locators(tmp_path, monkeypatch):
+    import sys
+
+    output = tmp_path / "child-observed.json"
+    program = (
+        f"#!{sys.executable}\n"
+        "import fcntl, json, os, sys\n"
+        "from pathlib import Path\n"
+        "fd = int(os.environ['QUANTA_NATIVE_DEPLOYMENT_LOCK_FD_V2'])\n"
+        "selection = Path(sys.argv[0]).parent / 'active.json'\n"
+        "named = selection.parent / '.quanta-index-deployment.lock'\n"
+        "assert os.path.samestat(os.fstat(fd), named.stat())\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        f"Path({str(output)!r}).write_text(json.dumps({{'approval': os.environ['QUANTA_NATIVE_RETIREMENT_APPROVAL_PATH_V2'], 'policy': os.environ['QUANTA_NATIVE_RETIREMENT_DECISION_POLICY_PATH_V2']}}))\n"
+    )
+    _selected, request = selection_fixture(
+        tmp_path.resolve(), binary_bytes=program.encode(), retired_policy=True,
+    )
+    approval_file = tmp_path / "approved-native-q.json"
+    approval_file.write_text('{"payload":{},"signature_hex":"00"}')
+    approval_file.chmod(0o600)
+    monkeypatch.setattr(approval, "verify_installed_approval", lambda *_args, **_kwargs: None)
+    assert launcher.serve_selection(
+        request["selection_path"], approval_path=approval_file,
+        decision_policy_path=Path(request["decision_policy_path"]),
+    ) == 0
+    assert json.loads(output.read_text()) == {
+        "approval": str(approval_file), "policy": request["decision_policy_path"],
+    }
+
+
+def test_retirement_approval_publishes_canonical_receipt_and_replays_exactly(tmp_path, monkeypatch):
+    selected, request = selection_fixture(tmp_path.resolve(), retired_policy=True)
+    manifest = b"installed four-role release"
+    key = Ed25519PrivateKey.generate()
+    active = signed_product_active(key, tmp_path, sha(manifest))
+    installed = {
+        "active-generation.json": active,
+        "deployment-public-key.bin": key.public_key().public_bytes_raw(),
+        "release-manifest.json": manifest,
+    }
+    monkeypatch.setattr(approval, "_installed_bytes", lambda path, _limit: installed[path.name])
+    monkeypatch.setattr(launcher, "_run_selected_command", Mock(return_value=0))
+    target = tmp_path / "approved-native-q.json"
+    call = dict(
+        q_sha256=selected.binary_sha256, active_sha256=sha(active),
+        manifest_sha256=sha(manifest), sign=key.sign, launcher=launcher,
+        receipt_path=target,
+    )
+    original = launcher._publish_control_file_locked
+
+    def fail_before_rename(*args, **kwargs):
+        def fault(point):
+            if point == "after_file_fsync":
+                raise RuntimeError("injected pre-rename failure")
+        return original(*args, fault_hook=fault, **kwargs)
+
+    monkeypatch.setattr(launcher, "_publish_control_file_locked", fail_before_rename)
+    with pytest.raises(launcher.SelectionError, match="selection was not changed"):
+        approval.approve_selected_install(request, **call)
+    assert not target.exists()
+    assert not list(tmp_path.glob(".approved-native-q.json.tmp-*"))
+    monkeypatch.setattr(launcher, "_publish_control_file_locked", original)
+    issued = approval.approve_selected_install(request, **call)
+    exact = approval._canonical_bytes(issued) + b"\n"
+    assert target.read_bytes() == exact
+    assert approval.approve_selected_install(request, **call) == issued
+    assert target.read_bytes() == exact
+    with pytest.raises(ValueError, match="deployment-root file"):
+        approval.approve_selected_install(
+            request, **{**call, "receipt_path": tmp_path.parent / "foreign.json"},
+        )
+    target.write_bytes(b"foreign")
+    with pytest.raises(launcher.PersistenceUncertain, match="retained control file"):
+        approval.approve_selected_install(request, **call)
+    assert target.read_bytes() == b"foreign"
 
 
 def test_d_approves_the_selected_q_and_f_requires_the_same_install(tmp_path, monkeypatch):

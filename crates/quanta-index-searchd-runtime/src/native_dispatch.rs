@@ -148,6 +148,34 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                         .into(),
             });
         }
+        let mut admitted_work = None;
+        if let Some(retirement) = &self.retirement_approval {
+            // Resume and Reconfigure inspect durable objects. Give the policy
+            // read its own admitted Control scope, then release it before the
+            // request enters its normal worker/admission path.
+            let reservation = match ReservationGuard::try_acquire(
+                Arc::clone(&self.control_scheduler),
+                self.control_need,
+            ) {
+                Some(reservation) => reservation,
+                None => return NativeReply::Error(wire_error(&self.control_scheduler.denial())),
+            };
+            let mut work = WorkBudget::with_request(self.limits, budget.clone());
+            work.bind_memory_scope(reservation.memory_scope());
+            let checked = self.check_retired_request_v2(retirement, &request, &mut work);
+            work.bind_memory_scope(None);
+            drop(reservation);
+            match checked {
+                Ok(Some(reply)) => {
+                    return self
+                        .canonical_response(|| Ok(reply))
+                        .unwrap_or_else(|error| NativeReply::Error(wire_error(&error)));
+                }
+                Ok(None) => {}
+                Err(error) => return NativeReply::Error(wire_error(&error)),
+            }
+            admitted_work = Some(work);
+        }
         if let NativeIndexRequest::BeginInput(operation) = &request
             && let Some(admission) = &self.process_memory_admission
             && let Err(error) = admission.admit_publication_start()
@@ -174,6 +202,13 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 Err(resume_error) => return NativeReply::Error(wire_error(&resume_error)),
             }
         }
+        // Carry the policy read's usage into the ordinary route. A second
+        // WorkBudget would grant the same request a second reads/bytes limit.
+        let mut take_work = || {
+            admitted_work
+                .take()
+                .unwrap_or_else(|| WorkBudget::with_request(self.limits, budget.clone()))
+        };
         let result = match request {
             NativeIndexRequest::ReadSession(request) => {
                 crate::native_read_session_transport::dispatch(self, context, request, budget)
@@ -205,13 +240,13 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 instance,
                 query,
             } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 crate::native_graph_transport::query(self, selection, instance, query, &mut work)
                     .map(NativeReply::Graph)
             }
             NativeIndexRequest::Submit(request) => {
                 let key = request.operation;
-                let work = WorkBudget::with_request(self.limits, budget.clone());
+                let work = take_work();
                 self.canonical_response(|| {
                     self.submitted_or_reconcile(
                         key,
@@ -221,7 +256,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 })
             }
             NativeIndexRequest::Resume(key) => {
-                let work = WorkBudget::with_request(self.limits, budget.clone());
+                let work = take_work();
                 self.canonical_response(|| {
                     self.submitted_or_reconcile(
                         key,
@@ -231,11 +266,11 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 })
             }
             NativeIndexRequest::ReplayDslV1(input) => {
-                let work = WorkBudget::with_request(self.limits, budget.clone());
+                let work = take_work();
                 self.canonical_response(|| self.replay_dsl(input, work))
             }
             NativeIndexRequest::LookupSourceOwners { selection, owners } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 work.checkpoint().and_then(|()| {
                     self.lookup_source_owners(selection, &owners, &mut work)
                         .map(NativeReply::SourceOwners)
@@ -246,7 +281,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 projection,
                 owners,
             } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 work.checkpoint().and_then(|()| {
                     self.lookup_projection_owners(selection, projection, &owners, &mut work)
                         .map(NativeReply::ProjectionOwners)
@@ -255,7 +290,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
             NativeIndexRequest::ListProducerProjectionOwnersV1 {
                 view, projection, producer, after, limit,
             } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 self.list_producer_projection_owners_v1(view, projection, producer, after, limit, &mut work)
                     .map(NativeReply::ProducerProjectionOwnersV1)
             }
@@ -266,7 +301,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 after,
                 limit,
             } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 work.checkpoint().and_then(|()| {
                     self.diff_projection_source_owners(
                         selection, projection, producer, after, limit, &mut work,
@@ -280,7 +315,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 after,
                 limit,
             } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 work.checkpoint().and_then(|()| {
                     self.list_producer_source_owners(selection, producer, after, limit, &mut work)
                         .map(NativeReply::ProducerSourceOwners)
@@ -293,7 +328,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 after,
                 limit,
             } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 work.checkpoint().and_then(|()| {
                     self.search_literal(selection, instance, literal, after, limit, &mut work)
                         .map(NativeReply::Literal)
@@ -306,7 +341,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 after,
                 limit,
             } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 work.checkpoint().and_then(|()| {
                     self.query_paths(selection, instance, prefix, after, limit, &mut work)
                         .map(NativeReply::Path)
@@ -319,7 +354,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 after,
                 limit,
             } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 work.checkpoint().and_then(|()| {
                     self.query_repository_paths(
                         selection, instance, prefix, after, limit, &mut work,
@@ -336,7 +371,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 instance,
                 query,
             } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 let mut stage = ReadFailureStage::Checkpoint;
                 let result = work.checkpoint().and_then(|()| {
                     self.search_text(selection, instance, &query, false, &mut work, &mut stage)
@@ -357,7 +392,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 instance,
                 query,
             } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 let mut stage = ReadFailureStage::Checkpoint;
                 let result = work.checkpoint().and_then(|()| {
                     self.search_text(selection, instance, &query, true, &mut work, &mut stage)
@@ -378,7 +413,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 instance,
                 query,
             } => {
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 work.checkpoint().and_then(|()| {
                     self.search_semantic(selection, instance, query, &mut work)
                         .map(NativeReply::Semantic)
@@ -425,7 +460,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                         | NativeIndexRequest::ObserveCandidateInstallationV1
                         | NativeIndexRequest::ResolveProtectedSourceHead { .. }
                 );
-                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                let mut work = take_work();
                 let mut read_view_stage = ReadFailureStage::Checkpoint;
                 let result = (|| {
                     work.checkpoint().inspect_err(|error| {

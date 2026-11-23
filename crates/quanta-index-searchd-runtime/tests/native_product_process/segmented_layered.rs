@@ -12,19 +12,6 @@ fn layered_text_spec() -> InstanceSpec {
     spec
 }
 
-fn layered_file_spec() -> InstanceSpec {
-    InstanceSpec {
-        instance: IndexInstanceId([17; 16]),
-        kind: IndexKind([18; 16]),
-        group: PublicationGroupId([9; 16]),
-        activation: GroupActivation::CoreRequired,
-        input_domain: InputDomain::SourceLocal,
-        schema: SchemaId([10; 16]),
-        policy: Digest([21; 32]),
-        format: StorageFormatId([19; 16]),
-    }
-}
-
 fn owner(id: u8) -> OwnerKey {
     OwnerKey {
         producer: operation(2).producer,
@@ -105,7 +92,7 @@ fn configure_layered(client: &NativeUdsClient) -> TestResult<ViewRef> {
     let profile = client.stage_profile(
         ingress,
         IndexProfile {
-            instances: vec![layered_file_spec(), layered_text_spec()],
+            instances: vec![file_spec(), layered_text_spec()],
         },
         &budget(),
     )?;
@@ -135,25 +122,28 @@ fn prepare_advance(
     prior: ViewRef,
     mutations: impl IntoIterator<Item = OwnerMutation>,
 ) -> TestResult<UpdateRequest> {
-    let sequence = ingress.operation.sequence;
+    let operation = ingress.operation;
     let before = client.read_view(ViewSelection::Exact(prior), &budget())?;
     let owners = client.stage_mutations(ingress, mutations, &budget())?;
-    let event_sequence = sequence.checked_sub(1).ok_or("source event underflow")?;
+    let event_sequence = operation
+        .sequence
+        .checked_sub(1)
+        .ok_or("source event underflow")?;
     let mut transition = SourceTransition {
         expected_source: before.source,
         owners,
         events: Vec::new(),
     };
     transition.events.push(SourceEvent {
-        producer: operation(sequence).producer,
-        stream: operation(sequence).stream,
-        stream_epoch: 1,
+        producer: operation.producer,
+        stream: operation.stream,
+        stream_epoch: operation.stream_epoch,
         predecessor: event_sequence.checked_sub(1).unwrap_or(0),
         sequence: event_sequence,
         payload: transition.owner_digest()?,
     });
     Ok(UpdateRequest {
-        operation: operation(sequence),
+        operation,
         expected_view: prior,
         kind: UpdateKind::SourceAdvance(transition),
     })
@@ -166,7 +156,7 @@ fn verify_paths(
 ) -> TestResult {
     let page = client.query_repository_paths(
         ViewSelection::Exact(view),
-        layered_file_spec().instance,
+        file_spec().instance,
         String::new(),
         None,
         16,
@@ -1132,8 +1122,28 @@ fn layered_text_sixteen_live_layers_compact_without_losing_owners() -> TestResul
     let mut final_paths = expected_paths.clone();
     final_paths[0].2 = *revived;
     final_paths[15].2 = *replacement;
+    // The source set still has 16 two-token documents and `revised` occurs
+    // once per matching document. Owner 16 has taken owner 1's place.
+    let tied_score = before.hits.first().ok_or("missing repack rank")?.score;
+    let expected_rank: Vec<_> = final_paths[1..]
+        .iter()
+        .map(|&(path, owner, _)| (owner, path, tied_score))
+        .collect();
     let verify_final = |reader: &NativeUdsClient| -> TestResult {
         verify_paths(reader, revived_view, &final_paths)?;
+        let ranked = rank(reader, revived_view)?;
+        require(ranked.exhaustive, "post-compaction rank was truncated")?;
+        require_equal(&ranked.matched, &15, "post-compaction shared term count")?;
+        let observed_rank: Vec<_> = ranked
+            .hits
+            .iter()
+            .map(|hit| (hit.owner, hit.path.as_str(), hit.score))
+            .collect();
+        require_equal(
+            &observed_rank,
+            &expected_rank,
+            "post-compaction shared term rank and score",
+        )?;
         for (query, expected) in [
             ("newowner00", None),
             ("oldowner15", None),
@@ -1153,27 +1163,31 @@ fn layered_text_sixteen_live_layers_compact_without_losing_owners() -> TestResul
     verify_final(&client)?;
     // A writer that still holds the pre-delete source cannot erase the
     // re-added owner, even when the new posting lives beside compacted layers.
-    let ingress = client.begin_input(operation(22), &budget())?;
-    let mut request = prepare_advance(
-        &client,
-        ingress,
-        revived_view,
-        [OwnerMutation {
-            owner: owner(1),
-            expected: Some(latest[0]),
-            next: None,
-        }],
-    )?;
-    let UpdateKind::SourceAdvance(ref mut transition) = request.kind else {
-        return Err("layered stale CAS request is not a source advance".into());
-    };
-    let event = transition
-        .events
-        .first_mut()
-        .ok_or("missing source event")?;
-    event.predecessor = 18;
-    event.sequence = 19;
-    let stale_source = client.submit(request, &budget())?;
+    let delete_revived =
+        |reader: &NativeUdsClient, operation, expected, predecessor| -> TestResult<_> {
+            let ingress = reader.begin_input(operation, &budget())?;
+            let mut request = prepare_advance(
+                reader,
+                ingress,
+                revived_view,
+                [OwnerMutation {
+                    owner: owner(1),
+                    expected: Some(expected),
+                    next: None,
+                }],
+            )?;
+            let UpdateKind::SourceAdvance(ref mut transition) = request.kind else {
+                return Err("layered CAS request is not a source advance".into());
+            };
+            let event = transition
+                .events
+                .first_mut()
+                .ok_or("missing source event")?;
+            event.predecessor = predecessor;
+            event.sequence = predecessor + 1;
+            Ok(reader.submit(request, &budget())?)
+        };
+    let stale_source = delete_revived(&client, operation(22), latest[0], 18)?;
     require(
         matches!(
             &stale_source,
@@ -1222,6 +1236,20 @@ fn layered_text_sixteen_live_layers_compact_without_losing_owners() -> TestResul
     )?;
     verify_text(&reader, removed, "newowner00", None)?;
     verify_final(&reader)?;
+    // The refused event still binds its original digest. A fresh stream
+    // supplies the current-reference control against the same view.
+    let control = OperationKey {
+        stream: StreamId([8; 16]),
+        ..operation(2)
+    };
+    let deleted = published(&delete_revived(&reader, control, *revived, 0)?)?;
+    verify_text(&reader, deleted, "revivedowner00", None)?;
+    verify_text(
+        &reader,
+        revived_view,
+        "revivedowner00",
+        Some((paths[0].as_str(), owner(1), *revived)),
+    )?;
     reopened.stop()
 }
 

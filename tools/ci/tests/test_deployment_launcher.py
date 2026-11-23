@@ -801,7 +801,7 @@ else:
     assert "--native-candidate-q-config" not in flags
     assert "--native-candidate-q-config-sha256" not in flags
 if flags.get("--native-candidate-source-mode") == "source-only":
-    image = Path(os.environ["FIXTURE_LEGACY_BINARY"])
+    image = Path(flags["--native-q-executable"])
     assert flags["--native-candidate-source-exporter-executable"] == str(image)
     assert flags["--native-candidate-source-exporter-executable-sha256"] == sha256(image.read_bytes()).hexdigest()
 else:
@@ -844,7 +844,6 @@ print(os.environ["FIXTURE_HANDOFF"])
         "--producer-env", f"FIXTURE_CACHE={cache}",
         "--producer-env", f"FIXTURE_DEPLOYMENT_LOCK={deployment / launcher.DEPLOYMENT_LOCK_NAME}",
         "--producer-env", f"FIXTURE_HANDOFF={json.dumps(expected_handoff)}",
-        "--producer-env", f"FIXTURE_LEGACY_BINARY={binary}",
         "--timeout-seconds", "5", "--", "--native-candidate-expected-snapshot", "1",
         "--native-candidate-resident-socket", str(cache / "resident.sock"),
         "--native-candidate-runtime-session-id", "retained-session",

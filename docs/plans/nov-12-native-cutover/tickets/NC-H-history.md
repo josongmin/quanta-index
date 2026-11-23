@@ -3752,6 +3752,79 @@ execution and installed qualification remain separate.
 [Foreign-repository mutation](/tmp/nc-h-native-history-inventory.GnUV5d48/red.log) ·
 [S fast scope](/tmp/nc-h-native-history-inventory.GnUV5d48/s-history-gates-final.log).
 
+The maintained S consumer regression now also checks that the four optional
+CLI suites have a reachable canonical runner. The production registry keeps
+them optional. Removing any one of the four runner calls from a scratch gate
+fails the check. The current scoped Python checks passed **14/14**.
+[Consumer regression](/Users/songmin/Documents/code-new/semantica-codegraph-v2/tools/testing/tests/test_history_required_suite_contract_v1.py:51) ·
+[Optional consumer mutations](/tmp/nc-h-consumer-regression.6DlXJgHR/s-optional-consumer-negative.log) ·
+[S recheck](/tmp/nc-h-consumer-regression.6DlXJgHR/s-fast.log).
+
+The focused macOS History process gate verified the local old-Q executable
+digest and resolved locked metadata. It entered the existing build lane and
+returned **exit 101 · 0/5** while compiling the current Runtime. The active
+RepoMap retirement changes produce four diagnostics in the new retirement
+modules. They concern `OperationJournalPort` method resolution, sibling
+visibility of `check_retired_request_v2` and two unused imports, including
+Linux-only `PathBuf` on macOS. The tracked History fixture and selected Cargo
+hashes matched before and after this run. The previous built-binary 5/5 and
+the separate owner-gate 10/10 retain their recorded scopes.
+[Process compiler result](/tmp/nc-h-uds-current.1BSMs1YL/q-uds.log) ·
+[Retirement owner scope](../../nov-23-repomap-retirement/02-quanta-index.md).
+
+The optional S installed Source failure suite now declares the five tests
+mounted by the Linux daemon integration target. They cover export and
+prebind cleanup, primary error preservation when cleanup refuses, retry
+after bind, and exact retry after signed COMMIT acknowledgment loss. The old
+entry named seven removed tests and claimed RepoMap failure coverage. The
+source roster check is part of the existing Python CI step. It reproduced the
+old mismatch and refused each of the five single-witness omissions. The
+canonical runner resolved five tests in the existing feature class. The
+fast focused suite passed **15/15** and the local reproduction of the
+existing CI test group passed **230/230**. Signed Linux process bodies
+remain **NOT_RUN · 0/5**.
+[S registry](/Users/songmin/Documents/code-new/semantica-codegraph-v2/tools/testing/suite-registry-v1.yaml:15300) ·
+[Fast checks](/tmp/nc-h-source-witness.LajuzHY8/green.log) ·
+[Local CI test group](/tmp/nc-h-source-witness.LajuzHY8/ci-fast.log) ·
+[Old roster failure](/tmp/nc-h-source-witness.LajuzHY8/red-stale-roster.log) ·
+[Omission probes](/tmp/nc-h-source-witness.LajuzHY8/missing-witness.log) ·
+[Runner resolution](/tmp/nc-h-source-witness.LajuzHY8/resolve.log).
+
+The Linux Q History recipe selects eight Rust bodies. Its Python gate test
+now accounts for the protected two-Source import and reopen in
+`native_index_uds` and the Legacy-to-fresh-Native rollback refusal in
+`native_product_process`. The old six-name expectation failed on Linux.
+The updated test checks the exact selector list, accepts all eight test
+events and refuses an omitted result from either binary. The local Linux
+roster and gate checks passed **9/9** with Just 1.58.0. The macOS Python
+policy and proof checks passed **290/290**. These runs exercise the gate
+with controlled events. The Linux Rust bodies remain **NOT_RUN · 0/8**.
+[Q gate regression](../../../../tools/ci/tests/test_circleci_authority.py#L214) ·
+[Linux before](/tmp/nc-h-linux-roster.dw3EFdjE/linux-red.log) ·
+[Linux after](/tmp/nc-h-linux-roster.dw3EFdjE/linux-green.log) ·
+[macOS Python checks](/tmp/nc-h-linux-roster.dw3EFdjE/macos-green.log).
+
+The existing macOS process lane passed the earlier four Runtime diagnostics
+after the retirement owner repaired the imports and visibility. The next
+compiler result was **exit 101 · 0/5** at `verify_selected_v2`. Its
+`pub(crate)` signature exposed the parent module's private
+`ValidatedConfig` and `-D private-interfaces` stopped compilation. Both
+platform variants now use parent-module visibility. The follow-up with the
+same old-Q pin entered the existing build lane and returned
+**exit 101 · 0/5**. Catalog's new retirement-policy row and reader used
+`Digest` before the import was present. The current Catalog file contains
+that import. Catalog, Core, SDK and Runtime inputs changed during the run.
+A fresh runtime result needs the retirement owner's stable source.
+[Compiler result](/tmp/nc-h-uds-repaired.JYm1lHTy/q-uds.log) ·
+[Follow-up compiler result](/tmp/nc-h-uds-visibility.7mWV1GJt/q-uds.log) ·
+[Changed inputs](/tmp/nc-h-uds-visibility.7mWV1GJt/input-drift.diff).
+
+The S History suite registry and exact-witness Python checks also passed
+**15/15** in the local Linux container. The external build volume was
+absent. Current S Linux Candidate CLI and signed process bodies remain
+unexecuted.
+[S Linux source checks](/tmp/nc-h-linux-roster.dw3EFdjE/s-linux-static.log).
+
 ## Retired section links
 
 These fragments recover historical source/dispatch sections; current work follows

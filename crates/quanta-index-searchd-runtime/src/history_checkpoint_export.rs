@@ -308,7 +308,12 @@ pub fn run(command: &NativeHistoryExportCommandV1, request: RequestBudgetV1) -> 
                 command.expected_current_sha256,
                 budget,
                 |selection, budget| {
-                    if selection.native_command_v1().is_some() {
+                    if let Some(selected) = selection.native_command_v1() {
+                        ensure!(
+                            selected.config_path == command.config_path
+                                && selected.config_digest == Some(command.config_digest),
+                            "Native History export config differs from the held selection"
+                        );
                         return native_v1::export_v1(
                             selection,
                             &command.scope,

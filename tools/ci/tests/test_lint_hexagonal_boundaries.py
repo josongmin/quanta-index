@@ -75,15 +75,43 @@ def test_native_dto_construction_protocol_does_not_admit_service_ports(
     )
 
 
-def test_path_dependencies_are_named_as_cargo_names_them(tmp_path: Path) -> None:
+def test_domain_isolation_detects_code_without_matching_comments_or_strings(
+    tmp_path: Path, monkeypatch
+) -> None:
+    lint = _load_lint()
+    crates = tmp_path / "crates"
+    domains = crates / "quanta-index-core" / "src" / "domains"
+    lexical = domains / "lexical" / "service.rs"
+    lexical.parent.mkdir(parents=True)
+    hybrid = domains / "hybrid" / "service.rs"
+    hybrid.parent.mkdir(parents=True)
+    hybrid.write_text("use crate::domains::semantic::SemanticPolicy;\n")
+    harmless = (
+        "// crate::domains::semantic::SemanticPolicy\n"
+        "/* domains::semantic::SemanticPolicy */\n"
+        'const NORMAL: &str = "crate::domains::semantic::SemanticPolicy";\n'
+        'const RAW: &str = r##"domains::semantic::SemanticPolicy"##;\n'
+    )
+    lexical.write_text(harmless + "use crate::domains::semantic::SemanticPolicy;\n")
+    monkeypatch.setattr(lint, "CRATES", crates)
+
+    violations = lint.check_domain_isolation()
+    assert [(violation.path, violation.message) for violation in violations] == [
+        (lexical, "domain 'lexical' must not reference domain 'semantic'")
+    ]
+
+    lexical.write_text(harmless)
+    assert lint.check_domain_isolation() == []
+
+
+def test_dependencies_are_named_as_cargo_names_them() -> None:
     """The table key (or `package`) is the name, never the path's basename.
 
     Deriving the name from the path, underscored, once made every internal
     dependency invisible to the allowlist check.
     """
     lint = _load_lint()
-    cargo_toml = tmp_path / "Cargo.toml"
-    cargo_toml.write_text(
+    manifest = lint.tomllib.loads(
         """
 [package]
 name = "quanta-index-example"
@@ -91,20 +119,57 @@ name = "quanta-index-example"
 [dependencies]
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 alias = { package = "quanta-index-contract", version = "0.1.0", path = "../somewhere-else" }
-serde = { workspace = true }
+codec = { workspace = true }
 
-[dev-dependencies]
+[target.'cfg(unix)'.build-dependencies]
+quanta-index-storage = "0.1.0"
+
+[target.'cfg(unix)'.dev-dependencies]
 quanta-index-searchd-harness = { version = "0.1.0", path = "../quanta-index-searchd-harness" }
-""",
-        encoding="utf-8",
+"""
     )
-    assert lint.path_dependencies(cargo_toml, lint.PRODUCTION_SECTIONS) == {
+    workspace = {"codec": {"package": "quanta-index-cbor", "path": "crates/quanta-index-cbor"}}
+    assert lint.dependency_packages(manifest, workspace, lint.PRODUCTION_SECTIONS) == {
         "quanta-index-core",
         "quanta-index-contract",
+        "quanta-index-cbor",
+        "quanta-index-storage",
     }
-    assert lint.path_dependencies(cargo_toml, lint.DEV_SECTIONS) == {
+    assert lint.dependency_packages(manifest, workspace, lint.DEV_SECTIONS) == {
         "quanta-index-searchd-harness",
     }
+
+
+def test_codec_and_unicode_are_leaf_dependencies(tmp_path: Path, monkeypatch) -> None:
+    lint = _load_lint()
+    crates = tmp_path / "crates"
+    monkeypatch.setattr(lint, "CRATES", crates)
+
+    def manifest(name: str, dependencies: str = "") -> Path:
+        folder = crates / name
+        folder.mkdir()
+        path = folder / "Cargo.toml"
+        path.write_text(f'[package]\nname = "{name}"\n{dependencies}', encoding="utf-8")
+        return path
+
+    crates.mkdir()
+    codec = manifest("quanta-index-cbor")
+    manifest("quanta-index-unicode")
+    manifest("quanta-index-sqlite-fd-ledger", "\n[workspace]\n")
+    manifest("quanta-index-sdk", '\n[dependencies]\nquanta-index-cbor = "0.1.0"\n')
+    manifest("quanta-index-contract-base", '\n[dependencies]\nquanta-index-unicode = "0.1.0"\n')
+    assert lint.check_crate_dependency_matrix() == []
+
+    codec.write_text(
+        codec.read_text()
+        + "\n[target.'cfg(unix)'.dependencies]\n"
+        + 'service = { package = "quanta-index-ipc", path = "../quanta-index-ipc" }\n',
+        encoding="utf-8",
+    )
+    violations = lint.check_crate_dependency_matrix()
+    assert [(violation.path, violation.message) for violation in violations] == [
+        (codec, "quanta-index-cbor must not depend on quanta-index-ipc (allowed: [])")
+    ]
 
 
 def test_an_unlisted_internal_dependency_is_a_violation(tmp_path: Path, monkeypatch) -> None:
@@ -159,8 +224,9 @@ def test_search_plane_real_adapter_is_test_only(tmp_path: Path, monkeypatch) -> 
     assert "must not depend on quanta-index-lexical" in messages[0]
 
 
-
-def test_native_product_cli_and_scratch_composition_are_test_only(tmp_path: Path, monkeypatch) -> None:
+def test_native_product_cli_and_scratch_composition_are_test_only(
+    tmp_path: Path, monkeypatch
+) -> None:
     lint = _load_lint()
     runtime = tmp_path / "crates" / "quanta-index-searchd-runtime"
     runtime.mkdir(parents=True)
@@ -169,10 +235,10 @@ def test_native_product_cli_and_scratch_composition_are_test_only(tmp_path: Path
     monkeypatch.setattr(lint, "CRATES", tmp_path / "crates")
     for dependency in ("quanta-index-searchctl", "quanta-index-scratch-sqlite"):
         edge = f'{dependency} = {{ path = "../{dependency}" }}\n'
-        manifest.write_text(package + '[dev-dependencies]\n' + edge, encoding="utf-8")
+        manifest.write_text(package + "[dev-dependencies]\n" + edge, encoding="utf-8")
         assert lint.check_crate_dependency_matrix() == []
 
-        manifest.write_text(package + '[dependencies]\n' + edge, encoding="utf-8")
+        manifest.write_text(package + "[dependencies]\n" + edge, encoding="utf-8")
         messages = [violation.message for violation in lint.check_crate_dependency_matrix()]
         assert len(messages) == 1
         assert f"must not depend on {dependency}" in messages[0]
@@ -235,7 +301,9 @@ def test_native_embedding_provider_edge_is_composition_only(tmp_path: Path, monk
     monkeypatch.setattr(lint, "CRATES", crates)
     violations = lint.check_crate_dependency_matrix()
     assert {violation.path.parent.name for violation in violations} == set(names[1:])
-    assert all("must not depend on quanta-index-embed" in violation.message for violation in violations)
+    assert all(
+        "must not depend on quanta-index-embed" in violation.message for violation in violations
+    )
 
 
 def test_cfg_test_path_module_is_not_a_production_transport_leak(tmp_path: Path) -> None:
@@ -310,7 +378,7 @@ def test_core_vendor_alias_cannot_bypass_dependency_boundary(tmp_path: Path, mon
 [package]
 name = "quanta-index-core"
 
-[dependencies]
+[target.'cfg(unix)'.build-dependencies]
 storage = { package = "rusqlite", version = "0.40" }
 """,
         encoding="utf-8",

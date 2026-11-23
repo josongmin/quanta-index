@@ -83,6 +83,7 @@ fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestR
             }),
         ),
     ];
+    let route_count = routes.len();
     let cancelled = RequestBudgetV1::unbounded();
     cancelled.cancel_handle().cancel();
     for (checkpoint, request) in routes {
@@ -104,8 +105,10 @@ fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestR
         .iter()
         .filter(|sample| sample.name.as_ref() == "lq_typed_error_cancelled_total")
         .count();
-    if cancelled != 8 {
-        return Err(format!("expected 8 cancelled-error samples, got {cancelled}").into());
+    if cancelled != route_count {
+        return Err(
+            format!("expected {route_count} cancelled-error samples, got {cancelled}").into(),
+        );
     }
     // A cancellation is never a deadline (QI-BB-002): the two counters
     // are distinct, globally and per route.
@@ -115,10 +118,11 @@ fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestR
             sample.name.ends_with("_cancelled_total") && sample.name.starts_with("lq_route_")
         })
         .count();
-    if per_route_cancelled != 8 {
-        return Err(
-            format!("expected 8 per-route cancelled samples, got {per_route_cancelled}").into(),
-        );
+    if per_route_cancelled != route_count {
+        return Err(format!(
+            "expected {route_count} per-route cancelled samples, got {per_route_cancelled}"
+        )
+        .into());
     }
     if samples.iter().any(|sample| {
         sample.name.as_ref() == "lq_typed_error_other_total"

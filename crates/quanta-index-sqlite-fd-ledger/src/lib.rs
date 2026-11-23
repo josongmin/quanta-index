@@ -102,7 +102,17 @@ pub struct FdLedger {
 }
 
 impl FdLedger {
+    /// Minimum requested slot bytes. `try_reserve_exact` may allocate more,
+    /// so this is not a hard-memory-quota admission amount.
+    pub fn minimum_slot_backing_bytes(max_entries: NonZeroUsize) -> Result<u64, LedgerError> {
+        let bytes = std::mem::size_of::<Option<Entry>>()
+            .checked_mul(max_entries.get())
+            .ok_or(LedgerError::MemoryUnavailable)?;
+        u64::try_from(bytes).map_err(|_| LedgerError::MemoryUnavailable)
+    }
+
     pub fn with_capacity(max_entries: NonZeroUsize) -> Result<Self, LedgerError> {
+        let _minimum_size = Self::minimum_slot_backing_bytes(max_entries)?;
         let mut entries = Vec::new();
         entries
             .try_reserve_exact(max_entries.get())
@@ -223,7 +233,11 @@ impl FdLedger {
         close_once: impl FnOnce(RawFd) -> Result<(), E>,
     ) -> Result<CloseReport<E>, LedgerError> {
         let mut state = self.lock()?;
-        if current_token(&state, token.fd) != Some(token) {
+        if current_token(&state, token.fd) != Some(token)
+            || !state.entries.iter().flatten().any(|entry| {
+                entry.generation == token.generation && matches!(entry.physical, Physical::Live)
+            })
+        {
             return Err(LedgerError::NotCurrent);
         }
         let close_result = match catch_unwind(AssertUnwindSafe(|| close_once(token.fd))) {
@@ -343,6 +357,14 @@ mod tests {
             Ok(CloseReport::Uncertain("EINTR"))
         ));
         assert_eq!(attempts, 1);
+        assert!(matches!(
+            ledger.close_with(old, |_| {
+                attempts += 1;
+                Ok::<_, &str>(())
+            }),
+            Err(LedgerError::NotCurrent)
+        ));
+        assert_eq!(attempts, 1);
         let OpenDisposition::Ready(new) = ledger
             .open_with(id(2), id(12), || Ok::<_, ()>(5), |_| Some(identity(20)))
             .unwrap()
@@ -395,6 +417,14 @@ mod tests {
                 Err::<(), _>("EBADF")
             }),
             Ok(CloseReport::Uncertain("EBADF"))
+        ));
+        assert_eq!(calls, 1);
+        assert!(matches!(
+            ledger.close_with(token, |_| {
+                calls += 1;
+                Ok::<_, &str>(())
+            }),
+            Err(LedgerError::NotCurrent)
         ));
         assert_eq!(calls, 1);
         assert_eq!(ledger.release_owner(token), Ok(None));

@@ -291,6 +291,10 @@ rust-audit-explicit-fd:
 rust-test-ciborium-no-default:
     {{cargo}} --lane test-ciborium-no-default-lane test -p ciborium --no-default-features --test no_std --locked
 
+# Independently verify the registry dependency without workspace feature unification.
+rust-test-ciborium-registry-no-default:
+    {{cargo}} --lane test-ciborium-no-default-lane nextest run --manifest-path tools/ci/ciborium-no-default-consumer/Cargo.toml --locked --lib --no-tests fail
+
 # Local test loop that keeps unit and binary coverage but skips integration/E2E.
 rust-test-fast:
     {{cargo}} --lane test-fast-lane test --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime
@@ -501,7 +505,9 @@ rust-test-native-history lane="test-workspace-lane": require-native-legacy-searc
     )
     if [[ {{os()}} == linux ]]; then
         targets+=(--test native_product_process)
+        cases+=(native_index_uds:$history::native_protected::native_protected_two_source_heads_import_seal_and_reopen)
         cases+=(native_product_process:native_boot::offline_legacy_history_export_streams_real_rows_and_terminal_ack)
+        cases+=(native_product_process:native_boot::legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback)
     fi
     filterset=
     for case in "${cases[@]}"; do
@@ -598,13 +604,16 @@ rust-test-native-dsl-cli:
 # Native Text and Literal correctness, retained reads and recovery.
 rust-test-native-lexical lane="test-workspace-lane":
     {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --offline --no-default-features \
+        -p quanta-index-sdk --lib --no-tests fail --no-fail-fast --test-threads 1 \
+        -E 'test(/^native_uds::read_session::(page|path_page_v1)::tests::/) | test(/^native_uds::tests::literal_(query_rejects_malformed_pages_and_owner_cursors|continuation_requires_exact_view_before_connecting)$/)'
+    {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --offline --no-default-features \
         -p quanta-index-kernel --test native_lifecycle --test native_bootstrap \
         --no-tests fail --no-fail-fast --test-threads 1 \
         -E 'test(=lexical_cold_source_advance::product_shaped_cold_text_source_advance_preserves_boundary_work_and_postings) | test(=occurrence_blocks::native_incremental_text_matches_fresh_full_rank_and_score) | test(=literal_patch_does_not_walk_unaffected_directory_pages) | test(=existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens) | test(=literal_seal::literal_patch_second_directory_diff_page_failure_preserves_old_view)'
     {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --offline --no-default-features \
         -p quanta-index-searchd-runtime --test native_index_uds --test native_product_process \
         --no-tests fail --no-fail-fast --test-threads 1 \
-        -E 'test(=native_uds_text_query_binds_pinned_view_and_fixed_bm25_gold) | test(=read_sessions::query::global_text_pages_keep_original_view_across_publication_and_release) | test(=native_kill_reopen_retains_view_and_reclaims_owned_scratch) | test(/^text_shard_contract::native_(multigeneration_delta_matches_model_and_independent_full_after_reopen|boundary_delta_matches_independent_full_and_cold_reopen|multipage_lexical_delta_survives_sigkill_and_matches_full)$/) | test(/^segmented_layered::(selected_native_text_posting_page_faults_are_typed|layered_text_delta_refuses_a_corrupt_selected_base_posting_page)$/)'
+        -E 'test(=native_uds_text_query_binds_pinned_view_and_fixed_bm25_gold) | test(/^read_sessions::query::(global_text_pages_keep_original_view_across_publication_and_release|text_page_refusals_preserve_session_pin_and_original_deadline)$/) | test(=read_sessions::excluded_text::excluded_binary_and_utf8_source_stay_path_only_through_update_noop_delete_and_reopen) | test(=native_kill_reopen_retains_view_and_reclaims_owned_scratch) | test(/^text_shard_contract::native_(multigeneration_delta_matches_model_and_independent_full_after_reopen|boundary_delta_matches_independent_full_and_cold_reopen|multipage_lexical_delta_survives_sigkill_and_matches_full|lexical_partial_mutation_page_recovers_after_sigkill|lexical_commit_rollback_and_truncated_published_ack_preserve_one_operation)$/) | test(/^segmented_layered::(selected_native_text_posting_page_faults_are_typed|layered_text_delta_refuses_a_corrupt_selected_base_posting_page|layered_text_sixteen_live_layers_compact_without_losing_owners)$/)'
 
 rust-test-cli-smoke lane="test-cli-smoke-lane":
     python3 tools/ci/run-local-test-scope.py cli-smoke --lane {{lane}}
@@ -974,6 +983,9 @@ rust-no-allow:
 rust-hexagonal:
     python3 tools/ci/lint/lint-hexagonal-boundaries.py
 
+rust-read-view-ambient:
+    python3 tools/ci/lint/check-read-view-ambient-lookup.py
+
 rust-derive-allowlist:
     python3 tools/ci/lint/check-rust-derive-allowlist.py
 
@@ -1055,16 +1067,20 @@ rust-fuzz-smoke seconds="60":
     env QUANTA_INDEX_BUILD_LANE=fuzz-lq-norm-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz run lq_parse_pipeline -- -max_total_time={{seconds}}'
     env QUANTA_INDEX_BUILD_LANE=fuzz-lq-norm-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz run regex_necessary_gram -- -max_total_time={{seconds}}'
 
-# Produces a fresh full-workspace LCOV artifact, then fails closed if a Rust
-# source line added since `base` is absent or uncovered. cargo-llvm-cov is a
-# tool-owned wrapper, so it runs only after the repository environment is set.
+# Checks changed production Rust lines against fresh full-workspace LCOV.
 rust-coverage-changed base minimum_percent="90":
-    {{cargo}} --lane coverage-lane llvm-cov nextest --workspace --all-features --locked --lcov --output-path /tmp/quanta-index-coverage.lcov
-    python3 tools/ci/lint/check-changed-line-coverage.py --lcov /tmp/quanta-index-coverage.lcov --base {{base}} --minimum-percent {{minimum_percent}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    report=$(mktemp "${TMPDIR:-/tmp}/quanta-index-coverage.XXXXXXXX")
+    trap 'rm -f -- "$report"' EXIT
+    {{quote(cargo)}} --lane coverage-lane llvm-cov nextest --workspace --all-features --locked --lcov --output-path "$report"
+    uv run --frozen --extra dev python tools/ci/lint/check-changed-line-coverage.py \
+        --lcov "$report" --base {{quote(base)}} --minimum-percent {{quote(minimum_percent)}}
 
 rust-policy:
     @just rust-workspace-lints
     @just rust-hexagonal
+    @just rust-read-view-ambient
     @just rust-no-allow
     @just rust-derive-allowlist
     @just rust-cargo-toml-hygiene
@@ -1316,7 +1332,7 @@ rust-test-candidate-activation-release:
 proof-p04-read-view-lifetime-owner:
     @just rust-profile test-read-view-lifetime-owner
     @just rust-profile test-search-plane-read-view-lib
-    @python3 tools/ci/lint/check-read-view-ambient-lookup.py
+    @just rust-read-view-ambient
     @just rust-hexagonal
     @just rust-wire-inventory
     @just rust-public-api

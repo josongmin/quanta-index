@@ -494,6 +494,7 @@ def main() -> int:
 
         parser = get_parser("rust")
         findings = []
+        refusals = []
         scoped = 0
         candidates = 0
         for source_path in rust_source_files((ROOT / "crates", ROOT / "benchmarks")):
@@ -528,7 +529,7 @@ def main() -> int:
                     ):
                         findings.append((relative, line, rule))
                 except ValueError as error:
-                    raise ValueError(f"{relative}: {error}") from error
+                    refusals.append((relative, str(error)))
     except (
         ImportError,
         OSError,
@@ -540,6 +541,10 @@ def main() -> int:
         return 2
     for path, line, rule in findings:
         print(f"{path}:{line}: {rule}")
+    for path, error in refusals:
+        print(f"Rust syntax policy blocked: {path}: {error}", file=sys.stderr)
+    if refusals:
+        return 2
     if findings:
         return 1
     print(f"Rust syntax policy: clean ({scoped} scoped files, {candidates} parsed candidates)")

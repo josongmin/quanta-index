@@ -692,7 +692,7 @@ impl NativeProtectedSourceRoutesV1 {
         checkpoint().map_err(NativeProtectedEncodingErrorV1::Work)?;
         children.sort_unstable();
         children.dedup();
-        if children.len() > crate::native_protocol::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN {
+        if children.len() > super::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN {
             let origin = self
                 .native_origin
                 .as_ref()

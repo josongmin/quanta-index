@@ -1228,6 +1228,16 @@ pub trait WorkClaimPort: Send + Sync {
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<Vec<WorkIntent>, IndexError>;
+    /// Scan due work under one Catalog snapshot and apply an installed
+    /// identity predicate before the caller's limit.
+    fn ready_work_filtered_v2(
+        &self,
+        workspace: WorkspaceKey,
+        epoch: u64,
+        limit: u32,
+        allow: &dyn Fn(&WorkIntent) -> bool,
+        budget: &mut WorkBudget,
+    ) -> Result<Vec<WorkIntent>, IndexError>;
     /// Bounded eligible page. Due managed retries and expired managed claims
     /// precede unstarted pending work: their frozen total lifetime has begun.
     /// Each lane retains timestamp/canonical-work ordering; discovery is read-only

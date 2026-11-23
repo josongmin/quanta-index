@@ -1,4 +1,5 @@
 use super::*;
+use quanta_index_core::index::WorkLimits;
 
 #[test]
 fn native_capacity_refusal_during_catalog_checkpoint_is_not_deferred() -> TestResult {

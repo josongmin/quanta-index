@@ -18,6 +18,8 @@ use anyhow::{Context as _, Result};
 #[path = "native_protected_source_resolve.rs"]
 mod protected_source_resolve;
 mod request;
+#[path = "native_retirement_gate_v2.rs"]
+mod retirement_gate_v2;
 mod service;
 #[path = "native_source_route_seal.rs"]
 mod source_route_seal;
@@ -371,6 +373,7 @@ fn open_native_format(
 pub use crate::native_stub_certificate_projection_v1::StubGrammarPolicy;
 
 pub(super) struct NativeDispatcher {
+    pub(super) retirement_approval: Option<NativeRetirementAuthorityV2>,
     pub(super) read_sessions: Arc<OnceLock<Arc<crate::native_read_sessions::NativeReadSessions>>>,
     pub(super) dsl_corpus_cache: crate::native_read_session_transport::NativeDslCorpusCache,
     pub(super) kernel: Arc<Kernel<SqliteCatalog>>,
@@ -481,6 +484,11 @@ impl NativeDispatcher {
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<ScopedNativeLiteralPage, IndexError> {
+        if after.is_some() && !matches!(selection, ViewSelection::Exact(_)) {
+            return Err(IndexError::InvalidInput(
+                "literal continuation requires an exact view".into(),
+            ));
+        }
         let request = LiteralReadRequest {
             literal,
             after,
@@ -1061,6 +1069,15 @@ pub(super) struct NativeBootAuthority {
     pub(super) physical: Arc<PublicationFileCapacity>,
     pub(super) io: Arc<NativeScratchIo>,
     pub(super) request: RequestBudgetV1,
+    pub(super) retirement_approval: Option<NativeRetirementAuthorityV2>,
+}
+
+pub(super) struct NativeRetirementAuthorityV2 {
+    pub(super) approval: crate::native_product::retirement_approval_v2::VerifiedApprovalV2,
+    pub(super) retired_projections: Vec<quanta_index_contract::index::ProjectionId>,
+    pub(super) retired_instances: Vec<quanta_index_contract::index::IndexInstanceId>,
+    pub(super) _index_memory: quanta_index_core::index::MemoryLease,
+    pub(super) policy_ref: quanta_index_contract::index::RetiredProjectionPolicyRefV1,
 }
 
 pub(super) fn prepare_native_boot_authority(
@@ -1106,6 +1123,7 @@ pub(super) fn prepare_native_boot_authority(
         physical,
         io,
         request: request.clone(),
+        retirement_approval: None,
     })
 }
 
@@ -1205,6 +1223,7 @@ pub(super) fn prepare_native_recovery_boot_authority(
         physical,
         io,
         request: budget.request().clone(),
+        retirement_approval: None,
     })
 }
 
@@ -2472,6 +2491,7 @@ impl NativeIndexService {
             physical,
             io,
             request,
+            retirement_approval,
         } = authority;
         let root = lease.state_root_identity_v1();
         let socket_entry = resolved_socket_entry(socket_path)?;
@@ -2578,6 +2598,7 @@ impl NativeIndexService {
         drop(boot_funding);
         let read_sessions = Arc::new(OnceLock::new());
         let dispatcher = Arc::new(NativeDispatcher {
+            retirement_approval,
             read_sessions: Arc::clone(&read_sessions),
             dsl_corpus_cache: crate::native_read_session_transport::NativeDslCorpusCache::new(
                 dsl_cache_bytes,

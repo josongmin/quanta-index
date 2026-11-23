@@ -6,10 +6,10 @@
 
 | 트랙 | 현재 상태 | 병렬 경계와 다음 합류 |
 | --- | --- | --- |
-| [01 Tree-sitter](01-tree-sitter.md) | **진행 중**. Rust·Python 공식 crate/wheel을 선택했다. Python 관련 838개, 별도 Rust consumer fixture 2개와 2,054개 소스의 선언 비교는 **VERIFIED**다. 실제 benchmark `symbols::tests`는 **NOT_RUN**이다. Go·JS·TS는 순정 문법에서 필수 fixture 회귀가 남았다. | 벤치 Python/Rust 파일만 독립 수정. 각 문법은 호환 후보와 양쪽 소비자 검증을 확보하기 전 삭제하지 않는다. |
+| [01 Tree-sitter](01-tree-sitter.md) | **진행 중**. Rust·Python 공식 crate/wheel을 선택했다. Python 관련 838개, 별도 Rust consumer fixture 2개와 2,054개 소스의 선언 비교는 **VERIFIED**다. Go·JS·TS 순정 문법의 회귀를 처리할 opt-in projection을 추가했지만 실제 benchmark `symbols::tests`, Rust 후보 및 설치 custody는 **NOT_RUN**이다. | 기본 경로는 기존 Go·JS·TS 포크다. 각 문법은 호환 후보와 양쪽 소비자 검증을 확보하기 전 삭제하지 않는다. |
 | [02 SQLite](02-sqlite-and-storage-limits.md) | **진행 중**. SQL-01 Rust pager 진단 제거 초안과 Python 소비자 정리. Python 관련 706개 통과. rusqlite registry 선택 및 locked/offline metadata 통과. SQL-06 비 SQLite close 사용처와 SQL-05 Catalog lock 파일 authority를 각각 분리했다. Catalog/Scratch 과거 Cargo check와 독립 close 테스트는 **VERIFIED**, SQL-05의 Rust check·제품 회귀는 **NOT_RUN**. | Catalog/Scratch/Core/trace 소비자 소유. Unix FD·SHM·deferred close를 보존하는 제품 VFS와 하드 quota 대체가 선행돼야 vendor를 삭제한다. |
 | [03 Lance](03-lance.md) | **진행 중**. exact 동점 검색을 공개 scan·cosine 계산·bounded Top-K heap으로 제품 경로에 연결했다. 이전 후보의 Semantic Cargo check와 heap 독립 테스트 7개는 **VERIFIED**다. 최종 소스의 Cargo 재검증, 저장 세대 제품 테스트 및 실제 순정 Lance 전환은 **NOT_RUN**이다. | Semantic/Runtime storage 경계. 02의 Root quota와 공용 파일 authority가 선행. 현재 다른 Native 소유자의 dirty hunk를 보존한다. |
-| [04 CBOR·Unicode](04-cbor-unicode-paired.md) | **진행 중**. Q/S Unicode 공급자를 registry 0.1.25로 전환했고 자체 crate에서 admission·DATA를 소유한다. CBOR finite decoder와 Q/S 호출자 타입도 제품 소유로 전환했다. Q IPC 실코드 경량 harness 34/34 및 Q/S locked metadata는 **VERIFIED**다. 실제 Q/S Cargo/QBC와 제품 검증은 **NOT_RUN**이다. | Unicode와 CBOR vendor 삭제, CBOR 일반 직렬화 전환 및 Q/S 제품 검증이 남았다. |
+| [04 CBOR·Unicode](04-cbor-unicode-paired.md) | **진행 중**. Q/S Unicode 공급자는 registry 0.1.25이고 자체 crate에서 admission·DATA를 소유한다. CBOR finite decoder와 Q/S 호출자 타입도 제품 소유로 전환했다. 선택 차등, Unicode crate Cargo 7개, CBOR crate Cargo 31개, Q IPC admission Cargo 25개와 registry no-default 별도 nextest 6개는 **VERIFIED**다. S QBC와 Q/S 제품 통합 검증은 **NOT_RUN**이다. | Unicode와 CBOR vendor 삭제, CBOR 일반 직렬화 전환 및 Q/S 제품 검증이 남았다. |
 | [07–09 엔진](07-engine-product4k.md) | 계획 수립, 이 계획에 따른 구현과 제품 재실행은 **NOT_RUN**. | 퇴역과 별개인 기존 엔진 문제. 07·08의 측정/코드와 09의 평가를 독립 진행할 수 있으나 공용 Cargo·Q/S 파일·실행 큐는 조정한다. |
 | [05 통합](05-integration-and-release.md) | **NOT_RUN**. | 각 트랙의 실제 변경과 테스트 결과를 동일 후보에 합친 뒤 판정한다. |
 

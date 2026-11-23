@@ -12,12 +12,9 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, CoreError, DiagnosticStageV1,
-    LexicalEndpoint, LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1,
-    RequestBudgetV1, validate_query_top_k,
+    LexicalPageSpec, LexicalQueryPort, QueryRouteV1, RequestBudgetV1, validate_query_top_k,
 };
 
-use crate::lower_lexical_text_query;
-use crate::lowering::reject_code_search_on_nonlexical_route;
 use crate::query_dispatcher::continuation::{
     CursorRequestContextV2, require_cursor_on_nonempty_plan, require_token_pin,
 };
@@ -555,15 +552,7 @@ impl SearchPlaneDispatcher {
                     cursor: None,
                     ..TextQueryRequest::from(request.clone())
                 };
-                reject_code_search_on_nonlexical_route(pageless.syntax, "symbol")?;
-                let lowered = lower_lexical_text_query(&pageless)?;
-                let validated = LexicalPolicy::plan_query(
-                    &lowered,
-                    &request.constraints,
-                    LexicalEndpoint::Symbol,
-                )?;
-                self.lex_opener
-                    .preflight_query_primitives(&validated, budget)?;
+                let lowered = self.plan_symbol_query(&pageless, budget)?;
                 let opened = request
                     .cursor
                     .as_ref()

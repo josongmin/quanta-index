@@ -9,6 +9,8 @@ use std::io;
 pub const NATIVE_IMMUTABLE_OBJECT_MAGIC_V1: &[u8; 8] = b"QIOBJ001";
 pub const NATIVE_IMMUTABLE_OBJECT_HASH_DOMAIN_V1: &[u8] = b"quanta-index-immutable-object-v1\0";
 pub const NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1: usize = 16;
+/// Maximum direct child references in one immutable native object.
+pub(crate) const MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN: usize = 4_096;
 
 const PROTECTED_WORK_CHECKPOINT_BYTES_V1: usize = 64 * 1024;
 

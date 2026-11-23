@@ -13,6 +13,8 @@
 
 위 실행은 최초 실패 진단에 사용한다. 전환 비교의 기준선은 **엔진 수리를 포함한 포크 유지 후보의 실제 결과**다. 순정 후보와 같은 코퍼스·설정·계측 Off/Record 조건을 적용하고, 후보별 Q/S revision·Cargo lock·resolver·출하 feature/target·서명 설치 입력을 고정한다. 실행마다 source/config/binary hash, 정확한 selector, 본문 수·exit, 첫 실패 phase, Work 사용량·요청 기한, trace 완전성, 제품 입출력을 기록한다. 원본 결과의 재사용은 실제 변경 영향 경로와 입력 일치를 증명한 경우에 한한다. [기준선 비교](05-integration-and-release.md#엔진-기준선과-포크-전환-비교)
 
+**2026-11-23 현행 접수 감사.** 기존 후기 Record 슬롯 `ann4k-late-record-h4a2lcwt`의 `state.json`은 `waiting_for_original_admission`이지만, 기록된 PID `99430`과 활성 Product4K controller/child는 없고 디렉터리에는 preflight·controller·state만 있다. 기존 B 원장은 이 재접수의 preflight/terminal 저장 `ENOSPC`와 본문·trace 0건을 기록한다. 현재 Data 여유는 16 GiB이며, 확인 시 1분 load 105.74로 기존 quiet-host 상한 8을 초과했고 다른 Rust 빌드가 공유 슬롯을 사용 중이었다. 따라서 후기 지배 비용과 현 후보의 최초 실패 단계는 **미확정**이다. 이번 07 감사에서 엔진 코드 수정과 ANN4K·Product4K·TEXT 제품 본문은 **NOT_RUN**이다. 재접수 시 이전 슬롯의 비활성을 재확인하고 기존 B controller·잠금·admission으로 후기 Record 한 건을 먼저 확보한다. `state.json`의 대기 표시는 실행 중이라는 증거로 쓰지 않는다.
+
 ## 1. 현 후보의 최초 실패 경계 판정
 
 1. B의 기존 `product_after_prefix.py` / `retry.py PRODUCT4K`와 단일 공용 Rust 실행 잠금, 기존 quiet-host admission을 사용한다. 기존 controller의 PID·child·terminal·잠금을 먼저 확인하고 미접수일 때 **한 건** 접수한다. Record 출력과 테스트 temp/state 볼륨의 공간을 캡처 상한과 함께 확인한다. 공간 부족·호스트 경합으로 본문이 시작되지 않으면 **BLOCKED/NOT_RUN**으로 분리한다. 새 후기 Record가 `ENOSPC` 때문에 본문 0건이었던 이력을 성공 증거로 승격하지 않는다. [B 입장](../nov-21-bugbash-source-advance-4k/04-product-acceptance.md#materialization-계측--성공-owner의-전-구간을-연결).

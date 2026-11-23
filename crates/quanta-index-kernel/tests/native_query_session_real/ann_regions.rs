@@ -8,7 +8,7 @@ use quanta_index_core::diagnostic_trace::{
     DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1,
     DiagnosticTerminalV1,
 };
-use quanta_index_core::index::{WorkIntent, WorkScope};
+use quanta_index_core::index::{MapRoot, WorkIntent, WorkScope};
 use quanta_index_core::index::{
     WorkStatus, member_map_key, owner_map_key,
     ports::{ImmutableObjectPort, PersistentMapPort},
@@ -54,10 +54,24 @@ fn extra_owner(id: u16) -> OwnerKey {
     }
 }
 
+fn same_frontier_owner(id: u16) -> OwnerKey {
+    let [high, low] = id.to_be_bytes();
+    let mut stable_id = [0; 16];
+    // Keep a second untouched root branch so removing the selected owner
+    // cannot collapse the missing root into the growing sibling.
+    let branch = if id == 7 { 0x40 } else { 0x80 };
+    stable_id[..4].copy_from_slice(&[branch, (low & 0x0f) << 4, high, low]);
+    OwnerKey {
+        producer: PRODUCER,
+        stable_id: StableOwnerId(stable_id),
+    }
+}
+
 struct AnnSources {
     view: ViewRef,
     primary: ObjectRef,
     extra_sources: Vec<(OwnerKey, ObjectRef)>,
+    submit_reads: u64,
 }
 
 /// Stage actual UTF-8 sources under one ingress and publish one source cut.
@@ -67,6 +81,15 @@ fn advance_ann_sources_count(
     fixture: &Fixture,
     view: ViewRef,
     count: u16,
+) -> TestResult<AnnSources> {
+    advance_ann_sources_with_extra_owners(fixture, view, count, extra_owner)
+}
+
+fn advance_ann_sources_with_extra_owners(
+    fixture: &Fixture,
+    view: ViewRef,
+    count: u16,
+    extra_owner: fn(u16) -> OwnerKey,
 ) -> TestResult<AnnSources> {
     let extra_count = count
         .checked_sub(1)
@@ -124,18 +147,20 @@ fn advance_ann_sources_count(
         sequence: 1,
         payload: transition.owner_digest()?,
     });
+    let mut submission = ann_budget();
     let next = published(block_on(fixture.kernel.submit(
         UpdateRequest {
             operation: key,
             expected_view: view,
             kind: UpdateKind::SourceAdvance(transition),
         },
-        &mut ann_budget(),
+        &mut submission,
     ))?)?;
     Ok(AnnSources {
         view: next,
         primary,
         extra_sources,
+        submit_reads: submission.usage().reads,
     })
 }
 
@@ -366,7 +391,19 @@ fn assert_materialize_phase_completed(
 #[test]
 fn source_local_ann_one_owner_materialize_keeps_unrelated_pending_and_traces_phases() -> TestResult
 {
-    for count in [1_u16, 64, 512] {
+    let cases: [(u16, fn(u16) -> OwnerKey, bool); 5] = [
+        (1, extra_owner, false),
+        (64, extra_owner, false),
+        (512, extra_owner, false),
+        // Both growing branches exceed the nested Source map's physical
+        // child limit so its caller-visible owner root also keeps three edges.
+        (98, same_frontier_owner, true),
+        (130, same_frontier_owner, true),
+    ];
+    let mut save_reads = [0; 5];
+    for ((count, extra_owner, check_sibling_frontier), save_reads) in
+        cases.into_iter().zip(&mut save_reads)
+    {
         let root = tempfile::tempdir()?;
         let runtime = Arc::new(
             tokio::runtime::Builder::new_current_thread()
@@ -375,7 +412,8 @@ fn source_local_ann_one_owner_materialize_keeps_unrelated_pending_and_traces_pha
         );
         let fixture = fixture_with_lancedb_ann(root.path(), Arc::clone(&runtime))?;
         let configured = configured(&fixture)?;
-        let sources = advance_ann_sources_count(&fixture, configured, count)?;
+        let sources =
+            advance_ann_sources_with_extra_owners(&fixture, configured, count, extra_owner)?;
         let objects = fixture.objects.as_ref();
         let ready = fixture
             .kernel
@@ -386,6 +424,41 @@ fn source_local_ann_one_owner_materialize_keeps_unrelated_pending_and_traces_pha
         let expected = old.1.desired;
         assert_eq!(expected.source, Some(sources.primary));
         assert_eq!(old.1.covered, None);
+        assert_eq!(
+            old.0.status,
+            CoverageStatus::Partial {
+                missing: old.0.owners
+            }
+        );
+        let old_owners = old.0.owners.0.ok_or("missing cold owner map")?;
+        // A nibble radix node has at most sixteen slots. Object-valued fixed
+        // keys contribute one physical edge per slot, including leaf values.
+        let old_root = objects.get(old_owners, &mut ann_budget())?;
+        let root_children = old_root.registration.children.len();
+        let source_root = old.0.desired.root.0.ok_or("missing source owner map")?;
+        let source_root_children = objects
+            .get(source_root, &mut ann_budget())?
+            .registration
+            .children
+            .len();
+        let untouched_children = if check_sibling_frontier {
+            assert_eq!(source_root_children, 3);
+            let [_selected, sentinel, sibling] = old_root.registration.children.as_slice() else {
+                return Err("expected one selected root edge and two siblings".into());
+            };
+            assert_eq!(
+                objects
+                    .get(*sibling, &mut ann_budget())?
+                    .registration
+                    .children
+                    .len(),
+                16,
+            );
+            Some([*sentinel, *sibling])
+        } else {
+            None
+        };
+        drop(old_root);
         let work = WorkIntent {
             workspace: workspace(),
             epoch: sources.view.epoch,
@@ -448,22 +521,23 @@ fn source_local_ann_one_owner_materialize_keeps_unrelated_pending_and_traces_pha
             .map(|stage| Ok((stage, assert_materialize_phase_completed(&events, stage)?)))
             .collect::<TestResult<Vec<_>>>()?;
         drop(events);
+        *save_reads = reads_by_phase
+            .iter()
+            .find(|(stage, _)| *stage == quanta_index_core::DiagnosticStageV1::NativeCoverageSave)
+            .ok_or("missing coverage save phase")?
+            .1;
         std::io::Write::write_fmt(
             &mut std::io::stdout().lock(),
             format_args!(
-                "native-ann-owner-local pending={count} reads={} phases={reads_by_phase:?}\n",
+                "native-ann-owner-local pending={count} initial_reads={} cold_root_children={root_children} source_root_children={source_root_children} reads={} phases={reads_by_phase:?}\n",
+                sources.submit_reads,
                 attempt.usage().reads,
             ),
         )?;
-        if count == 512 {
-            // This budget covers only the selected owner's materialization. A
-            // logical read for each pending owner would exceed this bound.
-            assert!(
-                attempt.usage().reads < u64::from(count),
-                "one-owner materialization used {} logical reads for {count} pending owners",
-                attempt.usage().reads
-            );
-        }
+        assert!(
+            root_children <= 16,
+            "cold coverage root fans out to {root_children} children"
+        );
         let after = materialize_cost_owner_state(&fixture, objects, completed, selected)?;
         assert_eq!(after.1.desired, expected);
         assert_eq!(after.1.covered, Some(expected));
@@ -471,6 +545,22 @@ fn source_local_ann_one_owner_materialize_keeps_unrelated_pending_and_traces_pha
         assert_eq!(after.0.desired, old.0.desired);
         assert_ne!(after.0.owners, old.0.owners);
         assert_eq!(after.0.status == CoverageStatus::Complete, count == 1);
+        if let Some(untouched_children) = untouched_children {
+            let CoverageStatus::Partial {
+                missing: MapRoot(Some(missing)),
+            } = after.0.status
+            else {
+                return Err("frontier fixture lost its pending sibling branches".into());
+            };
+            assert_eq!(
+                objects
+                    .get(missing, &mut ann_budget())?
+                    .registration
+                    .children
+                    .as_slice(),
+                untouched_children
+            );
+        }
         assert_eq!(
             source(&fixture.kernel, completed)?,
             source(&fixture.kernel, sources.view)?
@@ -515,6 +605,11 @@ fn source_local_ann_one_owner_materialize_keeps_unrelated_pending_and_traces_pha
         );
         old_pin.release()?;
     }
+    let [_, _, _, shallow, deep] = save_reads;
+    assert_eq!(
+        shallow, deep,
+        "coverage save did extra work below an unchanged sibling frontier"
+    );
     Ok(())
 }
 
@@ -698,6 +793,7 @@ fn managed_ann_region_reopens_after_owner_replacement_with_old_view_pinned() -> 
         view: source_view,
         primary,
         extra_sources,
+        ..
     } = advance_ann_sources(&fixture, configured)?;
     let sealed_view = materialize_ann_owners(&fixture, runtime.as_ref(), source_view)?;
     let sealed_source = source(&fixture.kernel, sealed_view)?;

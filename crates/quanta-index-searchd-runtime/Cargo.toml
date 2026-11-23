@@ -119,7 +119,8 @@ nix = { workspace = true, features = ["fs"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 quanta-explicit-fd-process.workspace = true
-quanta-installed-artifact-trust.workspace = true
+quanta-installed-artifact-trust = { workspace = true, features = ["s-product-startup-v1"] }
+fs2.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 libsqlite3-sys = { workspace = true, features = ["quanta-capacity-vfs-test-hooks"] }

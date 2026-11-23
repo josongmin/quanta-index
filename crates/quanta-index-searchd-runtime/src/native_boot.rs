@@ -21,7 +21,7 @@ use std::{fs, sync::Arc};
 use anyhow::{Result, anyhow, bail};
 use quanta_index_contract::index::{
     RetiredProjectionPolicyErrorV1, decode_retired_projection_policy_v1,
-    preflight_retired_projection_policy_v1,
+    preflight_retired_projection_policy_v1, RetiredProjectionPolicyRefV1,
 };
 use sha2::{Digest as _, Sha256};
 use quanta_index_catalog::{
@@ -59,6 +59,66 @@ use crate::{
     native_object_read_io::NativeObjectReadIo,
     native_resources::{NativeResourceClass, NativeResourceLedger},
 };
+
+/// Reopen only the policy object already authenticated by selected BOOT.
+/// Recheck its body before transferring it to the listener's request gate.
+pub(super) fn read_verified_retirement_policy_v2(
+    authority: &NativeBootAuthority,
+    policy: RetiredProjectionPolicyRefV1,
+    budget: &mut WorkBudget,
+) -> Result<(Vec<quanta_index_contract::index::ProjectionId>, Vec<IndexInstanceId>, MemoryLease)> {
+    let root = authority.lease.state_root_identity_v1();
+    let object_root = root.join("native-objects");
+    let io = Arc::new(NativeObjectReadIo::new(Arc::clone(&authority.physical)));
+    let lock = io.open(&object_root.join(".object-namespace.lease"), budget)?;
+    let reader = FileObjectReader::open_existing(&object_root, lock, io, budget)?;
+    let stored = reader.get(policy.object, budget)?;
+    if !stored.registration.children.is_empty()
+        || stored.payload.len() > quanta_index_contract::index::MAX_RETIRED_PROJECTION_POLICY_BYTES_V1
+        || preflight_retired_projection_policy_v1(&stored.payload)
+            .map_err(|_| IndexError::DigestConflict)? != policy.identity_count as usize
+        || quanta_index_core::index::Digest(Sha256::digest(&stored.payload).into()) != policy.sha256
+    {
+        return Err(IndexError::DigestConflict.into());
+    }
+    let count = policy.identity_count as usize;
+    let retained_bytes = count.checked_mul(
+        std::mem::size_of::<IndexInstanceId>()
+            + std::mem::size_of::<quanta_index_contract::index::ProjectionId>(),
+    )
+        .ok_or(IndexError::ResourceLimited)?;
+    let grant_bytes = u64::try_from(retained_bytes)?.checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(128))
+        .ok_or(IndexError::ResourceLimited)?;
+    let retained = budget.reserve_memory(
+        grant_bytes,
+        MemoryLifetime::Retained,
+    )?.ok_or(IndexError::ResourceLimited)?;
+    let mut scratch = Vec::new();
+    scratch.try_reserve_exact(count).map_err(|_| IndexError::ResourceLimited)?;
+    scratch.resize(count, IndexInstanceId([0; 16]));
+    let view = decode_retired_projection_policy_v1(
+        &stored.payload, &mut scratch, &mut || budget.checkpoint(),
+    ).map_err(|error| match error {
+        RetiredProjectionPolicyErrorV1::Admission(error) => error,
+        _ => IndexError::DigestConflict,
+    })?;
+    let mut projections = Vec::new();
+    projections.try_reserve_exact(count).map_err(|_| IndexError::ResourceLimited)?;
+    let actual_bytes = scratch.capacity().checked_mul(std::mem::size_of::<IndexInstanceId>())
+        .and_then(|bytes| projections.capacity()
+            .checked_mul(std::mem::size_of::<quanta_index_contract::index::ProjectionId>())
+            .and_then(|other| bytes.checked_add(other)))
+        .ok_or(IndexError::ResourceLimited)?;
+    if u64::try_from(actual_bytes)? > grant_bytes {
+        return Err(IndexError::ResourceLimited.into());
+    }
+    for index in 0..count {
+        budget.checkpoint()?;
+        projections.push(view.identity_v1(index).ok_or(IndexError::DigestConflict)?.projection);
+    }
+    Ok((projections, scratch, retained))
+}
 
 fn identity(nonce: [u8; 32], manifest: &NativeBootManifest) -> Result<NativeBootIdentityV1> {
     Ok(NativeBootIdentityV1 {
@@ -298,7 +358,7 @@ fn authenticate_with_legacy_history_v1(
             return Err(IndexError::DigestConflict.into());
         }
         retired_policy_profile_v1::reject_candidate_profile_overlap_v1(
-            &view, &profile.payload, budget,
+            &view, &scratch, &profile.payload, budget,
         )?;
     }
     if let Some(route) = manifest.protected_source_routes {
@@ -1080,6 +1140,35 @@ pub(super) fn require_candidate_start_v1(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Plain Native Serve may create an empty root, but a selected retirement
+/// BOOT needs its exact identity and signed policy capability before listen.
+pub(super) fn refuse_plain_serve_on_selected_boot_v2(
+    authority: &NativeBootAuthority,
+    config: &ValidatedConfig,
+    request: &RequestBudgetV1,
+) -> Result<()> {
+    let root = authority.lease.state_root_identity_v1();
+    let catalog = quanta_index_catalog::catalog_dir(root)
+        .join(quanta_index_catalog::CATALOG_FILE_NAME);
+    match fs::symlink_metadata(&catalog) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    with_admitted_control_budget(config, request.clone(), false, |budget, _| {
+        verify_existing_native_format(authority, &config.socket_path, budget)?;
+        let snapshot = verify_native_boot_catalog(root, authority.io.as_ref(), budget)?;
+        if snapshot
+            .selected
+            .as_ref()
+            .is_some_and(|selected| selected.retired_projection_policy.is_some())
+        {
+            bail!("plain Native serve cannot reopen a selected retirement BOOT");
+        }
+        Ok(())
+    })
 }
 
 /// None is offline completion; Some transfers the same root and Common owner.

@@ -1,0 +1,11 @@
+[package]
+name = "ciborium-no-default-consumer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Keep this supplier check separate from product feature unification and patches.
+[workspace]
+
+[dependencies]
+ciborium = { version = "=0.2.2", default-features = false }

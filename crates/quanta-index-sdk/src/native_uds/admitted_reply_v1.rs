@@ -13,8 +13,9 @@ use quanta_index_contract::{
     native_protocol::{
         MAX_NATIVE_SOURCE_OWNER_LOOKUP, NativeIndexErrorCode, NativeIndexResponse,
         NativeIndexResponseEnvelope, NativeIndexWireError, NativeProducerProjectionOwnerV1,
-        NativeProjectionOwnerBinding, NativeProjectionOwnerLookup, NativeProjectionRead, NativeSourceOwnerBinding,
-        NativeSourceOwnerLookup, NativeStubReply, SourceStageReplayReceiptV1,
+        NativeProjectionOwnerBinding, NativeProjectionOwnerLookup, NativeProjectionRead,
+        NativeSourceOwnerBinding, NativeSourceOwnerLookup, NativeStubReply,
+        SourceStageReplayReceiptV1,
     },
 };
 use serde::de::{self, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
@@ -318,8 +319,7 @@ impl<'a> CborScan<'a> {
         }
         let key = std::str::from_utf8(self.take(length)?)
             .map_err(|_error| NativeUdsError::Protocol("invalid CBOR map key UTF-8".into()))?;
-        if !(known_identifier(key) || self.allow_graph && graph_identifier(key))
-        {
+        if !(known_identifier(key) || self.allow_graph && graph_identifier(key)) {
             return Err(NativeUdsError::Protocol(
                 "unknown Native publication CBOR identifier".into(),
             ));
@@ -1540,8 +1540,7 @@ mod tests {
             index::{ProjectionBinding, SchemaId, SourceCut},
             native_protocol::{
                 NativeProducerProjectionOwnerPageV1, NativeProducerProjectionOwnerRowsV1,
-                NativeProducerSourceOwner,
-                NativeProducerSourcePage, NativeProducerSourceRows,
+                NativeProducerSourceOwner, NativeProducerSourcePage, NativeProducerSourceRows,
             },
         };
 

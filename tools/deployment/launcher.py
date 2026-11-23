@@ -628,6 +628,7 @@ def _run_selected_command(
     candidate_receipt: tuple[Path, str, str, str, str | None, tuple[str, str, int] | None] | None = None,
     with_candidate: Callable[[subprocess.Popen[bytes], Callable[[], bool]], None] | None = None,
     fail_on_external_signal: bool = False,
+    retirement_approval: tuple[Path, Path] | None = None,
 ) -> int:
     _check_binary(selection)
     if threading.current_thread() is not threading.main_thread():
@@ -723,9 +724,16 @@ def _run_selected_command(
         signal.signal(signal.SIGINT, handle_signal)
         signal.signal(signal.SIGTERM, handle_signal)
         try:
+            child_environment = selection.child_environment()
+            if retirement_approval is not None:
+                if operation != "serve-native":
+                    raise SelectionError("retirement approval is only valid for selected Native serve")
+                child_environment["QUANTA_NATIVE_RETIREMENT_APPROVAL_PATH_V2"] = str(retirement_approval[0])
+                child_environment["QUANTA_NATIVE_RETIREMENT_DECISION_POLICY_PATH_V2"] = str(retirement_approval[1])
+                child_environment["QUANTA_NATIVE_DEPLOYMENT_LOCK_FD_V2"] = str(lock_fd)
             child = subprocess.Popen(
                 args,
-                env=selection.child_environment(),
+                env=child_environment,
                 cwd="/",
                 close_fds=True,
                 pass_fds=(lock_fd,),
@@ -1357,8 +1365,8 @@ def build_native_candidate(
         if current_source.native_config is not None and not native_history:
             raise SelectionError("Native Source-only export requires Native History selection")
         pinned_flags.update({
-            "--native-candidate-source-exporter-executable": str(current_source.binary),
-            "--native-candidate-source-exporter-executable-sha256": current_source.binary_sha256,
+            "--native-candidate-source-exporter-executable": str(selection.binary),
+            "--native-candidate-source-exporter-executable-sha256": selection.binary_sha256,
         })
     arguments = list(producer_arguments)
     for flag, value in pinned_flags.items():
@@ -1835,12 +1843,64 @@ def _sync_retained_publication(
         ) from error
 
 
-def serve_selection(path: str | Path) -> int:
+def _read_signed_approval(path: Path) -> dict[str, object]:
+    path = _canonical_existing(path, directory=False)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as stream:
+        _check_control_file(os.fstat(stream.fileno()), "Native release approval")
+        data = stream.read(MAX_NATIVE_RECEIPT_BYTES + 1)
+    if len(data) > MAX_NATIVE_RECEIPT_BYTES:
+        raise SelectionError("Native release approval exceeds byte bound")
+    try:
+        receipt = json.loads(data, object_pairs_hook=_reject_duplicate_fields)
+    except (UnicodeError, ValueError) as error:
+        raise SelectionError(f"Native release approval JSON differs: {error}") from error
+    if not isinstance(receipt, dict):
+        raise SelectionError("Native release approval envelope differs")
+    return receipt
+
+
+def serve_selection(
+    path: str | Path, *, approval_path: Path | None = None,
+    decision_policy_path: Path | None = None,
+) -> int:
     """Serve the selected root; searchd boot owns live validation and recovery."""
     with deployment_lock(path) as lock_fd:
-        selection = _read_selection_locked(_selection_path(path))
+        selected_path = _selection_path(path)
+        selection = _read_selection_locked(selected_path)
+        retired = (selection.native_boot_receipt is not None
+                   and selection.native_boot_receipt.retired_policy_object_hex is not None)
+        if retired:
+            if approval_path is None or decision_policy_path is None:
+                raise SelectionError("retired Native selection requires signed release approval")
+            if __package__:
+                from . import native_release_approval
+            else:
+                import native_release_approval
+            approval = _read_signed_approval(approval_path)
+            policy_path = _canonical_existing(decision_policy_path, directory=False)
+            policy_fd = os.open(
+                policy_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            )
+            with os.fdopen(policy_fd, "rb") as policy_stream:
+                if not stat.S_ISREG(os.fstat(policy_stream.fileno()).st_mode):
+                    raise SelectionError("Native decision policy must be a regular file")
+                policy_bytes = policy_stream.read(1024 * 1024 + 1)
+            if len(policy_bytes) > 1024 * 1024:
+                raise SelectionError("Native decision policy exceeds byte bound")
+            policy_sha256 = hashlib.sha256(policy_bytes).hexdigest()
+            try:
+                native_release_approval.verify_installed_approval(
+                    approval, selection, _selection_fingerprint(selection), policy_sha256,
+                    selection_path=selected_path,
+                )
+            except (OSError, KeyError, TypeError, ValueError) as error:
+                raise SelectionError(f"Native release approval differs: {error}") from error
+        elif approval_path is not None or decision_policy_path is not None:
+            raise SelectionError("Native release approval requires a retired selection")
         return _run_selected_command(
-            selection, "serve-native" if selection.native_config is not None else "serve", lock_fd
+            selection, "serve-native" if selection.native_config is not None else "serve", lock_fd,
+            retirement_approval=(Path(approval_path), policy_path) if retired else None,
         )
 
 
@@ -1954,6 +2014,8 @@ def main(argv: list[str] | None = None) -> int:
     verify_bootstrap.add_argument("--selection", type=Path, required=True)
     serve = commands.add_parser("serve", help="restart the selected root under searchd boot")
     serve.add_argument("--selection", type=Path, required=True)
+    serve.add_argument("--native-release-approval", type=Path)
+    serve.add_argument("--decision-policy", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "install":
@@ -2047,7 +2109,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "verify-bootstrap":
             verify_bootstrap_selection(args.selection)
             return 0
-        return serve_selection(args.selection)
+        return serve_selection(
+            args.selection, approval_path=args.native_release_approval,
+            decision_policy_path=args.decision_policy,
+        )
     except SelectionError as error:
         print(f"deployment launcher: {error}", file=sys.stderr)
         return 1

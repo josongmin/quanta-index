@@ -85,7 +85,7 @@ impl NativeDispatcher {
             return Err(IndexError::DigestConflict);
         }
         crate::native_product::reject_candidate_profile_overlap_v1(
-            &view, &profile_object.payload, budget,
+            &view, &scratch, &profile_object.payload, budget,
         )
     }
 

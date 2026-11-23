@@ -14,9 +14,11 @@ default `regular` workflow runs tooling contracts, guarded module snapshots,
 prompt-manager and Rust policy checks, benchmark-control contracts, Semgrep,
 tracked agent-output validation, pre-commit hooks, fmt, clippy, cargo-deny,
 cargo-machete, exact-toolchain MSRV compilation, Rustdoc, benchmark compilation,
-and full-workspace nextest. The PR-only coverage job retains the 90% changed
-production Rust line gate and starts only after `verify` succeeds. The Python
-job produces a source-bound P00 proof manifest after its owner tests pass.
+and full-workspace nextest. The PR-only coverage job runs the 90% changed
+production Rust line gate after the Python and Rust workers succeed. The
+aggregate `verify` waits for coverage on pull requests. On `main` pushes,
+CircleCI filters out the PR-only dependency. The Python job produces a
+source-bound P00 proof manifest after its owner tests pass.
 The Rust job emits a test-authority receipt only for an observed PR or `main`
 run. The `run_heavy`
 pipeline parameter defaults to false; setting it true selects the manual

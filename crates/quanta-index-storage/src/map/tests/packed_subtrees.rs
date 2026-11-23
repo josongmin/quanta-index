@@ -625,10 +625,39 @@ fn nested_mode_reduces_physical_nodes_and_preserves_lookup_diff_and_reopen() -> 
     check_eq!(changes.0, vec![(removed_key.clone(), Some(prior), None)]);
     let mut changed_model = model.clone();
     let _removed = changed_model.remove(&removed_key);
+    let changed_rows: Vec<_> = changed_model.into_iter().collect();
+    check_eq!(scan_all(&store, changed, &mut work)?, changed_rows);
+    // Existing nested roots must also accept the ordinary scalar COW path
+    // after cold publications stop selecting nested packing.
+    let scalar = store.apply(
+        root,
+        &[MapEdit {
+            key: removed_key.clone(),
+            expected: Some(prior),
+            next: None,
+        }],
+        &RecordingSink::default(),
+        &mut work,
+    )?;
+    check_eq!(store.lookup(root, &removed_key, &mut work)?, Some(prior));
+    check_eq!(store.lookup(scalar.root, &removed_key, &mut work)?, None);
+    let mut scalar_changes = Changes::default();
+    check!(!store.visit_diff(
+        root,
+        scalar.root,
+        MapDiffRange {
+            prefix: b"",
+            after: None,
+            limit: 16,
+        },
+        &mut scalar_changes,
+        &mut work
+    )?);
     check_eq!(
-        scan_all(&store, changed, &mut work)?,
-        changed_model.into_iter().collect::<Vec<_>>()
+        scalar_changes.0,
+        vec![(removed_key.clone(), Some(prior), None)]
     );
+    check_eq!(scan_all(&store, scalar.root, &mut work)?, changed_rows);
     // This established fixture has eight small terminal subtrees, so its
     // selected root is guaranteed to fit the QIMAP005 physical child bound.
     // The larger hierarchy above can legitimately spill its selected root as
@@ -656,6 +685,8 @@ fn nested_mode_reduces_physical_nodes_and_preserves_lookup_diff_and_reopen() -> 
     let reopened = FileObjectStore::open(&dir.0)?;
     check_eq!(scan_all(&reopened, root, &mut work)?, expected_rows);
     check_eq!(reopened.lookup(changed, &removed_key, &mut work)?, None);
+    check_eq!(reopened.lookup(scalar.root, &removed_key, &mut work)?, None);
+    check_eq!(scan_all(&reopened, scalar.root, &mut work)?, changed_rows);
     check_eq!(scan_all(&reopened, legacy_root, &mut work)?, legacy_rows);
     check_eq!(
         scan_all(&reopened, ordinary_root, &mut work)?,

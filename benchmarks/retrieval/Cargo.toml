@@ -40,6 +40,8 @@ tree-sitter-typescript = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tree-sitter-go-official = { workspace = true }
+tree-sitter-javascript-official = { workspace = true }
+tree-sitter-typescript-official = { workspace = true }
 
 [build-dependencies]
 sha2 = { workspace = true }

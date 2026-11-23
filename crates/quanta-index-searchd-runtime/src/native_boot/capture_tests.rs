@@ -302,6 +302,7 @@ fn authenticate_full_ast(intervening: Intervening) -> TestResult {
                     fixture.config.resources.physical.inventory.max_entries,
                     Some(&capture),
                     false,
+                    /* candidate_profile */ false,
                     budget,
                 );
                 // A physical-retirement error must not become an expected negative.
@@ -438,6 +439,7 @@ fn actual_selected_delta_uses_current_native_capture_and_refuses_historical_full
                 fixture.config.resources.physical.inventory.max_entries,
                 Some(&capture),
                 false,
+                /* candidate_profile */ false,
                 budget,
             )?;
             boot::require_retired(&authority)?;
@@ -464,6 +466,7 @@ fn actual_selected_delta_uses_current_native_capture_and_refuses_historical_full
                     fixture.config.resources.physical.inventory.max_entries,
                     Some(&capture),
                     false,
+                    /* candidate_profile */ false,
                     budget,
                 );
                 boot::require_retired(&authority)?;
@@ -507,6 +510,7 @@ fn actual_selected_delta_uses_current_native_capture_and_refuses_historical_full
                 fixture.config.resources.physical.inventory.max_entries,
                 Some(&capture),
                 false,
+                /* candidate_profile */ false,
                 budget,
             );
             boot::require_retired(&authority)?;
@@ -699,6 +703,7 @@ fn actual_stale_catalog_without_ast_refuses_missing_current_native_row() -> Test
                 fixture.config.resources.physical.inventory.max_entries,
                 Some(&capture),
                 false,
+                /* candidate_profile */ false,
                 budget,
             );
             boot::require_retired(&authority)?;
@@ -840,6 +845,7 @@ fn actual_selected_ast_after_delta_uses_current_native_same_snapshot_publication
                 fixture.config.resources.physical.inventory.max_entries,
                 Some(&capture),
                 false,
+                /* candidate_profile */ false,
                 budget,
             )?;
             boot::require_retired(&authority)?;
@@ -864,6 +870,7 @@ fn actual_selected_ast_after_delta_uses_current_native_same_snapshot_publication
                     full: &full,
                 }),
                 false,
+                /* candidate_profile */ false,
                 budget,
             );
             boot::require_retired(&authority)?;
@@ -904,6 +911,7 @@ fn actual_selected_ast_after_delta_uses_current_native_same_snapshot_publication
                 fixture.config.resources.physical.inventory.max_entries,
                 Some(&capture),
                 false,
+                /* candidate_profile */ false,
                 budget,
             );
             boot::require_retired(&authority)?;

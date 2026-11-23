@@ -1369,7 +1369,11 @@ fn schema3_retired_policy_ref_is_exact_and_schema2_remains_readable() -> TestRes
     let fixture = Fixture::new(DeploymentRecoveryModeV1::RestoreForward)?;
     let (mut work, _execution) = budget()?;
     let old = codec::decode(&fixture.after, &mut work)?;
-    require(old.retired_projection_policy_ref_v1().is_none(), "schema-2 policy absent")?;
+    let old_identity = old
+        .native_command_v1()
+        .and_then(|command| command.identity)
+        .ok_or("schema-2 BOOT identity missing")?;
+    require(old_identity.retired_projection_policy.is_none(), "schema-2 policy absent")?;
 
     let mut wire: serde_json::Value = serde_json::from_slice(&fixture.after)?;
     wire["schema_version"] = serde_json::json!(3);
@@ -1378,17 +1382,19 @@ fn schema3_retired_policy_ref_is_exact_and_schema2_remains_readable() -> TestRes
     wire["native_boot_receipt"]["retired_policy_identity_count"] = serde_json::json!(2);
     let bytes = codec::canonical_payload(&wire)?;
     let selected = codec::decode(&bytes, &mut work)?;
-    let reference = selected.retired_projection_policy_ref_v1().ok_or("schema-3 policy missing")?;
+    let reference = selected
+        .native_command_v1()
+        .and_then(|command| command.identity)
+        .and_then(|identity| identity.retired_projection_policy)
+        .ok_or("schema-3 BOOT policy missing")?;
     require(reference.object.0 == Digest([0x44; 32]), "schema-3 object ref")?;
     require(reference.sha256 == Digest([0x55; 32]) && reference.identity_count == 2, "schema-3 digest/count")?;
-    require(
-        selected.native_command_v1().and_then(|command| command.identity)
-            .and_then(|identity| identity.retired_projection_policy) == Some(reference),
-        "schema-3 BOOT identity did not retain policy ref",
-    )?;
 
-    wire["native_boot_receipt"].as_object_mut().ok_or("receipt object")?
+    let removed_digest = wire["native_boot_receipt"]
+        .as_object_mut()
+        .ok_or("receipt object")?
         .remove("retired_policy_sha256_hex");
+    require(removed_digest.is_some(), "schema-3 fixture digest missing before removal")?;
     require(codec::decode(&codec::canonical_payload(&wire)?, &mut work).is_err(), "missing schema-3 digest accepted")?;
     wire["schema_version"] = serde_json::json!(2);
     require(codec::decode(&codec::canonical_payload(&wire)?, &mut work).is_err(), "schema-2 accepted schema-3 fields")?;

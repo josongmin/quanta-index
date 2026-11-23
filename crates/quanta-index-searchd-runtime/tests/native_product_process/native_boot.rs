@@ -3052,6 +3052,84 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
     )?;
     let native_quiescent_files = root_files(&candidate.root)?;
     let selected_native = fs::read(&selection)?;
+    if cfg!(target_os = "linux") {
+        let native_digest = inspected_selection_digest(&selection)?;
+        let native_inventory = run_private_pipe_one_shot(&[
+            "export-native-history-checkpoint",
+            "--selection-path",
+            selection.to_str().ok_or("selection is not UTF-8")?,
+            "--expected-current-sha256",
+            &native_digest,
+            "--inventory-repo-id",
+            "repo-e2e",
+            "--config",
+            candidate.config.to_str().ok_or("config is not UTF-8")?,
+            "--config-digest",
+            &config_digest,
+        ])?;
+        require(
+            native_inventory.status.success() && !native_inventory.stdout.is_empty(),
+            format!(
+                "selected Native History inventory refused: {}",
+                String::from_utf8_lossy(&native_inventory.stderr)
+            ),
+        )?;
+
+        let foreign_config = base.join("foreign-native-config.json");
+        fs::copy(&candidate.config, &foreign_config)?;
+        let foreign_path = foreign_config.to_str().ok_or("config is not UTF-8")?;
+        let native_config_path = candidate.config.to_str().ok_or("config is not UTF-8")?;
+        for (operation, extra) in [
+            ("export-native-history-checkpoint", vec!["--inventory-repo-id", "repo-e2e"]),
+            ("export-native-source-snapshot", vec!["--source-only-native"]),
+        ] {
+            let mut args = vec![
+                operation,
+                "--selection-path",
+                selection.to_str().ok_or("selection is not UTF-8")?,
+                "--expected-current-sha256",
+                native_digest.as_str(),
+                "--config",
+                foreign_path,
+                "--config-digest",
+                config_digest.as_str(),
+            ];
+            args.extend(extra);
+            let refused = run_private_pipe_one_shot(&args)?;
+            require_equal(&refused.status.code(), &Some(70), "foreign Native config exit")?;
+            require(refused.stdout.is_empty(), "foreign Native config emitted frames")?;
+            require(
+                String::from_utf8_lossy(&refused.stderr)
+                    .contains("config differs from the held selection"),
+                "foreign Native config refusal missed the selected config binding",
+            )?;
+        }
+        let route_less = run_private_pipe_one_shot(&[
+            "export-native-source-snapshot",
+            "--source-only-native",
+            "--selection-path",
+            selection.to_str().ok_or("selection is not UTF-8")?,
+            "--expected-current-sha256",
+            &native_digest,
+            "--config",
+            native_config_path,
+            "--config-digest",
+            &config_digest,
+        ])?;
+        require_equal(&route_less.status.code(), &Some(70), "route-less Native export exit")?;
+        require(route_less.stdout.is_empty(), "route-less Native export emitted frames")?;
+        require(
+            String::from_utf8_lossy(&route_less.stderr)
+                .contains("requires protected Source routes"),
+            "route-less Native export did not refuse before transcript",
+        )?;
+        require_equal(&fs::read(&selection)?, &selected_native, "Native export selection")?;
+        require_equal(
+            &root_files(&candidate.root)?,
+            &native_quiescent_files,
+            "Native export changed the selected root",
+        )?;
+    }
     let rollback = run_launcher(&[
         "rollback-legacy".into(),
         "--selection".into(),

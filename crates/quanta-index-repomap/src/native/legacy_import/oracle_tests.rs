@@ -496,48 +496,44 @@ fn imported_compiler_graph_builds_exact_maps_and_reopens_paginated_rows()
         )
         .is_err()
     );
-    assert!(
-        with_verified_native_legacy_repomap_member_v1(
-            &member,
-            &instance,
-            source(),
-            |reference, budget| {
-                let stored = objects.get(reference, budget)?;
-                if reference == header_ref {
-                    Ok(StoredObject::new(
-                        stored.registration.clone(),
-                        b"{}".to_vec(),
-                        None,
-                    ))
-                } else {
-                    Ok(stored)
-                }
-            },
-            &mut work,
-            |_, _| Ok(())
-        )
-        .is_err()
+    let corrupt_header = with_verified_native_legacy_repomap_member_v1(
+        &member,
+        &instance,
+        source(),
+        |reference, budget| {
+            let stored = objects.get(reference, budget)?;
+            if reference == header_ref {
+                Ok(StoredObject::new(
+                    stored.registration.clone(),
+                    b"{}".to_vec(),
+                    None,
+                ))
+            } else {
+                Ok(stored)
+            }
+        },
+        &mut work,
+        |_, _| Ok(()),
     );
-    assert!(
-        with_verified_native_legacy_repomap_member_v1(
-            &member,
-            &instance,
-            source(),
-            |reference, budget| {
-                let stored = objects.get(reference, budget)?;
-                if reference == page.reference {
-                    let mut bytes = stored.payload.to_vec();
-                    bytes[0] ^= 1;
-                    Ok(StoredObject::new(stored.registration.clone(), bytes, None))
-                } else {
-                    Ok(stored)
-                }
-            },
-            &mut work,
-            |_, _| Ok(())
-        )
-        .is_err()
+    assert!(corrupt_header.is_err());
+    let corrupt_page = with_verified_native_legacy_repomap_member_v1(
+        &member,
+        &instance,
+        source(),
+        |reference, budget| {
+            let stored = objects.get(reference, budget)?;
+            if reference == page.reference {
+                let mut bytes = stored.payload.to_vec();
+                bytes[0] ^= 1;
+                Ok(StoredObject::new(stored.registration.clone(), bytes, None))
+            } else {
+                Ok(stored)
+            }
+        },
+        &mut work,
+        |_, _| Ok(()),
     );
+    assert!(corrupt_page.is_err());
     let member_root: LegacyImportRootV1 =
         serde_json::from_slice(&objects.get(member.artifact, &mut work)?.payload)?;
     let mut second_span = None;

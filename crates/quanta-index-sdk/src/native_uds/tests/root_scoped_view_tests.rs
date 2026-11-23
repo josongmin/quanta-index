@@ -94,9 +94,6 @@ fn exchange<R>(
     )
 }
 
-
-
-
 #[test]
 fn root_observation_ordinary_and_admitted_decoders_keep_exact_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -209,7 +206,6 @@ fn root_observation_refuses_zero_nonce_foreign_selection_and_bad_digest()
 }
 
 #[cfg(target_os = "linux")]
-
 #[test]
 fn root_observation_expiry_cancel_and_memory_denial_connect_no_socket()
 -> Result<(), Box<dyn std::error::Error>> {

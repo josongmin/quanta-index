@@ -63,6 +63,7 @@ fn publish_sibling<P: AsRef<std::path::Path>>(
     client: &NativeUdsClient<P>,
     scope: WorkspaceKey,
     id: u8,
+    repo: &str,
 ) -> TestResult<(OperationKey, ViewRef, UpdateRequest)> {
     let NativeIndexResponse::Created(genesis) = sdk_phase(
         "sibling create workspace",
@@ -110,13 +111,14 @@ fn publish_sibling<P: AsRef<std::path::Path>>(
     )?;
     let (request, _) = sdk_phase(
         "sibling prepare Source input",
-        prepare_text_owner_in_ingress(
+        prepare_text_owner_in_repository(
             client,
             configured,
             source_ingress,
             id,
             &format!("protected/{id}.rs"),
             &format!("protected source {id}"),
+            Some(RepoId::new(repo)?),
         ),
     )?;
     let view = published(&sdk_phase(
@@ -268,6 +270,139 @@ fn actual_snapshot_from_sql(
     Ok(snapshot)
 }
 
+#[cfg(target_os = "linux")]
+fn assert_selected_native_source_export_v1(
+    root: &std::path::Path,
+    socket: &std::path::Path,
+    routes: &NativeProtectedSourceRoutesV1,
+    route_ref: ObjectRef,
+    selected: quanta_index_contract::native_protocol::NativeRootScopedViewV1,
+) -> TestResult {
+    use quanta_index_contract::index::NativeSourceSnapshotExportFrameV1 as Frame;
+    use quanta_index_searchd_harness::native_index::native_dsl_history_config;
+    use sha2::{Digest as _, Sha256};
+    use std::{os::unix::fs::PermissionsExt as _, process::Command};
+
+    let controls = private_root()?;
+    let binary = std::path::Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
+    let config = controls.path().join("old-native-config.json");
+    let receipt = controls.path().join("old-native-receipt.json");
+    let selection = controls.path().join("old-native-selection.json");
+    let config_bytes = serde_json::to_vec(&native_dsl_history_config(root, socket)?)?;
+    std::fs::write(&config, &config_bytes)?;
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))?;
+    let selected_output = Command::new(binary)
+        .args([
+            "select-native-state",
+            "--config", config.to_str().ok_or("Native config path is not UTF-8")?,
+            "--manifest-operation", &serde_json::to_string(&operation(2))?,
+            "--receipt", receipt.to_str().ok_or("Native receipt path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(selected_output.status.success(), "protected Native Select: {}",
+        String::from_utf8_lossy(&selected_output.stderr));
+    let receipt_json: serde_json::Value = serde_json::from_slice(&std::fs::read(&receipt)?)?;
+    let mut binary_file = std::fs::File::open(binary)?;
+    let mut binary_hash = Sha256::new();
+    std::io::copy(&mut binary_file, &mut binary_hash)?;
+    let binary_sha256 = format!("{:x}", binary_hash.finalize());
+    let config_sha256 = format!("{:x}", Sha256::digest(&config_bytes));
+    let mut selected_bytes = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 2,
+        "mode": "native",
+        "binary": binary.to_str().ok_or("Native binary path is not UTF-8")?,
+        "binary_sha256": binary_sha256,
+        "state_root": root.to_str().ok_or("Native root path is not UTF-8")?,
+        "environment": {},
+        "native_config": config.to_str().ok_or("Native config path is not UTF-8")?,
+        "native_config_sha256": config_sha256,
+        "native_boot_receipt": receipt_json,
+    }))?;
+    selected_bytes.push(b'\n');
+    std::fs::write(&selection, &selected_bytes)?;
+    std::fs::set_permissions(&selection, std::fs::Permissions::from_mode(0o600))?;
+    let before = native_regular_files(root)?;
+    let selection_sha256 = format!("{:x}", Sha256::digest(&selected_bytes));
+    let export = |selected_sha: &str| -> TestResult<std::process::Output> {
+        Ok(Command::new(binary).args([
+            "export-native-source-snapshot", "--source-only-native",
+            "--selection-path", selection.to_str().ok_or("Native selection path is not UTF-8")?,
+            "--expected-current-sha256", selected_sha,
+            "--config", config.to_str().ok_or("Native config path is not UTF-8")?,
+            "--config-digest", config_sha256.as_str(),
+        ]).output()?)
+    };
+    let output = export(&selection_sha256)?;
+    assert!(output.status.success(), "protected Native Source export: {}",
+        String::from_utf8_lossy(&output.stderr));
+    let mut bytes = output.stdout.as_slice();
+    let mut frames = Vec::new();
+    while !bytes.is_empty() {
+        assert!(bytes.len() >= 4, "truncated protected Source frame length");
+        let length = usize::try_from(u32::from_le_bytes(bytes[..4].try_into()?))?;
+        assert!(length > 0 && length <= quanta_index_contract::index::MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1 + 4096
+            && bytes.len() >= length + 4, "protected Source frame exceeds bound");
+        frames.push(serde_json::from_slice::<Frame>(&bytes[4..4 + length])?);
+        bytes = &bytes[4 + length..];
+    }
+    assert_eq!(frames.len(), 11, "two protected heads emit two exact file sequences and completion");
+    for (index, id) in [31_u8, 32].into_iter().enumerate() {
+        let head = &routes.heads[index];
+        let base = index * 5;
+        let Frame::HeadBegin { source_root_nonce, source_routes, repo_id, revision_id,
+            source_head, file_count } = &frames[base] else {
+            return Err("protected Source head begin absent".into());
+        };
+        assert_eq!(*source_root_nonce, selected.root_nonce);
+        assert_eq!(*source_routes, route_ref);
+        assert_eq!(repo_id, &head.repo_id);
+        assert_eq!(revision_id, &head.revision_id);
+        assert_eq!(source_head, head);
+        assert_eq!(*file_count, 1);
+        let Frame::FileBegin { source, text_admitted, source_bytes, language } = &frames[base + 1] else {
+            return Err("protected Source file begin absent".into());
+        };
+        let body = format!("protected source {id}");
+        assert_eq!(source.file.source_repo_id, head.repo_id);
+        assert_eq!(source.file.repo_relative_path.as_str(), format!("protected/{id}.rs"));
+        assert_eq!(source.source_sha256, Sha256::digest(body.as_bytes()).into());
+        assert!(*text_admitted && language.is_none());
+        assert_eq!(*source_bytes, body.len() as u64);
+        let Frame::FileChunk { offset, bytes } = &frames[base + 2] else {
+            return Err("protected Source file chunk absent".into());
+        };
+        assert_eq!(*offset, 0);
+        assert_eq!(bytes.as_slice(), body.as_bytes());
+        let Frame::FileEnd { source: end } = &frames[base + 3] else {
+            return Err("protected Source file end absent".into());
+        };
+        assert_eq!(end, source);
+        let Frame::HeadComplete { repo_id, revision_id, file_count, .. } = &frames[base + 4] else {
+            return Err("protected Source head complete absent".into());
+        };
+        assert_eq!((repo_id, revision_id), (&head.repo_id, &head.revision_id));
+        assert_eq!(*file_count, 1);
+    }
+    let Frame::InventoryComplete { source_root_nonce, source_routes, head_count,
+        route_head_count, retired_identity_count, transcript_sha256, file_census_sha256 } = &frames[10] else {
+        return Err("protected Source inventory completion absent".into());
+    };
+    assert_eq!((*source_root_nonce, *source_routes), (selected.root_nonce, route_ref));
+    assert_eq!((*head_count, *route_head_count, *retired_identity_count), (2, 2, 0));
+    assert_ne!(transcript_sha256.0, [0; 32]);
+    assert_ne!(file_census_sha256.0, [0; 32]);
+
+    let mut stale = selection_sha256.into_bytes();
+    stale[0] = if stale[0] == b'0' { b'1' } else { b'0' };
+    let stale = String::from_utf8(stale)?;
+    let refused = export(&stale)?;
+    assert!(!refused.status.success() && refused.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("active selection fingerprint changed"));
+    assert_eq!(std::fs::read(&selection)?, selected_bytes);
+    assert_eq!(native_regular_files(root)?, before, "Source exporter changed old protected root");
+    Ok(())
+}
+
 #[test]
 fn native_protected_two_source_heads_import_seal_and_reopen() -> TestResult {
     use quanta_index_core::index::ports::CatalogExactHistoryPort;
@@ -296,11 +431,11 @@ fn native_protected_two_source_heads_import_seal_and_reopen() -> TestResult {
     )?;
     let first = sdk_phase(
         "old root publish sibling 31",
-        publish_sibling(&old_client, sibling(31), 31),
+        publish_sibling(&old_client, sibling(31), 31, "repo-a"),
     )?;
     let second = sdk_phase(
         "old root publish sibling 32",
-        publish_sibling(&old_client, sibling(32), 32),
+        publish_sibling(&old_client, sibling(32), 32, "repo-b"),
     )?;
     old_running.stop()?;
 
@@ -410,6 +545,10 @@ fn native_protected_two_source_heads_import_seal_and_reopen() -> TestResult {
     let NativeIndexResponse::RootScopedView(old_selected) = reply else {
         return Err("old protected route was not sealed".into());
     };
+    #[cfg(target_os = "linux")]
+    assert_selected_native_source_export_v1(
+        old_root.path(), &old_socket, &routes, old_route_ref, old_selected.clone(),
+    )?;
     let snapshot = actual_snapshot_from_sql(
         old_root.path(),
         &routes,

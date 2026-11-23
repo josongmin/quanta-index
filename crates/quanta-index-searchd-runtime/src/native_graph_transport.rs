@@ -25,7 +25,7 @@ pub(crate) type ScopedNativeGraphResult = ScopedNativeResult<NativeGraphResult>;
 
 pub(crate) struct GraphAnchor {
     pub(crate) value: RepoMapNodeRef,
-    memory: Option<MemoryLease>,
+    _memory: Option<MemoryLease>,
 }
 
 impl GraphAnchor {
@@ -57,12 +57,8 @@ impl GraphAnchor {
         };
         Ok(Self {
             value,
-            memory,
+            _memory: memory,
         })
-    }
-
-    pub(crate) fn into_parts(self) -> (RepoMapNodeRef, Option<MemoryLease>) {
-        (self.value, self.memory)
     }
 }
 

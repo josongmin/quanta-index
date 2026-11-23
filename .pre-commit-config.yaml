@@ -130,7 +130,7 @@ repos:
         entry: python3 tools/ci/lint/lint-hexagonal-boundaries.py
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|crates/.*/(Cargo\.toml|src/.*\.rs)|tools/ci/lint/lint-hexagonal-boundaries\.py|tools/ci/tests/test_lint_hexagonal_boundaries\.py)$
+        files: ^(Cargo\.toml|crates/.*/(Cargo\.toml|src/.*\.rs)|tools/ci/lint/(lint-hexagonal-boundaries|check-module-cycles)\.py|tools/ci/tests/test_lint_hexagonal_boundaries\.py)$
         stages: [pre-commit, pre-push]
 
       - id: rust-no-allow

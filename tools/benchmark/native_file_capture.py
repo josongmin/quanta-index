@@ -273,6 +273,7 @@ def _verify_signed_install(plan, selected, policy_sha256):
     try:
         native_release_approval.verify_installed_approval(
             plan[SIGNED_INSTALL], selected, plan["selection_sha256"], policy_sha256,
+            selection_path=plan["selection_path"],
         )
     except (OSError, KeyError, TypeError, ValueError) as error:
         raise EvidenceError(f"Native signed installation differs: {error}") from error

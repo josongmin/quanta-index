@@ -458,6 +458,25 @@ mod tests {
         assert_eq!(view.len_v1(), 0);
         assert_eq!(digest, Digest(Sha256::digest(&bytes).into()));
         assert!(!view.rejects_v1(ProjectionId([1; 16]), IndexInstanceId([2; 16]), &mut checkpoint).unwrap());
+        let reference = RetiredProjectionPolicyRefV1 {
+            object: ObjectRef(Digest([9; 32])),
+            sha256: digest,
+            identity_count: 0,
+        };
+        assert_eq!(reference.matches_body_v1(&bytes, &mut scratch, &mut checkpoint).unwrap(), true);
+        let mut changed_candidate_config = bytes.clone();
+        let candidate_config_at = MAGIC_V1.len() + 4 + 32 * 3 + 4 + 32;
+        changed_candidate_config[candidate_config_at] ^= 1;
+        assert_eq!(reference.matches_body_v1(&changed_candidate_config, &mut scratch, &mut checkpoint).unwrap(), false);
+        let mut missing_old_route = header;
+        missing_old_route.old_routes_ref = None;
+        assert!(encode_retired_projection_policy_v1(
+            missing_old_route,
+            &[],
+            &mut scratch,
+            &mut checkpoint,
+            io::sink(),
+        ).is_err());
     }
 
     #[test]

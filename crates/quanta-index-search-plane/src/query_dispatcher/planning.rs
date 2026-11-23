@@ -36,6 +36,21 @@ impl SearchPlaneDispatcher {
         prepare_language_query_v1(query, constraints)
     }
 
+    /// Validate Symbol query primitives before cursor selection or read-view acquisition.
+    pub(super) fn plan_symbol_query(
+        &self,
+        request: &TextQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<LqQuery, CoreError> {
+        reject_code_search_on_nonlexical_route(request.syntax, "symbol")?;
+        let lowered = lower_lexical_text_query(request)?;
+        let validated =
+            LexicalPolicy::plan_query(&lowered, &request.constraints, LexicalEndpoint::Symbol)?;
+        self.lex_opener
+            .preflight_query_primitives(&validated, budget)?;
+        Ok(lowered)
+    }
+
     /// Shared lexical plan for hybrid search, seed search and hybrid explain.
     pub(super) fn plan_hybrid_lexical_query(
         &self,

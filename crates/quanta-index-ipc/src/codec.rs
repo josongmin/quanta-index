@@ -1194,6 +1194,25 @@ mod tests {
         encode_cbor_payload, encode_request,
     };
 
+    #[cfg(any(target_pointer_width = "32", target_pointer_width = "64"))]
+    #[test]
+    fn stock_ciborium_pointer_integer_extremes_preserve_range() {
+        use ciborium::value::Integer;
+
+        for value in [0_usize, 1, usize::MAX] {
+            let integer = Integer::from(value);
+            assert_eq!(usize::try_from(integer), Ok(value));
+            assert_eq!(u128::try_from(integer), u128::try_from(value));
+        }
+        for value in [isize::MIN, -1, 0, 1, isize::MAX] {
+            let integer = Integer::from(value);
+            assert_eq!(isize::try_from(integer), Ok(value));
+            assert_eq!(i128::try_from(value), Ok(i128::from(integer)));
+        }
+        assert!(usize::try_from(Integer::from(-1_i8)).is_err());
+        assert!(isize::try_from(Integer::from(usize::MAX)).is_err());
+    }
+
     struct ClientMemoryOwner(std::sync::Arc<std::sync::atomic::AtomicU64>);
 
     impl quanta_index_core::index::MemoryLeaseOwner for ClientMemoryOwner {
@@ -1918,8 +1937,11 @@ mod tests {
         let empty = encode_request(&"").expect("encode empty token counterexample");
         let rejected: Result<ContinuationTokenV2, IpcError> =
             decode_request(&mut Cursor::new(empty));
-        assert!(matches!(rejected, Err(IpcError::Decode(message))
-            if message.contains("non-empty continuation token")));
+        assert!(
+            matches!(&rejected, Err(IpcError::Decode(message))
+                if message.contains("non-empty continuation token")),
+            "unexpected rejection: {rejected:?}"
+        );
 
         for (request_id, size) in [(72_000, 4_096), (72_001, 4_097)] {
             let cursor_text = "c".repeat(size);

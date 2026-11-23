@@ -11,6 +11,7 @@ use std::{
 
 use quanta_index_contract::RepoId;
 use quanta_index_contract::native_protocol::{SourceStageReplayContextV1, SourceStageReplayReceiptV1};
+use sha2::{Digest as _, Sha256};
 use quanta_index_core::DiagnosticStageV1;
 use quanta_index_core::index::{
     AdmissionOutcome, AttemptContext, AttemptRef, BootstrapRef, CatalogReadAttempt,
@@ -2226,6 +2227,19 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             .ready_work(workspace, epoch, limit, budget)
     }
 
+    pub fn ready_work_filtered_v2(
+        &self,
+        workspace: WorkspaceKey,
+        epoch: u64,
+        limit: u32,
+        allow: &dyn Fn(&WorkIntent) -> bool,
+        budget: &mut WorkBudget,
+    ) -> Result<Vec<WorkIntent>, IndexError> {
+        self.services.catalog.ready_work_filtered_v2(
+            workspace, epoch, limit, allow, budget,
+        )
+    }
+
     pub fn claim_work(
         &self,
         intent: &WorkIntent,
@@ -2457,6 +2471,13 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             Ok((payload, children))
         })();
         let (payload, children) = diagnostic::finish(preflight, prepared)?;
+        if let Some(checked) = budget.retirement_check_v2() {
+            if checked.operation != request.operation
+                || checked.request_sha256 != Digest(Sha256::digest(&payload.bytes).into())
+            {
+                return Err(IndexError::DigestConflict);
+            }
+        }
         // Catalog API scopes include lock/row work, not SQL statements alone.
         let ingress_span = diagnostic::begin(budget, DiagnosticStageV1::SqliteWork);
         let (ingress, sealed) = diagnostic::finish(
@@ -3625,16 +3646,11 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                             Ok(if let Some(edits) = edits {
                                 flush_coverage_leaves(&mut pending_coverage, &edits, context)?;
                                 if pending_coverage.shared_pending_roots {
-                                    let mut packing =
-                                        quanta_index_core::index::ports::RootPackingPlan::default();
-                                    packing.select(
-                                        0,
-                                        quanta_index_core::index::ports::RootPackingMode::Nested,
-                                    )?;
-                                    let roots = context.apply_stream(
-                                        &[prior_owners],
-                                        &mut edits.cursor().with_packing_plan(packing),
-                                    )?;
+                                    // These roots split on the first owner publication.
+                                    // Keep sibling subtrees indirect so scalar edits do
+                                    // not repeatedly install a packed branch's owner edges.
+                                    let roots = context
+                                        .apply_stream(&[prior_owners], &mut edits.cursor())?;
                                     let [root]: [MapRoot; 1] =
                                         roots.as_slice().try_into().map_err(|_roots| {
                                             IndexError::BackendViolation(

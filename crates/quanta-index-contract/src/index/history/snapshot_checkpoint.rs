@@ -226,7 +226,7 @@ impl HistorySnapshotCheckpointV1 {
             || self.cut.replay_start.0 == [0; 32]
             || self.row_count < 2
             || self.pages.is_empty()
-            || self.pages.len() > crate::native_protocol::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN
+            || self.pages.len() > super::super::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN
             || self.terminal_ack.generation != self.cut.generation.generation
             || self.terminal_ack.durable_sequence == 0
             || !self.terminal_ack.applied

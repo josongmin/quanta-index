@@ -74,7 +74,7 @@ use quanta_index_core::index::ports::{
     OperationInspectAccess, OperationJournalPort, WorkActionCursor, WorkClaimPort,
 };
 use quanta_index_core::index::{
-    AdmissionOutcome, AttemptId, AttemptRef, BootstrapRef, CatalogView, ImmutableOperation,
+    AdmissionOutcome, AttemptId, AttemptRef, BootstrapRef, CatalogView, Digest, ImmutableOperation,
     IndexError, IngressRef, MemoryLifetime, OWNED_WORK_PRODUCER, ObjectInstallScope,
     ObjectNamespaceBinding, ObjectRef, OperationKey, OperationStatus, OwnedWorkAssignment,
     OwnerMemberBinding, PreparedPublication, ProducerId, ReclaimCandidate, ReclaimDrainPage,
@@ -455,6 +455,14 @@ const READY_PENDING_QUERY: &str = "SELECT work,length(payload),ready_since_ms FR
 const READY_EXPIRED_QUERY: &str = "SELECT work,length(payload),lease_until_ms FROM native_work_v1
     WHERE workspace=?1 AND epoch=?2 AND owner_mode=1 AND status=1 AND lease_until_ms<=?3
     ORDER BY lease_until_ms,work LIMIT ?4";
+const READY_PENDING_AFTER_QUERY: &str = "SELECT work,length(payload),ready_since_ms FROM native_work_v1
+    WHERE workspace=?1 AND epoch=?2 AND owner_mode=0 AND status=0
+      AND (ready_since_ms>?3 OR (ready_since_ms=?3 AND work>?4))
+    ORDER BY ready_since_ms,work LIMIT ?5";
+const READY_EXPIRED_AFTER_QUERY: &str = "SELECT work,length(payload),lease_until_ms FROM native_work_v1
+    WHERE workspace=?1 AND epoch=?2 AND owner_mode=1 AND status=1 AND lease_until_ms<=?3
+      AND (lease_until_ms>?4 OR (lease_until_ms=?4 AND work>?5))
+    ORDER BY lease_until_ms,work LIMIT ?6";
 
 const SCHEMA_OBJECTS: &[(&str, &str, &str)] = &[
     ("table", "native_capture_format_v1", "native capture format"),
@@ -1634,15 +1642,17 @@ struct OperationRow {
     status: OperationStatus,
     published_view: Option<CatalogView>,
     projection_replay: Option<ProjectionReplayStamp>,
+    retirement_policy_sha256_v2: Option<Digest>,
 }
 
 impl Serialize for OperationRow {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct as _;
 
-        let has_replay = self.projection_replay.is_some();
+        let has_replay = self.projection_replay.is_some()
+            || self.retirement_policy_sha256_v2.is_some();
         let mut row =
-            serializer.serialize_struct("OperationRow", if has_replay { 6 } else { 5 })?;
+            serializer.serialize_struct("OperationRow", if self.retirement_policy_sha256_v2.is_some() { 7 } else if has_replay { 6 } else { 5 })?;
         row.serialize_field("immutable", &self.immutable)?;
         row.serialize_field("events", &self.events)?;
         row.serialize_field("fence", &self.fence)?;
@@ -1650,6 +1660,9 @@ impl Serialize for OperationRow {
         row.serialize_field("published_view", &self.published_view)?;
         if has_replay {
             row.serialize_field("projection_replay", &self.projection_replay)?;
+        }
+        if self.retirement_policy_sha256_v2.is_some() {
+            row.serialize_field("retirement_policy_sha256_v2", &self.retirement_policy_sha256_v2)?;
         }
         row.end()
     }
@@ -1666,6 +1679,7 @@ impl<'de> Deserialize<'de> for OperationRow {
             "status",
             "published_view",
             "projection_replay",
+            "retirement_policy_sha256_v2",
         ];
 
         enum Field {
@@ -1675,6 +1689,7 @@ impl<'de> Deserialize<'de> for OperationRow {
             Status,
             PublishedView,
             ProjectionReplay,
+            RetirementPolicySha256V2,
         }
 
         impl<'de> Deserialize<'de> for Field {
@@ -1699,6 +1714,7 @@ impl<'de> Deserialize<'de> for OperationRow {
                             "status" => Ok(Field::Status),
                             "published_view" => Ok(Field::PublishedView),
                             "projection_replay" => Ok(Field::ProjectionReplay),
+                            "retirement_policy_sha256_v2" => Ok(Field::RetirementPolicySha256V2),
                             _ => Err(E::unknown_field(key, FIELDS)),
                         }
                     }
@@ -1714,7 +1730,7 @@ impl<'de> Deserialize<'de> for OperationRow {
                             .ok_or_else(|| {
                                 E::invalid_value(
                                     Unexpected::Unsigned(key),
-                                    &"field index 0 <= i < 6",
+                                    &"field index 0 <= i < 7",
                                 )
                             })?;
                         self.visit_str(name)
@@ -1761,6 +1777,7 @@ impl<'de> Deserialize<'de> for OperationRow {
                 let mut status = None;
                 let mut published_view = None;
                 let mut projection_replay = None;
+                let mut retirement_policy_sha256_v2 = None;
 
                 while let Some(field) = map.next_key()? {
                     match field {
@@ -1774,6 +1791,9 @@ impl<'de> Deserialize<'de> for OperationRow {
                         Field::ProjectionReplay => {
                             read_field(&mut map, &mut projection_replay, "projection_replay")?;
                         }
+                        Field::RetirementPolicySha256V2 => {
+                            read_field(&mut map, &mut retirement_policy_sha256_v2, "retirement_policy_sha256_v2")?;
+                        }
                     }
                 }
 
@@ -1785,6 +1805,7 @@ impl<'de> Deserialize<'de> for OperationRow {
                     published_view: published_view
                         .ok_or_else(|| A::Error::missing_field("published_view"))?,
                     projection_replay: projection_replay.unwrap_or_default(),
+                    retirement_policy_sha256_v2: retirement_policy_sha256_v2.unwrap_or_default(),
                 })
             }
 
@@ -1796,6 +1817,7 @@ impl<'de> Deserialize<'de> for OperationRow {
                     status: required_element(&mut seq, 3)?,
                     published_view: required_element(&mut seq, 4)?,
                     projection_replay: seq.next_element()?.unwrap_or_default(),
+                    retirement_policy_sha256_v2: seq.next_element()?.unwrap_or_default(),
                 })
             }
         }
@@ -2368,6 +2390,93 @@ fn ready_candidates(
         result.push((uint(due)?, key));
     }
     Ok(result)
+}
+
+const RETIRED_READY_PAGE_V2: u32 = 64;
+const RETIRED_READY_SCAN_MAX_V2: u32 = 16_384;
+
+fn ready_candidates_after_v2(
+    connection: &Connection,
+    workspace: WorkspaceKey,
+    epoch: u64,
+    now: u64,
+    after: Option<&(u64, Vec<u8>)>,
+    claimed: bool,
+    budget: &mut WorkBudget,
+) -> Result<Vec<(u64, Vec<u8>)>, IndexError> {
+    budget.checkpoint()?;
+    let query = if claimed { READY_EXPIRED_AFTER_QUERY } else { READY_PENDING_AFTER_QUERY };
+    let after_due = match after {
+        Some((due, _)) => int(*due)?,
+        None => -1,
+    };
+    let after_work = after.map_or(&[][..], |(_, work)| work.as_slice());
+    let mut statement = connection.prepare(query).map_err(|error| sql(&error))?;
+    let mut rows = if claimed {
+        statement.query(params![workspace_key(workspace)?, int(epoch)?, int(now)?,
+            after_due, after_work, i64::from(RETIRED_READY_PAGE_V2)])
+            .map_err(|error| sql(&error))?
+    } else {
+        statement.query(params![workspace_key(workspace)?, int(epoch)?,
+            after_due, after_work, i64::from(RETIRED_READY_PAGE_V2)])
+            .map_err(|error| sql(&error))?
+    };
+    let mut result = Vec::new();
+    result.try_reserve_exact(RETIRED_READY_PAGE_V2 as usize)
+        .map_err(|_| IndexError::ResourceLimited)?;
+    while let Some(row) = rows.next().map_err(|error| sql(&error))? {
+        let key = bounded_work_blob(row, 0, 32, true).map_err(|error| sql(&error))?;
+        let payload_bytes: i64 = row.get(1).map_err(|error| sql(&error))?;
+        let due: i64 = row.get(2).map_err(|error| sql(&error))?;
+        let payload_bytes = uint(payload_bytes)?;
+        if payload_bytes > owned_work::MAX_OWNED_WORK_ROW_BYTES {
+            return Err(IndexError::Storage("oversized owned work row".into()));
+        }
+        budget.charge(WorkUsage {
+            reads: 1,
+            bytes: payload_bytes.checked_add(64).ok_or(IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        result.push((uint(due)?, key));
+    }
+    if result.capacity() > 2 * RETIRED_READY_PAGE_V2 as usize {
+        return Err(IndexError::ResourceLimited);
+    }
+    Ok(result)
+}
+
+struct ReadyLaneV2 {
+    claimed: bool,
+    rows: Vec<(u64, Vec<u8>)>,
+    position: usize,
+    after: Option<(u64, Vec<u8>)>,
+    exhausted: bool,
+}
+
+impl ReadyLaneV2 {
+    fn new(claimed: bool) -> Self {
+        Self { claimed, rows: Vec::new(), position: 0, after: None, exhausted: false }
+    }
+
+    fn head(
+        &mut self, connection: &Connection, workspace: WorkspaceKey, epoch: u64,
+        now: u64, budget: &mut WorkBudget,
+    ) -> Result<Option<(u64, Vec<u8>)>, IndexError> {
+        if self.position == self.rows.len() && !self.exhausted {
+            let page = ready_candidates_after_v2(
+                connection, workspace, epoch, now, self.after.as_ref(), self.claimed, budget,
+            )?;
+            self.exhausted = page.len() < RETIRED_READY_PAGE_V2 as usize;
+            self.after = page.last().cloned();
+            self.rows = page;
+            self.position = 0;
+        }
+        Ok(self.rows.get(self.position).cloned())
+    }
+
+    fn advance(&mut self) {
+        self.position += 1;
+    }
 }
 
 fn validate_work_scope(connection: &Connection, intent: &WorkIntent) -> Result<(), IndexError> {
@@ -3688,6 +3797,21 @@ impl InputStagingPort for SqliteCatalog {
 }
 
 impl SqliteCatalog {
+    /// Durable classification written in the same transaction as admission.
+    /// A missing marker is never evidence that a GC'd request was retained.
+    pub fn retirement_policy_sha256_v2(
+        &self,
+        key: OperationKey,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<Digest>, IndexError> {
+        budget.charge(WorkUsage { reads: 1, ..WorkUsage::default() })?;
+        let guard = self.lock_native_budget(budget)?;
+        let row = read_operation_with_budget(&guard, key, Some(budget))?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        budget.checkpoint()?;
+        Ok(row.retirement_policy_sha256_v2)
+    }
+
     /// Re-fence only a staged Source operation that still owns its confirmed
     /// mutation root. An absent ingress cannot become a new stage here.
     pub fn reopen_source_stage_ingress_v1(
@@ -3846,12 +3970,25 @@ impl SqliteCatalog {
             }
             None => {}
         }
-        if let Some(existing) = read_operation(&tx, immutable.key)? {
+        let retirement_policy_sha256_v2 = match budget.retirement_check_v2() {
+            Some(checked) if checked.operation == immutable.key => Some(checked.policy_sha256),
+            Some(_) => return Err(IndexError::DigestConflict),
+            None => None,
+        };
+        if let Some(mut existing) = read_operation(&tx, immutable.key)? {
             if existing.immutable != immutable
                 || existing.events != events
                 || existing.projection_replay != projection_replay
             {
                 return Err(IndexError::DigestConflict);
+            }
+            if let Some(policy_sha) = retirement_policy_sha256_v2
+                && existing.retirement_policy_sha256_v2 != Some(policy_sha)
+            {
+                existing.retirement_policy_sha256_v2 = Some(policy_sha);
+                write_operation(&tx, &existing, false)?;
+                budget.checkpoint()?;
+                tx.commit().map_err(|error| sql(&error))?;
             }
             return Ok(AdmissionOutcome::Existing(existing.status));
         }
@@ -3892,6 +4029,7 @@ impl SqliteCatalog {
                 status: OperationStatus::Pending(attempt),
                 published_view: None,
                 projection_replay,
+                retirement_policy_sha256_v2,
             },
             true,
         )?;
@@ -4225,6 +4363,100 @@ impl WorkClaimPort for SqliteCatalog {
                 }
             }
             result.push(verified.intent);
+        }
+        tx.commit().map_err(|error| sql(&error))?;
+        drop(guard);
+        budget.checkpoint()?;
+        Ok(result)
+    }
+
+    fn ready_work_filtered_v2(
+        &self,
+        workspace: WorkspaceKey,
+        epoch: u64,
+        limit: u32,
+        allow: &dyn Fn(&WorkIntent) -> bool,
+        budget: &mut WorkBudget,
+    ) -> Result<Vec<WorkIntent>, IndexError> {
+        if limit == 0 || limit > 256 {
+            return Err(IndexError::ResourceLimited);
+        }
+        let page_bytes = std::mem::size_of::<(u64, Vec<u8>)>()
+            .checked_add(32).ok_or(IndexError::ResourceLimited)?
+            .checked_mul(6 * RETIRED_READY_PAGE_V2 as usize)
+            .ok_or(IndexError::ResourceLimited)?;
+        let result_bytes = std::mem::size_of::<WorkIntent>()
+            .checked_mul(usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?)
+            .ok_or(IndexError::ResourceLimited)?;
+        let memory_bytes = page_bytes.checked_add(
+            result_bytes.checked_mul(2).ok_or(IndexError::ResourceLimited)?,
+        )
+            .and_then(|bytes| bytes.checked_add(8192))
+            .ok_or(IndexError::ResourceLimited)?;
+        let _memory = budget.reserve_memory(
+            u64::try_from(memory_bytes).map_err(|_| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?.ok_or(IndexError::ResourceLimited)?;
+        budget.checkpoint()?;
+        let mut guard = self.lock_native_budget(budget)?;
+        let tx = guard.transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(|error| sql(&error))?;
+        let current = current_view(&tx, workspace)?.ok_or(IndexError::SnapshotUnavailable)?;
+        if current.identity.epoch != epoch {
+            return Err(IndexError::Conflict);
+        }
+        let now = observed_catalog_now_ms(&tx, self.clock.now_unix_ms())?;
+        let mut pending = ReadyLaneV2::new(false);
+        let mut expired = ReadyLaneV2::new(true);
+        let mut result = Vec::new();
+        result.try_reserve_exact(usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        if result.capacity() > 2 * usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)? {
+            return Err(IndexError::ResourceLimited);
+        }
+        let mut scanned = 0u32;
+        while result.len() < usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)? {
+            budget.checkpoint()?;
+            let first = pending.head(&tx, workspace, epoch, now, budget)?;
+            let second = expired.head(&tx, workspace, epoch, now, budget)?;
+            let (due, key) = match (first, second) {
+                (None, None) => break,
+                (Some(left), None) => { pending.advance(); left }
+                (None, Some(right)) => { expired.advance(); right }
+                (Some(left), Some(right)) if left <= right => { pending.advance(); left }
+                (Some(_), Some(right)) => { expired.advance(); right }
+            };
+            scanned = scanned.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+            if scanned > RETIRED_READY_SCAN_MAX_V2 {
+                return Err(IndexError::ResourceLimited);
+            }
+            let (payload, checksum): (Vec<u8>, Vec<u8>) = tx.query_row(
+                "SELECT payload,row_digest FROM native_work_v1 WHERE work=?1",
+                params![&key],
+                |row| Ok((
+                    bounded_work_blob(row, 0, owned_work::MAX_OWNED_WORK_ROW_BYTES, false)?,
+                    bounded_work_blob(row, 1, 32, true)?,
+                )),
+            ).map_err(|error| sql(&error))?;
+            check_digest(b"qidx.native.work.v2", &payload, &checksum)?;
+            let decoded: WorkRow = decode(&payload)?;
+            if work_key(&decoded.intent)? != key {
+                return Err(IndexError::Storage("ready work identity mismatch".into()));
+            }
+            let verified = read_work(&tx, &decoded.intent)?
+                .ok_or_else(|| IndexError::Storage("ready work disappeared".into()))?;
+            if verified.intent.workspace != workspace || verified.intent.epoch != epoch {
+                return Err(IndexError::Storage("ready work scope mismatch".into()));
+            }
+            match verified.status {
+                WorkStatus::Pending if verified.ready_since_ms == due => {}
+                WorkStatus::Claimed(claim)
+                    if claim.lease_until_ms <= now && claim.lease_until_ms == due => {}
+                _ => return Err(IndexError::Storage("ready work status mismatch".into())),
+            }
+            if allow(&verified.intent) {
+                result.push(verified.intent);
+            }
         }
         tx.commit().map_err(|error| sql(&error))?;
         drop(guard);
@@ -5380,6 +5612,7 @@ mod tests {
             status: OperationStatus::Unknown,
             published_view: None,
             projection_replay: None,
+            retirement_policy_sha256_v2: None,
         };
         let immutable = serde_json::to_string(&row.immutable)?;
         let status = serde_json::to_string(&row.status)?;
@@ -5423,6 +5656,22 @@ mod tests {
         check_eq!(decode::<OperationRow>(stored.as_bytes())?, row);
         let positional = format!("[{immutable},[],31,{status},{published},{replay}]");
         check_eq!(decode::<OperationRow>(positional.as_bytes())?, row);
+
+        row.projection_replay = None;
+        row.published_view = None;
+        row.retirement_policy_sha256_v2 = Some(digest_id(77));
+        let policy = serde_json::to_string(&row.retirement_policy_sha256_v2)?;
+        let classified = format!(
+            r#"{prefix},"published_view":null,"projection_replay":null,"retirement_policy_sha256_v2":{policy}}}"#
+        );
+        check_eq!(encode(&row)?, classified.as_bytes());
+        check_eq!(decode::<OperationRow>(classified.as_bytes())?, row);
+        let positional = format!("[{immutable},[],31,{status},null,null,{policy}]");
+        check_eq!(decode::<OperationRow>(positional.as_bytes())?, row);
+        let duplicate = format!(
+            r#"{prefix},"published_view":null,"projection_replay":null,"retirement_policy_sha256_v2":{policy},"retirement_policy_sha256_v2":{policy}}}"#
+        );
+        check!(decode::<OperationRow>(duplicate.as_bytes()).is_err());
         Ok(())
     }
 
@@ -6493,6 +6742,8 @@ mod tests {
         for (query, index, parameters) in [
             (READY_PENDING_QUERY, "native_owned_open_idx_v1", 3),
             (READY_EXPIRED_QUERY, "native_owned_claim_idx_v1", 4),
+            (READY_PENDING_AFTER_QUERY, "native_owned_open_idx_v1", 5),
+            (READY_EXPIRED_AFTER_QUERY, "native_owned_claim_idx_v1", 6),
             (owned_work::OWNED_DUE_QUERY, "native_owned_due_idx_v1", 4),
         ] {
             let explain = format!("EXPLAIN QUERY PLAN {query}");
@@ -8395,6 +8646,7 @@ mod tests {
                         status: OperationStatus::Refused(reason),
                         published_view: None,
                         projection_replay: None,
+                        retirement_policy_sha256_v2: None,
                     },
                     true,
                 )?;
@@ -8706,6 +8958,59 @@ mod tests {
             |row| row.get(0),
         )?;
         check_eq!(work_children, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn filtered_ready_work_fills_limit_after_retired_front_row() -> TestResult {
+        use quanta_index_core::index::{MemoryLease, MemoryLeaseOwner, MemoryScope, MemoryScopePort};
+        struct TestMemory;
+        impl MemoryLeaseOwner for TestMemory {
+            fn release(&self, _bytes: u64) {}
+        }
+        impl MemoryScopePort for TestMemory {
+            fn reserve(&self, bytes: u64, _lifetime: MemoryLifetime)
+                -> Result<MemoryLease, IndexError>
+            {
+                Ok(MemoryLease::new(bytes, Arc::new(TestMemory)))
+            }
+        }
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let first = operation(201, 202);
+        let attempt = admit_new(&catalog, first)?;
+        let left = owner_work(1);
+        let right = owner_work(2);
+        let queued = view(1, genesis.profile, None);
+        check_eq!(
+            commit_actions(
+                &catalog,
+                PreparedPublication {
+                    attempt,
+                    expected: genesis.identity,
+                    next: queued,
+                    work_actions: WorkActionSet::empty(),
+                    complete_work: None,
+                    source_events: vec![],
+                    projection_events: vec![],
+                    expected_source: None,
+                    source_mode: SourceOperationMode::Unchanged,
+                },
+                &[WorkAction::Create(left), WorkAction::Create(right)],
+            )?,
+            OperationStatus::Published(view(1, genesis.profile, None).identity)
+        );
+        let mut budget = admission_budget();
+        budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(TestMemory))));
+        let ordered = catalog.ready_work(workspace(), 7, 2, &mut budget)?;
+        check_eq!(ordered.len(), 2);
+        let second = *ordered.get(1).ok_or("second ready work missing")?;
+        check_eq!(
+            catalog.ready_work_filtered_v2(
+                workspace(), 7, 1, &|intent| *intent == second, &mut budget,
+            )?,
+            vec![second]
+        );
         Ok(())
     }
 
@@ -12789,6 +13094,31 @@ mod tests {
     }
 
     #[test]
+    fn retirement_classification_survives_terminal_custody_release() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let operation = operation(995, 205);
+        let request = RegisteredObject::unscoped(operation.request, 1, vec![]);
+        let ingress = stage_inputs(&catalog, operation, &[request])?;
+        let mut budget = admission_budget();
+        let policy = digest_id(206);
+        budget.set_retirement_check_v2(quanta_index_core::index::RetirementCheckV2 {
+            operation: operation.key,
+            request_sha256: digest_id(207),
+            policy_sha256: policy,
+        })?;
+        let AdmissionOutcome::New(attempt) = catalog.admit(operation, ingress, &[], &mut budget)?
+        else { return Err("expected new classified operation".into()); };
+        let next = view(1, genesis.profile, None);
+        check!(matches!(publish(&catalog, attempt, &genesis, next)?, OperationStatus::Published(_)));
+        let page = catalog.release_terminal_custody(operation.key, 256, &mut admission_budget())?;
+        check!(!page.has_more);
+        check_eq!(terminal_custody_counts(&catalog, operation.key)?, (0, 0, 0));
+        check_eq!(catalog.retirement_policy_sha256_v2(operation.key, &mut admission_budget())?, Some(policy));
+        Ok(())
+    }
+
+    #[test]
     fn terminal_custody_budget_failure_rolls_back_and_refusal_replays() -> TestResult {
         let root = tempfile::tempdir()?;
         let (catalog, _genesis) = setup(root.path())?;
@@ -13332,6 +13662,7 @@ mod tests {
                 status: OperationStatus::Refused(reason),
                 published_view: None,
                 projection_replay: None,
+                retirement_policy_sha256_v2: None,
             },
             true,
         )?;

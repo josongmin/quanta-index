@@ -46,7 +46,7 @@ impl PublicationCapacityLedger {
     pub fn boot_inode_allocation_bytes_v1() -> Result<u64, CoreError> {
         publication_inventory_map_node_bytes_v1::<InodeKey, Retained>()
     }
-    /// Header plus actual Mutex<State> backing of the sealed capacity Arc.
+    /// Header plus actual `Mutex<State>` backing of the sealed capacity Arc.
     /// MemoryLease backing is admitted separately by its existing allocator.
     pub fn boot_state_allocation_bytes_v1() -> Result<u64, CoreError> {
         let layout = crate::index::MemoryLease::shared_allocation_backing_layout(Layout::new::<

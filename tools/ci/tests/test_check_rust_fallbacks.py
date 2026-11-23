@@ -51,6 +51,29 @@ class RustFallbackTest(unittest.TestCase):
                 self.assertEqual(LINT.main(), 1)
             self.assertIn(LINT.RULE_OR_ELSE, output.getvalue())
 
+    def test_a_parser_refusal_does_not_hide_findings_in_other_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "benchmarks").mkdir()
+            sources = root / "crates" / "quanta-index-core" / "src"
+            sources.mkdir(parents=True)
+            (sources / "a_opaque.rs").write_text(
+                "fn f(r: Result<(), ()>) { passthrough! { r.or_else(|_| Ok(())) } }\n"
+            )
+            (sources / "b_violation.rs").write_text(
+                "fn f(r: Result<(), ()>) { let _ = r.or_else(|_| Ok(())); }\n"
+            )
+            output = io.StringIO()
+            error = io.StringIO()
+            with (
+                patch.object(LINT, "ROOT", root),
+                redirect_stdout(output),
+                redirect_stderr(error),
+            ):
+                self.assertEqual(LINT.main(), 2)
+            self.assertIn("a_opaque.rs: governed syntax inside opaque Rust macro", error.getvalue())
+            self.assertIn(f"b_violation.rs:1: {LINT.RULE_OR_ELSE}", output.getvalue())
+
     def test_three_replaced_rules_and_width_exceptions(self) -> None:
         source = """fn f(result: Result<(), ()>, value: u64) {
     if u8::try_from(value).is_ok() { narrow(); } else { wide(); }

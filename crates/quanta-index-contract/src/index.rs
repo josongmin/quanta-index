@@ -36,6 +36,7 @@ pub use retired_projection_policy_v1::{
     preflight_retired_projection_policy_v1,
     retired_repomap_route_identity_v1,
 };
+pub(crate) use immutable_object_wire::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN;
 pub use immutable_object_wire::{
     NATIVE_IMMUTABLE_OBJECT_HASH_DOMAIN_V1, NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1,
     NATIVE_IMMUTABLE_OBJECT_MAGIC_V1, NativeProtectedEncodingErrorV1,

@@ -211,8 +211,13 @@ def test_f15_recipe_requires_three_passes_and_preserves_producer_failure(
     assert result.returncode == expected_exit, (result.stdout, result.stderr)
 
 
-@pytest.mark.parametrize("omit_body", [False, True])
-def test_native_history_recipe_requires_each_platform_body(tmp_path, omit_body):
+@pytest.mark.parametrize(
+    "omit_binary",
+    [None, "native_index_uds", "native_product_process"]
+    if sys.platform.startswith("linux")
+    else [None, "native_index_uds"],
+)
+def test_native_history_recipe_requires_each_platform_body(tmp_path, omit_binary):
     package = "quanta-index-searchd-runtime"
     owner = "read_sessions::query::history"
     roster = {
@@ -225,21 +230,35 @@ def test_native_history_recipe_requires_each_platform_body(tmp_path, omit_body):
         ],
     }
     if sys.platform.startswith("linux"):
+        roster["native_index_uds"].append(
+            f"{owner}::native_protected::native_protected_two_source_heads_import_seal_and_reopen",
+        )
         roster["native_product_process"] = [
             "native_boot::offline_legacy_history_export_streams_real_rows_and_terminal_ack",
+            "native_boot::legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback",
         ]
     events = []
     for binary, names in roster.items():
-        witnesses = names[:-1] if omit_body and binary == "native_index_uds" else names
+        witnesses = names[:-1] if binary == omit_binary else names
         suite = {"crate": package, "test_binary": binary, "kind": "test"}
-        events.append({"type": "suite", "event": "started", "test_count": len(witnesses), "nextest": suite})
+        events.append(
+            {"type": "suite", "event": "started", "test_count": len(witnesses), "nextest": suite}
+        )
         for witness in witnesses:
             name = f"{package}::{binary}${witness}"
-            events.extend({"type": "test", "event": event, "name": name} for event in ("started", "ok"))
-        events.append({
-            "type": "suite", "event": "ok", "passed": len(witnesses),
-            "failed": 0, "ignored": 0, "nextest": suite,
-        })
+            events.extend(
+                {"type": "test", "event": event, "name": name} for event in ("started", "ok")
+            )
+        events.append(
+            {
+                "type": "suite",
+                "event": "ok",
+                "passed": len(witnesses),
+                "failed": 0,
+                "ignored": 0,
+                "nextest": suite,
+            }
+        )
 
     args = tmp_path / "nextest-args"
     payload = "".join(f"{json.dumps(event)}\n" for event in events)
@@ -256,19 +275,24 @@ def test_native_history_recipe_requires_each_platform_body(tmp_path, omit_body):
     }
     result = subprocess.run(
         ["just", "--set", "cargo", str(stub), "rust-test-native-history"],
-        cwd=ROOT, env=env, capture_output=True, text=True,
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
     )
-    assert result.returncode == int(omit_body), (result.stdout, result.stderr)
+    assert result.returncode == int(omit_binary is not None), (result.stdout, result.stderr)
     argv = args.read_text().splitlines()
     targets = {argv[i + 1] for i, arg in enumerate(argv) if arg == "--test"}
     assert targets == roster.keys()
     selections = argv[argv.index("-E") + 1].split(" | ")
     assert selections == [
-        f"(binary(={binary}) & test(={name}))"
-        for binary, names in roster.items() for name in names
+        f"(binary(={binary}) & test(={name}))" for binary, names in roster.items() for name in names
     ]
-    if omit_body:
+    if omit_binary is not None:
         assert "nextest execution differs from collected tests" in result.stderr
+    else:
+        expected_count = sum(map(len, roster.values()))
+        assert result.stdout == f"Native History: {expected_count}/{expected_count} passed\n"
 
 
 @pytest.mark.parametrize("omit_kernel_body", [False, True])
@@ -352,10 +376,13 @@ def test_native_history_owner_recipe_requires_catalog_and_kernel_bodies(tmp_path
         assert "nextest execution differs from collected tests" in result.stderr
 
 
-@pytest.mark.parametrize("recipe", [
-    ["rust-test-process-readiness-no-default"],
-    ["rust-prepare-native-dsl-history", "export", "daemon", "digest"],
-])
+@pytest.mark.parametrize(
+    "recipe",
+    [
+        ["rust-test-process-readiness-no-default"],
+        ["rust-prepare-native-dsl-history", "export", "daemon", "digest"],
+    ],
+)
 @pytest.mark.parametrize("invalid_pin", ["missing", "digest"])
 def test_history_recipes_require_legacy_pin_before_cargo(tmp_path, recipe, invalid_pin):
     env = os.environ.copy()
@@ -669,32 +696,38 @@ def test_all_job_commands_propagate_failures():
                 assert run["command"].lstrip().startswith("set -euo pipefail\n")
 
 
-def test_regular_python_and_rust_jobs_are_independent_and_source_bound():
+def test_regular_aggregate_waits_for_source_bound_workers_and_pr_coverage():
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     workers = ["verify-rust-static", "verify-rust-tests", "verify-rust-docs", "verify-rust-bench"]
+    core_jobs = ["verify-python", *workers]
     entries = config["workflows"]["regular"]["jobs"]
-    assert entries[:2] == [{"verify": {"requires": workers}}, "verify-python"]
-    assert entries[2:-1] == workers
+    assert entries[0] == {"verify": {"requires": [*core_jobs, "verify-pr-coverage"]}}
+    assert entries[1:-1] == core_jobs
     assert entries[-1] == {
         "verify-pr-coverage": {
-            "requires": ["verify"],
+            "requires": core_jobs,
             "filters": 'pipeline.event.name == "pull_request"',
         }
     }
     gate_steps = config["jobs"]["verify"]["steps"]
     assert gate_steps[0] == "checkout"
     assert 'test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"' in gate_steps[1]["run"]["command"]
+    python_steps = config["jobs"]["verify-python"]["steps"]
     for name in workers:
         steps = config["jobs"][name]["steps"]
         common_steps = steps[:1] + steps[2:] if name == "verify-rust-tests" else steps
-        assert common_steps[:3] == config["jobs"]["verify-python"]["steps"][:3]
-        source_guard = steps[-1]["run"]["command"]
-        assert 'test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"' in source_guard
-        assert "git diff --exit-code" in source_guard
-        assert "git status --porcelain=v1 --untracked-files=all" in source_guard
-        assert "exit 1" in source_guard
+        assert common_steps[:3] == python_steps[:3]
+        assert steps[-1] == python_steps[-1]
+    source_guard = python_steps[-1]["run"]["command"]
+    assert 'test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"' in source_guard
+    assert "git diff --exit-code" in source_guard
+    assert "git status --porcelain=v1 --untracked-files=all" in source_guard
+    assert "exit 1" in source_guard
+    coverage_steps = config["jobs"]["verify-pr-coverage"]["steps"]
+    assert coverage_steps[0] == "checkout"
+    assert coverage_steps[-2] == python_steps[-1]
+    assert "store_artifacts" in coverage_steps[-1]
     rust_steps = config["jobs"]["verify-rust-tests"]["steps"]
-    python_steps = config["jobs"]["verify-python"]["steps"]
     assert rust_steps[0] == python_steps[0] == "checkout"
     assert rust_steps[2:4] == python_steps[1:3]
     assert '"$HOME/.zprofile"' in rust_steps[2]["run"]["command"]
@@ -908,12 +941,19 @@ def test_regular_workflow_keeps_standard_rust_and_precommit_gates():
         assert "unset BASH_ENV ENV\n" in script
         assert all(f"\n{command}\n" in script for command in commands)
     precommit = python_runs["Pre-commit hooks"]
-    assert "just rust-policy" in python_runs["Python policy and tooling tests"]
+    policy = python_runs["Python policy and tooling tests"]
+    assert "just rust-policy" in policy
+    justfile = (ROOT / "Justfile").read_text(encoding="utf-8")
+    rust_policy = justfile.split("\nrust-policy:\n", 1)[1].split("\n\n", 1)[0]
+    assert "    @just rust-read-view-ambient" in rust_policy.splitlines()
+    assert (
+        "\nrust-read-view-ambient:\n    python3 tools/ci/lint/check-read-view-ambient-lookup.py\n"
+        in justfile
+    )
     assert precommit.startswith("set -euo pipefail\n")
     assert (
         "uv run --frozen --extra dev pre-commit run --all-files --show-diff-on-failure" in precommit
     )
-    assert "git diff --exit-code" in precommit
 
 
 def test_circleci_explicit_test_selector_must_be_registered(tmp_path: Path):

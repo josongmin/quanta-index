@@ -13,7 +13,6 @@ import os
 import platform
 import re
 import shutil
-import signal
 import stat
 import subprocess
 import tempfile
@@ -21,6 +20,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+from tools.benchmark.retrieval.projection_process import ProjectionProcessError, run_bounded
 
 MAX_SOURCE_BYTES = 1 << 20
 MAX_EDITS = 1 << 16
@@ -58,9 +59,7 @@ class GoProjection:
 class GoProjector:
     """Stage exact verified binary bytes outside the checkout for one run."""
 
-    def __init__(
-        self, binary: Path, *, binary_sha256: str, go_version: str = "go1.25.4"
-    ) -> None:
+    def __init__(self, binary: Path, *, binary_sha256: str, go_version: str = "go1.25.4") -> None:
         if not re.fullmatch(r"[0-9a-f]{64}", binary_sha256):
             raise GoProjectionError("binary_identity")
         self.binary = binary
@@ -80,7 +79,10 @@ class GoProjector:
             fd = os.open(self.binary, os.O_RDONLY | os.O_NOFOLLOW)
             with os.fdopen(fd, "rb") as source:
                 blob = source.read(MAX_BINARY_BYTES + 1)
-            if len(blob) > MAX_BINARY_BYTES or hashlib.sha256(blob).hexdigest() != self.binary_sha256:
+            if (
+                len(blob) > MAX_BINARY_BYTES
+                or hashlib.sha256(blob).hexdigest() != self.binary_sha256
+            ):
                 raise GoProjectionError("binary_identity")
             self._directory = Path(tempfile.mkdtemp(prefix="quanta-go-projection-"))
             self._staged = self._directory / "projector"
@@ -99,14 +101,6 @@ class GoProjector:
             shutil.rmtree(self._directory)
         self._directory = None
         self._staged = None
-
-    @staticmethod
-    def _terminate(child: subprocess.Popen[bytes]) -> None:
-        try:
-            os.killpg(child.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        child.communicate()
 
     def project(
         self,
@@ -135,35 +129,39 @@ class GoProjector:
             )
         except OSError as error:
             raise GoProjectionError("producer_defect") from error
-        pending: bytes | None = source
-        while True:
-            if cancelled is not None and cancelled():
-                self._terminate(child)
-                raise GoProjectionError("cancelled")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self._terminate(child)
-                raise GoProjectionError("timeout")
-            try:
-                output, stderr = child.communicate(input=pending, timeout=min(remaining, 0.05))
-                break
-            except subprocess.TimeoutExpired:
-                pending = None
-        if child.returncode != 0 or stderr or len(output) > MAX_RESPONSE_BYTES:
+        try:
+            output, stderr, returncode = run_bounded(
+                child,
+                source,
+                deadline=deadline,
+                cancelled=cancelled,
+                max_stdout=MAX_RESPONSE_BYTES,
+            )
+        except ProjectionProcessError as error:
+            raise GoProjectionError(error.kind) from error
+        except OSError as error:
+            raise GoProjectionError("producer_defect") from error
+        if returncode != 0 or stderr:
             raise GoProjectionError("producer_defect")
         try:
             response = json.loads(output)
         except (ValueError, UnicodeDecodeError) as error:
             raise GoProjectionError("producer_defect") from error
-        if not isinstance(response, dict) or set(response) != {
-            "schema", "status", "go_version", "source_sha256", "edits"
-        } or response["schema"] != SCHEMA or response["go_version"] != self.go_version:
+        if (
+            not isinstance(response, dict)
+            or set(response) != {"schema", "status", "go_version", "source_sha256", "edits"}
+            or response["schema"] != SCHEMA
+            or response["go_version"] != self.go_version
+        ):
             raise GoProjectionError("producer_defect")
         digest = hashlib.sha256(source).hexdigest()
         if response["source_sha256"] != digest:
             raise GoProjectionError("producer_defect")
         if response["status"] != "ok":
-            if response["status"] in {"parse_failure", "resource_limit"} and response["edits"] == []:
+            if (
+                response["status"] in {"parse_failure", "resource_limit"}
+                and response["edits"] == []
+            ):
                 raise GoProjectionError(response["status"])
             raise GoProjectionError("producer_defect")
         edits = response["edits"]

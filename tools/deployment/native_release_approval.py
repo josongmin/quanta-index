@@ -141,7 +141,8 @@ def require_matching_installed_recovery(active, q_image_sha256, q_config_sha256)
             raise ValueError("Native release selection differs from installed recovery approval")
 
 
-def binding(selection, selection_sha256, policy_sha256, active_sha256, manifest_sha256):
+def binding(selection, selection_sha256, policy_sha256, active_sha256, manifest_sha256,
+            *, selection_path=None):
     if selection.native_config is None or selection.native_boot_receipt is None:
         raise ValueError("Native release approval requires a selected BOOT")
     digests = (selection_sha256, policy_sha256, active_sha256, manifest_sha256,
@@ -163,7 +164,17 @@ def binding(selection, selection_sha256, policy_sha256, active_sha256, manifest_
         "decision_policy_sha256": policy_sha256,
     }
     if retirement:
+        if selection_path is None:
+            raise ValueError("Native retirement approval requires its selected file path")
+        selection_path = Path(selection_path)
+        try:
+            canonical_selection = selection_path.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise ValueError("Native retirement approval selection path differs") from error
+        if not selection_path.is_absolute() or canonical_selection != selection_path:
+            raise ValueError("Native retirement approval selection path differs")
         receipt = selection.native_boot_receipt
+        payload["selection_path"] = str(selection_path)
         payload["retired_projection_policy"] = {
             "object_hex": receipt.retired_policy_object_hex,
             "sha256_hex": receipt.retired_policy_sha256_hex,
@@ -235,7 +246,8 @@ def verify_approval_request(request, *, q_sha256=None, launcher=None):
             raise ValueError("Native release selection differs from the approved Q ELF")
 
 
-def approve_selected_install(request, *, q_sha256, active_sha256, manifest_sha256, sign, launcher):
+def approve_selected_install(request, *, q_sha256, active_sha256, manifest_sha256, sign, launcher,
+                             receipt_path=None):
     root, selection_path, policy = _request_paths(request)
     request = request.copy()
     expected = request["selection_sha256"]
@@ -244,12 +256,42 @@ def approve_selected_install(request, *, q_sha256, active_sha256, manifest_sha25
     with launcher.deployment_lock(selection_path) as lock_fd:
         _verify_request_digests(request, selection_path, policy)
         selection = _require_native_selection(root, selection_path, expected, q_sha256, launcher)
-        payload = binding(selection, expected, policy_sha, active_sha256, manifest_sha256)
+        payload = binding(
+            selection, expected, policy_sha, active_sha256, manifest_sha256,
+            selection_path=selection_path,
+        )
         launcher._verify_bootstrap_locked(selection, lock_fd)
         verify_approval_request(request, q_sha256=q_sha256, launcher=launcher)
         signature_hex = sign(signing_bytes(payload)).hex()
         verify_approval_request(request, q_sha256=q_sha256, launcher=launcher)
-        return {"payload": payload, "signature_hex": signature_hex}
+        receipt = {"payload": payload, "signature_hex": signature_hex}
+        if receipt_path is not None:
+            if payload["schema_version"] != RETIREMENT_SCHEMA:
+                raise ValueError("Native retirement receipt output requires schema-3 selection")
+            target = Path(receipt_path)
+            if (not target.is_absolute() or target.parent != root
+                    or target in {selection_path, policy}
+                    or target.name.startswith(".")):
+                raise ValueError("Native release approval output must be a deployment-root file")
+            target = launcher._selection_path(target)
+            encoded = _canonical_bytes(receipt) + b"\n"
+            if len(encoded) > 8 * 1024:
+                raise ValueError("Native release approval exceeds its installed byte bound")
+            verify_installed_approval(
+                receipt, selection, expected, policy_sha, selection_path=selection_path,
+            )
+            try:
+                target.lstat()
+            except FileNotFoundError:
+                launcher._publish_control_file_locked(
+                    target, encoded, lock_fd, create_only=True,
+                )
+            else:
+                launcher._sync_retained_publication(
+                    target, lock_fd, encoded, 8 * 1024, lambda data: data,
+                )
+            verify_approval_request(request, q_sha256=q_sha256, launcher=launcher)
+        return receipt
 
 
 def _installed_bytes(path: Path, limit: int) -> bytes:
@@ -273,7 +315,8 @@ def _installed_bytes(path: Path, limit: int) -> bytes:
         return data
 
 
-def verify_installed_approval(receipt, selection, selection_sha256, policy_sha256):
+def verify_installed_approval(receipt, selection, selection_sha256, policy_sha256,
+                              *, selection_path=None):
     """Compare approval with this installation's protected trust and actual inputs."""
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -289,8 +332,11 @@ def verify_installed_approval(receipt, selection, selection_sha256, policy_sha25
         payload, selection.binary_sha256, selection.native_config_sha256,
     )
     manifest_sha = payload["release_manifest_sha256"]
-    expected = binding(selection, selection_sha256, policy_sha256,
-                       hashlib.sha256(active).hexdigest(), manifest_sha)
+    expected = binding(
+        selection, selection_sha256, policy_sha256,
+        hashlib.sha256(active).hexdigest(), manifest_sha,
+        selection_path=selection_path,
+    )
     expected_bytes = signing_bytes(expected)
     if not isinstance(receipt["payload"], dict) or signing_bytes(receipt["payload"]) != expected_bytes:
         raise ValueError("Native release approval differs from the selected installation")

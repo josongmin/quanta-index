@@ -44,7 +44,6 @@ pub(crate) struct DeploymentSelectionDocumentV1 {
     binary: PathBuf,
     binary_digest: Digest,
     native: Option<NativeStateCommandV1>,
-    retired_projection_policy: Option<RetiredProjectionPolicyRefV1>,
 }
 impl DeploymentSelectionDocumentV1 {
     pub(super) fn payload_v1(&self) -> &[u8] {
@@ -58,9 +57,6 @@ impl DeploymentSelectionDocumentV1 {
     }
     pub(crate) fn native_command_v1(&self) -> Option<&NativeStateCommandV1> {
         self.native.as_ref()
-    }
-    pub(crate) fn retired_projection_policy_ref_v1(&self) -> Option<RetiredProjectionPolicyRefV1> {
-        self.retired_projection_policy
     }
     pub(super) fn binary_v1(&self) -> &Path {
         &self.binary
@@ -157,7 +153,6 @@ pub(super) fn decode_document(
             "invalid environment value"
         );
     }
-    let mut retired_projection_policy = None;
     let command = if native {
         let config = canonical_path(text(wire, "native_config")?, false, budget)?;
         let config_digest = hex(text(wire, "native_config_sha256")?)?;
@@ -196,7 +191,7 @@ pub(super) fn decode_document(
             _ => return Err(anyhow!("unsupported selection format")),
         };
         exact_fields(receipt, RECEIPT_FIELDS, extra)?;
-        if schema == Some(3) {
+        let retired_projection_policy = if schema == Some(3) {
             let count = receipt.get("retired_policy_identity_count")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| anyhow!("retired policy identity count missing"))?;
@@ -206,8 +201,10 @@ pub(super) fn decode_document(
                 identity_count: u32::try_from(count)?,
             };
             reference.validate_v1().map_err(|reason| anyhow!(reason))?;
-            retired_projection_policy = Some(reference);
-        }
+            Some(reference)
+        } else {
+            None
+        };
         let nonce = hex(text(receipt, "root_nonce_hex")?)?;
         let source = hex(text(receipt, "source_cut_digest_hex")?)?;
         ensure!(
@@ -247,7 +244,6 @@ pub(super) fn decode_document(
         binary,
         binary_digest,
         native: command,
-        retired_projection_policy,
     })
 }
 fn exact_fields(value: &Value, fields: &[&str], extra: &[&str]) -> Result<()> {

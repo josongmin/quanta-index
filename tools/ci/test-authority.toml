@@ -463,6 +463,10 @@ targets = [
   "benchmark-portable-execution-python-owner",
   "benchmark-conditional-window-python-owner",
   "benchmark-conditional-execution-python-owner",
+  "benchmark-go-projection-python-owner",
+  "benchmark-ts-projection-python-owner",
+  "benchmark-symbol-grammar-identity-python-owner",
+  "ciborium-no-default-feature-graph-python-owner",
   "benchmark-producer-notifications-python-owner",
   "benchmark-bootstrap-cache-python-owner",
   "benchmark-proof-command-timings-python-owner",
@@ -790,6 +794,30 @@ path = "tools/ci/tests/test_conditional_tool_execution.py"
 owner = "tools/benchmark/retrieval/conditional_proof.py"
 rail = "pr-benchmark-control-python"
 
+[[python_targets]]
+id = "benchmark-go-projection-python-owner"
+path = "tools/ci/tests/test_go_projection.py"
+owner = "tools/benchmark/retrieval/go_projection.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-ts-projection-python-owner"
+path = "tools/ci/tests/test_ts_projection.py"
+owner = "tools/benchmark/retrieval/ts_projection.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-symbol-grammar-identity-python-owner"
+path = "tools/ci/tests/test_symbol_grammar_identity.py"
+owner = "tools/benchmark/retrieval/symbol_coverage.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "ciborium-no-default-feature-graph-python-owner"
+path = "tools/ci/tests/test_ciborium_no_default_consumer.py"
+owner = "tools/ci/verify_ciborium_no_default.py"
+rail = "pr-benchmark-control-python"
+
 [[integration_targets]]
 id = "ciborium-admitted-seed-decode-v3"
 path = "vendor/ciborium-0.2.2/tests/admitted_seed_decode_v3.rs"
@@ -997,6 +1025,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "ipc-wire-historical-cbor"
 path = "crates/quanta-index-ipc/tests/wire_historical_cbor.rs"
+owner = "quanta-index-ipc"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "ipc-ciborium-stock-contract"
+path = "crates/quanta-index-ipc/tests/ciborium_stock_contract.rs"
 owner = "quanta-index-ipc"
 rail = "pr-workspace-nextest"
 

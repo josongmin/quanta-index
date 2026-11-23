@@ -7,7 +7,7 @@ use quanta_index_core::index::{
     IndexError, MAX_WORK_ACTION_BYTES, MapEdit, MemoryLease, MemoryLifetime, OrdinalMapEdit,
     ScratchAllocation, ScratchRequest, ScratchSpacePort, WorkAction, WorkActionDigest,
     WorkActionSet, WorkBudget, WorkUsage,
-    ports::{ImmutableObjectPort, MapEditCursor, RootPackingPlan, WorkActionCursor},
+    ports::{ImmutableObjectPort, MapEditCursor, WorkActionCursor},
 };
 use rusqlite::params;
 
@@ -273,7 +273,6 @@ impl EditSpool {
             after: None,
             page: EditPage::default(),
             finished: false,
-            packing: RootPackingPlan::default(),
         }
     }
 
@@ -314,21 +313,9 @@ pub(crate) struct EditSpoolCursor<'a> {
     after: Option<OrdinalMapEdit>,
     page: EditPage,
     finished: bool,
-    packing: RootPackingPlan,
-}
-
-impl EditSpoolCursor<'_> {
-    pub(crate) fn with_packing_plan(mut self, packing: RootPackingPlan) -> Self {
-        self.packing = packing;
-        self
-    }
 }
 
 impl MapEditCursor for EditSpoolCursor<'_> {
-    fn subtree_packing(&self) -> Result<RootPackingPlan, IndexError> {
-        Ok(self.packing)
-    }
-
     fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
         budget.checkpoint()?;
         if self.finished {

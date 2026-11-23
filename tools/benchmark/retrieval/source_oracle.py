@@ -394,6 +394,30 @@ def candidate_go_declaration_census(path: str, raw: bytes, projector, *, timeout
     return rows, projection, extension_sha256
 
 
+def candidate_syntax_declaration_census(
+    language: str, path: str, raw: bytes, projector, *, timeout_seconds: float
+):
+    """Opt-in TypeScript-validated census for released JS/TS/TSX grammars."""
+    grammar = DECLARATION_GRAMMARS.get(language, {}).get("." + path.rsplit(".", 1)[-1])
+    if language not in {"javascript", "typescript"} or grammar is None:
+        raise SourceOracleError(f"syntax candidate does not admit file: {path}")
+    from tools.benchmark.retrieval.declaration_parsers import get_released_syntax_candidate_parser
+    from tools.benchmark.retrieval.ts_projection import TsProjectionError
+
+    try:
+        projection = projector.project(path, raw, timeout_seconds=timeout_seconds)
+        parser, extension_sha256 = get_released_syntax_candidate_parser(grammar)
+    except (TsProjectionError, ImportError, LookupError, ValueError) as exc:
+        raise SourceOracleError(f"syntax candidate producer failure: {path}: {exc}") from exc
+    root = parser.parse(projection.projected).root_node
+    if root.has_error:
+        raise SourceOracleError(f"syntax candidate grammar parse error: {path}")
+    rows = _declaration_rows(language, path, raw, root)
+    if any(projection.overlaps_name(start, end) for start, end, *_ in rows):
+        raise SourceOracleError(f"syntax candidate projected declaration name: {path}")
+    return rows, projection, extension_sha256
+
+
 def _declaration_rows(language: str, path: str, raw: bytes, root):
     rows = []
     nodes = [root]

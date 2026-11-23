@@ -2528,6 +2528,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         Ok(page)
     }
 
+    /// Continue against `ViewSelection::Exact` using the view from the first page.
     pub fn search_literal(
         &self,
         selection: ViewSelection,
@@ -2544,6 +2545,11 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         {
             return Err(NativeUdsError::Protocol(
                 "literal query exceeds native request bounds".into(),
+            ));
+        }
+        if after.is_some() && !matches!(selection, ViewSelection::Exact(_)) {
+            return Err(NativeUdsError::Protocol(
+                "literal continuation requires an exact view".into(),
             ));
         }
         let page_limit = usize::try_from(limit)
@@ -2566,6 +2572,34 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         if !selection_matches(selection, page.view) || page.hits.len() > page_limit {
             return Err(NativeUdsError::Protocol(
                 "literal query page binding or limit mismatch".into(),
+            ));
+        }
+        if page.has_more != page.after.is_some() || (page.has_more && page.hits.is_empty()) {
+            return Err(NativeUdsError::Protocol(
+                "literal query page continuation mismatch".into(),
+            ));
+        }
+        let mut prior = after.map(|cursor| {
+            let mut bytes = [0; 32];
+            bytes.copy_from_slice(cursor);
+            bytes
+        });
+        for hit in &page.hits {
+            let mut cursor = [0; 32];
+            cursor[..16].copy_from_slice(&hit.owner.producer.0);
+            cursor[16..].copy_from_slice(&hit.owner.stable_id.0);
+            if !valid_native_source_path(&hit.record.path)
+                || prior.is_some_and(|previous| cursor <= previous)
+            {
+                return Err(NativeUdsError::Protocol(
+                    "literal query page has invalid or unordered hits".into(),
+                ));
+            }
+            prior = Some(cursor);
+        }
+        if page.has_more && page.after.as_deref() != prior.as_ref().map(<[u8; 32]>::as_slice) {
+            return Err(NativeUdsError::Protocol(
+                "literal query page cursor differs from last hit".into(),
             ));
         }
         Ok(page)
@@ -6715,6 +6749,132 @@ mod tests {
                 score: FiniteScore::new(1.25).expect("finite score"),
             }],
         }
+    }
+
+    #[test]
+    fn literal_query_rejects_malformed_pages_and_owner_cursors() {
+        use quanta_index_contract::{index::SourceRecord, native_protocol::NativeLiteralHit};
+
+        let view = text_result().view;
+        let instance = IndexInstanceId([9; 16]);
+        let owner = |id| OwnerKey {
+            producer: ProducerId([5; 16]),
+            stable_id: StableOwnerId([id; 16]),
+        };
+        let cursor = |id| {
+            let mut bytes = vec![5; 16];
+            bytes.extend_from_slice(&[id; 16]);
+            bytes
+        };
+        let hit = |id| NativeLiteralHit {
+            owner: owner(id),
+            record: SourceRecord {
+                path: format!("src/{id}.rs"),
+                bytes: ObjectRef(Digest([id; 32])),
+                byte_len: 8,
+                text: SourceTextAdmission::Excluded,
+                source_repo_id: None,
+                language: None,
+            },
+        };
+        let valid = NativeLiteralPage {
+            view,
+            hits: vec![hit(2), hit(3)],
+            after: Some(cursor(3)),
+            has_more: true,
+        };
+        let requested_after = cursor(1);
+        let query = |page| {
+            scripted_reply(NativeIndexResponse::LiteralPage(page), |client, budget| {
+                client.search_literal(
+                    ViewSelection::Exact(view),
+                    instance,
+                    b"needle",
+                    Some(&requested_after),
+                    2,
+                    budget,
+                )
+            })
+        };
+        assert_eq!(
+            query(valid.clone()).expect("valid continuing literal page"),
+            valid
+        );
+        let terminal = NativeLiteralPage {
+            after: None,
+            has_more: false,
+            ..valid.clone()
+        };
+        assert_eq!(
+            query(terminal.clone()).expect("valid terminal literal page"),
+            terminal
+        );
+
+        let mut wrong_view = valid.clone();
+        wrong_view.view.sequence += 1;
+        let mut too_many = valid.clone();
+        too_many.hits.push(hit(4));
+        let mut missing_cursor = valid.clone();
+        missing_cursor.after = None;
+        let mut unexpected_cursor = terminal;
+        unexpected_cursor.after = Some(cursor(3));
+        let mut empty_continuation = valid.clone();
+        empty_continuation.hits.clear();
+        let mut short_cursor = valid.clone();
+        short_cursor.after = Some(vec![0; 31]);
+        let mut wrong_last_cursor = valid.clone();
+        wrong_last_cursor.after = Some(cursor(4));
+        let mut duplicate_owner = valid.clone();
+        duplicate_owner.hits[1] = hit(2);
+        let mut unordered_owners = valid.clone();
+        unordered_owners.hits.reverse();
+        let mut behind_requested_cursor = valid.clone();
+        behind_requested_cursor.hits[0] = hit(1);
+        let mut absolute_path = valid.clone();
+        absolute_path.hits[0].record.path = "/src/2.rs".into();
+        let mut traversal_path = valid.clone();
+        traversal_path.hits[0].record.path = "src/../2.rs".into();
+        let mut oversized_path = valid;
+        oversized_path.hits[0].record.path = "a".repeat(MAX_SOURCE_PATH_BYTES + 1);
+
+        for (case, page) in [
+            ("wrong view", wrong_view),
+            ("too many hits", too_many),
+            ("missing cursor", missing_cursor),
+            ("unexpected cursor", unexpected_cursor),
+            ("empty continuation", empty_continuation),
+            ("short cursor", short_cursor),
+            ("cursor differs from last hit", wrong_last_cursor),
+            ("duplicate owner", duplicate_owner),
+            ("unordered owners", unordered_owners),
+            ("hit at requested cursor", behind_requested_cursor),
+            ("absolute path", absolute_path),
+            ("traversal path", traversal_path),
+            ("oversized path", oversized_path),
+        ] {
+            assert!(
+                matches!(query(page), Err(NativeUdsError::Protocol(_))),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn literal_continuation_requires_exact_view_before_connecting() {
+        let directory = tempfile::tempdir().expect("socket directory");
+        let client = NativeUdsClient::new(directory.path().join("absent.sock"));
+        let view = text_result().view;
+        assert!(matches!(
+            client.search_literal(
+                ViewSelection::Latest { workspace: view.workspace, epoch: view.epoch },
+                IndexInstanceId([9; 16]),
+                b"needle",
+                Some(&[1; 32]),
+                2,
+                &RequestBudgetV1::for_duration(Duration::from_secs(1)),
+            ),
+            Err(NativeUdsError::Protocol(message)) if message == "literal continuation requires an exact view"
+        ));
     }
 
     #[test]

@@ -81,6 +81,8 @@ pub(crate) use boot::RestoreForwardSourceRefusalV1;
 
 #[path = "native_product_diagnostic.rs"]
 mod diagnostic;
+#[path = "native_product_retirement_approval_v2.rs"]
+pub(crate) mod retirement_approval_v2;
 
 use quanta_index_searchd::cli::{NativeCommandModeV1, NativeStateCommandV1};
 use sha2::{Digest as _, Sha256};
@@ -2317,6 +2319,7 @@ fn bind(
         let _private_mode = builder.mode(0o700);
         builder.create(&config.state_root)?;
     }
+    let plain_serve = authority.is_none() && !candidate;
     let authority = match authority {
         Some(authority) => authority,
         None => crate::native::prepare_native_boot_authority(
@@ -2328,6 +2331,9 @@ fn bind(
             request,
         )?,
     };
+    if plain_serve {
+        boot::refuse_plain_serve_on_selected_boot_v2(&authority, config, request)?;
+    }
     if candidate {
         boot::require_candidate_start_v1(&authority, config, &capabilities.builders, request)?;
     }
@@ -2618,6 +2624,18 @@ fn run_command_inner(
     command.validate()?;
     let (config, config_sha256) =
         read_config_observed(&command.config_path, command.config_digest)?;
+    let mut retirement_approval = if command.mode == NativeCommandModeV1::Serve
+        && command
+            .identity
+            .and_then(|identity| identity.retired_projection_policy)
+            .is_some()
+    {
+        Some(retirement_approval_v2::verify_selected_v2(
+            command, &config, config_sha256,
+        )?)
+    } else {
+        None
+    };
     let candidate = command.mode == NativeCommandModeV1::ServeCandidate;
     if candidate && config.socket_access != quanta_index_ipc::SocketAccessPolicy::Private {
         bail!("Native candidate service requires a private socket");
@@ -2663,7 +2681,7 @@ fn run_command_inner(
         return Ok(0);
     }
     let composition = composition.ok_or_else(|| anyhow!("Native Serve composition is absent"))?;
-    let authority = if command.identity.is_some() {
+    let mut authority = if command.identity.is_some() {
         Some(
             boot::execute(
                 command,
@@ -2676,6 +2694,23 @@ fn run_command_inner(
     } else {
         None
     };
+    if let Some(policy) = command.identity.and_then(|identity| identity.retired_projection_policy) {
+        let selected = authority.as_mut()
+            .ok_or_else(|| anyhow!("retired Native serve has no BOOT authority"))?;
+        let approval = retirement_approval.take()
+            .ok_or_else(|| anyhow!("retired Native serve lost signed approval"))?;
+        let (retired_projections, retired_instances, index_memory) =
+            boot::with_admitted_control_budget(&config, request.clone(), false, |budget, _| {
+                boot::read_verified_retirement_policy_v2(selected, policy, budget)
+            })?;
+        selected.retirement_approval = Some(crate::native::NativeRetirementAuthorityV2 {
+            approval,
+            retired_projections,
+            retired_instances,
+            _index_memory: index_memory,
+            policy_ref: policy,
+        });
+    }
     let service = bind(
         &config,
         config_sha256,

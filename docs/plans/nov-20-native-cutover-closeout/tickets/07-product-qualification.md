@@ -208,7 +208,7 @@ PYTHONDONTWRITEBYTECODE=1 uv run --frozen --offline --no-sync --extra dev python
 
 ## Native Text와 Literal 검증 순서
 
-1. `just rust-test-native-lexical`로 Kernel 5건과 Runtime 8건을 실행한다. 기본 Tree와 layered V2의 DELTA를 각각 새 FULL의 순위·점수와 대조한다. 고정 BM25 기준, Literal 1·2·3바이트와 비 UTF-8 바이트, 이전 뷰·페이지, 재오픈, 손상 posting과 늦은 seal 실패를 확인한다. 추가된 Kernel 검사는 cold SourceAdvance의 posting과 Work 계측을 대조한다. 추가된 Runtime 검사는 여러 페이지를 읽는 동안 게시된 DELTA 하나와 미게시 DELTA 하나를 남기고 데몬을 SIGKILL한다. 기존 뷰·재시도·최종 FULL과의 순위와 점수를 다시 확인한다. 각 실행의 선택·통과·실패 본문 수를 확인한다. [실행 명령](../../../../Justfile) · [SIGKILL 회귀](../../../../crates/quanta-index-searchd-runtime/tests/native_product_process/text_shard_contract.rs)
+1. `just rust-test-native-lexical`로 SDK 7건, Kernel 5건, Runtime 13건을 실행한다. SDK는 후속 owner 순위·`remaining`과 Literal의 답변·커서를 검사한다. Literal의 첫 페이지에서 받은 뷰를 `Exact`로 지정해 이어 읽는다. Kernel은 기본 Tree DELTA, cold SourceAdvance의 posting·Work, 짧은 Literal·비 UTF-8과 늦은 seal 실패를 검사한다. Runtime은 이전 뷰의 동점 페이지, 새 DELTA 뷰의 양수·0점 페이지와 재오픈, 128건 mutation page ACK 뒤 SIGKILL, 16층 compaction과 stale owner CAS를 검사한다. SQLite 게시 terminal 쓰기 실패 뒤 기존 attempt를 되읽고, 같은 operation 재개로 생성된 응답을 한 바이트 잘라 ACK 유실을 재현한다. 두 번의 SIGKILL 뒤 동일 operation 행, 후속 뷰 1개, stale SourceCut 거절, 독립 FULL과의 순위·점수, Literal·경로 결과의 동일성을 확인한다. 각 실행에서 실제 선택·통과·실패한 본문 수를 확인한다. [실행 명령](../../../../Justfile) · [SIGKILL 회귀](../../../../crates/quanta-index-searchd-runtime/tests/native_product_process/text_shard_contract.rs) · [compaction 회귀](../../../../crates/quanta-index-searchd-runtime/tests/native_product_process/segmented_layered.rs)
 2. 배포와 같은 레이아웃의 고정 release daemon과 공개 SDK로 Source FULL→DELTA→조회→재시작을 재생한다. 게시 전·후 장애, 동일 operation 재시도, 이전 pin 동안 읽기와 마지막 pin 해제 뒤 회수까지 확인한다. 출하 대상의 설치와 복구는 03의 실물 실행을 인수한다. [서명 설치](03-signed-published-cp2.md)
 3. 동일 Linux·Source·쿼리에서 절대 기준과 두 기준본 대비 5쌍 비교를 적용한다. 희소·흔한 term, 1·2바이트 Literal, warm/cold, 고정 변경량에서 코퍼스 크기 변화의 비용을 함께 기록한다. 타임아웃·거절·부분 결과는 원 분모에 남긴다. [성능 합격선](../../nov-12-native-cutover/TANTIVY-RETIREMENT.md#벤치-실행과-합격선)
 
@@ -246,6 +246,14 @@ Kernel cold SourceAdvance는 Nextest `66be3869-c537-4ef3-ab00-b4fb6fba161e`에�
 cold SourceAdvance 재실행은 Nextest `dba9ddcd-1720-4ecc-8ebf-61e6295ca794` **VERIFIED · 1/1 · exit 0**이다. 63·64·65·255·256·257개 파일에서 경로 스트림 형상, 독립 예상 본문 posting·위치, Source 경로와 원문을 대조했다. Runtime 8건과 Catalog custody 검사가 후속 범위다.
 
 Catalog custody는 Nextest `40719f01-a2a1-4d3f-9546-d99fcdc625fa` **VERIFIED · 1/1 · exit 0**이다. 같은 큐의 Runtime은 새 정책 helper 세 경로가 실제 BOOT 모듈에 닿지 않아 **FAILED · compile exit 101 · 본문 0/8**이었다. 실제 모듈 경로와 필요한 단일 crate 내부 export를 맞춘 뒤 Runtime을 다시 실행했다.
+
+이어서 Runtime 재시도는 미사용 BOOT·graph 코드와 Source 검증 결과의 미사용 진단으로 **FAILED · compile exit 101 · 본문 0/8**이었다. 통합 기준 `5452e8cdb`에 이 진단을 정리한 작업을 적용한 별도 체크아웃에서 Kernel 5건과 Runtime 11건의 게이트를 접수했다. `just rust-test-authority` 및 `git diff --check`는 통과했다.
+
+2026-11-23 로컬 Lexical 검증은 Q `5452e8cdb` 기반 고정 체크아웃에 빌드 수정과 회귀를 반영해 **VERIFIED · Kernel 5/5 · Runtime 11/11 · 두 실행 모두 exit 0**이다. `just rust-test-native-lexical`의 Nextest IDs는 Kernel `1c47aee9-971e-453e-9ec2-304f46163179`, Runtime `5f5bf971-346e-402f-8f9c-a26345ac319f`다. 원본 Source 131개에서 교체·이름 변경·삭제·추가를 한 DELTA는 SQLite 롤백 후 기존 pending attempt를 복구했다. 재개 중 실제 게시 응답을 한 바이트 잘라 SDK가 같은 operation의 `Unknown`을 받는지 확인했다. 두 번째 SIGKILL 뒤 `Status`, `Resume`, 동일 `Submit`에서 같은 게시 뷰와 operation 행을 읽었고, SQL에서 후속 뷰 1개를 확인했다. 최종 검색 5개의 순위와 점수 비트는 새 FULL과 일치했다. 16층 compaction 회귀에서 stale CAS 거절, 재시작 전후 15개 동점 순위·점수, 현재 참조의 삭제 성공도 확인했다. [커밋·ACK 복구](../../../../crates/quanta-index-searchd-runtime/tests/native_product_process/text_shard_contract.rs#L1459) · [compaction과 CAS](../../../../crates/quanta-index-searchd-runtime/tests/native_product_process/segmented_layered.rs#L838)
+
+퇴역 검사를 현행 작업 트리에서 재실행했다. `check-tantivy-retirement.py`의 의존성·소스 검사는 **VERIFIED · exit 0**이다. `--check-migrations`는 삭제된 Lexical 테스트 90건에 필요한 검증 기록이 없다고 보고해 **FAILED · exit 1**이다. 현행 Q/S 동결 경로와 서명 readback 부재로 출하 후보 공급은 **BLOCKED**다. 서명 설치 복구와 두 기준본 대비 5쌍 비교는 **NOT_RUN**이다. [퇴역 검사](../../../../tools/ci/check-tantivy-retirement.py) · [현행 공급 원장](03-signed-published-cp2.md)
+
+같은 Q 기준의 Runtime 단위 보조 검증은 **VERIFIED · 9/9 · exit 0**이다. Nextest `fd62b7d6-d8ef-4139-a15c-aeade120b594`에서 schema 2/3 BOOT policy codec, FULL·DELTA·AST 캡처 7건, Catalog checkpoint 용량 거절을 실행했다.
 
 ## SDK60와 Large
 

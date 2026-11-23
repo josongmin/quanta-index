@@ -1123,6 +1123,19 @@ fn operation(sequence: u64) -> OperationKey {
     }
 }
 
+fn file_spec() -> InstanceSpec {
+    InstanceSpec {
+        instance: IndexInstanceId([17; 16]),
+        kind: IndexKind([18; 16]),
+        group: PublicationGroupId([9; 16]),
+        activation: GroupActivation::CoreRequired,
+        input_domain: InputDomain::SourceLocal,
+        schema: SchemaId([10; 16]),
+        policy: Digest([21; 32]),
+        format: StorageFormatId([19; 16]),
+    }
+}
+
 fn text_spec() -> InstanceSpec {
     InstanceSpec {
         instance: IndexInstanceId([71; 16]),

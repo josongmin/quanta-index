@@ -114,7 +114,8 @@ pub const MAX_NATIVE_SEMANTIC_OWNER_SCAN: u32 = 100_000;
 /// Upper bound on a vector identity in one native semantic hit.
 pub const MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES: usize = 1_024;
 /// Maximum direct child references in one immutable projection output.
-pub const MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN: usize = 4_096;
+pub const MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN: usize =
+    crate::index::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN;
 /// Maximum number of exact source-owner bindings in one lookup.
 pub const MAX_NATIVE_SOURCE_OWNER_LOOKUP: usize = 128;
 

@@ -136,7 +136,7 @@ pub(super) fn validate_page_with_memory(
         || page.instance != instance
         || page.remaining > page.matched
         || count != page.remaining.min(u64::from(limit))
-        || (after.is_none() && page.remaining != page.matched)
+        || (after.is_none() != (page.remaining == page.matched))
         || after.is_some_and(|cursor| cursor.artifact != page.artifact)
         || page.after.is_some() != (page.remaining > count)
     {
@@ -159,6 +159,7 @@ pub(super) fn validate_page_with_memory(
                 .as_ref()
                 .is_some_and(|expected| expected.as_str() != hit.path)
             || hit.score.get() < 0.0
+            || after.is_some_and(|cursor| hit.owner == cursor.owner)
             || prior.is_some_and(|(score, owner)| {
                 score.get().total_cmp(&hit.score.get()).is_lt()
                     || (score == hit.score && owner >= hit.owner)
@@ -330,7 +331,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn page_reply_refuses_repeated_rank_and_full_total_used_as_remaining()
+    fn page_reply_refuses_anchor_owner_even_with_a_lower_score()
     -> Result<(), Box<dyn std::error::Error>> {
         let (status, mut page, instance, digest) = fixture()?;
         let anchor = page.after;
@@ -349,6 +350,19 @@ pub(super) mod tests {
         page.hits[0].score = FiniteScore::new(0.4)?;
         page.remaining = 1;
         page.after = None;
+        assert!(matches!(
+            validate_page(
+                &status,
+                instance,
+                1,
+                digest,
+                anchor,
+                &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                &page,
+            ),
+            Err(NativeUdsError::Protocol(_))
+        ));
+        page.hits[0].owner.stable_id = StableOwnerId([11; 16]);
         validate_page(
             &status,
             instance,
@@ -358,19 +372,42 @@ pub(super) mod tests {
             &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             &page,
         )?;
-        page.remaining = 3;
+        Ok(())
+    }
+
+    #[test]
+    fn page_reply_refuses_continuation_that_counts_its_anchor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (status, mut page, instance, digest) = fixture()?;
+        let anchor = page.after.ok_or("fixture has no continuation")?;
+        page.hits[0].owner.stable_id = StableOwnerId([11; 16]);
+        page.after = Some(NativeTextCursor {
+            owner: page.hits[0].owner,
+            ..anchor
+        });
         assert!(
             validate_page(
                 &status,
                 instance,
                 1,
                 digest,
-                anchor,
+                Some(anchor),
                 &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 &page
             )
             .is_err()
         );
+        page.remaining = 1;
+        page.after = None;
+        validate_page(
+            &status,
+            instance,
+            1,
+            digest,
+            Some(anchor),
+            &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            &page,
+        )?;
         Ok(())
     }
 

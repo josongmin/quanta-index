@@ -451,20 +451,6 @@ pub(crate) type SyncPublishedRecoveryV1<'a> = dyn FnMut(
     ) -> Result<DeploymentSelectionPublishedV1>
     + 'a;
 
-/// Read one pinned active Legacy selection while holding the existing
-/// deployment lock. Export never creates the lock or publishes a selection.
-pub(crate) fn with_locked_legacy_export_selection_v1<T>(
-    path: &Path,
-    expected: Digest,
-    budget: &mut WorkBudget,
-    read: impl FnOnce(&DeploymentSelectionDocumentV1, &mut WorkBudget) -> Result<T>,
-) -> Result<T> {
-    with_locked_export_selection_v1(path, expected, budget, |selected, budget| {
-        ensure!(selected.native_command_v1().is_none(), "active selection is not Legacy");
-        read(selected, budget)
-    })
-}
-
 /// Read the exact selected deployment while holding its existing lock.
 pub(crate) fn with_locked_export_selection_v1<T>(
     path: &Path,

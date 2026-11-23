@@ -94,28 +94,52 @@ def grammar_identity(root: Path = ROOT) -> str:
         "tree-sitter-python": "0.25.0",
         "tree-sitter-typescript": "0.23.2",
     }
+    manifest = tomllib.loads(regular_bytes(root / "Cargo.toml").decode())
+    benchmark = tomllib.loads(regular_bytes(root / "benchmarks/retrieval/Cargo.toml").decode())
+    workspace = manifest["workspace"]["dependencies"]
+    benchmark_dependencies = benchmark["dependencies"]
+    benchmark_dev_dependencies = benchmark.get("dev-dependencies", {})
     lock = tomllib.loads(regular_bytes(root / "Cargo.lock").decode())
     registry_checksums = {}
     for name, version in versions.items():
         rows = [p for p in lock["package"] if p["name"] == name]
-        if len(rows) != 1 or rows[0]["version"] != version:
+        if not rows or any(row["version"] != version for row in rows):
             raise ValueError(f"grammar lock identity differs: {name}")
-        if name in {"tree-sitter-rust", "tree-sitter-python"}:
+        if name in {"tree-sitter", "tree-sitter-rust", "tree-sitter-python"}:
+            if len(rows) != 1:
+                raise ValueError(f"grammar lock identity differs: {name}")
             row = rows[0]
             checksum = row.get("checksum")
-            if (
-                row.get("source") != "registry+https://github.com/rust-lang/crates.io-index"
-                or not is_sha(checksum)
-            ):
+            if row.get(
+                "source"
+            ) != "registry+https://github.com/rust-lang/crates.io-index" or not is_sha(checksum):
                 raise ValueError(f"{name} must have a crates.io checksum")
             registry_checksums[name] = checksum
-        elif name in {
-            "tree-sitter-go",
-            "tree-sitter-typescript",
-            "tree-sitter-javascript",
-        } and ("source" in rows[0] or "checksum" in rows[0]):
-            raise ValueError(f"{name} grammar must resolve to the source-bound path dependency")
-    manifest = tomllib.loads(regular_bytes(root / "Cargo.toml").decode())
+        else:
+            path_rows = [row for row in rows if "source" not in row and "checksum" not in row]
+            alias = name + "-official"
+            has_alias = alias in workspace
+            registry_rows = [row for row in rows if row not in path_rows]
+            if alias in benchmark_dependencies:
+                raise ValueError(f"{name} official candidate must not enter product dependencies")
+            if len(path_rows) != 1 or len(registry_rows) != int(has_alias):
+                raise ValueError(f"{name} grammar must resolve to one source-bound path dependency")
+            if has_alias:
+                if workspace[alias] != {"package": name, "version": "=" + version}:
+                    raise ValueError(f"{name} official candidate dependency differs")
+                if benchmark_dev_dependencies.get(alias) != {"workspace": True}:
+                    raise ValueError(
+                        f"{name} official candidate must be a benchmark dev dependency"
+                    )
+                row = registry_rows[0]
+                if row.get(
+                    "source"
+                ) != "registry+https://github.com/rust-lang/crates.io-index" or not is_sha(
+                    row.get("checksum")
+                ):
+                    raise ValueError(f"{name} official candidate lacks a crates.io checksum")
+            elif alias in benchmark_dev_dependencies:
+                raise ValueError(f"{name} official candidate has no workspace pin")
     for tag, version in [
         ("typescript", "0.23.2"),
         ("go", "0.25.0"),
@@ -126,7 +150,8 @@ def grammar_identity(root: Path = ROOT) -> str:
         expected = "=" + version
         if tag not in {"rust", "python"}:
             expected = {"version": expected, "path": "vendor/tree-sitter-" + tag}
-        if manifest["workspace"]["dependencies"]["tree-sitter-" + tag] != expected:
+        name = "tree-sitter-" + tag
+        if workspace[name] != expected or benchmark_dependencies.get(name) != {"workspace": True}:
             raise ValueError(f"{tag} grammar dependency differs")
     return (
         "tree-sitter@0.25.10;rust@0.24.2;registry-checksum="

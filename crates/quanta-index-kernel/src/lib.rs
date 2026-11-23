@@ -17,6 +17,34 @@ mod projection;
 mod query;
 mod registry;
 mod request_decode;
+
+/// Inspect one original-funded durable request without releasing its decode
+/// backing before the caller has applied an installed policy gate.
+pub fn with_decoded_update_request_v1<R>(
+    bytes: &[u8],
+    budget: &mut quanta_index_core::index::WorkBudget,
+    inspect: impl FnOnce(
+        &quanta_index_core::index::UpdateRequest,
+        &mut quanta_index_core::index::WorkBudget,
+    ) -> R,
+) -> Result<R, quanta_index_core::index::IndexError> {
+    let loaded = request_decode::decode(bytes, budget)?;
+    Ok(inspect(&loaded, budget))
+}
+
+/// Inspect an existing immutable profile under the original request budget.
+pub fn with_loaded_profile_v1<R>(
+    reference: quanta_index_core::index::ObjectRef,
+    objects: &dyn quanta_index_core::index::ports::ImmutableObjectPort,
+    budget: &mut quanta_index_core::index::WorkBudget,
+    inspect: impl FnOnce(
+        &quanta_index_core::index::IndexProfile,
+        &mut quanta_index_core::index::WorkBudget,
+    ) -> R,
+) -> Result<R, quanta_index_core::index::IndexError> {
+    let loaded = profile::load(reference, objects, budget)?;
+    Ok(inspect(&loaded, budget))
+}
 mod request_preparation;
 mod source;
 mod spool;

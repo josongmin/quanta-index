@@ -18,7 +18,7 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Verify completed Rust worker source
+          name: Verify completed worker source
           command: |
             set -euo pipefail
             unset BASH_ENV ENV
@@ -276,6 +276,14 @@ jobs:
             unset BASH_ENV ENV
             ./scripts/cargow --lane test-ciborium-no-default-lane test -p ciborium --no-default-features --test no_std --locked
       - run:
+          name: registry ciborium no-default consumer
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            ./scripts/cargow --lane test-ciborium-no-default-lane nextest run --manifest-path tools/ci/ciborium-no-default-consumer/Cargo.toml --locked --lib --no-tests fail
+            python3 tools/ci/verify_ciborium_no_default.py
+      - run:
           name: explicit descriptor custody
           no_output_timeout: 20m
           command: |
@@ -363,6 +371,23 @@ jobs:
       - checkout
       - run: *install_verification_tools
       - run: *verify_tool_versions
+      - run:
+          name: Install pinned parser validation tools
+          command: |
+            set -euo pipefail
+            if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+              sudo apt-get install -y nodejs npm
+            fi
+            command -v node
+            command -v npm
+            archive="$(mktemp)"
+            trap 'rm -f "$archive"' EXIT
+            curl --proto '=https' --tlsv1.2 -LsSf https://go.dev/dl/go1.25.4.linux-amd64.tar.gz -o "$archive"
+            printf '%s  %s\n' '9fa5ffeda4170de60f67f3aa0f824e426421ba724c21e133c1e35d6159ca1bec' "$archive" | sha256sum -c -
+            mkdir -p "$HOME/.local/quanta-parser-go-1.25.4"
+            tar -xzf "$archive" --strip-components=1 -C "$HOME/.local/quanta-parser-go-1.25.4"
+            [[ "$("$HOME/.local/quanta-parser-go-1.25.4/bin/go" version)" == go\ version\ go1.25.4\ * ]]
+            printf 'export PATH="%s/.local/quanta-parser-go-1.25.4/bin:$PATH"\n' "$HOME" >> "$BASH_ENV"
       - restore_cache:
           keys:
             - quanta-index-v2-linux-amd64-uv0.9.11-python3.12.12-{{ checksum "uv.lock" }}
@@ -500,7 +525,7 @@ jobs:
             set -euo pipefail
             unset BASH_ENV ENV
             uv run --frozen --extra dev pre-commit run --all-files --show-diff-on-failure
-            git diff --exit-code
+      - run: *verify_unchanged_worker_source
 
   verify-pr-coverage:
     machine:
@@ -589,6 +614,7 @@ jobs:
             uv run --frozen --extra dev python tools/ci/lint/check-changed-line-coverage.py \
               --lcov /tmp/quanta-index-coverage.lcov \
               --base "$CI_PR_BASE_SHA" --minimum-percent 90
+      - run: *verify_unchanged_worker_source
       - store_artifacts:
           path: artifacts/test-authority
           destination: test-authority
@@ -712,10 +738,12 @@ workflows:
     jobs:
       - verify:
           requires:
+            - verify-python
             - verify-rust-static
             - verify-rust-tests
             - verify-rust-docs
             - verify-rust-bench
+            - verify-pr-coverage
       - verify-python
       - verify-rust-static
       - verify-rust-tests
@@ -723,7 +751,11 @@ workflows:
       - verify-rust-bench
       - verify-pr-coverage:
           requires:
-            - verify
+            - verify-python
+            - verify-rust-static
+            - verify-rust-tests
+            - verify-rust-docs
+            - verify-rust-bench
           filters: pipeline.event.name == "pull_request"
   manual-heavy:
     when: << pipeline.parameters.run_heavy >>

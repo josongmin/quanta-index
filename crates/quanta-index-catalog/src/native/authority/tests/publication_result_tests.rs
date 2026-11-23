@@ -480,6 +480,7 @@ fn initial_full_single_event_operation_row_syntactic_upper_bound_fits_boot_cap()
         status: OperationStatus::Published(publication.identity),
         published_view: Some(publication),
         projection_replay: None,
+        retirement_policy_sha256_v2: None,
     };
     let payload = encode(&row)?;
     check!(

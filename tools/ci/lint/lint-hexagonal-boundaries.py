@@ -6,7 +6,9 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
+from runpy import run_path
 
 try:
     import tomllib
@@ -107,11 +109,23 @@ DEV_INTEGRATION_DEPS = {
         {"quanta-index-searchctl", "quanta-index-scratch-sqlite"}
     ),
     "quanta-index-search-plane": frozenset({"quanta-index-lexical"}),
-    "quanta-index-kernel": frozenset({"quanta-index-catalog", "quanta-index-storage", "quanta-index-lexical", "quanta-index-repomap", "quanta-index-semantic"}),
+    "quanta-index-kernel": frozenset(
+        {
+            "quanta-index-catalog",
+            "quanta-index-storage",
+            "quanta-index-lexical",
+            "quanta-index-repomap",
+            "quanta-index-semantic",
+        }
+    ),
 }
 
 ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
-    "quanta-index-contract-base": frozenset(),
+    "quanta-index-cbor": frozenset(),
+    "quanta-index-unicode": frozenset(),
+    # Standalone under crates/ until the SQLite integration is qualified.
+    "quanta-index-sqlite-fd-ledger": frozenset(),
+    "quanta-index-contract-base": frozenset({"quanta-index-unicode"}),
     # The contract re-exports the base DTOs it is split from.
     "quanta-index-contract": frozenset(
         {"quanta-index-contract-base", "quanta-index-lq-norm", "quanta-index-lq-bridge"}
@@ -137,7 +151,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-semantic": _ADAPTER_CRATE_DEPS | frozenset({"quanta-index-scratch-sqlite"}),
     # Embedding adapter: implements core outbound ports from contract DTOs.
     "quanta-index-embed": _ADAPTER_CRATE_DEPS,
-    "quanta-index-ipc": _ADAPTER_CRATE_DEPS,
+    "quanta-index-ipc": _ADAPTER_CRATE_DEPS | frozenset({"quanta-index-cbor"}),
     # The search plane uses the transport crate for exactly its codec: the
     # CBOR payload encoding the authority snapshots persist in and the
     # canonical batch digest idempotency verifies (the wire encoding is the
@@ -145,6 +159,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # metric primitive library the plane's scrape is built from.
     "quanta-index-search-plane": frozenset(
         {
+            "quanta-index-cbor",
             "quanta-index-contract",
             "quanta-index-core",
             "quanta-index-ipc",
@@ -160,9 +175,8 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # which point this crate will start depending on quanta-index-contract.
     # The DSL maps its `case:` option onto the text normalizer's mode.
     "quanta-index-lq-norm": frozenset({"quanta-index-contract", "quanta-index-lq-text-normalizer"}),
-    # The one Unicode text normalization contract (QI-BB-011): a leaf crate
-    # shared by the DSL, the lexical adapter and the search plane.
-    "quanta-index-lq-text-normalizer": frozenset(),
+    # Lexical normalization and identity decoding share the Unicode implementation.
+    "quanta-index-lq-text-normalizer": frozenset({"quanta-index-unicode"}),
     # LQ trigram index (in-progress). Peer of the lq-* family.
     "quanta-index-lq-trigram": frozenset({"quanta-index-contract"}),
     # LQ positional index (in-progress). Peer of the lq-* family.
@@ -266,6 +280,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     ),
     "quanta-index-sdk": frozenset(
         {
+            "quanta-index-cbor",
             "quanta-index-contract",
             "quanta-index-ipc",
         }
@@ -313,50 +328,36 @@ class Violation:
     message: str
 
 
-def crate_name(cargo_toml: Path) -> str:
-    data = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
-    name = data.get("package", {}).get("name")
-    if not isinstance(name, str):
-        raise ValueError(f"missing package.name in {cargo_toml}")
-    return name
-
-
 PRODUCTION_SECTIONS = ("dependencies", "build-dependencies")
 DEV_SECTIONS = ("dev-dependencies",)
 
 
-def path_dependencies(
-    cargo_toml: Path,
-    sections: tuple[str, ...] = PRODUCTION_SECTIONS + DEV_SECTIONS,
+def dependency_packages(
+    manifest: dict, workspace_dependencies: dict, sections: tuple[str, ...]
 ) -> set[str]:
-    """The package names of every path dependency in `sections`, as Cargo
-    names them.
-
-    A dependency's package is its table key unless `package = "..."`
-    renames it; the path's directory name is never the authority. (Deriving
-    the name from the path, underscored, once made every internal
-    dependency invisible to the `quanta-index-` allowlist check.)
-    """
-    data = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
+    """Read Cargo package names, including aliases, inheritance and target tables."""
     deps: set[str] = set()
-    for section in sections:
-        block = data.get(section, {})
-        if not isinstance(block, dict):
-            continue
-        for key, value in block.items():
-            if not isinstance(value, dict) or value.get("path") is None:
-                continue
-            package = value.get("package", key)
-            if not isinstance(package, str):
-                raise ValueError(f"non-string package name for {key!r} in {cargo_toml}")
-            deps.add(package)
+    for table in (manifest, *manifest.get("target", {}).values()):
+        for section in sections:
+            for key, spec in table.get(section, {}).items():
+                if isinstance(spec, dict) and spec.get("workspace") is True:
+                    spec = workspace_dependencies[key]
+                package = spec.get("package", key) if isinstance(spec, dict) else key
+                if not isinstance(package, str):
+                    raise ValueError(f"non-string package name for {key!r}")
+                deps.add(package)
     return deps
 
 
 def check_crate_dependency_matrix() -> list[Violation]:
     violations: list[Violation] = []
+    workspace = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]
     for cargo_toml in sorted(CRATES.glob("*/Cargo.toml")):
-        name = crate_name(cargo_toml)
+        manifest = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
+        name = manifest.get("package", {}).get("name")
+        if not isinstance(name, str):
+            violations.append(Violation(cargo_toml, "missing package.name"))
+            continue
         allowed = ALLOWED_CRATE_DEPS.get(name)
         if allowed is None:
             # Fallback for in-progress `quanta-index-lq-*` family crates: peers
@@ -369,12 +370,19 @@ def check_crate_dependency_matrix() -> list[Violation]:
                 violations.append(
                     Violation(
                         cargo_toml,
-                        f"unknown workspace crate {name!r} (update ALLOWED_CRATE_DEPS)",
+                        f"unknown crate {name!r} (update ALLOWED_CRATE_DEPS)",
                     )
                 )
                 continue
 
-        for dep in sorted(path_dependencies(cargo_toml, PRODUCTION_SECTIONS)):
+        workspace_dependencies = manifest.get("workspace", workspace).get("dependencies", {})
+        try:
+            production = dependency_packages(manifest, workspace_dependencies, PRODUCTION_SECTIONS)
+            development = dependency_packages(manifest, workspace_dependencies, DEV_SECTIONS)
+        except (KeyError, ValueError) as error:
+            violations.append(Violation(cargo_toml, f"invalid dependency declaration: {error}"))
+            continue
+        for dep in sorted(production):
             if dep.startswith("quanta-index-") and dep not in allowed:
                 violations.append(
                     Violation(
@@ -383,7 +391,7 @@ def check_crate_dependency_matrix() -> list[Violation]:
                     )
                 )
         dev_allowed = allowed | TEST_SUPPORT_CRATES | DEV_INTEGRATION_DEPS.get(name, frozenset())
-        for dep in sorted(path_dependencies(cargo_toml, DEV_SECTIONS)):
+        for dep in sorted(development):
             if dep.startswith("quanta-index-") and dep not in dev_allowed and dep != name:
                 violations.append(
                     Violation(
@@ -392,23 +400,17 @@ def check_crate_dependency_matrix() -> list[Violation]:
                     )
                 )
 
-        all_deps = tomllib.loads(cargo_toml.read_text(encoding="utf-8")).get("dependencies", {})
-        if name == "quanta-index-core" and isinstance(all_deps, dict):
-            for dep_key, dep_value in all_deps.items():
-                package = (
-                    dep_value.get("package", dep_key) if isinstance(dep_value, dict) else dep_key
-                )
-                base = package.split("/")[0]
-                if base in FORBIDDEN_VENDOR_DEPS:
-                    violations.append(
-                        Violation(
-                            cargo_toml,
-                            f"quanta-index-core must not depend on vendor crate {package!r}",
-                        )
+        if name == "quanta-index-core":
+            for package in sorted(production & FORBIDDEN_VENDOR_DEPS):
+                violations.append(
+                    Violation(
+                        cargo_toml,
+                        f"quanta-index-core must not depend on vendor crate {package!r}",
                     )
+                )
 
         if name in _ADAPTER_CRATES:
-            peer_adapters = path_dependencies(cargo_toml) & _ADAPTER_CRATES
+            peer_adapters = (production | development) & _ADAPTER_CRATES
             if peer_adapters:
                 violations.append(
                     Violation(
@@ -453,6 +455,13 @@ def owning_domain(rel_path: Path) -> str | None:
     return domain if domain in DOMAINS else None
 
 
+@lru_cache(maxsize=1)
+def rust_code_mask():
+    # The module-cycle gate already masks Rust comments and normal/raw string
+    # literals without adding a parser dependency to the standalone hook.
+    return run_path(str(Path(__file__).with_name("check-module-cycles.py")))["blank_non_code"]
+
+
 def check_domain_isolation() -> list[Violation]:
     violations: list[Violation] = []
     core_domains = CRATES / "quanta-index-core" / "src" / "domains"
@@ -463,10 +472,10 @@ def check_domain_isolation() -> list[Violation]:
         return violations
 
     for rust_file in sorted(core_domains.rglob("*.rs")):
-        owner = owning_domain(rust_file.relative_to(core_domains))
+        owner = owning_domain(rust_file.relative_to(core_domains.parent))
         if owner is None:
             continue
-        text = rust_file.read_text(encoding="utf-8")
+        text = rust_code_mask()(rust_file.read_text(encoding="utf-8"))
         for match in DOMAIN_USE_RE.finditer(text):
             target = match.group("target")
             if target == owner:

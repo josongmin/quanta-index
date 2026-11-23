@@ -4,7 +4,7 @@
 use super::*;
 use super::super::retired_policy_profile_v1::old_repomap_identity_v1;
 use quanta_index_contract::index::{
-    Digest, NativeImportedNativeSourceHeadV1,
+    Digest, NativeImportedNativeSourceHeadV1, RetiredProjectionPolicyViewV1,
     NativeSourceOriginV1, RetiredProjectionIdentityV1, RetiredProjectionPolicyErrorV1,
     SourceCut, SourceTextAdmission, decode_retired_projection_policy_v1,
     preflight_retired_projection_policy_v1,
@@ -216,6 +216,140 @@ fn verify_source_files_v1(
     Ok((count, Digest(digest.finalize().into())))
 }
 
+fn reject_retired_candidate_publications_v1(
+    candidate: &NativeBootAuthority,
+    reader: &FileObjectReader,
+    expected: &quanta_index_catalog::NativeBootQuiescentCatalogV1,
+    routes: Option<&quanta_index_core::index::NativeProtectedSourceRoutesV1>,
+    policy: &RetiredProjectionPolicyViewV1<'_>,
+    sorted_instances: &[quanta_index_core::index::IndexInstanceId],
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    // There is no predecessor identity to compare. Static retired producer
+    // and policy checks still run at candidate ingress and BOOT authentication.
+    if policy.len_v1() == 0 {
+        return Ok(());
+    }
+    let root = candidate.lease.state_root_identity_v1();
+    let workspace = expected.snapshot.selected.as_ref()
+        .ok_or(IndexError::SnapshotUnavailable)?.operation.key.workspace;
+    let mut visit = |snapshot: &quanta_index_catalog::NativeBootCatalogSnapshot,
+                     _catalog: &quanta_index_catalog::NativeBootPublicationReader<'_>,
+                     _head: &quanta_index_core::index::CatalogView,
+                     operation: &quanta_index_core::index::ImmutableOperation,
+                     publication: &quanta_index_core::index::CatalogView,
+                     budget: &mut WorkBudget| -> Result<(), IndexError> {
+        if snapshot.root_nonce != expected.snapshot.root_nonce
+            || snapshot.selected != expected.snapshot.selected
+            || snapshot.namespace != expected.snapshot.namespace
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        // Retained publications may outlive request objects. Without those
+        // bytes this scan cannot prove that an old ID was never published.
+        let stored_request = reader.get(operation.request, budget)?;
+        quanta_index_kernel::with_decoded_update_request_v1(
+            &stored_request.payload, budget, |request, budget| -> Result<(), IndexError> {
+                if request.operation != operation.key
+                    || request.kind.source_mode() != operation.source_mode
+                    || request.expected_view.workspace != operation.key.workspace
+                    || request.expected_view.epoch != operation.key.epoch
+                {
+                    return Err(IndexError::DigestConflict);
+                }
+                if let quanta_index_core::index::UpdateKind::ProjectionAdvance(transition) = &request.kind {
+                    if super::super::retired_policy_profile_v1::retired_projection_present_v1(
+                        policy, transition.projection, budget,
+                    )? {
+                        return Err(IndexError::DigestConflict);
+                    }
+                }
+                Ok(())
+            },
+        )??;
+        let profile = reader.get(publication.profile, budget)?;
+        if !profile.registration.children.is_empty() {
+            return Err(IndexError::DigestConflict);
+        }
+        super::super::retired_policy_profile_v1::reject_candidate_profile_overlap_v1(
+            policy, sorted_instances, &profile.payload, budget,
+        )?;
+        reject_retired_map_keys_v1(reader, publication.projections, policy, sorted_instances, true, budget)?;
+        reject_retired_map_keys_v1(reader, publication.members, policy, sorted_instances, false, budget)?;
+        reject_retired_map_keys_v1(reader, publication.coverage, policy, sorted_instances, false, budget)?;
+        Ok(())
+    };
+    let observed = if let Some(routes) = routes {
+        quanta_index_catalog::verify_native_source_root_publications_with_routes_v1(
+            root, candidate.io.as_ref(), workspace, routes, budget, &mut visit,
+        )?
+    } else {
+        quanta_index_catalog::verify_native_source_root_publications_v1(
+            root, candidate.io.as_ref(), workspace, budget, &mut visit,
+        )?
+    };
+    if observed.snapshot.root_nonce != expected.snapshot.root_nonce
+        || observed.snapshot.selected != expected.snapshot.selected
+        || observed.snapshot.namespace != expected.snapshot.namespace
+        || observed.current_head != expected.current_head
+    {
+        return Err(IndexError::DigestConflict);
+    }
+    Ok(())
+}
+
+fn reject_retired_map_keys_v1(
+    reader: &FileObjectReader,
+    root: quanta_index_core::index::MapRoot,
+    policy: &RetiredProjectionPolicyViewV1<'_>,
+    sorted_instances: &[quanta_index_core::index::IndexInstanceId],
+    projection_map: bool,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    if root.0.is_none() {
+        return Ok(());
+    }
+    let mut after: Option<MapPageEntry> = None;
+    loop {
+        let page = reader.scan_map(
+            root,
+            after.as_ref().map(|entry| entry.key()).transpose()?,
+            128,
+            budget,
+        )?;
+        for (key, _) in &page.entries {
+            budget.checkpoint()?;
+            if projection_map {
+                if key.len() == 27 && key.starts_with(b"projection\0") {
+                    let mut projection = [0_u8; 16];
+                    projection.copy_from_slice(&key[11..]);
+                    if super::super::retired_policy_profile_v1::retired_projection_present_v1(
+                        policy,
+                        quanta_index_core::index::ProjectionId(projection),
+                        budget,
+                    )? {
+                        return Err(IndexError::DigestConflict);
+                    }
+                }
+            } else if key.len() == 23 && key.starts_with(b"member\0")
+                && sorted_instances.binary_search_by(|instance| instance.0.as_slice().cmp(&key[7..])).is_ok()
+            {
+                return Err(IndexError::DigestConflict);
+            }
+        }
+        if !page.has_more {
+            return Ok(());
+        }
+        let next = page.cursor().last().ok_or(IndexError::ResourceLimited)?;
+        if after.as_ref().map(|entry| entry.key()).transpose()?
+            .is_some_and(|prior| next.key().is_ok_and(|key| key <= prior))
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        after = Some(next);
+    }
+}
+
 pub(super) fn verify_preserved_native_v1(
     previous: &HeldPreviousNativeV1,
     candidate: &NativeBootAuthority,
@@ -294,7 +428,7 @@ pub(super) fn verify_preserved_native_v1(
             return Err(IndexError::DigestConflict.into());
         }
         previous.with_current_source_reader_v1(budget, |old_current, old_reader, budget| {
-            verify_source_files_v1(
+            let _verified_census = verify_source_files_v1(
                 old_reader,
                 &reader,
                 &old_current.source,
@@ -404,6 +538,9 @@ pub(super) fn verify_preserved_native_v1(
                 }
                 let Some(route) = route else {
                     if old_routes.heads.is_empty() {
+                        reject_retired_candidate_publications_v1(
+                            candidate, &reader, &candidate_current, None, &policy_view, &scratch, budget,
+                        )?;
                         return Ok(());
                     }
                     return Err(IndexError::SnapshotUnavailable.into());
@@ -476,6 +613,10 @@ pub(super) fn verify_preserved_native_v1(
                                 return Err(IndexError::DigestConflict);
                             }
                         }
+                        reject_retired_candidate_publications_v1(
+                            candidate, &reader, &candidate_current,
+                            Some(new_routes), &policy_view, &scratch, budget,
+                        )?;
                         Ok(())
                     },
                 )?;

@@ -993,6 +993,126 @@ pub fn extract_go_candidate_symbols(
     })
 }
 
+/// Candidate-only TypeScript compiler edit, in original UTF-8 byte offsets.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SyntaxCandidateEdit {
+    pub start: usize,
+    pub end: usize,
+    pub replacement: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct SyntaxCandidateProjection {
+    pub projected: String,
+    pub source_sha256: String,
+    pub projected_sha256: String,
+    pub node_sha256: String,
+    pub typescript_sha256: String,
+    pub helper_script_sha256: String,
+    pub edits: Vec<SyntaxCandidateEdit>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SyntaxCandidateSymbols {
+    pub records: Vec<SymbolRecord>,
+    pub source_sha256: String,
+    pub projected_sha256: String,
+    pub node_sha256: String,
+    pub typescript_sha256: String,
+    pub helper_script_sha256: String,
+    pub edits_sha256: String,
+}
+
+/// Evaluate an explicitly supplied released JS/TS grammar against a checked
+/// compiler projection. The default vendor grammar remains unchanged.
+pub fn extract_syntax_candidate_symbols(
+    path: &str,
+    source: &str,
+    projection: &SyntaxCandidateProjection,
+    grammar: Language,
+) -> Result<SyntaxCandidateSymbols, SymbolExtractError> {
+    let language = SymbolLanguage::from_path(path)
+        .ok_or_else(|| SymbolExtractError::Unsupported { path: path.into() })?;
+    if !matches!(
+        language,
+        SymbolLanguage::JavaScript | SymbolLanguage::TypeScript { .. }
+    ) {
+        return Err(SymbolExtractError::Unsupported { path: path.into() });
+    }
+    if source.len() > 1 << 20 || projection.edits.len() > 1 << 16 {
+        return Err(SymbolExtractError::ResourceLimit { path: path.into() });
+    }
+    let defect = || SymbolExtractError::ProducerDefect {
+        detail: format!("invalid syntax candidate projection: {path}"),
+    };
+    let lower_hex = |digest: &str| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    if source.len() != projection.projected.len()
+        || sha256_hex(source.as_bytes()) != projection.source_sha256
+        || sha256_hex(projection.projected.as_bytes()) != projection.projected_sha256
+        || !lower_hex(&projection.node_sha256)
+        || !lower_hex(&projection.typescript_sha256)
+        || !lower_hex(&projection.helper_script_sha256)
+    {
+        return Err(defect());
+    }
+    let mut rebuilt = source.as_bytes().to_vec();
+    let mut previous_end = 0;
+    for edit in &projection.edits {
+        if edit.start < previous_end || edit.start >= edit.end || edit.end > source.len() {
+            return Err(defect());
+        }
+        let old = &source.as_bytes()[edit.start..edit.end];
+        let replacement = edit.replacement.as_bytes();
+        if old.len() != replacement.len()
+            || !replacement.is_ascii()
+            || old.iter().zip(replacement).any(|(before, after)| {
+                (*before == b'\n' || *before == b'\r' || *after == b'\n' || *after == b'\r')
+                    && before != after
+            })
+        {
+            return Err(defect());
+        }
+        rebuilt[edit.start..edit.end].copy_from_slice(replacement);
+        previous_end = edit.end;
+    }
+    if rebuilt != projection.projected.as_bytes() {
+        return Err(defect());
+    }
+    let tree = parse_tree_with_grammar(grammar.clone(), path, &projection.projected, None)?;
+    if tree.root_node().has_error() {
+        return Err(SymbolExtractError::ParseFailure { path: path.into() });
+    }
+    let query = tree_sitter::Query::new(&grammar, language.query()).map_err(|error| {
+        SymbolExtractError::ProducerDefect {
+            detail: format!("candidate syntax grammar/query mismatch for {path}: {error}"),
+        }
+    })?;
+    let extracted = extract_parsed_symbols(language, path, source, &tree, None, Some(&query))?;
+    if extracted.names.values().any(|name| {
+        projection
+            .edits
+            .iter()
+            .any(|edit| edit.start < name.end_byte && name.start_byte < edit.end)
+    }) {
+        return Err(defect());
+    }
+    let edit_bytes = serde_json::to_vec(&projection.edits).map_err(|_| defect())?;
+    Ok(SyntaxCandidateSymbols {
+        records: extracted.records,
+        source_sha256: projection.source_sha256.clone(),
+        projected_sha256: projection.projected_sha256.clone(),
+        node_sha256: projection.node_sha256.clone(),
+        typescript_sha256: projection.typescript_sha256.clone(),
+        helper_script_sha256: projection.helper_script_sha256.clone(),
+        edits_sha256: sha256_hex(&edit_bytes),
+    })
+}
+
 fn extract_parsed_symbols(
     language: SymbolLanguage,
     path: &str,
@@ -1208,6 +1328,77 @@ mod tests {
             ),
             Err(SymbolExtractError::ProducerDefect { .. })
         ));
+    }
+
+    #[test]
+    fn explicit_syntax_candidates_keep_vendor_symbol_records() {
+        let fixtures: [(&str, &str, &str, &str, Language); 5] = [
+            (
+                "alias.js",
+                "// café\r\nfunction local() {} export { local as const };",
+                "const",
+                "aaaaa",
+                tree_sitter_javascript_official::LANGUAGE.into(),
+            ),
+            (
+                "star.ts",
+                "export type * as HttpProxy from './basic'\nfunction sentinel() {}",
+                "type",
+                "    ",
+                tree_sitter_typescript_official::LANGUAGE_TYPESCRIPT.into(),
+            ),
+            (
+                "generic.ts",
+                "runnerImport<typeof import('./basic')>(fixture('cjs.js'),)\nfunction sentinel() {}",
+                "typeof import('./basic')",
+                "any                     ",
+                tree_sitter_typescript_official::LANGUAGE_TYPESCRIPT.into(),
+            ),
+            (
+                "signature.ts",
+                "type Overloads = { <T>(): T\n<T>(): T };\nfunction sentinel() {}",
+                ": T",
+                ";  ",
+                tree_sitter_typescript_official::LANGUAGE_TYPESCRIPT.into(),
+            ),
+            (
+                "star.tsx",
+                "export type * as HttpProxy from './basic'\nfunction sentinel() { return <div/> }",
+                "type",
+                "    ",
+                tree_sitter_typescript_official::LANGUAGE_TSX.into(),
+            ),
+        ];
+        for (path, source, needle, replacement, grammar) in fixtures {
+            assert_eq!(
+                needle.len(),
+                replacement.len(),
+                "same-width fixture: {path}"
+            );
+            let start = source.find(needle).expect("edit token");
+            let mut projected = source.to_string();
+            projected.replace_range(start..start + needle.len(), replacement);
+            let projection = SyntaxCandidateProjection {
+                source_sha256: sha256_hex(source.as_bytes()),
+                projected_sha256: sha256_hex(projected.as_bytes()),
+                node_sha256: "a".repeat(64),
+                typescript_sha256: "b".repeat(64),
+                helper_script_sha256: "c".repeat(64),
+                edits: vec![SyntaxCandidateEdit {
+                    start,
+                    end: start + needle.len(),
+                    replacement: replacement.into(),
+                }],
+                projected,
+            };
+            let candidate = extract_syntax_candidate_symbols(path, source, &projection, grammar)
+                .expect("released syntax candidate");
+            assert_eq!(
+                candidate.records,
+                extract_symbols(path, source).expect("vendor baseline"),
+                "{path}"
+            );
+        }
     }
 
     #[test]

@@ -134,7 +134,7 @@ impl<'a> NativeProtectedSnapshotPhysicalV1<'a> {
         if payload.first() != Some(&b'{')
             || payload.len() > MAX_NATIVE_PROTECTED_SNAPSHOT_BYTES_V1
             || roots.is_empty()
-            || roots.len() > crate::native_protocol::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN
+            || roots.len() > super::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN
             || roots.iter().any(|root| root.0 == Digest([0; 32]))
             || roots.windows(2).any(|pair| pair[0] >= pair[1])
         {
@@ -299,10 +299,8 @@ impl<'de> Deserialize<'de> for NativeProtectedNativeSnapshotV1 {
         type SnapshotRowsV1<T> = BoundedVecV1<T, MAX_NATIVE_PROTECTED_SNAPSHOT_ROWS_V1>;
         type SnapshotGenesisV1 =
             BoundedVecV1<CatalogView, { super::MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1 }>;
-        type SnapshotRootsV1 = BoundedVecV1<
-            ObjectRef,
-            { crate::native_protocol::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN },
-        >;
+        type SnapshotRootsV1 =
+            BoundedVecV1<ObjectRef, { super::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN }>;
         const FIELDS: &[&str] = &[
             "wire_version",
             "source_root_nonce",
@@ -517,7 +515,7 @@ impl NativeProtectedNativeSnapshotV1 {
             || self.source_authorities.len() > MAX_NATIVE_PROTECTED_SNAPSHOT_ROWS_V1
             || self.event_claims.len() > MAX_NATIVE_PROTECTED_SNAPSHOT_ROWS_V1
             || self.roots.is_empty()
-            || self.roots.len() > crate::native_protocol::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN
+            || self.roots.len() > super::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN
             || !self.roots.contains(&self.source_routes)
             || self.roots.iter().any(|root| root.0 == zero)
             || self.roots.windows(2).any(|pair| pair[0] >= pair[1])
@@ -857,7 +855,7 @@ mod physical_tests {
 
     #[test]
     fn paged_layout_binds_full_roots_and_both_ordered_pages() -> Result<(), &'static str> {
-        let roots = roots(crate::native_protocol::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN);
+        let roots = roots(super::super::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN);
         let mut payload = vec![b'{'; NATIVE_PROTECTED_SNAPSHOT_PAGE_BYTES_V1 + 1];
         let physical = NativeProtectedSnapshotPhysicalV1::new_v1(&payload, &roots)?;
         let mut records = Vec::new();

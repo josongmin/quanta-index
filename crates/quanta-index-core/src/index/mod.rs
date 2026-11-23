@@ -31,7 +31,7 @@ mod searchable;
 mod staging_payload;
 mod work;
 pub use budget::scoped_memory::ScopedMemoryBudget;
-pub use budget::{WorkBudget, WorkBudgetDenial, WorkLimits, WorkUsage};
+pub use budget::{RetirementCheckV2, WorkBudget, WorkBudgetDenial, WorkLimits, WorkUsage};
 pub use error::IndexError;
 pub use lifetime::{
     ReadSessionLease, ReadSessionRecoveryPage, ReadSessionRef, ReadTicketLease,

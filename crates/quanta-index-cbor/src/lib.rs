@@ -1037,7 +1037,7 @@ mod tests {
         work: usize,
         refuse: bool,
         noop_backing: bool,
-        deny_header: Option<&'static str>,
+        pub(super) deny_header: Option<&'static str>,
         refuse_after: Option<usize>,
         borrowed: Vec<u8>,
     }
@@ -1203,6 +1203,16 @@ mod tests {
         assert_eq!(owner.work, wire.len());
     }
     #[test]
+    fn typed_byte_string_uses_parser_owner_and_seed() {
+        let wire = [0x42, 1, 2];
+        let mut owner = admit();
+        let value = run(&wire, std::marker::PhantomData::<Vec<u8>>, &mut owner).unwrap();
+        assert_eq!(value, [1, 2]);
+        assert_eq!(owner.state, 4);
+        assert_eq!(owner.births, 1);
+        assert_eq!(owner.work, wire.len());
+    }
+    #[test]
     fn parser_refusal_poisoned_owner() {
         let wire = [0x66, b'h', b'e', b'l', b'l', b'o', b'!'];
         let mut owner = admit();
@@ -1334,6 +1344,21 @@ mod tests {
         assert_eq!(owner.births, 1);
         assert_eq!(owner.state, 5);
     }
+    #[test]
+    fn truncated_text_after_first_append_aborts_with_live_backing() {
+        let mut owner = admit();
+        let result = run(
+            &[0x66, b'h', b'e', b'l', b'l'],
+            std::marker::PhantomData::<String>,
+            &mut owner,
+        );
+        assert!(matches!(
+            result,
+            Err(Error::Io(FiniteReadErrorV3::EndOfInput))
+        ));
+        assert_eq!(owner.births, 1);
+        assert_eq!(owner.state, 5);
+    }
     struct TextLengthSeed;
     impl<'de> DeserializeSeed<'de> for TextLengthSeed {
         type Value = usize;
@@ -1435,6 +1460,44 @@ mod tests {
             result,
             Err(Error::Io(FiniteReadErrorV3::Work("last checkpoint")))
         ));
+        assert_eq!(owner.state, 5);
+    }
+    #[test]
+    fn initial_work_refusal_precedes_parser_backing() {
+        let mut owner = admit();
+        let mut scratch = [0_u8; 4];
+        let result = from_slice_with_finite_seed_and_allocation_v3(
+            &[0x61, b'a'],
+            &mut scratch,
+            std::marker::PhantomData::<String>,
+            &mut |_| Err::<(), _>("first work"),
+            &mut owner,
+        );
+        assert!(matches!(
+            result,
+            Err(Error::Io(FiniteReadErrorV3::Work("first work")))
+        ));
+        assert_eq!(owner.births, 0);
+        assert_eq!(owner.state, 5);
+    }
+    #[test]
+    fn short_scratch_aborts_before_parser_backing() {
+        let mut owner = admit();
+        let result = from_slice_with_finite_seed_and_allocation_v3(
+            &[0x61, b'a'],
+            &mut [],
+            std::marker::PhantomData::<String>,
+            &mut |_| Ok::<_, ()>(()),
+            &mut owner,
+        );
+        assert!(matches!(
+            result,
+            Err(Error::Semantic(
+                None,
+                FiniteSemanticReasonV3::Static("decoder scratch must hold one UTF-8 scalar")
+            ))
+        ));
+        assert_eq!(owner.births, 0);
         assert_eq!(owner.state, 5);
     }
     #[test]
@@ -1755,6 +1818,29 @@ mod fixed_wire_contract {
         assert_eq!(value, "borrowed");
         assert_eq!(owner.births, 0);
         assert_eq!(owner.state, 4);
+    }
+
+    #[test]
+    fn borrowed_bytes_header_denial_precedes_visitor() {
+        let mut owner = super::tests::admit();
+        owner.deny_header = Some("bytes");
+        let mut scratch = [0_u8; 4];
+        let result = from_slice_with_finite_seed_and_allocation_v3(
+            &[0x42, 1, 2],
+            &mut scratch,
+            AnyBytesRoute,
+            &mut |_| Ok::<_, ()>(()),
+            &mut owner,
+        );
+        assert!(matches!(
+            result,
+            Err(Error::Semantic(
+                None,
+                FiniteSemanticReasonV3::Static("controlled CBOR bytes header refused")
+            ))
+        ));
+        assert_eq!(owner.births, 0);
+        assert_eq!(owner.state, 5);
     }
 
     #[test]

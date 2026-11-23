@@ -239,7 +239,13 @@ pub(super) fn export_v1(
             .selected
             .as_ref()
             .ok_or(IndexError::SnapshotUnavailable)?;
+        // A route-less predecessor has no authenticated Source inventory to
+        // bind into NativeSourceOriginV1. Refuse before emitting a transcript.
         let route = selected.protected_source_routes;
+        ensure!(
+            route.is_some(),
+            "Source-only Native export requires protected Source routes"
+        );
         let mut transcript = TranscriptWriter {
             output,
             digest: {
