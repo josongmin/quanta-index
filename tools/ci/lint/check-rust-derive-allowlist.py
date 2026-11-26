@@ -31,7 +31,7 @@ from rust_attribute_policy import (  # noqa: E402
 )
 
 ROOT = Path(__file__).resolve().parents[3]
-RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "benchmarks")
+RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "benchmarks", ROOT / "shared")
 
 ALLOWED_DERIVES: frozenset[str] = frozenset(
     {
