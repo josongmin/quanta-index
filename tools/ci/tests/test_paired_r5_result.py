@@ -493,8 +493,15 @@ def test_default_recipe_uses_typed_selected_runner_and_same_cargo_target_floor()
     required = "index-sdk-ingress,retrieval-authority-contract-surface"
     root = Path(__file__).resolve().parents[3]
     script = (root / "scripts/verify-repomap-cross-repo.sh").read_text(encoding="utf-8")
-    caller, _ = r5_cases(live_proof(root, R5_PROOF))
+    caller, kernel = r5_cases(live_proof(root, R5_PROOF))
     assert set(required.split(",")).issubset(caller[2].split(","))
+    # Semantica's product restart and terminal-binding witnesses for the
+    # Source-only candidate. The archived CASES above still resolve old proofs.
+    assert caller[-1] == "index_sdk_ingress_native_source_text_path_cas_survives_runtime_restart_v1"
+    assert kernel[-1] == (
+        "index_sdk_ingress::terminal_receipt_v1::tests::"
+        "p11_source_only_source_history_original_request_rejects_foreign_published_tuple_v7"
+    )
     assert 'resolved_pair "$runtime_package" "$runtime_features"' in script
     assert '--qbc-lane "$r5_lane"' in script
     assert '"$quanta_root/tools/ci/paired_r5_result.py" "$@"' in script
