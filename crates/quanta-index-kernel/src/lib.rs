@@ -53,8 +53,9 @@ mod ticket;
 mod update;
 
 pub use boot::{
-    verify_native_boot_candidate_inputs, verify_native_boot_captured_request_v1,
-    verify_native_boot_inputs, verify_native_boot_source_target_v1,
+    RetainedSourceTreePolicyV20, verify_native_boot_candidate_inputs,
+    verify_native_boot_captured_request_v1, verify_native_boot_inputs,
+    verify_native_boot_retained_source_inputs_v20, verify_native_boot_source_target_v1,
     verify_native_published_full_target_v1, verify_native_published_source_target_v1,
     with_native_boot_history_full_v1, with_native_boot_history_request_v1,
 };

@@ -13,4 +13,15 @@ fn native_full_process_fixture_text_policy_matches_recipe_contract() {
             27, 213, 160, 212, 193, 212, 210, 3, 107, 248, 216, 173,
         ])
     );
+    assert_eq!(
+        TextRecipe::new(Digest([31; 32])).retained_source_tree_policy_v20(),
+        Some(Digest([
+            11, 34, 232, 218, 194, 139, 191, 146, 78, 100, 117, 64, 140, 141, 169, 115, 202, 243,
+            45, 220, 179, 43, 208, 223, 133, 230, 168, 17, 185, 192, 175, 197,
+        ])),
+    );
+    assert_eq!(
+        TextRecipe::segmented_full(Digest([31; 32])).retained_source_tree_policy_v20(),
+        None,
+    );
 }

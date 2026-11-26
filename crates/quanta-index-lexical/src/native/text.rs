@@ -29,20 +29,20 @@ use super::text_memory::{
     IndexedTokenCursor, MAX_NFC_BYTES, MAX_NFC_WORK_BYTES, PreparedKey, PreparedRows,
     prepare_indexed_token_cursor,
 };
+#[cfg(test)]
+use super::text_occurrence::positions::{Occurrence, Positions};
 use super::text_occurrence::{
     OccurrenceCount, OccurrenceReader,
     positions::{MAX_POSITIONS_PER_TERM, PreparedPositions},
 };
-#[cfg(test)]
-use super::text_occurrence::positions::{Occurrence, Positions};
 use super::text_spool::{
     InventoryPartition, MAX_INVENTORY_ROOTS, MAX_TERM_KEY_BYTES, PostingCasePages,
     PostingScratchRow, PostingTermKey, TextSpool,
 };
 pub use super::text_statistics::TextStatistics;
-use super::text_token_batch::{SourceRun, TokenBatch};
 #[cfg(test)]
 use super::text_token_batch::TokenRow;
+use super::text_token_batch::{SourceRun, TokenBatch};
 use quanta_index_core::DiagnosticStageV1;
 use quanta_index_core::index::{
     AttemptContext, BaseMember, DeltaInput, Digest, IndexError, MAX_SOURCE_PATH_BYTES, MapEdit,
@@ -154,6 +154,32 @@ impl TextRecipe {
             }
         }
         Digest(hash.finalize().into())
+    }
+
+    /// Authenticate a retained v20 Tree Source witness from before the
+    /// dictionary and path-postings recipe change. This policy is never used
+    /// to construct an index or admit a live reader.
+    #[must_use]
+    pub fn retained_source_tree_policy_v20(self) -> Option<Digest> {
+        if self.layout != TextLayout::Tree {
+            return None;
+        }
+        let mut hash = Sha256::new();
+        hash.update(b"qidx.native.text.token-only.v1\0");
+        hash.update(self.admission_policy.0);
+        hash.update(TEXT_NORMALIZER_VERSION.major.to_le_bytes());
+        hash.update(TEXT_NORMALIZER_VERSION.minor.to_le_bytes());
+        hash.update(MAX_SOURCE_BYTES.to_le_bytes());
+        hash.update(MAX_NFC_BYTES.to_le_bytes());
+        hash.update(MAX_NFC_WORK_BYTES.to_le_bytes());
+        hash.update(MAX_POSITIONS_PER_TERM.to_le_bytes());
+        hash.update(MAX_TERM_KEY_BYTES.to_le_bytes());
+        hash.update(b"sensitive+folded;indexed-runs-only;u32-positions");
+        hash.update(entry_map::LAYOUT_POLICY);
+        hash.update(contribution::LAYOUT_POLICY);
+        hash.update(super::text_occurrence::block::LAYOUT_POLICY);
+        hash.update(small_posting_block::LAYOUT_POLICY);
+        Some(Digest(hash.finalize().into()))
     }
 }
 
@@ -8566,7 +8592,9 @@ impl SelectedTextRoot {
                 let path = root.path_index();
                 Ok((path.postings, path.statistics, PathPostingValue::Object))
             }
-            Self::Segment { path: Some(path), .. } => Ok((
+            Self::Segment {
+                path: Some(path), ..
+            } => Ok((
                 path.postings,
                 path.statistics,
                 PathPostingValue::SourceCutDigest,

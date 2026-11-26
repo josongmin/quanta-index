@@ -183,17 +183,33 @@ impl HeldPreviousNativeV1 {
         if identity(observed.snapshot.root_nonce, selected)? != expected {
             return Err(IndexError::DigestConflict.into());
         }
-        authenticate(
-            authority,
-            &observed.snapshot,
-            selected,
-            registry,
-            config.resources.physical.inventory.max_entries,
-            None,
-            false,
-            false,
-            budget,
-        )?;
+        if let Some(previous) = config.text_recipe.retained_source_tree_policy_v20() {
+            authenticate_retained_source_v20(
+                authority,
+                &observed.snapshot,
+                selected,
+                registry,
+                config.resources.physical.inventory.max_entries,
+                quanta_index_kernel::RetainedSourceTreePolicyV20 {
+                    descriptor: config.text,
+                    previous,
+                    current: config.text_recipe.output_policy(),
+                },
+                budget,
+            )?;
+        } else {
+            authenticate(
+                authority,
+                &observed.snapshot,
+                selected,
+                registry,
+                config.resources.physical.inventory.max_entries,
+                None,
+                false,
+                false,
+                budget,
+            )?;
+        }
         require_retired(authority)?;
         authority.lease.require_state_root_v1(&config.state_root)?;
         budget.checkpoint()?;
