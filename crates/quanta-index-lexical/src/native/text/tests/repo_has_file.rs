@@ -45,6 +45,12 @@ fn add_repository_source(
 }
 
 fn repo_fixture() -> Result<(VisitorFixture, OwnerKey), IndexError> {
+    repo_fixture_with_second_path("body/b.rs")
+}
+
+fn repo_fixture_with_second_path(
+    second_path: &str,
+) -> Result<(VisitorFixture, OwnerKey), IndexError> {
     let (mut fixture, other) = two_owner_phrase_fixture()?;
     let first_repo = repo_id("corp-a")?;
     let other_repo = repo_id("corp-b")?;
@@ -63,10 +69,10 @@ fn repo_fixture() -> Result<(VisitorFixture, OwnerKey), IndexError> {
     add_repository_source(
         &mut fixture,
         paths,
-        82,
+        if second_path == "body/a.rs" { 81 } else { 82 },
         other,
         reference(71),
-        "body/b.rs",
+        second_path,
         &other_repo,
     )?;
 
@@ -111,6 +117,43 @@ fn repo_fixture() -> Result<(VisitorFixture, OwnerKey), IndexError> {
     )?;
     fixture.ticket.view.source.paths = paths;
     Ok((fixture, other))
+}
+
+#[test]
+fn overlay_search_checks_every_selected_path_owner_in_a_repository_bucket() -> Result<(), IndexError>
+{
+    use super::overlay_tests::{captured_overlay, reader_overlay};
+    use quanta_index_core::index::NativeTextHitSource;
+
+    let (fixture, other) = repo_fixture()?;
+    let query = |fixture: &VisitorFixture, mask_other| {
+        let mut overlay = vec![captured_overlay(
+            fixture.owner,
+            Some("body/a.rs"),
+            Some("one draft"),
+        )];
+        if mask_other {
+            overlay.push(captured_overlay(other, None, None));
+            overlay.sort_unstable_by_key(|row| row.owner);
+        }
+        let constraints = quanta_index_contract::QueryConstraintSetV1::unconstrained();
+        reader_overlay(fixture, overlay, &constraints, 2)
+    };
+    let require_overlay_hit = |fixture: &VisitorFixture, mask_other, matched| {
+        let result = query(fixture, mask_other)?;
+        check_eq!(result.matched, matched);
+        check!(result.hits.iter().any(|hit| {
+            hit.owner == fixture.owner
+                && hit.source == NativeTextHitSource::Overlay { revision: 19 }
+                && hit.path == "body/a.rs"
+        }));
+        Ok(())
+    };
+    require_overlay_hit(&fixture, false, 2)?;
+
+    let (shared, _) = repo_fixture_with_second_path("body/a.rs")?;
+    check!(matches!(query(&shared, false), Err(IndexError::Conflict)));
+    require_overlay_hit(&shared, true, 1)
 }
 
 #[test]

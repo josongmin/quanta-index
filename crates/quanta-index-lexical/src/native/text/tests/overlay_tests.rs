@@ -642,7 +642,7 @@ fn masked_owner_df_refuses_inverse_posting_without_inventory() -> Result<(), Ind
     Ok(())
 }
 
-fn reader_overlay(
+pub(super) fn reader_overlay(
     fixture: &VisitorFixture,
     documents: Vec<TextOverlayReadDocument>,
     constraints: &quanta_index_contract::QueryConstraintSetV1,
@@ -695,7 +695,7 @@ fn reader_overlay_after(
     Ok(outcome.into_result())
 }
 
-fn captured_overlay(
+pub(super) fn captured_overlay(
     owner: OwnerKey,
     path: Option<&str>,
     text: Option<&str>,
