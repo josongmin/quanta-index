@@ -4,12 +4,13 @@ use crate::channel_payloads::{decode_cbor_exact, encode_cbor, leading_cbor_array
 use crate::lexical_root_names::MAX_ROOT_BYTES;
 use quanta_index_core::CoreError;
 use sha2::{Digest as _, Sha256};
-pub(crate) const FILE_AUTHORITY_FORMAT: u16 = 22;
+const PRIOR_FILE_AUTHORITY_FORMAT: u16 = 21;
+const FILE_AUTHORITY_FORMAT: u16 = 22;
 
 /// Infallible by construction because only the domain and fixed-width policy digest are hashed.
-pub(crate) fn policy_digest() -> [u8; 32] {
+fn policy_digest(domain: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"quanta-file-authority-v22-packed-run-postings-policy\0");
+    hasher.update(domain);
     hasher.update(super::file_policy::policy_digest_for_paged());
     hasher.finalize().into()
 }
@@ -67,9 +68,9 @@ type RootWire = (
 );
 
 impl AuthorityRoot {
-    pub(crate) fn wire(&self) -> RootWire {
+    fn wire(&self, format: u16) -> RootWire {
         (
-            FILE_AUTHORITY_FORMAT,
+            format,
             self.policy_sha256,
             self.allocation_scope_sha256,
             self.source_heads.clone(),
@@ -92,27 +93,30 @@ impl AuthorityRoot {
         )
     }
 
-    pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
-        self.validate()?;
-        let bytes = encode_cbor(&self.wire(), "file authority v22 root")?;
-        if bytes.len() > MAX_ROOT_BYTES {
-            return Err(invalid("root exceeds byte admission"));
-        }
-        Ok(bytes)
-    }
-
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, CoreError> {
         if bytes.len() > MAX_ROOT_BYTES {
             return Err(corrupt("root exceeds byte admission"));
         }
-        let format = leading_cbor_array_version(bytes)
+        let version = leading_cbor_array_version(bytes)
             .map_err(|error| corrupt(&format!("root format decode: {error}")))?;
-        if format != u32::from(FILE_AUTHORITY_FORMAT) {
-            return Err(CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
-                message: format!("file authority format {format} requires rebuild"),
-            });
-        }
+        // Retained DATA verification authenticates both root formats. The
+        // run-posting payloads are walked through their object dependencies.
+        let (format, domain): (u16, &[u8]) = match u16::try_from(version) {
+            Ok(PRIOR_FILE_AUTHORITY_FORMAT) => (
+                PRIOR_FILE_AUTHORITY_FORMAT,
+                b"quanta-file-authority-v21-packed-run-postings-policy\0",
+            ),
+            Ok(FILE_AUTHORITY_FORMAT) => (
+                FILE_AUTHORITY_FORMAT,
+                b"quanta-file-authority-v22-packed-run-postings-policy\0",
+            ),
+            _ => {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+                    message: format!("file authority format {version} requires rebuild"),
+                });
+            }
+        };
         let (
             _format,
             policy_sha256,
@@ -151,15 +155,15 @@ impl AuthorityRoot {
             source_bytes,
             membership_count,
         };
-        root.validate()
+        root.validate(policy_digest(domain))
             .map_err(|error| corrupt(&error.to_string()))?;
-        if root.encode()? != bytes {
+        if encode_cbor(&root.wire(format), "file authority root")? != bytes {
             return Err(corrupt("root encoding is not canonical"));
         }
         Ok(root)
     }
 
-    pub(crate) fn validate(&self) -> Result<(), CoreError> {
+    fn validate(&self, expected_policy: [u8; 32]) -> Result<(), CoreError> {
         self.run_registry.validate()?;
         if let Some(premerge) = &self.premerge_run_registry {
             premerge.validate()?;
@@ -167,7 +171,7 @@ impl AuthorityRoot {
                 return Err(invalid("premerge registry segment count differs"));
             }
         }
-        if self.policy_sha256 != policy_digest()
+        if self.policy_sha256 != expected_policy
             || self.allocation_scope_sha256 == [0; 32]
             || self.live_sources > super::file_policy::policy().source_files
             || self.source_bytes > super::file_policy::policy().source_bytes
@@ -224,5 +228,93 @@ impl AuthorityRoot {
             roots.extend(premerge.object_roots());
         }
         roots
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+
+    // These stamps are derived from the fixed little-endian policy fields and
+    // the v21 (ade5fadc1) and v22 (03e2cead6) producer domains.
+    const V21_POLICY: [u8; 32] = [
+        60, 108, 228, 58, 191, 91, 186, 127, 16, 38, 68, 100, 64, 120, 205, 52, 24, 8, 248, 89,
+        232, 242, 152, 124, 74, 68, 158, 153, 19, 209, 174, 162,
+    ];
+    const V22_POLICY: [u8; 32] = [
+        253, 27, 118, 204, 85, 18, 121, 90, 12, 206, 219, 214, 233, 166, 238, 83, 40, 41, 174, 189,
+        209, 149, 231, 169, 238, 237, 36, 132, 116, 211, 91, 97,
+    ];
+
+    fn empty_file_root(format: u16, policy: [u8; 32]) -> Result<Vec<u8>, CoreError> {
+        let empty_map = (None::<()>, 0_u64);
+        let registry = (
+            2_u8,
+            empty_map,
+            empty_map,
+            1_u64,
+            0_u64,
+            1_u64,
+            0_u64,
+            None::<u64>,
+        );
+        let wire = (
+            format,
+            policy,
+            [1_u8; 32],
+            empty_map,
+            empty_map,
+            empty_map,
+            empty_map,
+            registry,
+            (None::<()>, empty_map, 0_u64),
+            empty_map,
+            empty_map,
+            empty_map,
+            0_u64,
+            0_u64,
+            0_u64,
+            0_u64,
+        );
+        encode_cbor(&wire, "File authority fixture")
+    }
+
+    #[test]
+    fn retained_file_root_authenticates_v21_and_v22_without_normalizing_format()
+    -> Result<(), CoreError> {
+        for (format, policy, wrong_policy) in
+            [(21, V21_POLICY, V22_POLICY), (22, V22_POLICY, V21_POLICY)]
+        {
+            let bytes = empty_file_root(format, policy)?;
+            let root = AuthorityRoot::decode(&bytes)?;
+            assert_eq!(root.policy_sha256, policy);
+            assert!(root.object_roots().is_empty());
+            assert!(matches!(
+                AuthorityRoot::decode(&empty_file_root(format, wrong_policy)?),
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                    ..
+                })
+            ));
+        }
+
+        let mut noncanonical = empty_file_root(21, V21_POLICY)?;
+        drop(noncanonical.splice(1..2, [0x18, 21]));
+        assert!(matches!(
+            AuthorityRoot::decode(&noncanonical),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ));
+        assert!(matches!(
+            AuthorityRoot::decode(&empty_file_root(20, V21_POLICY)?),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+                ..
+            })
+        ));
+        Ok(())
     }
 }
