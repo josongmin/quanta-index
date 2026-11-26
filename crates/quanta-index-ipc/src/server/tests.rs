@@ -141,7 +141,10 @@ impl DiagnosticEventSinkV1 for DroppingTraceSink {
 }
 
 #[derive(Debug)]
-struct QueueWaitSignalSink(mpsc::Sender<()>);
+struct QueueWaitSignalSink {
+    entered: mpsc::Sender<()>,
+    resume: Option<std::sync::Mutex<mpsc::Receiver<()>>>,
+}
 
 impl DiagnosticEventSinkV1 for QueueWaitSignalSink {
     fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
@@ -152,7 +155,14 @@ impl DiagnosticEventSinkV1 for QueueWaitSignalSink {
                 ..
             }
         ) {
-            let _signalled = self.0.send(());
+            let _signalled = self.entered.send(());
+            if let Some(resume) = &self.resume {
+                return resume
+                    .lock()
+                    .expect("test queue gate")
+                    .recv_timeout(Duration::from_secs(5))
+                    .is_ok();
+            }
         }
         true
     }
@@ -3316,7 +3326,7 @@ fn peer_watch_repeated_arms_leave_no_thread_or_fd_behind() {
     assert_test_ok(&result);
 }
 
-fn closed_queued_peer_skips_dispatch<E>(frame: &[u8]) -> TestRes
+fn closed_queued_peer_skips_dispatch<E>(frame: &[u8], refuse_slot: bool) -> TestRes
 where
     E: RequestEnvelope<u64>,
 {
@@ -3324,22 +3334,32 @@ where
         1,
         1,
         1,
-        Duration::from_secs(5),
+        if refuse_slot {
+            Duration::from_millis(100)
+        } else {
+            Duration::from_secs(5)
+        },
         Duration::from_secs(2),
         Duration::from_secs(2),
     )
     .map_err(|error| error.to_string())?;
     let slots = Arc::new(DispatchSlots::for_policy(policy));
-    let held = slots
-        .acquire(Duration::ZERO, None)
-        .map_err(|error| format!("reserve dispatch slot: {error:?}"))?;
+    let mut held = Some(
+        slots
+            .acquire(Duration::ZERO, None)
+            .map_err(|error| format!("reserve dispatch slot: {error:?}"))?,
+    );
     let (mut client, server) = UnixStream::pair().map_err(|error| error.to_string())?;
     client.write_all(frame).map_err(|error| error.to_string())?;
     let (queued_tx, queued_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
     let capture = DiagnosticContextV1::new(
         DiagnosticCaptureIdV1([19; 16]),
         Arc::new(TraceTestClock),
-        Arc::new(QueueWaitSignalSink(queued_tx)),
+        Arc::new(QueueWaitSignalSink {
+            entered: queued_tx,
+            resume: refuse_slot.then(|| std::sync::Mutex::new(resume_rx)),
+        }),
     );
     let counters = test_counters();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -3370,10 +3390,15 @@ where
         .recv_timeout(Duration::from_secs(5))
         .map_err(|error| format!("request did not enter the dispatch queue: {error}"))?;
     drop(client);
-    drop(held);
+    if refuse_slot {
+        resume_tx.send(()).map_err(|error| error.to_string())?;
+    } else {
+        drop(held.take());
+    }
     let reason = handle
         .join()
         .map_err(|panic| format!("server thread panicked: {panic:?}"))?;
+    drop(held);
     if !matches!(reason, ConnectionCloseReason::PeerClosed) {
         return Err(format!("closed queued peer got {reason:?}"));
     }
@@ -3386,6 +3411,8 @@ where
     let snapshot = counters.snapshot();
     if snapshot.dispatch_in_flight != 0
         || snapshot.requests_dispatched != 0
+        || snapshot.requests_overloaded != 0
+        || snapshot.response_bytes != 0
         || snapshot.peer_hangup_detected != 0
     {
         return Err(format!(
@@ -3410,7 +3437,7 @@ where
 #[test]
 fn closed_queued_one_shot_peer_never_enters_dispatcher() {
     let result = encode_test_frame(71, 3)
-        .and_then(|frame| closed_queued_peer_skips_dispatch::<TestRequestEnvelope>(&frame));
+        .and_then(|frame| closed_queued_peer_skips_dispatch::<TestRequestEnvelope>(&frame, false));
     assert_test_ok(&result);
 }
 
@@ -3424,8 +3451,121 @@ fn closed_queued_stream_peer_never_enters_dispatcher() {
     let result = encode_request(&StreamingTestRequestEnvelope(test_request(72, 3)))
         .map_err(|error| error.to_string())
         .and_then(|frame| {
-            closed_queued_peer_skips_dispatch::<StreamingTestRequestEnvelope>(&frame)
+            closed_queued_peer_skips_dispatch::<StreamingTestRequestEnvelope>(&frame, false)
         });
+    assert_test_ok(&result);
+}
+
+#[test]
+fn closed_queued_refused_peer_has_no_overload_or_response() {
+    let result = encode_test_frame(73, 3)
+        .and_then(|frame| closed_queued_peer_skips_dispatch::<TestRequestEnvelope>(&frame, true));
+    assert_test_ok(&result);
+}
+
+#[test]
+fn queued_client_deadline_expiry_has_no_overload_or_response() {
+    let result = (|| -> TestRes {
+        let policy = ServerAdmissionPolicy::new(
+            1,
+            1,
+            1,
+            Duration::from_secs(5),
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        )
+        .map_err(|error| error.to_string())?;
+        let slots = Arc::new(DispatchSlots::for_policy(policy));
+        let held = slots
+            .acquire(Duration::ZERO, None)
+            .map_err(|error| format!("reserve dispatch slot: {error:?}"))?;
+        let (mut client, server) = UnixStream::pair().map_err(|error| error.to_string())?;
+        let (queued_tx, queued_rx) = mpsc::channel();
+        let capture = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([20; 16]),
+            Arc::new(TraceTestClock),
+            Arc::new(QueueWaitSignalSink {
+                entered: queued_tx,
+                resume: None,
+            }),
+        );
+        let counters = test_counters();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let worker_counters = Arc::clone(&counters);
+        let worker_calls = Arc::clone(&calls);
+        let worker_slots = Arc::clone(&slots);
+        let handle = thread::spawn(move || {
+            super::handle_connection_traced::<
+                TestRequestEnvelope,
+                u64,
+                TestResponseEnvelope,
+                u64,
+                CountingDispatcher,
+            >(
+                server,
+                &CountingDispatcher(worker_calls),
+                &worker_slots,
+                policy,
+                IpcPlane::Query,
+                PeerCredentials {
+                    uid: 0,
+                    gid: 0,
+                    pid: None,
+                },
+                0,
+                1,
+                &AtomicBool::new(false),
+                &worker_counters,
+                Some(&capture),
+            )
+        });
+        client
+            .write_all(&super::REQUEST_DEADLINE_PREFACE_V1)
+            .map_err(|error| error.to_string())?;
+        let mut ack = [0; 4];
+        client
+            .read_exact(&mut ack)
+            .map_err(|error| error.to_string())?;
+        if ack != super::REQUEST_DEADLINE_ACK_V1 {
+            return Err(format!("unexpected deadline acknowledgement: {ack:?}"));
+        }
+        let remaining = Duration::from_millis(200);
+        let remaining_nanos = u64::try_from(remaining.as_nanos())
+            .map_err(|error| format!("QDL1 deadline overflow: {error}"))?;
+        client
+            .write_all(&remaining_nanos.to_be_bytes())
+            .map_err(|error| error.to_string())?;
+        client
+            .write_all(&encode_test_frame(74, 3)?)
+            .map_err(|error| error.to_string())?;
+        queued_rx
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("QDL1 request did not enter the queue: {error}"))?;
+        let reason = handle
+            .join()
+            .map_err(|panic| format!("server thread panicked: {panic:?}"))?;
+        drop(held);
+        if !matches!(
+            reason,
+            ConnectionCloseReason::RequestDecodeFailed(IpcError::ClientIoDeadlineElapsed)
+        ) {
+            return Err(format!("expired queued QDL1 request got {reason:?}"));
+        }
+        if client.read(&mut [0]).map_err(|error| error.to_string())? != 0 {
+            return Err("expired queued QDL1 request received a response".into());
+        }
+        let snapshot = counters.snapshot();
+        if calls.load(Ordering::Acquire) != 0
+            || snapshot.requests_dispatched != 0
+            || snapshot.requests_overloaded != 0
+            || snapshot.response_bytes != 0
+        {
+            return Err(format!(
+                "expired queued QDL1 accounting drifted: {snapshot:?}"
+            ));
+        }
+        Ok(())
+    })();
     assert_test_ok(&result);
 }
 

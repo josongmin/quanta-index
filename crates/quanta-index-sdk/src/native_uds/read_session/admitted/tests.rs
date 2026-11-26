@@ -605,6 +605,140 @@ fn admitted_read_text_page_and_hybrid_preserve_fixed_nonempty_gold() -> TestResu
 }
 
 #[test]
+fn admitted_path_projection_and_page_accept_bound_uds_replies() -> TestResult {
+    use quanta_index_contract::native_protocol::{
+        NativeTextPathCursorV1, NativeTextPathPageV1, NativeTextPathRankingV1,
+        NativeTextPathResultV1,
+    };
+
+    let (status, text_page, instance, _) = super::super::page::tests::fixture()?;
+    let query = TextQueryRequest {
+        query_text: "select:path alpha".into(),
+        ..text_query()
+    };
+    let digest =
+        quanta_index_contract::native_protocol::native_text_query_digest(instance, &query)?;
+    let repository = RepoId::new("repo-sdk-path")?;
+    let hit = text_page.hits[0].clone();
+    let ranked = NativeTextPathRankingV1 {
+        ranking: NativeTextResult {
+            view: status.view,
+            instance,
+            coverage: NativeTextCoverage::CoreRequired,
+            artifact: text_page.artifact,
+            matched: 1,
+            exhaustive: true,
+            hits: vec![hit.clone()],
+        },
+        repositories: vec![repository.clone()],
+    };
+    let result = NativeTextPathResultV1 {
+        ranked: ranked.clone(),
+        previews: None,
+    };
+    let (memory, counts) = scope();
+    let reply = exchange(
+        NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchText {
+            session: status.session,
+            instance,
+            query: query.clone(),
+        }),
+        NativeIndexResponse::TextPathRankedV1(result.clone()),
+        |client| {
+            client.search_text_in_read_session_admitted(
+                &status,
+                instance,
+                query.clone(),
+                &budget(),
+                &memory,
+            )
+        },
+    )??;
+    assert_eq!(
+        reply.response(),
+        &NativeIndexResponse::TextPathRankedV1(result)
+    );
+    drop(reply);
+    empty(&counts);
+
+    // The typed entry point rejects a syntactically valid reply from the
+    // wrong projection even when its instance matches the request.
+    let wrong_projection = exchange(
+        NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchText {
+            session: status.session,
+            instance,
+            query: query.clone(),
+        }),
+        NativeIndexResponse::TextRanked(ranked.ranking.clone()),
+        |client| {
+            client.search_text_in_read_session_admitted(
+                &status,
+                instance,
+                query.clone(),
+                &budget(),
+                &memory,
+            )
+        },
+    )?;
+    assert!(matches!(wrong_projection, Err(NativeUdsError::Protocol(_))));
+    empty(&counts);
+
+    let cursor = NativeTextPathCursorV1 {
+        view: status.view,
+        instance,
+        query: digest,
+        artifact: text_page.artifact,
+        score: hit.score,
+        repository,
+        path: hit.path,
+    };
+    let mut ranked_page = ranked;
+    ranked_page.ranking.matched = 2;
+    let page = NativeTextPathPageV1 {
+        session: status.session,
+        ranked: ranked_page,
+        remaining: 2,
+        after: Some(cursor),
+    };
+    let request = NativeReadSessionRequest::SearchTextPathPageV1 {
+        session: status.session,
+        instance,
+        query: query.clone(),
+        after: None,
+    };
+    let mut wrong_session = page.clone();
+    wrong_session.session = NativeReadSessionId([99; 32]);
+    assert!(!super::super::response_matches_request(
+        &request,
+        &NativeIndexResponse::TextPathPageV1(wrong_session)
+    ));
+    let mut wrong_instance = page.clone();
+    wrong_instance.ranked.ranking.instance = IndexInstanceId([99; 16]);
+    assert!(!super::super::response_matches_request(
+        &request,
+        &NativeIndexResponse::TextPathPageV1(wrong_instance)
+    ));
+    let reply = exchange(
+        NativeIndexRequest::ReadSession(request),
+        NativeIndexResponse::TextPathPageV1(page.clone()),
+        |client| {
+            client.search_text_path_page_in_read_session_admitted(
+                &status,
+                instance,
+                query,
+                None,
+                &budget(),
+                &memory,
+            )
+        },
+    )??;
+    assert_eq!(reply.response(), &NativeIndexResponse::TextPathPageV1(page));
+    drop(reply);
+    empty(&counts);
+    Ok(())
+}
+
+#[test]
 fn admitted_read_parser_and_validator_denials_fail_closed_before_scratch_birth() -> TestResult {
     let (status, profile) = super::super::profile::tests::fixture()?;
     let (memory, counts) = scope();

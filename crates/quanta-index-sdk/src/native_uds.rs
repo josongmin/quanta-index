@@ -1298,6 +1298,14 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                     peer,
                 )
             }
+            (AdmittedWireRoute::StageProjectionOutput, None) => {
+                quanta_index_ipc::send_request_body_with_budget_admitted_multiframe_v1(
+                    self.socket.as_ref(),
+                    envelope,
+                    budget,
+                    memory,
+                )
+            }
             (_, Some(peer)) => {
                 quanta_index_ipc::send_request_body_with_budget_admitted_bound_peer_v1(
                     self.socket.as_ref(),

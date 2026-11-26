@@ -342,12 +342,21 @@ pub(super) fn response_matches_request(
             result.session == *session && result.instance == *instance
         }
         (R::SearchText { instance, .. }, S::TextRanked(result)) => result.instance == *instance,
+        (R::SearchText { instance, .. }, S::TextPathRankedV1(result)) => {
+            result.ranked.ranking.instance == *instance
+        }
         (
             R::SearchTextPage {
                 session, instance, ..
             },
             S::TextRankedPage(result),
         ) => result.session == *session && result.instance == *instance,
+        (
+            R::SearchTextPathPageV1 {
+                session, instance, ..
+            },
+            S::TextPathPageV1(page),
+        ) => page.session == *session && page.ranked.ranking.instance == *instance,
         (
             R::SearchHybridFile {
                 session,
