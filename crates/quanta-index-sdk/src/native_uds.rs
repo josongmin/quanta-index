@@ -5346,6 +5346,84 @@ mod tests {
     }
 
     #[test]
+    fn unbound_admitted_stage_round_trips_fragmented_projection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::native_protocol::NativeProjectionOutputChildren;
+
+        let directory = tempfile::tempdir()?;
+        let socket = directory.path().join("native-stage-fragments.sock");
+        let listener = UnixListener::bind(&socket)?;
+        listener.set_nonblocking(true)?;
+        let ingress = IngressRef {
+            operation: key(79),
+            fence: 1,
+        };
+        let child = ObjectRef(Digest([4; 32]));
+        let staged = ObjectRef(Digest([5; 32]));
+        // A 0xff element occupies two bytes in the projection output CBOR
+        // array. The stored payload fits the object cap, but its wire does not
+        // fit a single frame.
+        let bytes_len = quanta_index_ipc::MAX_FRAME_BODY_BYTES / 2 + 1;
+        let request = NativeIndexRequest::StageProjectionOutput {
+            ingress,
+            bytes: vec![0xff; bytes_len],
+            children: NativeProjectionOutputChildren::new(vec![child])?,
+        };
+        let peer = std::thread::spawn(
+            move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                let accept_deadline = Instant::now() + Duration::from_secs(20);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && Instant::now() < accept_deadline =>
+                        {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                };
+                stream.set_nonblocking(false)?;
+                stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+                let request: NativeIndexRequestEnvelope =
+                    quanta_index_ipc::decode_request(&mut stream)?;
+                match request.payload {
+                    NativeIndexRequest::StageProjectionOutput {
+                        ingress: actual,
+                        bytes,
+                        children,
+                    } if actual == ingress
+                        && bytes.len() == bytes_len
+                        && bytes.iter().all(|byte| *byte == 0xff)
+                        && children.as_slice() == [child] => {}
+                    _ => return Err("decoded stage did not preserve its complete payload".into()),
+                }
+                stream.write_all(&quanta_index_ipc::encode_response(
+                    &NativeIndexResponseEnvelope {
+                        request_id: request.request_id,
+                        payload: NativeIndexResponse::Staged(staged),
+                    },
+                )?)?;
+                Ok(())
+            },
+        );
+        let (memory, active, _) = publication_scope(false);
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(20));
+        let reply =
+            NativeUdsClient::new(socket).request_publication_admitted(request, &budget, &memory);
+        let peer_result = peer
+            .join()
+            .map_err(|_| "fragmented projection peer panicked")?;
+        let reply = reply?;
+        peer_result.map_err(|error| error.to_string())?;
+        assert_eq!(reply.response(), &NativeIndexResponse::Staged(staged));
+        drop(reply);
+        assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[test]
     fn admitted_publication_reply_retains_original_scope_until_drop() -> Result<(), String> {
         let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
         let socket = directory.path().join("native-admitted.sock");
