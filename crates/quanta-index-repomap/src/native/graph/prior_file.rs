@@ -131,10 +131,15 @@ impl NativeGraph {
             .len()
             .checked_mul(std::mem::size_of::<NativeRepoMapPriorEndpointOwnerV1>() * 2)
             .ok_or(IndexError::ResourceLimited)?;
-        let owners_memory = budget.reserve_memory(
-            u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
-            MemoryLifetime::Retained,
-        )?;
+        let owners_memory = if bytes == 0 {
+            budget.checkpoint()?;
+            None
+        } else {
+            budget.reserve_memory(
+                u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+                MemoryLifetime::Retained,
+            )?
+        };
         let mut owners = Vec::new();
         owners
             .try_reserve_exact(supports.owners.len())
@@ -202,10 +207,15 @@ pub(super) fn scan_prior_endpoint_supports_v1(
                 .saturating_add(96),
         )
         .ok_or(IndexError::ResourceLimited)?;
-    let memory = budget.reserve_memory(
-        u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
-        MemoryLifetime::Temporary,
-    )?;
+    let memory = if bytes == 0 {
+        budget.checkpoint()?;
+        None
+    } else {
+        budget.reserve_memory(
+            u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?
+    };
     let mut owners = Vec::new();
     owners
         .try_reserve_exact(refs.entries.len())

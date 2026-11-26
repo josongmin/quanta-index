@@ -1539,6 +1539,72 @@ mod projection_retention {
     }
 
     #[test]
+    fn absent_prior_endpoint_keeps_empty_owners_without_zero_memory_reservation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::prior_file::scan_prior_endpoint_supports_v1;
+        use quanta_index_contract::native_protocol::native_repomap_rank_policy;
+
+        let objects = Objects::default();
+        let maps = EmptyMaps;
+        let ledger = Arc::new(DecodeLedger {
+            live: AtomicU64::new(0),
+            limit: 1 << 20,
+        });
+        let mut work = budget()?;
+        work.bind_memory_scope(Some(MemoryScope::new(Arc::new(DecodeScope(Arc::clone(
+            &ledger,
+        ))))));
+        let endpoint = super::file("src/successor-only.rs");
+        let scanned =
+            scan_prior_endpoint_supports_v1(MapRoot(None), &endpoint, &maps, &objects, &mut work)?;
+        assert!(scanned.owners.is_empty());
+        drop(scanned);
+        assert_eq!(ledger.live.load(Ordering::SeqCst), 0);
+
+        let source = SourceCut {
+            owners: MapRoot(None),
+            paths: MapRoot(None),
+            frontiers: MapRoot(None),
+        };
+        let mut selected = projection(source, reference(21));
+        selected.owners = MapRoot(None);
+        selected.producer_policy = native_repomap_rank_policy();
+        let spec = instance();
+        let root = GraphRoot {
+            facts_epoch: super::super::TYPED_FACTS_ROOT_EPOCH,
+            input: InputBinding {
+                root: selected.owners,
+                schema: selected.schema,
+                policy: spec.policy,
+                context: selected.materialization_context(),
+            },
+            projection: selected,
+            owners: MapRoot(None),
+            nodes: MapRoot(None),
+            edges: MapRoot(None),
+            incoming: MapRoot(None),
+        };
+        let bytes = serde_json::to_vec(&root)?;
+        let mut children = root.projection.object_children();
+        children.sort_unstable();
+        children.dedup();
+        let artifact = objects.store(&bytes, &children)?.reference;
+        let member = MemberBinding {
+            instance: spec.instance,
+            format: spec.format,
+            artifact,
+            input: root.input,
+            logical_commitment: Digest(Sha256::digest(&bytes).into()),
+        };
+        let result = NativeGraph
+            .read_prior_endpoint_owners_v1(&member, &endpoint, &maps, &objects, &mut work)?;
+        assert!(result.owners.is_empty());
+        drop(result);
+        assert_eq!(ledger.live.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[test]
     fn cross_file_endpoint_scan_resolves_only_its_exact_graph_supporter()
     -> Result<(), Box<dyn std::error::Error>> {
         use quanta_index_contract::{ChunkId, SymbolId};
