@@ -95,7 +95,8 @@ def _source_bytes(case_dir: Path, manifest: dict) -> dict[str, str]:
         path = _safe_path(row["path"])
         digest = row["file_sha256"]
         _require(
-            isinstance(digest, str) and len(digest) == 64
+            isinstance(digest, str)
+            and len(digest) == 64
             and all(ch in "0123456789abcdef" for ch in digest),
             "Go trace review manifest digest is invalid",
         )
@@ -149,7 +150,8 @@ def validate(
     case_root = case_dir.resolve()
     review_root = review_dir.resolve()
     _require(
-        review_dir.is_dir() and not review_dir.is_symlink()
+        review_dir.is_dir()
+        and not review_dir.is_symlink()
         and not review_root.is_relative_to(case_root)
         and not case_root.is_relative_to(review_root),
         "Go trace review directory overlaps SDK case",
@@ -223,7 +225,8 @@ def validate(
             )
             name = _safe_path(row["path"])
             _require(
-                name in production and name not in graded
+                name in production
+                and name not in graded
                 and row["file_sha256"] == source[name]
                 and type(row["direct_production"]) is bool
                 and isinstance(row["rationale"], str)
@@ -238,9 +241,8 @@ def validate(
     _require(len(set(ids)) == 3, "Go trace reviewers and adjudicator are not distinct")
     adjudication = forms[2][0]
     _require(
-        adjudication["review_sha256"] == [
-            tracked[review_dir / "review-1.json"], tracked[review_dir / "review-2.json"]
-        ]
+        adjudication["review_sha256"]
+        == [tracked[review_dir / "review-1.json"], tracked[review_dir / "review-2.json"]]
         and isinstance(adjudication["resolution"], str)
         and adjudication["resolution"].strip(),
         "Go trace adjudication does not bind both reviews",
@@ -268,9 +270,7 @@ def validate(
     gold_by_path = {row["path"]: row["evidence"] for row in gold}
     _require(len(gold_by_path) == len(gold), "Go trace direct gold repeats a path")
     positive = {
-        path: row["rationale"]
-        for path, row in adjudicated.items()
-        if row["direct_production"]
+        path: row["rationale"] for path, row in adjudicated.items() if row["direct_production"]
     }
     _require(gold_by_path == positive, "Go trace direct gold differs from adjudication")
     _require(
@@ -303,10 +303,15 @@ def validate_module_frame(
     _require(digest == plan.get("input_sha256"), "Go trace module source-owner input drift")
     inputs = parse_json(raw.decode("utf-8"))
     task = pack["tasks"][0]
-    matches = [
-        item for item in inputs
-        if isinstance(item, dict) and item.get("task_id") == task["task_id"]
-    ] if isinstance(inputs, list) else []
+    matches = (
+        [
+            item
+            for item in inputs
+            if isinstance(item, dict) and item.get("task_id") == task["task_id"]
+        ]
+        if isinstance(inputs, list)
+        else []
+    )
     _require(len(matches) == 1, "Go trace module source-owner input is not unique")
     source_input = matches[0]
     provenance = source_input.get("provenance")
@@ -351,8 +356,7 @@ def validate_module_frame(
     source_file = case_dir / "corpus" / frame_path
     source_raw = _read_control_file(source_file)
     _require(
-        _sha(source_raw) == files[frame_path]
-        and frame_line <= len(source_raw.splitlines()),
+        _sha(source_raw) == files[frame_path] and frame_line <= len(source_raw.splitlines()),
         "Go trace module frame source coordinate differs",
     )
     _require(

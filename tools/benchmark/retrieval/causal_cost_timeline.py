@@ -31,9 +31,7 @@ U64_MAX = (1 << 64) - 1
 MANAGED_INSTALL_CENSUS_KINDS = frozenset(
     {"catalog_registration", "catalog_edge", "storage_cas_reuse"}
 )
-MANAGED_INSTALL_CUSTODY_STAGES = frozenset(
-    {"managed_object_confirm", "managed_object_advance"}
-)
+MANAGED_INSTALL_CUSTODY_STAGES = frozenset({"managed_object_confirm", "managed_object_advance"})
 NATIVE_IO_SUMMARY_COUNTERS = frozenset({"sync_calls", "sync_failures", "sync_elapsed_ns"})
 TEXT_COLD_SHAPE_COUNTERS = frozenset(
     {
@@ -153,9 +151,7 @@ THREAD_CPU_V5_STAGES = THREAD_CPU_STAGES | frozenset(
         "managed_object_advance",
     }
 )
-THREAD_CPU_V5_SQLITE_LANES = frozenset(
-    {*range(3, 9), 11, 12, 15, 16, 21, 25, 26}
-)
+THREAD_CPU_V5_SQLITE_LANES = frozenset({*range(3, 9), 11, 12, 15, 16, 21, 25, 26})
 THREAD_CPU_V5_MAP_APPLY_LANES = frozenset(range(6))
 SQLITE_WRITE_BOUNDARY_COUNTERS = frozenset(
     {
@@ -188,9 +184,19 @@ SQLITE_WRITER_SETTINGS_COUNTERS = frozenset(
 SQLITE_CACHE_HEALTH_CODES = frozenset({"counter_unavailable", "counter_regressed"})
 OBJECT_INSTALL_PHASES = frozenset(
     {
-        "child_validation", "namespace_and_create", "write", "file_sync",
-        "publish_and_retire", "directory_sync", "barrier", "settlement", "existing",
-        "namespace_validation", "writer_create", "writer_ticket_prepare", "writer_open",
+        "child_validation",
+        "namespace_and_create",
+        "write",
+        "file_sync",
+        "publish_and_retire",
+        "directory_sync",
+        "barrier",
+        "settlement",
+        "existing",
+        "namespace_validation",
+        "writer_create",
+        "writer_ticket_prepare",
+        "writer_open",
         "writer_created_witness",
     }
 )
@@ -484,9 +490,7 @@ def _schema_for_version(schema: dict[str, Any], version: int) -> dict[str, Any]:
         selected["$defs"]["spanBegin"]["properties"]["stage"]["enum"].remove(
             "managed_object_advance"
         )
-        selected["$defs"]["spanBegin"]["properties"]["stage"]["enum"].remove(
-            "map_apply"
-        )
+        selected["$defs"]["spanBegin"]["properties"]["stage"]["enum"].remove("map_apply")
         selected["$defs"]["counterKey"]["enum"] = [
             key
             for key in selected["$defs"]["counterKey"]["enum"]
@@ -739,7 +743,11 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                     raise ValueError("map input next counter has no existing owner span")
                 if kind["key"] in OBJECT_PORT_READ_COUNTERS:
                     raise ValueError("object port read counter has no existing owner span")
-                if kind["key"] in (MANAGED_EXTERNAL_CHILD_COUNTERS | MANAGED_CROSS_GROUP_CHILD_COUNTERS) or kind["key"] == MANAGED_REUSED_EXTERNAL_CHILD_COUNTER:
+                if (
+                    kind["key"]
+                    in (MANAGED_EXTERNAL_CHILD_COUNTERS | MANAGED_CROSS_GROUP_CHILD_COUNTERS)
+                    or kind["key"] == MANAGED_REUSED_EXTERNAL_CHILD_COUNTER
+                ):
                     raise ValueError("managed external child counter has no existing owner span")
                 if kind["key"] in THREAD_CPU_COUNTERS:
                     raise ValueError("thread CPU counter has no existing owner span")
@@ -781,8 +789,15 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                     raise ValueError("map input next counter follows span end")
                 if key in span["counters"]:
                     raise ValueError("map input next counter is duplicated")
-            if key in (MANAGED_EXTERNAL_CHILD_COUNTERS | MANAGED_CROSS_GROUP_CHILD_COUNTERS) or key == MANAGED_REUSED_EXTERNAL_CHILD_COUNTER:
-                if version != 5 or span["stage"] != "managed_object_install" or span["lane_id"] != 3:
+            if (
+                key in (MANAGED_EXTERNAL_CHILD_COUNTERS | MANAGED_CROSS_GROUP_CHILD_COUNTERS)
+                or key == MANAGED_REUSED_EXTERNAL_CHILD_COUNTER
+            ):
+                if (
+                    version != 5
+                    or span["stage"] != "managed_object_install"
+                    or span["lane_id"] != 3
+                ):
                     raise ValueError("managed external child counter targets wrong owner span")
                 if span["end_ns"] is not None:
                     raise ValueError("managed external child counter follows span end")
@@ -877,9 +892,7 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                     "ts_ns": event["ts_ns"],
                     **{
                         key: kind[key]
-                        for key in (
-                            "phase", "calls", "elapsed_sum_ns", "thread_cpu_ns", "failures"
-                        )
+                        for key in ("phase", "calls", "elapsed_sum_ns", "thread_cpu_ns", "failures")
                     },
                 }
             )
@@ -1321,9 +1334,9 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
             calls = counts.get(f"{route}_calls")
             succeeded = counts.get(f"{route}_succeeded")
             wire_bytes = counts.get(f"{route}_wire_bytes")
-            if (
-                calls is not None and succeeded is not None and succeeded > calls
-            ) or (succeeded == 0 and wire_bytes not in (None, 0)):
+            if (calls is not None and succeeded is not None and succeeded > calls) or (
+                succeeded == 0 and wire_bytes not in (None, 0)
+            ):
                 raise ValueError(f"object port read counters contradict: {span_id}")
     for span_id, span in spans.items():
         observed = set(span["counters"]) & TEXT_OCCURRENCE_DIFF_COUNTERS
@@ -1339,7 +1352,9 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
             if attempts > U64_MAX:
                 raise ValueError(f"text occurrence Diff validation attempts exceed u64: {span_id}")
             if span["counters"]["text_occurrence_validation_failures"] > attempts:
-                raise ValueError(f"text occurrence Diff validation failures exceed attempts: {span_id}")
+                raise ValueError(
+                    f"text occurrence Diff validation failures exceed attempts: {span_id}"
+                )
     for span_id, span in spans.items():
         observed = set(span["counters"]) & MAP_ROOT_REUSE_COUNTERS
         if complete and span["stage"] == "map_apply" and span["lane_id"] == 0:
@@ -1350,8 +1365,7 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
         if span["stage"] != "map_apply" or span["lane_id"] != 0:
             raise ValueError(f"map root reuse counters target wrong owner span: {span_id}")
         if {"map_root_reuse_candidates", "map_root_reuses"} <= observed and (
-            span["counters"]["map_root_reuses"]
-            > span["counters"]["map_root_reuse_candidates"]
+            span["counters"]["map_root_reuses"] > span["counters"]["map_root_reuse_candidates"]
         ):
             raise ValueError(f"map root reuses exceed candidates: {span_id}")
     for span_id, span in spans.items():
@@ -1391,7 +1405,9 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                 raise ValueError(f"managed external child counters contradict: {span_id}")
             reused = counts.get(MANAGED_REUSED_EXTERNAL_CHILD_COUNTER)
             if reused is not None and reused > repeated:
-                raise ValueError(f"managed reused external child validations exceed guarded repeats: {span_id}")
+                raise ValueError(
+                    f"managed reused external child validations exceed guarded repeats: {span_id}"
+                )
     for span_id, span in spans.items():
         counts = span["counters"]
         observed = set(counts) & MANAGED_CROSS_GROUP_CHILD_COUNTERS
@@ -1406,8 +1422,13 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
         path_checks = counts["managed_object_child_path_checks"]
         if repeated_checks > path_checks or (overlap == 0 and repeated_checks != 0):
             raise ValueError(f"managed cross-group child counters contradict: {span_id}")
-        if MANAGED_EXTERNAL_CHILD_COUNTERS <= counts.keys() and overlap > counts["managed_object_unique_external_children"]:
-            raise ValueError(f"managed cross-group child overlap exceeds unique external children: {span_id}")
+        if (
+            MANAGED_EXTERNAL_CHILD_COUNTERS <= counts.keys()
+            and overlap > counts["managed_object_unique_external_children"]
+        ):
+            raise ValueError(
+                f"managed cross-group child overlap exceeds unique external children: {span_id}"
+            )
     pager_counts = Counter(
         (counter["span_id"], counter["key"])
         for counter in counters
@@ -1558,9 +1579,13 @@ def _validate_managed_install_census(
 def managed_install_census(capture: dict[str, Any], confirmed: list[int]) -> dict[str, Any]:
     """Count unique identities across the request's successful custody spans."""
     observed = capture.get("managed_install_census", {})
-    if capture["status"] != "complete" or not confirmed or any(
-        observed.get(span_id, {}).keys() != MANAGED_INSTALL_CENSUS_KINDS
-        for span_id in confirmed
+    if (
+        capture["status"] != "complete"
+        or not confirmed
+        or any(
+            observed.get(span_id, {}).keys() != MANAGED_INSTALL_CENSUS_KINDS
+            for span_id in confirmed
+        )
     ):
         return {"status": "unavailable"}
     distinct = {
@@ -2530,7 +2555,10 @@ def chrome_export(
         if "object_install" in row:
             packet = row["object_install"]
             packet["observed_phases"] = [
-                {key: str(value) if type(value) is int else value for key, value in aggregate.items()}
+                {
+                    key: str(value) if type(value) is int else value
+                    for key, value in aggregate.items()
+                }
                 for aggregate in packet["observed_phases"]
             ]
             packet["observed_elapsed_sum_ns"] = str(packet["observed_elapsed_sum_ns"])

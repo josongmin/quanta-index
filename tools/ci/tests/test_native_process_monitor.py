@@ -24,7 +24,11 @@ DIGEST = "a" * 64
 
 def rows(*, daemon_pid: int | None = 300, daemon_start: str = "daemon-start") -> dict[int, Process]:
     selected = Process(
-        200, 100, "test-start", f"{TEST} {SELECTOR} --exact --nocapture --test-threads=1", 30,
+        200,
+        100,
+        "test-start",
+        f"{TEST} {SELECTOR} --exact --nocapture --test-threads=1",
+        30,
     )
     result = {
         100: Process(100, 1, "root-start", "/bound/admission -- selected", 10),
@@ -33,7 +37,11 @@ def rows(*, daemon_pid: int | None = 300, daemon_start: str = "daemon-start") ->
     }
     if daemon_pid is not None:
         result[daemon_pid] = Process(
-            daemon_pid, 200, daemon_start, f"{DAEMON} serve-native --config {CONFIG}", 50,
+            daemon_pid,
+            200,
+            daemon_start,
+            f"{DAEMON} serve-native --config {CONFIG}",
+            50,
         )
     return result
 
@@ -112,8 +120,11 @@ def test_missing_daemon_rss_remains_unknown_then_invalid_config_fails_closed() -
     no_daemon = rows(daemon_pid=None)
     duplicate_config = rows()
     duplicate_config[300] = Process(
-        300, 200, "daemon-start",
-        f"{DAEMON} serve-native --config {CONFIG} --config {CONFIG}", 50,
+        300,
+        200,
+        "daemon-start",
+        f"{DAEMON} serve-native --config {CONFIG} --config {CONFIG}",
+        50,
     )
     samples = Samples([no_daemon, duplicate_config], [])
     current = [0.0]

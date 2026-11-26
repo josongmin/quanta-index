@@ -68,7 +68,13 @@ def test_native_error_report_requires_fixed_parse_gold_and_client_scope():
         "samples_ms": [1.0],
     }
     RUN_DSL.validate_native_report(
-        report, "error", report["scenario_id"], "cold", f"sha256:{daemon_sha}", "b" * 64, {},
+        report,
+        "error",
+        report["scenario_id"],
+        "cold",
+        f"sha256:{daemon_sha}",
+        "b" * 64,
+        {},
     )
     for field, forged in (
         ("typed_error_code", "INVALID_INPUT"),
@@ -80,10 +86,14 @@ def test_native_error_report_requires_fixed_parse_gold_and_client_scope():
         invalid = dict(report, **{field: forged})
         with pytest.raises(RuntimeError, match="Native"):
             RUN_DSL.validate_native_report(
-                invalid, "error", report["scenario_id"], "cold", f"sha256:{daemon_sha}",
-                "b" * 64, {},
+                invalid,
+                "error",
+                report["scenario_id"],
+                "cold",
+                f"sha256:{daemon_sha}",
+                "b" * 64,
+                {},
             )
-
 
 
 @pytest.mark.parametrize("source", ["path", "content"])
@@ -155,16 +165,28 @@ def test_native_diagnostic_cannot_be_admitted_as_a_complete_linux_baseline(tmp_p
 
 
 @pytest.mark.parametrize("fault", [None, "source", "mode", "matrix", "qualification", "missing"])
-def test_native_matrix_assembly_binds_the_rust_artifact_to_collected_bytes(tmp_path, monkeypatch, fault):
+def test_native_matrix_assembly_binds_the_rust_artifact_to_collected_bytes(
+    tmp_path, monkeypatch, fault
+):
     monkeypatch.syspath_prepend(str(REPO_ROOT / "tools/benchmark"))
     matrix = tmp_path / "matrix.json"
-    matrix.write_text(json.dumps({
-        "schema": "native-dsl-matrix-v1", "mode": "warm", "qualification": "diagnostic",
-        "git_head": HEAD, "scenarios": [],
-    }) + "\n")
+    matrix.write_text(
+        json.dumps(
+            {
+                "schema": "native-dsl-matrix-v1",
+                "mode": "warm",
+                "qualification": "diagnostic",
+                "git_head": HEAD,
+                "scenarios": [],
+            }
+        )
+        + "\n"
+    )
     assembled = tmp_path / "artifact.json"
     matrix_sha = "sha256:" + hashlib.sha256(matrix.read_bytes()).hexdigest()
-    payload = _artifact("cold" if fault == "mode" else "warm", [_row("lexical.keyword.native", 1.0)])
+    payload = _artifact(
+        "cold" if fault == "mode" else "warm", [_row("lexical.keyword.native", 1.0)]
+    )
     if fault == "source":
         payload["provenance"]["git_head"] = OTHER_HEAD
     payload["detail"] = {
@@ -343,11 +365,23 @@ def test_native_authority_artifact_admits_complete_linux_rss(tmp_path: Path) -> 
     COMPARE.gate_provenance(artifact, artifact, HEAD)
 
 
-@pytest.mark.parametrize("mutation", [
-    "missing_qualification", "unknown_qualification", "nested_qualification",
-    "missing_peak", "zero_peak", "error_peak", "aggregate_peak", "resource_scope",
-    "non_linux", "missing_row", "bad_commitment", "missing_source_schema",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_qualification",
+        "unknown_qualification",
+        "nested_qualification",
+        "missing_peak",
+        "zero_peak",
+        "error_peak",
+        "aggregate_peak",
+        "resource_scope",
+        "non_linux",
+        "missing_row",
+        "bad_commitment",
+        "missing_source_schema",
+    ],
+)
 def test_native_authority_refuses_unbound_claims(tmp_path: Path, mutation: str) -> None:
     payload = _native_authority_artifact()
     detail = payload["detail"]
@@ -469,7 +503,9 @@ else:
 
 
 def test_cold_orchestrator_collects_fresh_samples_and_assembles_through_the_binary(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.syspath_prepend(str(COLD_MATRIX_PATH.parent))
     fake = tmp_path / "fake_cold_matrix.py"
@@ -503,7 +539,10 @@ def test_cold_orchestrator_collects_fresh_samples_and_assembles_through_the_bina
     ],
 )
 def test_cold_orchestrator_preserves_previous_artifact_on_assembly_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, assembly: str, error: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    assembly: str,
+    error: str,
 ) -> None:
     monkeypatch.syspath_prepend(str(COLD_MATRIX_PATH.parent))
     fake = tmp_path / "fake_cold_matrix.py"
@@ -529,8 +568,10 @@ def test_cold_orchestrator_refuses_a_null_latency_without_an_early_stop(tmp_path
         FAKE_BIN.replace('"first_query_ms": None if stopped else 1.5', '"first_query_ms": None'),
         encoding="utf-8",
     )
+
     def run(*args, stdin=None):
         return COLD_MATRIX.run_bin([sys.executable, str(fake)], *args, stdin=stdin)
+
     with pytest.raises(RuntimeError, match="null first_query_ms without early_stop_reason"):
         COLD_MATRIX.measure(run, 2, tmp_path / "cold-matrix.json")
 
@@ -545,10 +586,19 @@ def test_cold_orchestrator_refuses_a_null_latency_without_an_early_stop(tmp_path
         ["--bin-cmd", "/external/dsl_cold_matrix", "--bin-head", "a" * 40],
         ["--bin-cmd", "/external/dsl_cold_matrix", "--bin-sha256", "sha256:" + "a" * 64],
     ],
-    ids=["workspace-only", "command-only", "empty-command", "checkout-only", "head-only", "digest-only"],
+    ids=[
+        "workspace-only",
+        "command-only",
+        "empty-command",
+        "checkout-only",
+        "head-only",
+        "digest-only",
+    ],
 )
 def test_external_cold_command_requires_complete_frozen_pin_before_execution(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pin_args: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pin_args: list[str],
 ) -> None:
     out = tmp_path / "cold.json"
     out.write_text("previous capture", encoding="utf-8")
@@ -593,8 +643,19 @@ def test_orchestrator_pins_a_frozen_legacy_producer(
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(
-        ["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost",
-         "commit", "--allow-empty", "-qm", "fixture"],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@localhost",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "fixture",
+        ],
         check=True,
     )
     head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
@@ -643,11 +704,21 @@ def test_orchestrator_pins_a_frozen_legacy_producer(
     sample_args = ["--samples", "1"] if mode == "cold" or fault == "cold-samples" else []
     result = subprocess.run(
         [
-            sys.executable, str(COLD_MATRIX_PATH), *sample_args, "--out", str(out),
-            "--bin-cmd", shlex.quote(str(fake)), "--bin-cwd", str(repo),
-            "--bin-head", OTHER_HEAD if fault == "checkout" else head,
-            "--bin-sha256", OTHER_DIGEST if fault == "binary" else digest,
-            "--bin-mode", mode,
+            sys.executable,
+            str(COLD_MATRIX_PATH),
+            *sample_args,
+            "--out",
+            str(out),
+            "--bin-cmd",
+            shlex.quote(str(fake)),
+            "--bin-cwd",
+            str(repo),
+            "--bin-head",
+            OTHER_HEAD if fault == "checkout" else head,
+            "--bin-sha256",
+            OTHER_DIGEST if fault == "binary" else digest,
+            "--bin-mode",
+            mode,
         ],
         cwd=REPO_ROOT,
         check=False,
@@ -699,7 +770,10 @@ def test_orchestrator_pins_a_frozen_legacy_producer(
     ],
 )
 def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
-    tmp_path, monkeypatch, mode, fault,
+    tmp_path,
+    monkeypatch,
+    mode,
+    fault,
 ):
     def digest(path):
         return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
@@ -712,12 +786,28 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
         repo.mkdir()
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         subprocess.run(
-            ["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost",
-             "commit", "--allow-empty", "-qm", "fixture"], check=True,
+            [
+                "git",
+                "-C",
+                str(repo),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@localhost",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "fixture",
+            ],
+            check=True,
         )
-        head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        head = subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+        ).strip()
         source_args = ["--native-artifact", "--bin-cwd", str(repo), "--bin-head", head]
-        produced = _artifact(mode, [_row("text.1", 1.0)], head=OTHER_HEAD if fault == "foreign_assembly" else head)
+        produced = _artifact(
+            mode, [_row("text.1", 1.0)], head=OTHER_HEAD if fault == "foreign_assembly" else head
+        )
         produced["detail"] = {"qualification": "diagnostic"}
 
     daemon = tmp_path / "daemon"
@@ -726,19 +816,27 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
     history_view = {"sequence": 5}
     history_cut = {"durable_epoch": 18}
     history_instance = [1] * 16
-    history.write_text(json.dumps({
-        "history": {
-            "view": history_view, "cut": history_cut,
-            "instance": {"instance": history_instance},
-        },
-        "daemon": str(daemon),
-        "daemon_sha256": "a" * 64 if fault == "foreign_history_daemon" else digest(daemon)[7:],
-        "config_sha256": "b" * 64,
-    }))
+    history.write_text(
+        json.dumps(
+            {
+                "history": {
+                    "view": history_view,
+                    "cut": history_cut,
+                    "instance": {"instance": history_instance},
+                },
+                "daemon": str(daemon),
+                "daemon_sha256": "a" * 64
+                if fault == "foreign_history_daemon"
+                else digest(daemon)[7:],
+                "config_sha256": "b" * 64,
+            }
+        )
+    )
     calls = tmp_path / "calls.jsonl"
     runner = tmp_path / "dsl-runner"
     text_ids = [f"text.{index}" for index in range(1, 8)] + [
-        "lexical.file_contains.native", "lexical.repo_has_file.sourcegraph",
+        "lexical.file_contains.native",
+        "lexical.repo_has_file.sourcegraph",
     ]
     error_ids = [
         "adversarial.unterminated_phrase.native",
@@ -749,9 +847,18 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
     ]
     history_ids = [f"history.{index}" for index in range(1, 8)]
     retained_ids = [
-        f"runtime.{case}.sourcegraph" for case in (
-            "dirty_no", "changed", "stale", "snapshot", "meta_owner", "meta_service",
-            "meta_layer", "meta_surface", "affected", "invalidated_by",
+        f"runtime.{case}.sourcegraph"
+        for case in (
+            "dirty_no",
+            "changed",
+            "stale",
+            "snapshot",
+            "meta_owner",
+            "meta_service",
+            "meta_layer",
+            "meta_surface",
+            "affected",
+            "invalidated_by",
         )
     ] + ["structural.tree_match.native", "structural.tree_match.sourcegraph"]
     runner.write_text(
@@ -772,25 +879,25 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
         '    produced["detail"]["source_schema"] = "native-dsl-matrix-v1"\n'
         '    produced["detail"]["native_matrix"] = json.loads(pathlib.Path(args[2]).read_bytes())\n'
         '    produced["detail"]["native_matrix_sha256"] = "sha256:" + hashlib.sha256(pathlib.Path(args[2]).read_bytes()).hexdigest()\n'
-        '    pathlib.Path(args[4]).write_text(json.dumps(produced))\n'
-        '    sys.exit(0)\n'
+        "    pathlib.Path(args[4]).write_text(json.dumps(produced))\n"
+        "    sys.exit(0)\n"
         'if args == ["--list-native"]:\n'
         '    if fault == "omitted_file_contains":\n'
         '        text_ids.remove("lexical.file_contains.native")\n'
         '    if fault == "omitted_repo_has_file":\n'
         '        text_ids.remove("lexical.repo_has_file.sourcegraph")\n'
         '    if fault == "omitted_roster_item":\n'
-        '        history_ids.pop()\n'
+        "        history_ids.pop()\n"
         '    if fault == "omitted_retained_roster_item":\n'
-        '        retained_ids.pop()\n'
+        "        retained_ids.pop()\n"
         '    print(json.dumps({"text": text_ids + error_ids, "error": error_ids, '
         '"history": [] if fault == "empty_roster" else history_ids, "retained": retained_ids}))\n'
-        '    sys.exit(0)\n'
+        "    sys.exit(0)\n"
         "flag, source, scenario = args\n"
         'if fault == "omitted_scenario" and scenario == history_ids[0]:\n'
-        '    sys.exit(0)\n'
+        "    sys.exit(0)\n"
         'if fault == "omitted_error_scenario" and scenario == error_ids[0]:\n'
-        '    sys.exit(0)\n'
+        "    sys.exit(0)\n"
         'warm = mode == "warm" or fault == "warm_sample"\n'
         'report = {"scenario_id": scenario, "passes": 1, "samples_per_pass": 2 if warm else 1, '
         '"prime_queries": 1 if warm else 0, "samples_ms": [2.0, 3.0] if warm else [2.0]}\n'
@@ -798,7 +905,7 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
         '    report.update(schema="native-dsl-error-samples-v1" if scenario in error_ids '
         'else "native-dsl-text-samples-v1", '
         'daemon_sha256="a" * 64 if fault == "foreign_report" else daemon_sha)\n'
-        '    if scenario in error_ids:\n'
+        "    if scenario in error_ids:\n"
         '        report.update(result_shape="typed_error", typed_error_code="PARSE_FAIL", '
         'error_count=report["passes"] * report["samples_per_pass"], '
         'engine_touched=[], measurement_scope="client_preflight")\n'
@@ -808,9 +915,9 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
         '    report.update(schema="native-dsl-retained-samples-v1", daemon_sha256=daemon_sha, '
         'query={"scope": {"repository": "repo-e2e"}}, fixture_sha256="sha256:" + "f" * 64, '
         'config_template_sha256="c" * 64, published=[{"view": view, "page": {"view": page_view}}])\n'
-        'else:\n'
+        "else:\n"
         '    assert flag == ("--native-history-reopen" if mode == "warm" else "--native-history")\n'
-        '    assert hashlib.sha256(pathlib.Path(source).read_bytes()).hexdigest() == history_sha\n'
+        "    assert hashlib.sha256(pathlib.Path(source).read_bytes()).hexdigest() == history_sha\n"
         '    report["schema"] = "native-dsl-history-samples-v2"\n'
         '    view = {"sequence": 6} if fault == "history_view_drift" else history_view\n'
         '    report["published"] = {"view": view, "cut": history_cut, "instance": history_instance, '
@@ -822,7 +929,7 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
         '"matched": 0 if fault == "history_wrong_result_count" else 1, "remaining": 1}\n'
         '    report = {"schema": f"native-dsl-history-process-{mode}-v1", '
         '"daemon_sha256": daemon_sha, "config_sha256": "b" * 64, "history": report}\n'
-        'print(json.dumps(report))\n',
+        "print(json.dumps(report))\n",
         encoding="utf-8",
     )
     runner.chmod(0o700)
@@ -833,17 +940,31 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
     monkeypatch.setenv("TMPDIR", str(executable_scratch))
     result = subprocess.run(
         [
-            sys.executable, str(COLD_MATRIX_PATH), "--out", str(out), "--bin-mode", mode,
-            "--native-runner", str(runner),
-            "--bin-sha256", OTHER_DIGEST if fault == "runner_digest" else digest(runner),
-            "--native-daemon", str(daemon),
-            "--native-daemon-sha256", OTHER_DIGEST if fault == "daemon_digest" else digest(daemon),
-            "--native-history-fixture", str(history),
-            "--native-history-sha256", OTHER_DIGEST if fault == "history_digest" else digest(history),
+            sys.executable,
+            str(COLD_MATRIX_PATH),
+            "--out",
+            str(out),
+            "--bin-mode",
+            mode,
+            "--native-runner",
+            str(runner),
+            "--bin-sha256",
+            OTHER_DIGEST if fault == "runner_digest" else digest(runner),
+            "--native-daemon",
+            str(daemon),
+            "--native-daemon-sha256",
+            OTHER_DIGEST if fault == "daemon_digest" else digest(daemon),
+            "--native-history-fixture",
+            str(history),
+            "--native-history-sha256",
+            OTHER_DIGEST if fault == "history_digest" else digest(history),
             *source_args,
             *(["--samples", "2"] if mode == "cold" else []),
         ],
-        cwd=REPO_ROOT, check=False, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
     )
     if fault not in (None, "assembled"):
         assert result.returncode == 2, result.stderr
@@ -870,8 +991,16 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
         assert out.read_text() == "previous capture"
         if fault.endswith("_digest") or fault == "foreign_history_daemon":
             assert not calls.exists()
-        if fault in ("omitted_roster_item", "omitted_retained_roster_item", "omitted_file_contains", "omitted_repo_has_file", "empty_roster"):
-            assert [json.loads(line) for line in calls.read_text().splitlines()] == [["--list-native"]]
+        if fault in (
+            "omitted_roster_item",
+            "omitted_retained_roster_item",
+            "omitted_file_contains",
+            "omitted_repo_has_file",
+            "empty_roster",
+        ):
+            assert [json.loads(line) for line in calls.read_text().splitlines()] == [
+                ["--list-native"]
+            ]
         return
 
     assert result.returncode == 0, result.stderr
@@ -890,8 +1019,12 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
     assert artifact["runner_sha256"] == digest(runner)
     assert artifact["history_fixture_sha256"] == digest(history)
     assert artifact["qualification"] == "diagnostic"
-    assert [row["scenario_id"] for row in artifact["scenarios"]] == text_ids + error_ids + history_ids + retained_ids
-    assert [row["kind"] for row in artifact["scenarios"]] == ["text"] * 9 + ["error"] * 5 + ["history"] * 7 + ["retained"] * 12
+    assert [
+        row["scenario_id"] for row in artifact["scenarios"]
+    ] == text_ids + error_ids + history_ids + retained_ids
+    assert [row["kind"] for row in artifact["scenarios"]] == ["text"] * 9 + ["error"] * 5 + [
+        "history"
+    ] * 7 + ["retained"] * 12
     expected_count = 1 if mode == "warm" else 2
     assert [len(row["reports"]) for row in artifact["scenarios"]] == [expected_count] * 33
     logged = [json.loads(line) for line in calls.read_text().splitlines()]
@@ -904,7 +1037,8 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
     expected_calls = [
         [flag, str(path), scenario]
         for flag, path, ids in (
-            ("--native-text", daemon, text_ids + error_ids), (history_flag, staged_history, history_ids),
+            ("--native-text", daemon, text_ids + error_ids),
+            (history_flag, staged_history, history_ids),
             ("--native-retained", daemon, retained_ids),
         )
         for scenario in ids

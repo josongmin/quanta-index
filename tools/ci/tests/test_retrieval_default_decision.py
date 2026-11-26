@@ -881,14 +881,17 @@ def test_go_trace_refuses_known_files_as_recall_gold(tmp_path):
 def test_go_trace_relative_frame_paths_match_request_path_rules():
     paths = decision.go_trace_review_receipt.relative_frame_paths
     assert paths("panic: source fault") == set()
-    assert paths(
-        "(./src/worker.go:12),\u2003`src/worker.go:31+0x10` src/worker_test.go:2"
-    ) == {"src/worker.go"}
+    assert paths("(./src/worker.go:12),\u2003`src/worker.go:31+0x10` src/worker_test.go:2") == {
+        "src/worker.go"
+    }
     assert paths("src/worker.go:1 src/peer.go:2") == {"src/worker.go", "src/peer.go"}
-    assert paths(
-        "../src/worker.go:1 /src/worker.go:1 C:/src/worker.go:1 src//worker.go:1 "
-        "src\\worker.go:1 src/worker.go:١ prefix\x1csrc/worker.go:1"
-    ) == set()
+    assert (
+        paths(
+            "../src/worker.go:1 /src/worker.go:1 C:/src/worker.go:1 src//worker.go:1 "
+            "src\\worker.go:1 src/worker.go:١ prefix\x1csrc/worker.go:1"
+        )
+        == set()
+    )
     assert paths("é" * 2047 + ".go:1") == set()
 
 
@@ -911,7 +914,9 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
     for index, path in enumerate(paths):
         source = corpus / path
         source.parent.mkdir(parents=True, exist_ok=True)
-        raw = (f"package source\n// file {index}\n" + ("func Trigger() {}\n" if index == 0 else "")).encode()
+        raw = (
+            f"package source\n// file {index}\n" + ("func Trigger() {}\n" if index == 0 else "")
+        ).encode()
         source.write_bytes(raw)
         files.append({"path": path, "file_sha256": hashlib.sha256(raw).hexdigest()})
     manifest_digest = write(
@@ -1046,11 +1051,20 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
     trace_candidates[0]["file_rrf_score"] = 2.0 / 61.0
     rank_pools = {
         "lexical": [
-            {"file": dict(row["file"]), "candidate_id": row["candidate_id"], "score_bits": 0x3F80_0000}
+            {
+                "file": dict(row["file"]),
+                "candidate_id": row["candidate_id"],
+                "score_bits": 0x3F80_0000,
+            }
             for row in all_trace_candidates
         ],
-        "dense": [{"file": dict(trace_candidates[0]["file"]),
-                   "candidate_id": trace_candidates[0]["candidate_id"], "score_bits": 0x3F80_0000}],
+        "dense": [
+            {
+                "file": dict(trace_candidates[0]["file"]),
+                "candidate_id": trace_candidates[0]["candidate_id"],
+                "score_bits": 0x3F80_0000,
+            }
+        ],
     }
     paired = {
         "schema_version": 4,
@@ -1066,7 +1080,8 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
                     "original_query_sha256": query_digest,
                     "semantic_text_sha256": query_digest,
                     "effective_lexical_request_sha256": decision.query_plan.derive_query_identity(
-                        "natural_language", query,
+                        "natural_language",
+                        query,
                         {**decision.query_plan.DEFAULT_NL_CONFIG, "max_tokens": 2},
                     )["effective_lexical_request_sha256"],
                     "generic_semantic_representation_policy": "task_query_v1",
@@ -1438,8 +1453,10 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
         paired["lane_top_k"], continuation=True, lanes=("go_test_trace.lexical",)
     )
     exact_pool_size = len(pool)
-    pool.extend({**pool[-1], "candidate_id": f"additional-chunk-{index}"}
-                for index in range(exact_pool_size, paired["lane_top_k"]))
+    pool.extend(
+        {**pool[-1], "candidate_id": f"additional-chunk-{index}"}
+        for index in range(exact_pool_size, paired["lane_top_k"])
+    )
     store_pair()
     assert decision.evaluate_go_trace_file_holdout(plan_path, judgments_path) == scored
     del pool[exact_pool_size:]
@@ -1544,12 +1561,14 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
 
     review_2["files"] = [
         {**row, "direct_production": True, "rationale": "review disagreement"}
-        if index == 1 else row
+        if index == 1
+        else row
         for index, row in enumerate(rows)
     ]
     adjudication["files"] = [
         {**row, "direct_production": True, "rationale": "undisputed file changed"}
-        if index == 2 else row
+        if index == 2
+        else row
         for index, row in enumerate(rows)
     ]
     rebind_reviews()
@@ -1559,9 +1578,7 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
     review_2["files"] = rows
     adjudication["files"] = rows
     rebind_reviews()
-    judgment["cases"][0]["direct_production_gold"] = [
-        {"path": paths[1], "evidence": "invented"}
-    ]
+    judgment["cases"][0]["direct_production_gold"] = [{"path": paths[1], "evidence": "invented"}]
     write(judgments_path, judgment)
     with pytest.raises(decision.DecisionError, match="differs from adjudication"):
         decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
@@ -1589,30 +1606,34 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
         "symbol": "Trigger",
         "file_sha256": files[0]["file_sha256"],
     }
-    owner_input = [{
-        "task_id": task_id,
-        "repo_id": "repo",
-        "commit": commit,
-        "failure_excerpt": module_excerpt,
-        "provenance": {
-            "kind": "original_upstream_issue_failure_transcript",
-            "frame_stratum": "in_repo_module_cache_panic_frame",
-            "failure_excerpt_sha256": module_digest,
-            "module_path": "github.com/example/mod",
-            "module_version": "v1.2.3",
-            "module_tag_commit": commit,
-        },
-    }]
+    owner_input = [
+        {
+            "task_id": task_id,
+            "repo_id": "repo",
+            "commit": commit,
+            "failure_excerpt": module_excerpt,
+            "provenance": {
+                "kind": "original_upstream_issue_failure_transcript",
+                "frame_stratum": "in_repo_module_cache_panic_frame",
+                "failure_excerpt_sha256": module_digest,
+                "module_path": "github.com/example/mod",
+                "module_version": "v1.2.3",
+                "module_tag_commit": commit,
+            },
+        }
+    ]
     input_path = tmp_path / "source-owner-inputs.json"
     input_digest = write(input_path, owner_input)
     plan["source_owner_inputs_path"] = str(input_path)
     plan["input_sha256"] = input_digest
-    plan["plans"][0].update({
-        "pack_sha256": pack_digest,
-        "module_path": "github.com/example/mod",
-        "module_version": "v1.2.3",
-        "module_frame": module_frame,
-    })
+    plan["plans"][0].update(
+        {
+            "pack_sha256": pack_digest,
+            "module_path": "github.com/example/mod",
+            "module_version": "v1.2.3",
+            "module_frame": module_frame,
+        }
+    )
     for form in (review_1, review_2, adjudication):
         form["semantic_input"] = semantic_input
         form["pack_sha256"] = pack_digest
@@ -1625,14 +1646,16 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
     write(judgments_path, judgment)
     paired["pack_sha256"] = hashlib.sha256(evidence.canonical_json(pack).encode()).hexdigest()
     source_context = paired["tasks"][0]["trace_files"]["source_context"]
-    source_context.update({
-        "mode": "frozen_module_panic_v1",
-        "module_path": "github.com/example/mod",
-        "module_version": "v1.2.3",
-        "module_frame": module_frame,
-        "pilot_inputs_sha256": input_digest,
-        "pack_file_sha256": pack_digest,
-    })
+    source_context.update(
+        {
+            "mode": "frozen_module_panic_v1",
+            "module_path": "github.com/example/mod",
+            "module_version": "v1.2.3",
+            "module_frame": module_frame,
+            "pilot_inputs_sha256": input_digest,
+            "pack_file_sha256": pack_digest,
+        }
+    )
     paired["tasks"][0]["query_identity"]["trace_semantic_text_sha256"] = module_digest
     paired["tasks"][0]["trace_files"]["failure_excerpt_sha256"] = module_digest
     paired["tasks"][0]["trace_files"]["semantic_text_sha256"] = module_digest

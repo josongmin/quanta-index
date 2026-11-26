@@ -442,8 +442,12 @@ class _CgroupOwner:
             if (path / "cgroup.type").read_text().strip() != "domain":
                 raise ProcessError("dedicated cgroup is not a domain cgroup")
             for name in (
-                "cgroup.procs", "cgroup.threads", "cgroup.events", "cgroup.kill",
-                "cpu.stat", "memory.peak",
+                "cgroup.procs",
+                "cgroup.threads",
+                "cgroup.events",
+                "cgroup.kill",
+                "cpu.stat",
+                "memory.peak",
             ):
                 if not (path / name).is_file():
                     raise ProcessError(f"required cgroup v2 file unavailable: {name}")
@@ -725,7 +729,9 @@ class _CgroupTracker:
                     # read; another thread can still represent the group.
                     after = self._validated_thread_row(tid, group)
                     if after is not None and after.identity != before.identity:
-                        raise ProcessError(f"TID {tid} changed start time during RSS sample") from exc
+                        raise ProcessError(
+                            f"TID {tid} changed start time during RSS sample"
+                        ) from exc
                     if (
                         isinstance(exc, OSError)
                         and exc.errno in (errno.ESRCH, errno.ENOENT)

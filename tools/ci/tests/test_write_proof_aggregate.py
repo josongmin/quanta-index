@@ -159,7 +159,10 @@ def _make_all_proofs_executable(text: str) -> str:
                 continue
             if proof_id.group(1) == P07_PROOF:
                 sections[index] += f'\nprovider_approval_sha256 = "{"a" * 64}"\n'
-            if proof_id.group(1) == P12A_PROOF or proof_id.group(1) in NATIVE_RELEASE_SCOPES.values():
+            if (
+                proof_id.group(1) == P12A_PROOF
+                or proof_id.group(1) in NATIVE_RELEASE_SCOPES.values()
+            ):
                 continue
             sections[index] = re.sub(
                 r'command = "[^"]+"',
@@ -277,8 +280,7 @@ def _build_fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict
             "[local_scopes.fixture-all]\n"
             f"targets = {json.dumps(target_ids)}\n"
             + "".join(
-                f"[local_scopes.{scope}]\n"
-                'targets = ["searchd-runtime-native-product-process"]\n'
+                f'[local_scopes.{scope}]\ntargets = ["searchd-runtime-native-product-process"]\n'
                 for scope in NATIVE_RELEASE_SCOPES
             )
             + f"[local_scopes.{P10_LIB_SCOPE}]\n"
@@ -317,9 +319,9 @@ def _build_fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict
             recipe = proof["command"].removeprefix("just ")
             if proof["id"] == PAIR_PROOF:
                 proof_recipes.append(
-                    '[positional-arguments]\n'
+                    "[positional-arguments]\n"
                     f'{recipe} semantica_root="fixture":\n'
-                    '    #!/bin/bash -p\n'
+                    "    #!/bin/bash -p\n"
                     '    exec ./scripts/verify-repomap-cross-repo.sh "$1"\n'
                 )
                 continue
@@ -559,12 +561,16 @@ def _write_dependency_manifests(
                     if proof_id == P07_PROOF:
                         observed["provider_approval_sha256"] = proof["provider_approval_sha256"]
                     source = evidence.parent / f"{proof_id}-{i}-daemon-observations.json"
-                    source.write_text(json.dumps({
-                        "nonce": nonce,
-                        "events_sha256": hashlib.sha256(events).hexdigest(),
-                        "inventory_sha256": hashlib.sha256(listed).hexdigest(),
-                        "observations": {name: observed},
-                    }))
+                    source.write_text(
+                        json.dumps(
+                            {
+                                "nonce": nonce,
+                                "events_sha256": hashlib.sha256(events).hexdigest(),
+                                "inventory_sha256": hashlib.sha256(listed).hexdigest(),
+                                "observations": {name: observed},
+                            }
+                        )
+                    )
                     run["daemon_observations"] = source.relative_to(root).as_posix()
                     result_artifacts.append(archive(root, run["daemon_observations"]))
                 runs.append(run)
@@ -573,7 +579,10 @@ def _write_dependency_manifests(
             for i, run in enumerate(execution_result["runs"]):
                 source_path = f"artifacts/proof-authority/raw/{proof_id}-{i}-run-binding.json"
                 bind_run(
-                    root, proof, run, source_path,
+                    root,
+                    proof,
+                    run,
+                    source_path,
                     daemon_sha256=daemon_binary["sha256"] if daemon_binary else None,
                 )
                 result_artifacts.append(archive(root, source_path))
@@ -625,7 +634,9 @@ def _write_dependency_manifests(
                 "corpus": None,
                 "config": None,
                 "model": None,
-                "provider": f"sha256:{proof['provider_approval_sha256']}" if proof_id == P07_PROOF else None,
+                "provider": f"sha256:{proof['provider_approval_sha256']}"
+                if proof_id == P07_PROOF
+                else None,
             },
             "started_at": start.isoformat(),
             "ended_at": (start + timedelta(seconds=1)).isoformat(),
@@ -786,7 +797,9 @@ def test_paired_manifest_refuses_mixed_release_prerequisite(
 
 @pytest.mark.parametrize("executable", [False, True], ids=["staged", "executable"])
 def test_registered_paired_recipe_refuses_ambient_shell_launch(
-    tmp_path: Path, aggregate_templates: AggregateTemplates, executable: bool,
+    tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
+    executable: bool,
 ) -> None:
     root, registry = _fixture_root(tmp_path, executable=executable, templates=aggregate_templates)
     path = root / "tools/ci/proof-authority.toml"
@@ -838,15 +851,18 @@ def test_archived_paired_manifest_uses_the_issuing_commit_selections(tmp_path, a
     live = CHECKER._read_toml(registry_path)
     live_by_id = {row["id"]: row for row in live["proofs"]}
     assert live_by_id[PAIR_PROOF]["paired_execution_cases"][1]["test"] != old_test
-    assert CHECKER.check_manifest(
-        payload,
-        proof=live_by_id[PAIR_PROOF],
-        root=root,
-        manifest_path=path,
-        bind_source=False,
-        schema=json.loads((root / "tools/ci/proof-manifest.schema.json").read_text()),
-        proof_by_id=live_by_id,
-    ) == []
+    assert (
+        CHECKER.check_manifest(
+            payload,
+            proof=live_by_id[PAIR_PROOF],
+            root=root,
+            manifest_path=path,
+            bind_source=False,
+            schema=json.loads((root / "tools/ci/proof-manifest.schema.json").read_text()),
+            proof_by_id=live_by_id,
+        )
+        == []
+    )
 
 
 def test_writer_publishes_truthful_not_ready_diagnostic_for_staged_graph(
@@ -1002,17 +1018,25 @@ def test_required_release_installation_refuses_foreign_selection_without_replaci
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
     registry_path = root / "tools/ci/proof-authority.toml"
-    output, _, ready = WRITER.publish_aggregate(root=root, registry_path=registry_path, paired_checkout=paired)
+    output, _, ready = WRITER.publish_aggregate(
+        root=root, registry_path=registry_path, paired_checkout=paired
+    )
     assert ready
     prior = output.read_bytes()
     payload = json.loads(prior)
     operation = next(proof for proof in registry["proofs"] if proof["id"] == "p11-rollback")
     target = json.loads((root / operation["artifact"]).read_bytes())["execution_result"]["target"]
-    identity = (payload["daemon_binary"]["sha256"], payload["source_pair"]["source"]["head"], payload["source"]["head"])
+    identity = (
+        payload["daemon_binary"]["sha256"],
+        payload["source_pair"]["source"]["head"],
+        payload["source"]["head"],
+    )
 
     with pytest.raises(WRITER.AggregateRefused, match="signed installation target"):
         WRITER.publish_aggregate(
-            root=root, registry_path=registry_path, paired_checkout=paired,
+            root=root,
+            registry_path=registry_path,
+            paired_checkout=paired,
             required_release_identity=identity,
             required_installation=(
                 target["state_root"],
@@ -1469,7 +1493,8 @@ def _refresh_run_binding(root: Path, proof: dict, run: dict, payload: dict) -> N
 
 
 def test_p07_archive_requires_the_same_approved_provider_in_manifest_and_witness(
-    tmp_path, aggregate_templates,
+    tmp_path,
+    aggregate_templates,
 ):
     from tools.ci.tests.test_proof_operational_result import archive
 
@@ -1502,7 +1527,9 @@ def test_p07_archive_requires_the_same_approved_provider_in_manifest_and_witness
     (witness,) = batch["observations"].values()
     witness["provider_approval_sha256"] = "b" * 64
     (root / observed).write_text(json.dumps(batch))
-    index = next(i for i, item in enumerate(payload["artifacts"]) if item["source_path"] == observed)
+    index = next(
+        i for i, item in enumerate(payload["artifacts"]) if item["source_path"] == observed
+    )
     payload["artifacts"][index] = archive(root, observed)
     _refresh_run_binding(root, proof, run, payload)
     assert any(
@@ -1512,7 +1539,9 @@ def test_p07_archive_requires_the_same_approved_provider_in_manifest_and_witness
 
 
 @pytest.mark.parametrize("missing", [0, 1])
-def test_release_read_view_requires_both_registered_observations(tmp_path, aggregate_templates, missing):
+def test_release_read_view_requires_both_registered_observations(
+    tmp_path, aggregate_templates, missing
+):
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
@@ -1535,7 +1564,8 @@ def test_release_read_view_requires_both_registered_observations(tmp_path, aggre
     observations_path = run.pop("daemon_observations")
     _refresh_run_binding(root, proof, run, payload)
     assert any(
-        "P04 lacks a daemon observation" in f.message for f in CHECKER.check_manifest(payload, **args)
+        "P04 lacks a daemon observation" in f.message
+        for f in CHECKER.check_manifest(payload, **args)
     )
     run["daemon_observations"] = observations_path
     observation = root / observations_path
@@ -1584,7 +1614,10 @@ def test_p04_archive_refuses_an_extra_passing_body(tmp_path, aggregate_templates
     path = root / proof["artifact"]
     payload = json.loads(path.read_bytes())
     args = dict(
-        proof=proof, manifest_path=path, root=root, bind_source=False,
+        proof=proof,
+        manifest_path=path,
+        root=root,
+        bind_source=False,
         schema=json.loads((root / proof["artifact_schema"]).read_bytes()),
         proof_by_id=authorities,
     )
@@ -1609,7 +1642,8 @@ def test_p04_archive_refuses_an_extra_passing_body(tmp_path, aggregate_templates
 
 
 def test_p10_archive_requires_all_four_observations_of_the_release_elf(
-    tmp_path, aggregate_templates,
+    tmp_path,
+    aggregate_templates,
 ):
     from tools.ci.tests.test_proof_operational_result import archive
 
@@ -1640,7 +1674,9 @@ def test_p10_archive_requires_all_four_observations_of_the_release_elf(
     batch = json.loads((root / observed).read_bytes())
     (row,) = batch["observations"].values()
     digest = payload["daemon_binary"]["sha256"]
-    index = next(i for i, item in enumerate(payload["artifacts"]) if item["source_path"] == observed)
+    index = next(
+        i for i, item in enumerate(payload["artifacts"]) if item["source_path"] == observed
+    )
     for digests, reason in (
         ([digest] * 3, "must bind 4 launch"),
         (["e" * 64] * 4, "P10 executed daemon differs from the release binary"),
@@ -1649,13 +1685,12 @@ def test_p10_archive_requires_all_four_observations_of_the_release_elf(
         (root / observed).write_text(json.dumps(batch))
         payload["artifacts"][index] = archive(root, observed)
         _refresh_run_binding(root, proof, run, payload)
-        assert any(
-            reason in finding.message for finding in CHECKER.check_manifest(payload, **args)
-        )
+        assert any(reason in finding.message for finding in CHECKER.check_manifest(payload, **args))
 
 
 def test_p10_archive_refuses_a_format_different_from_the_issuing_source(
-    tmp_path, aggregate_templates,
+    tmp_path,
+    aggregate_templates,
 ):
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
@@ -1679,7 +1714,9 @@ def test_p10_archive_refuses_a_format_different_from_the_issuing_source(
         schema=json.loads((root / proof["artifact_schema"]).read_bytes()),
         proof_by_id=authorities,
     )
-    assert any("P10 state-root format differs from its issuing source" in f.message for f in findings)
+    assert any(
+        "P10 state-root format differs from its issuing source" in f.message for f in findings
+    )
 
 
 def test_interrupted_deployment_invalidates_current_success_and_refuses_republication(
@@ -1895,7 +1932,10 @@ def test_release_receipt_interruption_keeps_prior_selection_and_allows_retry(
     if abrupt:
         child = subprocess.run(
             [
-                sys.executable, "-B", "-c", '''
+                sys.executable,
+                "-B",
+                "-c",
+                """
 import json, os, sys
 from pathlib import Path
 from unittest.mock import patch
@@ -1915,7 +1955,7 @@ with patch.object(writer.platform, "system", return_value="Linux"), \\
      patch.object(writer.platform, "machine", return_value="x86_64"), \\
      patch.object(os, "replace", side_effect=interrupt):
     writer.publish_manifest(**arguments)
-''',
+""",
                 json.dumps({key: str(value) for key, value in args.items()}),
             ],
             cwd=REPO_ROOT,
@@ -1927,7 +1967,9 @@ with patch.object(writer.platform, "system", return_value="Linux"), \\
         staged = current.read_bytes()
         assert json.loads(staged)["status"] == "blocked"
         with pytest.raises(ValueError, match="latest indexed release"):
-            CHECKER.require_current_release(root, json.loads(staged), hashlib.sha256(staged).hexdigest())
+            CHECKER.require_current_release(
+                root, json.loads(staged), hashlib.sha256(staged).hexdigest()
+            )
     else:
         with monkeypatch.context() as fault:
             fault.setattr(os, "replace", fail_replace)
@@ -1966,16 +2008,15 @@ def test_replay_uses_original_release_contract_after_valid_registry_change(
     new_schema.write_text('{"not": {}}\n')
     registry_path = root / "tools/ci/proof-authority.toml"
     registry_path.write_text(
-        registry_path.read_text().replace(
-            f'"{old_path.relative_to(root)}"', f'"{new_path.relative_to(root)}"'
-        ).replace(
-            f'"{old_schema.relative_to(root)}"', f'"{new_schema.relative_to(root)}"'
-        )
+        registry_path.read_text()
+        .replace(f'"{old_path.relative_to(root)}"', f'"{new_path.relative_to(root)}"')
+        .replace(f'"{old_schema.relative_to(root)}"', f'"{new_schema.relative_to(root)}"')
     )
     _run(root, "git", "add", "-A", "tools/ci")
     _run(root, "git", "commit", "-qm", "Relocate the fixture deployment contract")
     assert (
-        CHECKER.check_registry(CHECKER._read_toml(registry_path), root=root, path=registry_path) == []
+        CHECKER.check_registry(CHECKER._read_toml(registry_path), root=root, path=registry_path)
+        == []
     )
     assert CHECKER.main(args) == 0
     assert CHECKER.main([*args, "--schema", str(new_schema)]) == 0

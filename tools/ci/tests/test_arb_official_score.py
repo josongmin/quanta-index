@@ -312,7 +312,8 @@ def go_transfer_fixture():
 def test_go_transfer_binds_pinned_raw_trace_and_explicit_semantic_bytes():
     values = go_transfer_fixture()
     assert scorer.bind_identity(*values, FixedOfficial, scorer.GO_TRANSFER_PROFILE) == [
-        "cause.go", "test.go"
+        "cause.go",
+        "test.go",
     ]
     for mutate in (
         lambda c, s, u, p: u["tasks"][0]["semantic_input"].update(text="gold.go"),
@@ -454,11 +455,14 @@ def test_valid_old_record_cannot_be_replayed_into_new_arm():
             "access_block_log": "runner-was-not-given-gold",
         },
         "route_provenance": {"semantic": {"capture_id": "one"}},
-        "captures": {"one": {
-            "system": "quanta", "execution_profile": profile,
-            "model": "model2vec:minishlab/potion-code-16M-v2",
-            "model_revision": "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1",
-        }},
+        "captures": {
+            "one": {
+                "system": "quanta",
+                "execution_profile": profile,
+                "model": "model2vec:minishlab/potion-code-16M-v2",
+                "model_revision": "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1",
+            }
+        },
     }
     scorer.bind_record_identity(record, spec, arm)
     record["runner"]["revision"] = "sha256:" + "o" * 64
@@ -512,11 +516,13 @@ def test_actual_native_record_uses_binary_digest_not_source_commit():
     first_capture = next(iter(record["captures"].values()))
     assert first_capture["execution_profile"]["profile_id"] == "quanta-code-search-typo-file-v1"
     first_route = next(
-        route for route, binding in record["route_provenance"].items()
+        route
+        for route, binding in record["route_provenance"].items()
         if record["captures"][binding["capture_id"]] is first_capture
     )
     one = {
-        "runner": record["runner"], "captures": {"first": first_capture},
+        "runner": record["runner"],
+        "captures": {"first": first_capture},
         "route_provenance": {first_route: {"capture_id": "first"}},
     }
     spec = {

@@ -30,13 +30,13 @@ def test_filter_keywords_exclude_predicate_arguments_and_quoted_text():
 
 def test_rust_query_witnesses_preserve_raw_text_and_ignore_comments():
     module = _module()
-    source = r'''
+    source = r"""
         // client.sourcegraph("retired")
         /* client.sourcegraph("also retired") */
         client.sourcegraph(r#"file:has.content("quoted phrase") /\w+/"#);
         client.sourcegraph("type:commit \"fix bug\"");
         let error_label = r#"client.sourcegraph("diagnostic text")"#;
-    '''
+    """
     assert module.rust_string_literals(source, r"\.sourcegraph\(") == [
         r'file:has.content("quoted phrase") /\w+/',
         'type:commit "fix bug"',
@@ -56,7 +56,9 @@ def test_old_q_and_native_refusal_are_distinct_source_witnesses():
 
 
 def test_check_keeps_the_generated_report_when_a_witness_source_disappears(
-    monkeypatch, tmp_path, capsys,
+    monkeypatch,
+    tmp_path,
+    capsys,
 ):
     module = _module()
     report = tmp_path / "parity.md"

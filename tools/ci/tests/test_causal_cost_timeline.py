@@ -769,9 +769,7 @@ def test_owned_renewal_refusal_rejects_unexpired_boundary(
     reason: str, lease_until_ms: int | None, deadline_ms: int | None, expected: str
 ) -> None:
     rows = _owned_renewal_rows()
-    rows[3]["kind"].update(
-        reason=reason, lease_until_ms=lease_until_ms, deadline_ms=deadline_ms
-    )
+    rows[3]["kind"].update(reason=reason, lease_until_ms=lease_until_ms, deadline_ms=deadline_ms)
     with pytest.raises(ValueError, match=expected):
         parse(_boundary_rows(rows))
 
@@ -1294,9 +1292,7 @@ def test_ann_orphan_observation_preserves_region_invariants(
 
 @pytest.mark.parametrize("version", (3, 4, 5))
 @pytest.mark.parametrize("capture_kind", ("complete", "partial", "orphan"))
-def test_lance_observation_accepts_empty_file_entries(
-    version: int, capture_kind: str
-) -> None:
+def test_lance_observation_accepts_empty_file_entries(version: int, capture_kind: str) -> None:
     rows = _ann_region_repeated_query_rows(fileset="ab" * 32)
     for row in rows:
         if row.get("kind", {}).get("type") == "ann_region_observation":
@@ -1310,7 +1306,9 @@ def test_lance_observation_accepts_empty_file_entries(
     assert capture["status"] == ("complete" if capture_kind == "complete" else "partial")
     assert capture["orphan_events"] == (1 if capture_kind == "orphan" else 0)
     assert [(row["files"], row["chunks"]) for row in capture["ann_region_observations"]] == [
-        (2, 1), (2, 1), (2, 1)
+        (2, 1),
+        (2, 1),
+        (2, 1),
     ]
 
 
@@ -1326,7 +1324,10 @@ def test_native_hnsw_region_observations_preserve_one_logical_graph_artifact() -
         "de" * 32,
         "cd" * 32,
     ]
-    assert [(row["files"], row["chunks"]) for row in capture["ann_region_observations"]] == [(1, 1), (1, 1)]
+    assert [(row["files"], row["chunks"]) for row in capture["ann_region_observations"]] == [
+        (1, 1),
+        (1, 1),
+    ]
     assert summarize(capture)["ann_region_observations"] == capture["ann_region_observations"]
 
 
@@ -1358,8 +1359,12 @@ def test_v5_native_hnsw_installed_descriptor_reference_replays() -> None:
         kind = row["kind"]
         if kind["type"] == "span_begin":
             payload = [
-                "b", kind["span_id"], kind.get("parent_span_id"), kind["stage"],
-                kind["lane_id"], kind.get("root_kind"),
+                "b",
+                kind["span_id"],
+                kind.get("parent_span_id"),
+                kind["stage"],
+                kind["lane_id"],
+                kind.get("root_kind"),
             ]
         elif kind["type"] == "span_end":
             payload = ["e", kind["span_id"], kind["outcome"], kind.get("error_code")]
@@ -1536,9 +1541,7 @@ def test_v4_thread_cpu_counter_replays_as_one_exact_span_and_perfetto_counter(st
     owner = next(row for row in summarize(captured)["spans"] if row["span_id"] == 2)
     assert owner["counters"] == dict([THREAD_CPU_GOLD])
     viewer = [event for event in chrome_export(captured)["traceEvents"] if event["ph"] == "C"]
-    assert [(event["name"], event["args"][event["name"]]) for event in viewer] == [
-        THREAD_CPU_GOLD
-    ]
+    assert [(event["name"], event["args"][event["name"]]) for event in viewer] == [THREAD_CPU_GOLD]
 
 
 def test_v4_thread_cpu_counter_rejects_second_interval_on_same_span() -> None:
@@ -1592,8 +1595,7 @@ def test_v4_absent_thread_cpu_counter_is_not_synthesized_as_zero() -> None:
     assert all(counter["key"] != THREAD_CPU_GOLD[0] for counter in captured["counters"])
     assert all(THREAD_CPU_GOLD[0] not in span["counters"] for span in summarize(captured)["spans"])
     assert all(
-        event.get("name") != THREAD_CPU_GOLD[0]
-        for event in chrome_export(captured)["traceEvents"]
+        event.get("name") != THREAD_CPU_GOLD[0] for event in chrome_export(captured)["traceEvents"]
     )
 
 
@@ -3023,9 +3025,9 @@ def test_v5_lance_query_stages_preserve_candidate_parent_and_terminal(
         "query_ann_open",
         "query_ann_candidate",
     )
-    legacy_stages = _schema_for_version(json.loads(SCHEMA.read_text()), 4)["$defs"][
-        "spanBegin"
-    ]["properties"]["stage"]["enum"]
+    legacy_stages = _schema_for_version(json.loads(SCHEMA.read_text()), 4)["$defs"]["spanBegin"][
+        "properties"
+    ]["stage"]["enum"]
     assert all(stage not in legacy_stages for stage in stages)
     children = []
     for offset, stage in enumerate(stages):
@@ -3063,9 +3065,7 @@ def test_v5_lance_query_stages_preserve_candidate_parent_and_terminal(
     assert captured["spans"][6]["outcome"] == outcome
     assert captured["spans"][6]["counters"] == {}
     # A killed worker can leave an open_index begin without an end or footer.
-    open_begin = next(
-        i for i, row in enumerate(rows[1:-1], 1) if row[4][:2] == ["b", 5]
-    )
+    open_begin = next(i for i, row in enumerate(rows[1:-1], 1) if row[4][:2] == ["b", 5])
     interrupted = parse(_v5_bytes(rows[: open_begin + 1]))
     assert interrupted["status"] == "partial"
     assert interrupted["spans"][5]["end_ns"] is None
@@ -3262,8 +3262,10 @@ def _v5_map_root_rows(*, outcome: str = "ok") -> list[dict | list]:
     for sequence, event in enumerate(rows[1:-1], 1):
         event[1] = sequence
     rows[-1].update(
-        last_output_seq=count, events_attempted=count,
-        events_accepted=count, events_written=count,
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
     )
     return rows
 
@@ -3380,8 +3382,10 @@ def test_v5_map_root_reuse_rejects_invalid_family(fault: str, error: str) -> Non
     for sequence, event in enumerate(rows[1:-1], 1):
         event[1] = sequence
     rows[-1].update(
-        last_output_seq=count, events_attempted=count,
-        events_accepted=count, events_written=count,
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
     )
     with pytest.raises(ValueError, match=error):
         parse(_v5_bytes(rows))
@@ -3395,8 +3399,10 @@ def test_v5_map_root_partial_capture_keeps_observed_prefix() -> None:
     for sequence, event in enumerate(rows[1:-1], 1):
         event[1] = sequence
     rows[-1].update(
-        last_output_seq=count, events_attempted=count,
-        events_accepted=count, events_written=count,
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
     )
     captured = parse(_v5_bytes(rows))
     assert captured["status"] == "partial"
@@ -3453,9 +3459,9 @@ def _v5_managed_external_child_rows(
 def test_v5_managed_external_child_triple_preserves_counts_and_old_absence() -> None:
     captured = parse(_v5_bytes(_v5_managed_external_child_rows()))
     assert captured["status"] == "complete"
-    assert {key: captured["spans"][2]["counters"][key] for key, _ in MANAGED_EXTERNAL_CHILD_GOLD} == dict(
-        MANAGED_EXTERNAL_CHILD_GOLD
-    )
+    assert {
+        key: captured["spans"][2]["counters"][key] for key, _ in MANAGED_EXTERNAL_CHILD_GOLD
+    } == dict(MANAGED_EXTERNAL_CHILD_GOLD)
     old = _v5_managed_external_child_rows(())
     assert parse(_v5_bytes(old))["spans"][2]["counters"] == {"managed_object_inputs": 3}
 
@@ -3463,16 +3469,19 @@ def test_v5_managed_external_child_triple_preserves_counts_and_old_absence() -> 
 def test_v5_managed_cross_group_child_tuple_preserves_old_captures_and_realized_prefix() -> None:
     values = MANAGED_EXTERNAL_CHILD_GOLD + MANAGED_CROSS_GROUP_CHILD_GOLD
     captured = parse(_v5_bytes(_v5_managed_external_child_rows(values)))
-    assert {key: captured["spans"][2]["counters"][key] for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD} == dict(
-        MANAGED_CROSS_GROUP_CHILD_GOLD
-    )
+    assert {
+        key: captured["spans"][2]["counters"][key] for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD
+    } == dict(MANAGED_CROSS_GROUP_CHILD_GOLD)
     summary = next(row for row in summarize(captured)["spans"] if row["span_id"] == 2)
     assert {key: summary["counters"][key] for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD} == dict(
         MANAGED_CROSS_GROUP_CHILD_GOLD
     )
     only_new = parse(_v5_bytes(_v5_managed_external_child_rows(MANAGED_CROSS_GROUP_CHILD_GOLD)))
     assert all(key in only_new["spans"][2]["counters"] for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD)
-    assert not any(key in parse(_v5_bytes(_v5_managed_external_child_rows()))["spans"][2]["counters"] for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD)
+    assert not any(
+        key in parse(_v5_bytes(_v5_managed_external_child_rows()))["spans"][2]["counters"]
+        for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD
+    )
 
 
 @pytest.mark.parametrize(
@@ -3486,7 +3495,10 @@ def test_v5_managed_cross_group_child_tuple_preserves_old_captures_and_realized_
         ("orphan", "managed external child counter has no existing owner span"),
         ("repeated_exceeds", "managed cross-group child counters contradict"),
         ("zero_overlap", "managed cross-group child counters contradict"),
-        ("overlap_exceeds_unique", "managed cross-group child overlap exceeds unique external children"),
+        (
+            "overlap_exceeds_unique",
+            "managed cross-group child overlap exceeds unique external children",
+        ),
     ],
 )
 def test_v5_managed_cross_group_child_tuple_rejects_invalid_trace(fault: str, error: str) -> None:
@@ -3518,7 +3530,9 @@ def test_v5_managed_cross_group_child_tuple_rejects_invalid_trace(fault: str, er
 
 def test_v4_rejects_managed_cross_group_child_counter_keys() -> None:
     schema = _schema_for_version(json.loads(SCHEMA.read_text()), 4)
-    assert not {key for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD} & set(schema["$defs"]["counterKey"]["enum"])
+    assert not {key for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD} & set(
+        schema["$defs"]["counterKey"]["enum"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -3562,18 +3576,24 @@ def test_v5_managed_external_child_rejects_invalid_trace(fault: str, error: str)
 
 def test_v4_rejects_managed_external_child_counter_keys() -> None:
     schema = _schema_for_version(json.loads(SCHEMA.read_text()), 4)
-    assert not ({key for key, _ in MANAGED_EXTERNAL_CHILD_GOLD} | {MANAGED_REUSED_EXTERNAL_CHILD_KEY}) & set(
-        schema["$defs"]["counterKey"]["enum"]
-    )
+    assert not (
+        {key for key, _ in MANAGED_EXTERNAL_CHILD_GOLD} | {MANAGED_REUSED_EXTERNAL_CHILD_KEY}
+    ) & set(schema["$defs"]["counterKey"]["enum"])
 
 
 def test_v5_managed_reused_external_child_validation_is_optional_and_independent() -> None:
     only_actual = _v5_managed_external_child_rows(((MANAGED_REUSED_EXTERNAL_CHILD_KEY, 0),))
-    assert parse(_v5_bytes(only_actual))["spans"][2]["counters"][MANAGED_REUSED_EXTERNAL_CHILD_KEY] == 0
+    assert (
+        parse(_v5_bytes(only_actual))["spans"][2]["counters"][MANAGED_REUSED_EXTERNAL_CHILD_KEY]
+        == 0
+    )
     with_triple = _v5_managed_external_child_rows(
         MANAGED_EXTERNAL_CHILD_GOLD + ((MANAGED_REUSED_EXTERNAL_CHILD_KEY, 1),)
     )
-    assert parse(_v5_bytes(with_triple))["spans"][2]["counters"][MANAGED_REUSED_EXTERNAL_CHILD_KEY] == 1
+    assert (
+        parse(_v5_bytes(with_triple))["spans"][2]["counters"][MANAGED_REUSED_EXTERNAL_CHILD_KEY]
+        == 1
+    )
     without_actual = parse(_v5_bytes(_v5_managed_external_child_rows()))["spans"][2]["counters"]
     assert MANAGED_REUSED_EXTERNAL_CHILD_KEY not in without_actual
 
@@ -3818,16 +3838,17 @@ def _v5_diff_rows(*, outcome: str = "ok") -> list[dict | list]:
     rows = _v5_rows()
     rows[2][4] = ["b", 2, 1, "native_text_inventory_diff", 2, None]
     rows[3:4] = [
-        ["e", 0, CAPTURE, 25, ["c", 2, key, value]]
-        for key, value in TEXT_OCCURRENCE_DIFF_GOLD
+        ["e", 0, CAPTURE, 25, ["c", 2, key, value]] for key, value in TEXT_OCCURRENCE_DIFF_GOLD
     ]
     rows[-3][4] = ["e", 2, outcome, 1 if outcome == "error" else None]
     count = len(rows) - 2
     for sequence, event in enumerate(rows[1:-1], 1):
         event[1] = sequence
     rows[-1].update(
-        last_output_seq=count, events_attempted=count,
-        events_accepted=count, events_written=count,
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
     )
     return rows
 
@@ -3904,7 +3925,9 @@ def test_v5_text_occurrence_diff_rejects_invalid_owner_or_family(
     count = len(rows) - 2
     for sequence, row in enumerate(rows[1:-1], 1):
         row["output_seq" if isinstance(row, dict) else 1] = sequence
-    rows[-1].update(last_output_seq=count, events_attempted=count, events_accepted=count, events_written=count)
+    rows[-1].update(
+        last_output_seq=count, events_attempted=count, events_accepted=count, events_written=count
+    )
     with pytest.raises(ValueError, match=error):
         parse(_v5_bytes(rows))
 
@@ -3916,7 +3939,9 @@ def test_v5_text_occurrence_diff_partial_capture_keeps_unobserved_family_partial
     count = len(rows) - 2
     for sequence, row in enumerate(rows[1:-1], 1):
         row[1] = sequence
-    rows[-1].update(last_output_seq=count, events_attempted=count, events_accepted=count, events_written=count)
+    rows[-1].update(
+        last_output_seq=count, events_attempted=count, events_accepted=count, events_written=count
+    )
     captured = parse(_v5_bytes(rows))
     assert captured["status"] == "partial"
     assert "text_occurrence_prior_validation_attempts" not in captured["spans"][2]["counters"]
@@ -3926,21 +3951,35 @@ def _v5_object_install_rows() -> list[dict | list]:
     rows = _v5_rows()
     rows[2][4] = ["b", 2, 1, "managed_object_install", 0, None]
     rows[3] = [
-        "e", 3, CAPTURE, 25,
+        "e",
+        3,
+        CAPTURE,
+        25,
         {
-            "type": "object_install_aggregate", "span_id": 2,
-            "phase": "file_sync", "calls": 2, "elapsed_sum_ns": 6,
-            "thread_cpu_ns": 9, "failures": 0,
+            "type": "object_install_aggregate",
+            "span_id": 2,
+            "phase": "file_sync",
+            "calls": 2,
+            "elapsed_sum_ns": 6,
+            "thread_cpu_ns": 9,
+            "failures": 0,
         },
     ]
     rows.insert(
         4,
         [
-            "e", 4, CAPTURE, 26,
+            "e",
+            4,
+            CAPTURE,
+            26,
             {
-                "type": "object_install_aggregate", "span_id": 2,
-                "phase": "settlement", "calls": 1, "elapsed_sum_ns": 4,
-                "thread_cpu_ns": None, "failures": 1,
+                "type": "object_install_aggregate",
+                "span_id": 2,
+                "phase": "settlement",
+                "calls": 1,
+                "elapsed_sum_ns": 4,
+                "thread_cpu_ns": None,
+                "failures": 1,
             },
         ],
     )
@@ -3972,15 +4011,13 @@ def test_v5_object_install_phase_replay_summary_and_perfetto() -> None:
     assert packet["object_install"]["observed_phases"][1]["thread_cpu_ns"] is None
     exported = chrome_export(captured)
     phase_event = next(
-        event for event in exported["traceEvents"]
-        if event["name"] == "object_install:file_sync"
+        event for event in exported["traceEvents"] if event["name"] == "object_install:file_sync"
     )
     assert phase_event["ph"] == "i"
     assert phase_event["args"]["elapsed_sum_ns"] == "6"
     assert phase_event["args"]["thread_cpu_ns"] == "9"
     assert any(
-        event["name"] == "object_install:file_sync:thread_cpu_ns"
-        and event["ph"] == "C"
+        event["name"] == "object_install:file_sync:thread_cpu_ns" and event["ph"] == "C"
         for event in exported["traceEvents"]
     )
     assert not any(
@@ -3988,13 +4025,10 @@ def test_v5_object_install_phase_replay_summary_and_perfetto() -> None:
         for event in exported["traceEvents"]
     )
     exported_packet = next(
-        row for row in exported["quantaIndexSummary"]["spans"]
-        if row["span_id"] == "2"
+        row for row in exported["quantaIndexSummary"]["spans"] if row["span_id"] == "2"
     )
     assert exported_packet["object_install"]["unattributed_ns"] == "5"
-    assert exported["quantaIndexSummary"]["object_install_aggregates"][1][
-        "thread_cpu_ns"
-    ] is None
+    assert exported["quantaIndexSummary"]["object_install_aggregates"][1]["thread_cpu_ns"] is None
 
 
 @pytest.mark.parametrize("fault", (None, "incomplete", "absent", "short", "wrong_child"))
@@ -4017,23 +4051,33 @@ def test_managed_install_census_uses_confirmed_distinct_identities(fault: str | 
             if fault in {"short", "incomplete"} and span_id == 3 and kind == "catalog_edge":
                 count += 1
             events.append(
-                {"type": "managed_install_census_batch", "span_id": span_id,
-                 "census_kind": kind, "entries": count}
+                {
+                    "type": "managed_install_census_batch",
+                    "span_id": span_id,
+                    "census_kind": kind,
+                    "entries": count,
+                }
             )
             for object_ref, child_ref in identities:
                 if fault == "wrong_child" and kind == "catalog_registration":
                     child_ref = child
                 events.append(
-                    {"type": "managed_install_census_entry", "span_id": span_id,
-                     "census_kind": kind, "object_ref": object_ref, "child_ref": child_ref}
+                    {
+                        "type": "managed_install_census_entry",
+                        "span_id": span_id,
+                        "census_kind": kind,
+                        "object_ref": object_ref,
+                        "child_ref": child_ref,
+                    }
                 )
         events.append(["e", span_id, "ok", None])
     rows[3:4] = [["e", 0, CAPTURE, 25, event] for event in events]
     for sequence, row in enumerate(rows[1:-1], 1):
         row[1] = sequence
     count = len(rows) - 2
-    rows[-1].update(last_output_seq=count, events_attempted=count, events_accepted=count,
-                    events_written=count)
+    rows[-1].update(
+        last_output_seq=count, events_attempted=count, events_accepted=count, events_written=count
+    )
     if fault == "incomplete":
         rows[-1]["status"] = "partial"
     if fault in {"short", "wrong_child"}:
@@ -4046,8 +4090,11 @@ def test_managed_install_census_uses_confirmed_distinct_identities(fault: str | 
         assert observed == {"status": "unavailable"}
         return
     assert observed == {
-        "status": "complete", "custody_spans": 2,
-        "registered_objects": 1, "registered_edges": 1, "cas_reused_objects": 1
+        "status": "complete",
+        "custody_spans": 2,
+        "registered_objects": 1,
+        "registered_edges": 1,
+        "cas_reused_objects": 1,
     }
 
 
@@ -4137,9 +4184,7 @@ def test_v5_compaction_thread_cpu_keeps_exact_wire_and_rejects_async_stage() -> 
     captured = parse(_v5_bytes(rows))
     assert captured["status"] == "complete"
     assert captured["spans"][2]["parent_span_id"] == 1
-    assert captured["counters"] == [
-        {"span_id": 2, "key": "thread_cpu_ns", "value": 7, "ts_ns": 25}
-    ]
+    assert captured["counters"] == [{"span_id": 2, "key": "thread_cpu_ns", "value": 7, "ts_ns": 25}]
     rows[2][4] = ["b", 2, 1, "semantic_prepare", 3, None]
     with pytest.raises(ValueError, match="thread CPU"):
         parse(_v5_bytes(rows))
@@ -4158,9 +4203,7 @@ def test_v5_compaction_thread_cpu_keeps_exact_wire_and_rejects_async_stage() -> 
         ("sqlite_work", 26),
     ),
 )
-def test_v5_managed_and_sqlite_thread_cpu_replays_exact_counter(
-    stage: str, lane: int
-) -> None:
+def test_v5_managed_and_sqlite_thread_cpu_replays_exact_counter(stage: str, lane: int) -> None:
     rows = _v5_rows()
     rows[2][4] = ["b", 2, 1, stage, lane, None]
     rows[3][4] = ["c", 2, THREAD_CPU_GOLD[0], THREAD_CPU_GOLD[1]]
@@ -4174,9 +4217,7 @@ def test_v5_managed_and_sqlite_thread_cpu_replays_exact_counter(
     assert owner["lane_id"] == lane
     assert owner["counters"] == dict([THREAD_CPU_GOLD])
     viewer = [event for event in chrome_export(captured)["traceEvents"] if event["ph"] == "C"]
-    assert [(event["name"], event["args"][event["name"]]) for event in viewer] == [
-        THREAD_CPU_GOLD
-    ]
+    assert [(event["name"], event["args"][event["name"]]) for event in viewer] == [THREAD_CPU_GOLD]
 
 
 @pytest.mark.parametrize("lane", (9, 10, 22, 27, 28))
@@ -4226,9 +4267,7 @@ def test_v5_inventory_stage_closes_with_thread_cpu_and_exact_parent(stage: str) 
         span["outcome"],
         span["counters"],
     ) == (1, stage, 2, 20, 35, "ok", {"thread_cpu_ns": 7})
-    assert captured["counters"] == [
-        {"span_id": 2, "key": "thread_cpu_ns", "value": 7, "ts_ns": 25}
-    ]
+    assert captured["counters"] == [{"span_id": 2, "key": "thread_cpu_ns", "value": 7, "ts_ns": 25}]
     assert any(
         event["name"] == stage and event["ph"] == "X"
         for event in chrome_export(captured)["traceEvents"]
@@ -4259,8 +4298,7 @@ def test_v5_rejects_malformed_common_kind(wire_kind: object) -> None:
 
 @pytest.mark.parametrize(
     "outcome,error_code",
-    [("ok", 0), ("aborted", 1), ("error", None), ("cancelled", None),
-     ("error", 1 << 32)],
+    [("ok", 0), ("aborted", 1), ("error", None), ("cancelled", None), ("error", 1 << 32)],
 )
 def test_v5_span_end_rejects_outcome_code_mismatch_and_u32_overflow(
     outcome: str, error_code: int | None
@@ -4342,8 +4380,7 @@ def test_v5_rejects_malformed_or_legacy_outer_event(event: object) -> None:
 
 def test_v5_rejects_duplicate_rare_kind_field_and_v4_tuple_mixture() -> None:
     rows = _v5_rows()
-    rows[2] = ["e", 2, CAPTURE, 20, {"type": "phase_identity", "span_id": 1,
-                                      "phase": "full_seal"}]
+    rows[2] = ["e", 2, CAPTURE, 20, {"type": "phase_identity", "span_id": 1, "phase": "full_seal"}]
     raw = _v5_bytes(rows).replace(b'"span_id":1,', b'"span_id":1,"span_id":1,')
     with pytest.raises(ValueError, match="duplicate JSON key"):
         parse(raw)
@@ -4390,15 +4427,15 @@ def test_v5_preserves_full_capture_id_without_numeric_conversion() -> None:
 @pytest.mark.parametrize(
     "row_index,path",
     [
-        (1, (1,)),       # output sequence
-        (1, (3,)),       # timestamp
-        (1, (4, 1)),    # begin span ID
-        (2, (4, 2)),    # parent span ID
-        (2, (4, 4)),    # lane ID
-        (4, (4, 1)),    # end span ID
-        (4, (4, 3)),    # end error code
-        (3, (4, 1)),    # counter span ID
-        (3, (4, 3)),    # counter value
+        (1, (1,)),  # output sequence
+        (1, (3,)),  # timestamp
+        (1, (4, 1)),  # begin span ID
+        (2, (4, 2)),  # parent span ID
+        (2, (4, 4)),  # lane ID
+        (4, (4, 1)),  # end span ID
+        (4, (4, 3)),  # end error code
+        (3, (4, 1)),  # counter span ID
+        (3, (4, 3)),  # counter value
     ],
 )
 @pytest.mark.parametrize("bad", [1.0, True])

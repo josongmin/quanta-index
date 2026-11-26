@@ -118,13 +118,23 @@ def test_native_decision_cli_refuses_output_inside_release_input(tmp_path, monke
     output = release / "decision.json"
     by_family = {item["suite"]["suite_id"]: item for item in families}
     monkeypatch.setattr(
-        ev, "load_native_file_replay",
+        ev,
+        "load_native_file_replay",
         lambda *args, **_options: copy.deepcopy(by_family[args[-1][-1]]),
     )
     args = [
-        "--native-file-cohort", str(manifest), "--policy", str(policy),
-        "--daemon-binary", str(daemon), "--daemon-config", str(config),
-        "--runner-binary", str(runner), "--out", str(output),
+        "--native-file-cohort",
+        str(manifest),
+        "--policy",
+        str(policy),
+        "--daemon-binary",
+        str(daemon),
+        "--daemon-config",
+        str(config),
+        "--runner-binary",
+        str(runner),
+        "--out",
+        str(output),
     ]
     assert decision.main(args) == 2
     assert not output.exists()
@@ -172,7 +182,8 @@ def test_native_decision_cli_forwards_controlled_capture_runs(tmp_path, monkeypa
 
 def test_native_decision_cli_signed_install_requires_controlled_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        decision, "build_native_file_decision",
+        decision,
+        "build_native_file_decision",
         lambda *_args, **_options: pytest.fail("unbound signed decision delegated"),
     )
     assert decision.main(_args(tmp_path) + ["--require-signed-install"]) == 2
@@ -191,14 +202,21 @@ def test_native_decision_cli_forwards_signed_install_requirement(tmp_path, monke
     runs.write_text(json.dumps(["controlled-run-a"]))
     store = tmp_path / "store"
     reviewed = tmp_path / "reviews.json"
-    assert decision.main(
-        _args(tmp_path) + [
-            "--native-execution-root", str(store),
-            "--native-execution-runs", str(runs),
-            "--native-reviewed-labels", str(reviewed),
-            "--require-signed-install",
-        ]
-    ) == 0
+    assert (
+        decision.main(
+            _args(tmp_path)
+            + [
+                "--native-execution-root",
+                str(store),
+                "--native-execution-runs",
+                str(runs),
+                "--native-reviewed-labels",
+                str(reviewed),
+                "--require-signed-install",
+            ]
+        )
+        == 0
+    )
     assert observed[0]["require_signed_install"] is True
     assert observed[0]["execution_evidence_root"] == store
     assert observed[0]["execution_run_ids"] == ["controlled-run-a"]
@@ -206,7 +224,8 @@ def test_native_decision_cli_forwards_signed_install_requirement(tmp_path, monke
 
 
 def test_native_decision_cli_forwards_reviewed_labels_separately_from_capture_cohort(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     reviewed = tmp_path / "reviews.json"
     observed = []
@@ -231,7 +250,7 @@ def test_native_decision_cli_accepts_family_configs_without_a_global_flag(tmp_pa
     monkeypatch.setattr(decision, "build_native_file_decision", replay)
     args = _args(tmp_path)
     index = args.index("--daemon-config")
-    del args[index:index + 2]
+    del args[index : index + 2]
     assert decision.main(args) == 0
 
 

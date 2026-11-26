@@ -103,7 +103,9 @@ def collect_pytest_inventory(selectors: list[str], output: Path) -> None:
             self.nodeids = [item.nodeid for item in session.items]
 
     collector = Collector()
-    code = pytest.main(["--collect-only", "-p", "no:cacheprovider", "-q", *selectors], plugins=[collector])
+    code = pytest.main(
+        ["--collect-only", "-p", "no:cacheprovider", "-q", *selectors], plugins=[collector]
+    )
     if code != pytest.ExitCode.OK or not collector.nodeids:
         raise ExecutionResultError(f"pytest collection failed or selected no tests: {code}")
     identities = sorted(pytest_junit_identity(nodeid) for nodeid in collector.nodeids)
@@ -142,11 +144,19 @@ def collect_pytest_inventory(selectors: list[str], output: Path) -> None:
 
 
 def _collect_frozen_pytest(
-    checkout: Path, selectors: list[str], output: Path, env: dict[str, str],
+    checkout: Path,
+    selectors: list[str],
+    output: Path,
+    env: dict[str, str],
 ) -> None:
     command = [
-        sys.executable, "-m", "tools.ci.proof_execution_result", "collect-pytest",
-        "--output", str(output), *selectors,
+        sys.executable,
+        "-m",
+        "tools.ci.proof_execution_result",
+        "collect-pytest",
+        "--output",
+        str(output),
+        *selectors,
     ]
     completed = subprocess.run(command, cwd=checkout, env=env, check=False)
     if completed.returncode != 0:
@@ -185,7 +195,9 @@ def run_p12a_pytest(selectors: list[str], raw_dir: Path | None) -> int:
             require_run_source(ROOT, proof, source, phase="pytest collection", outputs=outputs)
             completed = subprocess.run(
                 [*command, "-p", "no:cacheprovider", f"--junitxml={junit}"],
-                cwd=checkout.root, env=env, check=False,
+                cwd=checkout.root,
+                env=env,
+                check=False,
             )
             if completed.returncode != 0:
                 return completed.returncode
@@ -199,7 +211,9 @@ def run_p12a_pytest(selectors: list[str], raw_dir: Path | None) -> int:
             if RawFile.capture(inventory) != collected or RawFile.capture(junit) != observed:
                 raise ExecutionResultError("pytest evidence changed during verification")
             write_run_binding(
-                binding, source, format="pytest-junit",
+                binding,
+                source,
+                format="pytest-junit",
                 digests={
                     "events": observed.sha256.removeprefix("sha256:"),
                     "inventory": collected.sha256.removeprefix("sha256:"),
@@ -272,7 +286,9 @@ def _bound_artifact_bytes(root: Path, artifact: dict[str, str]) -> bytes:
 
 
 def derive_test_result(
-    root: Path, result: Any, artifacts: list[dict[str, str]],
+    root: Path,
+    result: Any,
+    artifacts: list[dict[str, str]],
     *,
     daemon_observations: dict[str, str] | None = None,
     daemon_tests: dict[str, int] | None = None,
@@ -297,13 +313,14 @@ def derive_test_result(
     names: set[tuple[str, str]] = set()
     used_paths: set[str] = set()
     missing_lib_cases = {
-        (package, case)
-        for package, cases in (required_lib_cases or {}).items()
-        for case in cases
+        (package, case) for package, cases in (required_lib_cases or {}).items() for case in cases
     }
     for run in result["runs"]:
         required = {"format", "events", "inventory"}
-        if not isinstance(run, dict) or set(run) - {"daemon_observations", "run_binding"} != required:
+        if (
+            not isinstance(run, dict)
+            or set(run) - {"daemon_observations", "run_binding"} != required
+        ):
             raise ExecutionResultError("execution run has invalid fields")
         if run["format"] not in {"nextest-jsonl", "pytest-junit"}:
             raise ExecutionResultError("execution run format is not allowlisted")
@@ -322,10 +339,14 @@ def derive_test_result(
         if len(set(paths)) != len(paths) or used_paths.intersection(paths):
             raise ExecutionResultError("duplicate execution evidence")
         used_paths.update(paths)
-        raw = {kind: _bound_artifact_bytes(root, by_source[path]) for kind, path in references.items()}
+        raw = {
+            kind: _bound_artifact_bytes(root, by_source[path]) for kind, path in references.items()
+        }
         if run_source is not None:
             verify_run_binding(
-                raw["run_binding"], run_source, format=run["format"],
+                raw["run_binding"],
+                run_source,
+                format=run["format"],
                 digests={
                     key: by_source[path]["sha256"]
                     for key, path in references.items()
@@ -370,7 +391,9 @@ def derive_test_result(
                 nonce = validate_nonce(batch["nonce"])
                 for test in observed_names:
                     daemon_observations[test] = validate_witness(
-                        batch["observations"][test], test=test, nonce=nonce,
+                        batch["observations"][test],
+                        test=test,
+                        nonce=nonce,
                         launches=(daemon_tests or {})[test],
                         provider_approval_sha256=provider_approval_sha256,
                     )

@@ -56,21 +56,32 @@ R5_PROOF = "p11-cross-repo-cutover"
 # These are historical format definitions and must remain immutable.
 _P04_PREFIX = "quanta-index-searchd-runtime::process_readiness_owner_v1$"
 _P04_V1 = {
-    _P04_PREFIX + "legacy_read_view_domains::sealed_track_read_view_scenarios_share_one_fixture":
-        ("p04-read-view-domains.json", 1),
-    _P04_PREFIX + "legacy_read_view_selection::retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3":
-        ("p04-read-view-selection.json", 1),
+    _P04_PREFIX + "legacy_read_view_domains::sealed_track_read_view_scenarios_share_one_fixture": (
+        "p04-read-view-domains.json",
+        1,
+    ),
+    _P04_PREFIX
+    + "legacy_read_view_selection::retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3": (
+        "p04-read-view-selection.json",
+        1,
+    ),
 }
 R5Case = tuple[str, str, str, str, str, str]
 _R5_V1: tuple[R5Case, ...] = (
     (
-        "caller", "quanta-runtime", "index-sdk-ingress,retrieval-authority-contract-surface",
-        "index_sdk_ingress_publish_contract_test", "test",
+        "caller",
+        "quanta-runtime",
+        "index-sdk-ingress,retrieval-authority-contract-surface",
+        "index_sdk_ingress_publish_contract_test",
+        "test",
         "index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1",
     ),
     (
-        "kernel", "quanta-runtime-retrieval-kernel", "index-sdk-ingress-surface",
-        "quanta_runtime_retrieval_kernel", "lib",
+        "kernel",
+        "quanta-runtime-retrieval-kernel",
+        "index-sdk-ingress-surface",
+        "quanta_runtime_retrieval_kernel",
+        "lib",
         "index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2",
     ),
 )
@@ -105,7 +116,9 @@ def p04_witness_specs(
 
 
 def _witness_rows(
-    rows: list, label: str, allowed_launches: tuple[int, ...] | range,
+    rows: list,
+    label: str,
+    allowed_launches: tuple[int, ...] | range,
 ) -> dict[str, tuple[str, int]]:
     files = {}
     for row in rows:
@@ -127,7 +140,9 @@ def _witness_rows(
 
 
 def daemon_witness_specs(
-    proof: dict[str, Any], *, allow_legacy: bool = False,
+    proof: dict[str, Any],
+    *,
+    allow_legacy: bool = False,
 ) -> dict[str, tuple[str, int]]:
     proof_id = proof["id"]
     if proof_id == P04_PROOF:
@@ -267,9 +282,7 @@ def r5_cases(proof: dict[str, Any], *, allow_legacy: bool = False) -> tuple[R5Ca
 def read_witness(directory: Path, filename: str) -> bytes:
     parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        descriptor = os.open(
-            filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
-        )
+        descriptor = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
         with os.fdopen(descriptor, "rb") as stream:
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 raise ValueError(f"daemon witness is not a regular file: {filename}")
@@ -288,7 +301,12 @@ def validate_nonce(value: object) -> str:
 
 
 def validate_witness(
-    row: object, *, test: str, nonce: str, launches: int, provider_approval_sha256: str | None = None,
+    row: object,
+    *,
+    test: str,
+    nonce: str,
+    launches: int,
+    provider_approval_sha256: str | None = None,
 ) -> str:
     fields = {"schema_version", "test", "nonce", "executables"}
     if provider_approval_sha256 is not None:
@@ -307,11 +325,15 @@ def validate_witness(
     if (
         not isinstance(digests, list)
         or len(digests) != launches
-        or any(not isinstance(item, str) or re.fullmatch(r"[0-9a-f]{64}", item) is None
-               for item in digests)
+        or any(
+            not isinstance(item, str) or re.fullmatch(r"[0-9a-f]{64}", item) is None
+            for item in digests
+        )
         or len(set(digests)) != 1
     ):
-        raise ValueError(f"daemon witness must bind {launches} launch(es) of one executable: {test}")
+        raise ValueError(
+            f"daemon witness must bind {launches} launch(es) of one executable: {test}"
+        )
     return digests[0]
 
 

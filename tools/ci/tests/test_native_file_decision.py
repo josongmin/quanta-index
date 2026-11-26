@@ -319,7 +319,10 @@ def test_native_quality_reuses_release_replay_only_within_one_decision(
     monkeypatch.setattr(decision, "verify_controlled_capture_runs", verify_controlled)
     for count in (1, 2):
         result = decision.build_native_file_decision(
-            manifest, policy, *binaries, execution_evidence_root=tmp_path,
+            manifest,
+            policy,
+            *binaries,
+            execution_evidence_root=tmp_path,
             execution_run_ids=["fixture"],
         )
         assert result["status"] == "quality_admit"
@@ -344,7 +347,10 @@ def test_native_quality_resolves_manifest_location_before_relative_release_input
 
 @pytest.mark.parametrize("phase", ["family", "source_recheck"])
 def test_native_quality_rejects_cohort_manifest_retargeted_during_replay(
-    tmp_path, monkeypatch, synthetic_replay_sources, phase,
+    tmp_path,
+    monkeypatch,
+    synthetic_replay_sources,
+    phase,
 ):
     manifest, policy, binaries, families = _case(tmp_path)
     alias = tmp_path / "cohort-alias.json"
@@ -379,7 +385,9 @@ def test_native_quality_rejects_cohort_manifest_retargeted_during_replay(
 
 
 def test_native_quality_keeps_legacy_config_alias_pinned_during_replay(
-    tmp_path, monkeypatch, synthetic_replay_sources,
+    tmp_path,
+    monkeypatch,
+    synthetic_replay_sources,
 ):
     manifest, policy, binaries, families = _case(tmp_path)
     daemon, config, runner = binaries
@@ -402,7 +410,9 @@ def test_native_quality_keeps_legacy_config_alias_pinned_during_replay(
 
 
 def test_native_quality_keeps_each_family_capture_path_pinned(
-    tmp_path, monkeypatch, synthetic_replay_sources,
+    tmp_path,
+    monkeypatch,
+    synthetic_replay_sources,
 ):
     manifest, policy, binaries, families = _case(tmp_path)
     entries = json.loads(manifest.read_bytes())["families"]
@@ -445,7 +455,9 @@ def test_native_quality_keeps_each_family_capture_path_pinned(
     ],
 )
 def test_native_quality_refuses_or_rejects_broken_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
     synthetic_replay_sources: None,
 ) -> None:
     manifest, policy, binaries, families = _case(tmp_path)
@@ -525,12 +537,20 @@ def test_controlled_capture_refuses_nonstring_run_id(tmp_path: Path) -> None:
 
     with pytest.raises(decision.NativeDecisionError, match="controlled run inventory"):
         decision.verify_controlled_capture_runs(
-            manifest, policy, daemon, config, runner, tmp_path, run_ids,
+            manifest,
+            policy,
+            daemon,
+            config,
+            runner,
+            tmp_path,
+            run_ids,
         )
 
 
 def test_native_quality_refuses_input_changed_during_replay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, synthetic_replay_sources,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    synthetic_replay_sources,
 ) -> None:
     manifest, policy, binaries, families = _case(tmp_path)
     by_family = {item["suite"]["suite_id"]: item for item in families}
@@ -596,7 +616,9 @@ def test_native_replay_rejects_changed_length_before_reading_payload(tmp_path, m
 
     monkeypatch.setattr(evidence, "_consume_regular_file", consume_without_read)
     with pytest.raises(ValueError, match="bytes differ.*commitment"):
-        ev._load_native_file_inputs(tmp_path, suite, pack, capture, **{f"expected_{role}": expected})
+        ev._load_native_file_inputs(
+            tmp_path, suite, pack, capture, **{f"expected_{role}": expected}
+        )
 
 
 @pytest.mark.parametrize("changed", ["source_universe", "source_binding"])
@@ -616,8 +638,15 @@ def test_native_source_reader_binds_bytes_consumed_during_replay(
     try:
         with pytest.raises(ValueError, match="bytes differ from frozen commitment"):
             composite_source_binding.verify(
-                None, None, None, None, universe, binding,
-                tmp_path, tmp_path, "family-0",
+                None,
+                None,
+                None,
+                None,
+                universe,
+                binding,
+                tmp_path,
+                tmp_path,
+                "family-0",
                 **{f"expected_{changed}": expected},
             )
     finally:
@@ -635,10 +664,14 @@ def test_native_reviewed_labels_reader_binds_bytes_consumed_during_replay(
     try:
         with pytest.raises(ValueError, match="reviewed labels bytes differ"):
             ev.load_native_file_replay(
-                tmp_path, tmp_path / "suite.json", tmp_path / "pack.json",
-                tmp_path / "capture.json", reviewed_labels=receipt,
+                tmp_path,
+                tmp_path / "suite.json",
+                tmp_path / "pack.json",
+                tmp_path / "capture.json",
+                reviewed_labels=receipt,
                 expected_reviewed_labels=(
-                    "sha256:" + hashlib.sha256(original).hexdigest(), len(original),
+                    "sha256:" + hashlib.sha256(original).hexdigest(),
+                    len(original),
                 ),
             )
     finally:
@@ -648,7 +681,9 @@ def test_native_reviewed_labels_reader_binds_bytes_consumed_during_replay(
 
 @pytest.mark.parametrize("change_on_disk", [False, True])
 def test_controlled_capture_must_match_scored_bytes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, synthetic_replay_sources,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    synthetic_replay_sources,
     change_on_disk: bool,
 ) -> None:
     manifest, policy, binaries, families = _case(tmp_path)
@@ -682,7 +717,9 @@ def test_controlled_capture_must_match_scored_bytes(
 
 @pytest.mark.parametrize("mutation", ["base_content", "target_membership", "target_mode"])
 def test_native_quality_refuses_release_tree_changed_during_replay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, synthetic_replay_sources,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    synthetic_replay_sources,
     mutation: str,
 ) -> None:
     manifest, policy, binaries, families = _case(tmp_path)
@@ -727,11 +764,10 @@ def test_native_quality_rechecks_git_head_after_aggregation(
     policy.write_bytes(ev.canonical(frozen_policy))
     for item in by_family.values():
         item["capture"]["runtime_binding"]["decision_policy_sha256"] = _sha(policy)
-        item["report"]["capture_commitment_sha256"] = ev.digest(
-            ev.canonical(item["capture"])
-        )
+        item["report"]["capture_commitment_sha256"] = ev.digest(ev.canonical(item["capture"]))
     monkeypatch.setattr(
-        ev, "load_native_file_replay",
+        ev,
+        "load_native_file_replay",
         lambda *args, **_options: copy.deepcopy(by_family[args[-1][-1]]),
     )
     original_aggregate = decision.native_file_evidence.repository_cluster_ci_from_native_families
@@ -743,7 +779,9 @@ def test_native_quality_rechecks_git_head_after_aggregation(
         return result
 
     monkeypatch.setattr(
-        decision.native_file_evidence, "repository_cluster_ci_from_native_families", aggregate,
+        decision.native_file_evidence,
+        "repository_cluster_ci_from_native_families",
+        aggregate,
     )
     with pytest.raises(ev.EvidenceError, match="HEAD|checkout"):
         decision.build_native_file_decision(manifest, policy, *binaries)
@@ -813,7 +851,10 @@ def test_native_quality_refuses_fifo_binary_or_config_before_replay(tmp_path, mo
 
 @pytest.mark.parametrize("changed_input", ["receipt_bytes", "receipt_path", "review_manifest_path"])
 def test_native_quality_replays_exact_review_roster_and_checks_receipt_freshness(
-    tmp_path, monkeypatch, synthetic_replay_sources, changed_input,
+    tmp_path,
+    monkeypatch,
+    synthetic_replay_sources,
+    changed_input,
 ):
     manifest, policy, binaries, families = _case(tmp_path)
     by_family = {item["suite"]["suite_id"]: item for item in families}
@@ -845,7 +886,9 @@ def test_native_quality_replays_exact_review_roster_and_checks_receipt_freshness
         return copy.deepcopy(by_family[family])
 
     monkeypatch.setattr(ev, "load_native_file_replay", replay)
-    result = decision.build_native_file_decision(manifest, policy, *binaries, reviewed_labels_path=reviewed)
+    result = decision.build_native_file_decision(
+        manifest, policy, *binaries, reviewed_labels_path=reviewed
+    )
     assert result["reviewed_labels_manifest_sha256"] == _sha(reviewed)
     assert observed == pinned_paths
     assert manifest.read_bytes() == original_manifest
@@ -860,12 +903,17 @@ def test_native_quality_replays_exact_review_roster_and_checks_receipt_freshness
 
     monkeypatch.setattr(ev, "load_native_file_replay", changed)
     with pytest.raises(ValueError, match="inputs changed during replay"):
-        decision.build_native_file_decision(manifest, policy, *binaries, reviewed_labels_path=reviewed)
+        decision.build_native_file_decision(
+            manifest, policy, *binaries, reviewed_labels_path=reviewed
+        )
 
 
 @pytest.mark.parametrize("via_alias", [False, True])
 def test_native_quality_rejects_review_receipt_reusing_a_frozen_policy_path(
-    tmp_path, monkeypatch, synthetic_replay_sources, via_alias,
+    tmp_path,
+    monkeypatch,
+    synthetic_replay_sources,
+    via_alias,
 ):
     manifest, policy, binaries, families = _case(tmp_path)
     declared_policy = policy
@@ -891,8 +939,12 @@ def test_native_quality_rejects_review_receipt_reusing_a_frozen_policy_path(
     monkeypatch.setattr(
         ev, "load_native_file_replay", lambda *args, **_: copy.deepcopy(by_family[args[-1][-1]])
     )
-    with pytest.raises(decision.NativeDecisionError, match="input path is reused with different bytes"):
-        decision.build_native_file_decision(manifest, declared_policy, *binaries, reviewed_labels_path=reviewed)
+    with pytest.raises(
+        decision.NativeDecisionError, match="input path is reused with different bytes"
+    ):
+        decision.build_native_file_decision(
+            manifest, declared_policy, *binaries, reviewed_labels_path=reviewed
+        )
 
 
 def test_native_quality_binds_independent_family_configs_to_one_recipe(
@@ -905,14 +957,21 @@ def test_native_quality_binds_independent_family_configs_to_one_recipe(
     for index, (entry, replay) in enumerate(zip(cohort["families"], families, strict=True)):
         path = tmp_path / f"daemon-{index}.json"
         socket = str(tmp_path / f"native-{index}.sock")
-        path.write_bytes(ev.canonical({
-            "socket_path": socket, "state_root": str(tmp_path / f"state-{index}"),
-            "work_limits": {"reads": 1_000_000},
-        }))
+        path.write_bytes(
+            ev.canonical(
+                {
+                    "socket_path": socket,
+                    "state_root": str(tmp_path / f"state-{index}"),
+                    "work_limits": {"reads": 1_000_000},
+                }
+            )
+        )
         config_paths.append(path)
         entry.update(daemon_config=path.name, daemon_config_sha256=_sha(path))
         replay["capture"]["runtime_binding"].update(
-            config_path=str(path), socket_path=socket, daemon_config_sha256=_sha(path),
+            config_path=str(path),
+            socket_path=socket,
+            daemon_config_sha256=_sha(path),
         )
     manifest.write_bytes(ev.canonical(cohort))
     policy_value = json.loads(policy.read_bytes())
@@ -956,13 +1015,18 @@ def test_native_quality_binds_independent_family_configs_to_one_recipe(
     manifest.write_bytes(ev.canonical(cohort))
     policy_value["cohort_manifest_sha256"] = _sha(manifest)
     policy.write_bytes(ev.canonical(policy_value))
-    with pytest.raises(ValueError, match="family daemon configs differ beyond state root and socket"):
+    with pytest.raises(
+        ValueError, match="family daemon configs differ beyond state root and socket"
+    ):
         decision.build_native_file_decision(manifest, policy, daemon, None, runner)
 
 
 @pytest.mark.parametrize("role", ["selection_path", "daemon_config"])
 def test_native_quality_refuses_same_bytes_runtime_path_replacement_during_replay(
-    tmp_path, monkeypatch, role, synthetic_replay_sources,
+    tmp_path,
+    monkeypatch,
+    role,
+    synthetic_replay_sources,
 ):
     manifest, policy, binaries, families = _case(tmp_path)
     _, _, selected = _selected_native(tmp_path)
@@ -976,7 +1040,11 @@ def test_native_quality_refuses_same_bytes_runtime_path_replacement_during_repla
         config.chmod(0o600)
         selection = tmp_path / f"selected-{index}.json"
         current = launcher.proposed_native_selection(
-            selected.binary, state_root, config, {}, selected.native_boot_receipt,
+            selected.binary,
+            state_root,
+            config,
+            {},
+            selected.native_boot_receipt,
         )
         selection.write_bytes(ev.canonical(current.to_wire()))
         selection.chmod(0o600)
@@ -1010,9 +1078,7 @@ def test_native_quality_refuses_same_bytes_runtime_path_replacement_during_repla
     policy.write_bytes(ev.canonical(frozen_policy))
     for replay in families:
         replay["capture"]["runtime_binding"]["decision_policy_sha256"] = _sha(policy)
-        replay["report"]["capture_commitment_sha256"] = ev.digest(
-            ev.canonical(replay["capture"])
-        )
+        replay["report"]["capture_commitment_sha256"] = ev.digest(ev.canonical(replay["capture"]))
     by_family = {item["suite"]["suite_id"]: item for item in families}
     _, _, runner = binaries
     monkeypatch.setattr(ev, "load_native_file_replay", lambda *args, **_: by_family[args[-1][-1]])
@@ -1041,29 +1107,49 @@ def test_native_quality_refuses_same_bytes_runtime_path_replacement_during_repla
 
 
 def test_signed_native_quality_requires_controlled_v2_before_scoring(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manifest, policy, binaries, _ = _case(tmp_path)
     monkeypatch.setattr(
-        ev, "load_native_file_replay", lambda *_, **__: pytest.fail("unsigned family scored"),
+        ev,
+        "load_native_file_replay",
+        lambda *_, **__: pytest.fail("unsigned family scored"),
     )
     with pytest.raises(decision.NativeDecisionError, match="controlled execution root and run IDs"):
         decision.build_native_file_decision(
-            manifest, policy, *binaries, require_signed_install=True,
+            manifest,
+            policy,
+            *binaries,
+            require_signed_install=True,
         )
     with pytest.raises(decision.NativeDecisionError, match="v2 selected cohort"):
         decision.build_native_file_decision(
-            manifest, policy, *binaries, require_signed_install=True,
-            execution_evidence_root=tmp_path, execution_run_ids=["unused"],
+            manifest,
+            policy,
+            *binaries,
+            require_signed_install=True,
+            execution_evidence_root=tmp_path,
+            execution_run_ids=["unused"],
         )
 
 
-@pytest.mark.parametrize("drift", [
-    None, "generation", "other_selection", "missing_reviewed_labels", "standalone_receipt",
-    "review_digest", "review_changed_after_replay",
-])
+@pytest.mark.parametrize(
+    "drift",
+    [
+        None,
+        "generation",
+        "other_selection",
+        "missing_reviewed_labels",
+        "standalone_receipt",
+        "review_digest",
+        "review_changed_after_replay",
+    ],
+)
 def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact_scope(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, synthetic_replay_sources,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    synthetic_replay_sources,
     drift: str | None,
 ) -> None:
     import importlib
@@ -1085,18 +1171,26 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
         config.chmod(0o600)
         selection = tmp_path / f"signed-selection-{index}.json"
         current = launcher.proposed_native_selection(
-            selected.binary, state_root, config, {}, selected.native_boot_receipt,
+            selected.binary,
+            state_root,
+            config,
+            {},
+            selected.native_boot_receipt,
         )
         selection.write_bytes(ev.canonical(current.to_wire()))
         selection.chmod(0o600)
         entry.update(
-            daemon_config=config.name, daemon_config_sha256=_sha(config),
-            selection_path=selection.name, selection_sha256=_sha(selection),
+            daemon_config=config.name,
+            daemon_config_sha256=_sha(config),
+            selection_path=selection.name,
+            selection_sha256=_sha(selection),
         )
         receipt = current.native_boot_receipt
         replay["capture"]["runtime_binding"].update(
-            daemon_config_sha256=_sha(config), socket_path=socket,
-            config_path=str(config), command="serve-native",
+            daemon_config_sha256=_sha(config),
+            socket_path=socket,
+            config_path=str(config),
+            command="serve-native",
             boot_identity={
                 "root_nonce_hex": receipt.root_nonce_hex,
                 "manifest_operation": json.loads(receipt.manifest_operation_json),
@@ -1120,21 +1214,30 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
         review_paths[family] = path
         inputs = {}
         for role in (
-            "contexts", "control_pools", "review_1", "review_2", "adjudication", "task_contracts",
+            "contexts",
+            "control_pools",
+            "review_1",
+            "review_2",
+            "adjudication",
+            "task_contracts",
         ):
             source = tmp_path / f"signed-review-{index}-{role}.json"
             source.write_bytes(ev.canonical({"family": family, "role": role}))
             inputs[role] = {"path": source.name, "sha256": _sha(source)}
         if index == 0 and drift == "review_digest":
             inputs["review_1"]["sha256"] = "0" * 64
-        path.write_bytes(ev.canonical(
-            {"status": "adjudicated_file_labels_unqualified", "qualified": False}
-            if index == 0 and drift == "standalone_receipt" else
-            {"schema_version": "native-file-review-source/v1", "seed": index, "inputs": inputs}
-        ))
-    reviewed.write_bytes(ev.canonical({
-        family: path.name for family, path in review_paths.items()
-    }))
+        path.write_bytes(
+            ev.canonical(
+                {"status": "adjudicated_file_labels_unqualified", "qualified": False}
+                if index == 0 and drift == "standalone_receipt"
+                else {
+                    "schema_version": "native-file-review-source/v1",
+                    "seed": index,
+                    "inputs": inputs,
+                }
+            )
+        )
+    reviewed.write_bytes(ev.canonical({family: path.name for family, path in review_paths.items()}))
     verified = False
     identity = {
         "active_generation_sha256": "a" * 64,
@@ -1152,8 +1255,11 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
     labels_replayed = []
 
     def verify(
-        *_args, require_signed_install, signed_install_identity,
-        signed_install_recheck, **_options,
+        *_args,
+        require_signed_install,
+        signed_install_identity,
+        signed_install_recheck,
+        **_options,
     ):
         nonlocal verified
         assert require_signed_install is True
@@ -1188,7 +1294,7 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
             drifted = True
         if drift == "review_changed_after_replay":
             original = tmp_path / f"{review_paths[family].stem}-review_1.json"
-            original.write_bytes(br'{"changed":true}')
+            original.write_bytes(rb'{"changed":true}')
         return copy.deepcopy(by_family[family])
 
     def check_install(actual_plan, actual_selected, policy_sha):
@@ -1221,25 +1327,43 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
     if drift in entry_errors:
         with pytest.raises(decision.NativeDecisionError, match=entry_errors[drift]):
             decision.build_native_file_decision(
-                manifest, policy, selected.binary, None, binaries[2], **options,
+                manifest,
+                policy,
+                selected.binary,
+                None,
+                binaries[2],
+                **options,
             )
         assert not verified
         return
     expected_errors = {
         "generation": (EvidenceError, "active generation changed"),
         "other_selection": (decision.NativeDecisionError, "selection digest changed"),
-        "review_changed_after_replay": (decision.NativeDecisionError, "inputs changed during replay"),
+        "review_changed_after_replay": (
+            decision.NativeDecisionError,
+            "inputs changed during replay",
+        ),
     }
     if drift is not None:
         error, message = expected_errors[drift]
         with pytest.raises(error, match=message):
             decision.build_native_file_decision(
-                manifest, policy, selected.binary, None, binaries[2], **options,
+                manifest,
+                policy,
+                selected.binary,
+                None,
+                binaries[2],
+                **options,
             )
         assert checked == [True]
         return
     result = decision.build_native_file_decision(
-        manifest, policy, selected.binary, None, binaries[2], **options,
+        manifest,
+        policy,
+        selected.binary,
+        None,
+        binaries[2],
+        **options,
     )
     assert checked == [True]
     assert labels_replayed == list(by_family)
@@ -1259,7 +1383,9 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
     ["active_generation_sha256", "release_manifest_sha256", "q_elf_sha256"],
 )
 def test_signed_native_controlled_replay_refuses_mixed_installed_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed_key: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changed_key: str,
 ) -> None:
     import importlib
 
@@ -1273,15 +1399,19 @@ def test_signed_native_controlled_replay_refuses_mixed_installed_identity(
     config = tmp_path / "config.json"
     entries = [{"family_id": f"family-{index}"} for index in range(2)]
     monkeypatch.setattr(
-        ev, "_native_cohort_manifest",
+        ev,
+        "_native_cohort_manifest",
         lambda _path: (b"fixture", {"schema_version": 2, "families": entries}),
     )
     monkeypatch.setattr(bridge, "source_identity", lambda *_args: {"closure_digest": "fixture"})
     monkeypatch.setattr(evidence, "file_digest", lambda _path: ("sha256:lock", 4))
     monkeypatch.setattr(
-        decision, "_cohort_runtime",
+        decision,
+        "_cohort_runtime",
         lambda _manifest, family, _config: (
-            config, "config-sha", (tmp_path / f"selection-{family['family_id']}", "selection-sha")
+            config,
+            "config-sha",
+            (tmp_path / f"selection-{family['family_id']}", "selection-sha"),
         ),
     )
 
@@ -1291,7 +1421,8 @@ def test_signed_native_controlled_replay_refuses_mixed_installed_identity(
 
     monkeypatch.setattr(evidence, "RunStore", Store)
     monkeypatch.setattr(
-        capture, "load_published_run",
+        capture,
+        "load_published_run",
         lambda _store, run_id, **_options: {
             "case_id": run_id,
             "source": {"closure_digest": "fixture"},
@@ -1299,7 +1430,9 @@ def test_signed_native_controlled_replay_refuses_mixed_installed_identity(
         },
     )
     monkeypatch.setattr(
-        capture, "_archived_raw", lambda _store, record, name: record["case_id"],
+        capture,
+        "_archived_raw",
+        lambda _store, record, name: record["case_id"],
     )
     identities = [
         {
@@ -1337,7 +1470,12 @@ def test_signed_native_controlled_replay_refuses_mixed_installed_identity(
     monkeypatch.setattr(capture, "replay_run", replay)
     with pytest.raises(decision.NativeDecisionError, match="differs across cohort families"):
         decision.verify_controlled_capture_runs(
-            manifest, policy, daemon, config, runner, tmp_path,
+            manifest,
+            policy,
+            daemon,
+            config,
+            runner,
+            tmp_path,
             [entry["family_id"] for entry in entries],
             require_signed_install=True,
         )

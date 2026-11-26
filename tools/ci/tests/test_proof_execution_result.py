@@ -158,9 +158,13 @@ def test_run_p12a_emits_complete_junit_pair(
     monkeypatch.setattr(MODULE.subprocess, "run", run)
     assert MODULE.run_p12a_pytest([selector], raw_dir) == 0
     record = json.loads((raw_dir / "p12a-run-binding.json").read_bytes())
-    assert record["source"]["head"] == subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], text=True,
-    ).strip()
+    assert (
+        record["source"]["head"]
+        == subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            text=True,
+        ).strip()
+    )
     assert record["cargo_lock_sha256"] is None
     assert record["daemon_sha256"] is None
     assert record["artifacts"] == {
@@ -180,7 +184,11 @@ def test_run_p12a_refuses_same_head_source_drift(tmp_path, monkeypatch, during):
     body = root / selector
     body.parent.mkdir(parents=True)
     transient = during == "transient execution"
-    original_body = "def test_case():\n    assert False\n" if transient else "def test_case():\n    assert True\n"
+    original_body = (
+        "def test_case():\n    assert False\n"
+        if transient
+        else "def test_case():\n    assert True\n"
+    )
     body.write_text(original_body)
     subprocess.run(["git", "add", selector], cwd=root, check=True)
     subprocess.run(["git", "commit", "-qm", "Track tested body"], cwd=root, check=True)
@@ -226,9 +234,7 @@ def test_run_p12a_refuses_same_head_source_drift(tmp_path, monkeypatch, during):
         assert not (raw / "p12a-junit.xml").exists()
 
 
-def _nextest_fixture(
-    root: Path, *, kind: str = "test"
-) -> tuple[dict, list[dict[str, str]], Path]:
+def _nextest_fixture(root: Path, *, kind: str = "test") -> tuple[dict, list[dict[str, str]], Path]:
     raw = root / "raw"
     raw.mkdir()
     events = raw / "events.jsonl"
@@ -308,15 +314,23 @@ def test_bound_nextest_refuses_substituted_archived_input(tmp_path: Path, substi
     daemon_sha256 = "4" * 64
     binding = "raw/run-binding.json"
     write_run_binding(
-        tmp_path / binding, original, format=run["format"],
-        digests=dict(zip(("events", "inventory"), (row["sha256"] for row in artifacts), strict=True)),
+        tmp_path / binding,
+        original,
+        format=run["format"],
+        digests=dict(
+            zip(("events", "inventory"), (row["sha256"] for row in artifacts), strict=True)
+        ),
         daemon_sha256=daemon_sha256,
     )
     run["run_binding"] = binding
     artifacts.append({"path": binding, "source_path": binding})
     _bind_artifact_digests(tmp_path, artifacts)
     counts, _ = derive_test_result(
-        tmp_path, result, artifacts, run_source=original, daemon_sha256=daemon_sha256,
+        tmp_path,
+        result,
+        artifacts,
+        run_source=original,
+        daemon_sha256=daemon_sha256,
     )
     assert counts["passed"] == 1
 
@@ -330,7 +344,11 @@ def test_bound_nextest_refuses_substituted_archived_input(tmp_path: Path, substi
         _bind_artifact_digests(tmp_path, artifacts)
     with pytest.raises(ValueError, match="captured execution source differs"):
         derive_test_result(
-            tmp_path, result, artifacts, run_source=source, daemon_sha256=daemon_sha256,
+            tmp_path,
+            result,
+            artifacts,
+            run_source=source,
+            daemon_sha256=daemon_sha256,
         )
 
 
@@ -344,15 +362,28 @@ def test_p04_archive_binds_process_observations_to_integration_target(
     nonce = "a" * 32
     run = result["runs"][0]
     run["daemon_observations"] = "raw/daemon-observations.json"
-    (tmp_path / run["daemon_observations"]).write_text(json.dumps({
-        "nonce": nonce,
-        "events_sha256": hashlib.sha256(events.read_bytes()).hexdigest(),
-        "inventory_sha256": hashlib.sha256((tmp_path / run["inventory"]).read_bytes()).hexdigest(),
-        "observations": {
-            name: {"schema_version": 1, "test": name, "nonce": nonce, "executables": [digest]},
-        },
-    }))
-    artifacts.append({"source_path": run["daemon_observations"], "path": run["daemon_observations"]})
+    (tmp_path / run["daemon_observations"]).write_text(
+        json.dumps(
+            {
+                "nonce": nonce,
+                "events_sha256": hashlib.sha256(events.read_bytes()).hexdigest(),
+                "inventory_sha256": hashlib.sha256(
+                    (tmp_path / run["inventory"]).read_bytes()
+                ).hexdigest(),
+                "observations": {
+                    name: {
+                        "schema_version": 1,
+                        "test": name,
+                        "nonce": nonce,
+                        "executables": [digest],
+                    },
+                },
+            }
+        )
+    )
+    artifacts.append(
+        {"source_path": run["daemon_observations"], "path": run["daemon_observations"]}
+    )
     _bind_artifact_digests(tmp_path, artifacts)
     observed: dict[str, str] = {}
     arguments = {"daemon_observations": observed, "daemon_tests": {name: 1}}

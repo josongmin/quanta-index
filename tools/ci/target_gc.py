@@ -768,7 +768,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--no-artifacts", action="store_true")
     parser.add_argument("--no-incremental", action="store_true")
     parser.add_argument(
-        "--incremental-only", metavar="LANE",
+        "--incremental-only",
+        metavar="LANE",
         help="prune only superseded incremental dirs in this checkout's named lane",
     )
     parser.add_argument("--dry-run", action="store_true")

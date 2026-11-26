@@ -71,9 +71,7 @@ def _frozen(root: Path, expected: str) -> None:
         raise ValueError(f"source changed or is dirty: {root}")
 
 
-def validate_selected(
-    inventory_raw: bytes, events_raw: bytes, case: R5Case
-) -> dict[str, Any]:
+def validate_selected(inventory_raw: bytes, events_raw: bytes, case: R5Case) -> dict[str, Any]:
     """Require one exact collected and executed test, with independent bytes."""
     _, package, _, binary, kind, test = case
     expected_name = f"{package}::{binary}${test}"
@@ -264,7 +262,9 @@ def _qbc_modules(root: Path, expected_head: str) -> tuple[Any, Any, Any]:
     module_paths = {
         name: directory / (name + ".py")
         for name in (
-            "qbc_completed_run_v1", "quanta_build_cli", "verification_completion_locator_v1",
+            "qbc_completed_run_v1",
+            "quanta_build_cli",
+            "verification_completion_locator_v1",
         )
     }
     sys.path.insert(0, str(directory))
@@ -794,7 +794,8 @@ def main(*, standalone: bool = False) -> int:
     git_no_replace = os.environ.get("GIT_NO_REPLACE_OBJECTS")
     os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
     removed_witness = {
-        key: os.environ.pop(key) for key in (WITNESS_DIR_ENV, WITNESS_NONCE_ENV)
+        key: os.environ.pop(key)
+        for key in (WITNESS_DIR_ENV, WITNESS_NONCE_ENV)
         if key in os.environ
     }
     python_cache = (sys.pycache_prefix, sys.dont_write_bytecode)
@@ -940,7 +941,9 @@ def _main(signer_socket: str | None) -> int:
     parent = _open_repo_output_parent(output, INDEX, create=False)
     try:
         verify_runner_capture(
-            payload, lambda name: read_runner_capture(output, name), cases=registered_cases,
+            payload,
+            lambda name: read_runner_capture(output, name),
+            cases=registered_cases,
         )
         publish_paired_output(output, Path(INDEX), parent, _canonical(payload) + b"\n")
     finally:

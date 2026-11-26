@@ -15,13 +15,15 @@ def exact_window(returned: int) -> dict:
         "coverage": {
             "examined": {"kind": "exact", "value": returned},
             "exhaustion_proof": {"kind": "probe_exhausted", "fetched": returned},
-            "lanes": [{
-                "lane": "lexical",
-                "executed": True,
-                "contributed": returned > 0,
-                "filtered_out": 0,
-                "candidates": {"kind": "exact", "value": returned},
-            }],
+            "lanes": [
+                {
+                    "lane": "lexical",
+                    "executed": True,
+                    "contributed": returned > 0,
+                    "filtered_out": 0,
+                    "candidates": {"kind": "exact", "value": returned},
+                }
+            ],
         },
     }
     if not returned:

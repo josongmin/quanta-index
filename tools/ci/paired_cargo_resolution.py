@@ -53,8 +53,13 @@ def _unsigned_environment() -> dict[str, str]:
 def source_python_environment(environment: MutableMapping[str, str]) -> Iterator[str]:
     """Isolate source-backed imports and shell startup for proof children."""
     removed = (
-        "BASH_ENV", "ENV", "PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE",
-        "PYTHONSTARTUP", "PYTHONINSPECT",
+        "BASH_ENV",
+        "ENV",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONUSERBASE",
+        "PYTHONSTARTUP",
+        "PYTHONINSPECT",
     )
     controlled = {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
     keys = (*removed, *controlled, "PYTHONPYCACHEPREFIX")
@@ -77,23 +82,35 @@ def frozen_source_head(root: Path) -> str:
     """Admit a physical checkout before running any of its QBC code."""
     environment = _unsigned_environment()
     local_env = subprocess.check_output(
-        ["git", "rev-parse", "--local-env-vars"], env=environment, text=True,
+        ["git", "rev-parse", "--local-env-vars"],
+        env=environment,
+        text=True,
     )
     if any(
         name in environment
         for name in (*local_env.splitlines(), "GIT_NAMESPACE")
-        if name not in {
-            "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_NO_REPLACE_OBJECTS",
+        if name
+        not in {
+            "GIT_CONFIG",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_NO_REPLACE_OBJECTS",
         }
     ):
         raise ValueError(f"paired proof refuses an overridden Git repository environment: {root}")
     git = [
-        "git", "--no-replace-objects", "--no-optional-locks",
-        "-c", "core.fsmonitor=false", "-C", str(root),
+        "git",
+        "--no-replace-objects",
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-C",
+        str(root),
     ]
     identity = subprocess.check_output(
         [*git, "rev-parse", "--show-toplevel", "--verify", "HEAD^{commit}"],
-        env=environment, text=True,
+        env=environment,
+        text=True,
     )
     actual_root, _, head = identity.rstrip("\n").rpartition("\n")
     if actual_root != str(root) or len(head) != 40:
@@ -212,7 +229,11 @@ def resolve_from_qbc(
 
 
 def _resolve_with_qbc(
-    quanta_root: Path, paired_root: Path, consumer: str, feature: str, lane: str,
+    quanta_root: Path,
+    paired_root: Path,
+    consumer: str,
+    feature: str,
+    lane: str,
     environment: dict[str, str],
 ) -> dict[str, Any]:
     roots = {root: frozen_source_head(root) for root in (quanta_root, paired_root)}

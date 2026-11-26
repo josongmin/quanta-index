@@ -181,11 +181,15 @@ def prepare_go_trace_semantic_text(query: dict[str, object]) -> str:
     if not isinstance(command, str) or _GO_TEST_COMMAND.match(command) is None:
         raise ArbAdapterRefusal("ARB_GO_TRACE_UNSUPPORTED_COMMAND", "command must be go test")
     if not isinstance(trace, str) or not trace.strip():
-        raise ArbAdapterRefusal("ARB_GO_TRACE_INVALID_EXCERPT", "failure_excerpt must be nonempty text")
+        raise ArbAdapterRefusal(
+            "ARB_GO_TRACE_INVALID_EXCERPT", "failure_excerpt must be nonempty text"
+        )
     try:
         trace_bytes = trace.encode("utf-8")
     except UnicodeEncodeError as exc:
-        raise ArbAdapterRefusal("ARB_GO_TRACE_INVALID_EXCERPT", "failure_excerpt must be UTF-8") from exc
+        raise ArbAdapterRefusal(
+            "ARB_GO_TRACE_INVALID_EXCERPT", "failure_excerpt must be UTF-8"
+        ) from exc
     if "\0" in trace:
         raise ArbAdapterRefusal("ARB_GO_TRACE_INVALID_EXCERPT", "failure_excerpt contains NUL")
     if len(trace_bytes) > GO_TRACE_SEMANTIC_MAX_TEXT_BYTES:

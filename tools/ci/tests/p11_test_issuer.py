@@ -23,7 +23,9 @@ def cache_old_python_source(source: Path, older: bytes) -> None:
     os.utime(source, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
     try:
         py_compile.compile(
-            str(source), cfile=str(cache), doraise=True,
+            str(source),
+            cfile=str(cache),
+            doraise=True,
             invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP,
         )
     finally:
@@ -95,12 +97,14 @@ def pytest_bytes(selectors: list[str]) -> tuple[bytes, bytes]:
     import json
 
     cases = sorted(f"{path[:-3].replace('/', '.')}.test_case" for path in selectors)
-    inventory = json.dumps({
-        "schema_version": 1,
-        "kind": "pytest",
-        "selector": " ".join(selectors),
-        "tests": cases,
-    }).encode()
+    inventory = json.dumps(
+        {
+            "schema_version": 1,
+            "kind": "pytest",
+            "selector": " ".join(selectors),
+            "tests": cases,
+        }
+    ).encode()
     junit = (
         f'<testsuite tests="{len(cases)}" failures="0" errors="0" skipped="0">'
         + "".join(
@@ -112,7 +116,12 @@ def pytest_bytes(selectors: list[str]) -> tuple[bytes, bytes]:
 
 
 def bind_run(
-    root: Path, proof: dict, run: dict, source_path: str, *, daemon_sha256: str | None = None,
+    root: Path,
+    proof: dict,
+    run: dict,
+    source_path: str,
+    *,
+    daemon_sha256: str | None = None,
 ) -> None:
     from tools.ci.proof_run_source import capture_run_source, write_run_binding
 
@@ -122,8 +131,11 @@ def bind_run(
         if key in run
     }
     write_run_binding(
-        root / source_path, capture_run_source(root, proof), format=run["format"],
-        digests=digests, daemon_sha256=daemon_sha256,
+        root / source_path,
+        capture_run_source(root, proof),
+        format=run["format"],
+        digests=digests,
+        daemon_sha256=daemon_sha256,
     )
     run["run_binding"] = source_path
 
@@ -185,7 +197,9 @@ def paired_evidence(
                 "quanta_workspace_manifest_sha256": "sha256:" + "9" * 64,
                 "packages": packages,
             }
-            for key, (_, consumer, features, _, _, _) in zip(("runtime", "kernel"), cases, strict=True)
+            for key, (_, consumer, features, _, _, _) in zip(
+                ("runtime", "kernel"), cases, strict=True
+            )
         },
         "cases": [],
     }

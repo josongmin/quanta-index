@@ -255,8 +255,13 @@ def _manifest() -> dict:
 
 
 def _native_child(
-    path: Path, capture_id: str, *, publication: bool, schema_version: int = 2,
-    source_publication: bool = False, lexical_witness: str | None = None,
+    path: Path,
+    capture_id: str,
+    *,
+    publication: bool,
+    schema_version: int = 2,
+    source_publication: bool = False,
+    lexical_witness: str | None = None,
     lexical_before_publication: bool = False,
     prepare_before_apply: bool = False,
     boot_after_query: bool = False,
@@ -280,8 +285,12 @@ def _native_child(
         if schema_version == 5:
             if kind["type"] == "span_begin":
                 wire_kind = [
-                    "b", kind["span_id"], kind.get("parent_span_id"),
-                    kind["stage"], kind["lane_id"], kind.get("root_kind"),
+                    "b",
+                    kind["span_id"],
+                    kind.get("parent_span_id"),
+                    kind["stage"],
+                    kind["lane_id"],
+                    kind.get("root_kind"),
                 ]
             elif kind["type"] == "span_end":
                 wire_kind = ["e", kind["span_id"], kind["outcome"], kind.get("error_code")]
@@ -302,12 +311,33 @@ def _native_child(
             )
 
     def lexical() -> None:
-        event({"type": "span_begin", "span_id": 7, "stage": "request", "lane_id": 0,
-               "root_kind": "request"})
-        event({"type": "request_identity", "span_id": 7, "request_id": 2,
-               "plane": "control", "connection_id": 2})
-        event({"type": "span_begin", "span_id": 8, "parent_span_id": 7,
-               "stage": "query_lexical", "lane_id": 2})
+        event(
+            {
+                "type": "span_begin",
+                "span_id": 7,
+                "stage": "request",
+                "lane_id": 0,
+                "root_kind": "request",
+            }
+        )
+        event(
+            {
+                "type": "request_identity",
+                "span_id": 7,
+                "request_id": 2,
+                "plane": "control",
+                "connection_id": 2,
+            }
+        )
+        event(
+            {
+                "type": "span_begin",
+                "span_id": 8,
+                "parent_span_id": 7,
+                "stage": "query_lexical",
+                "lane_id": 2,
+            }
+        )
         event({"type": "span_end", "span_id": 8, "outcome": "ok"})
         terminal = {"type": "span_end", "span_id": 7, "outcome": lexical_witness}
         if lexical_witness != "ok":
@@ -323,6 +353,7 @@ def _native_child(
             "lane_id": 1,
         }
     )
+
     def boot() -> None:
         event(
             {
@@ -416,7 +447,10 @@ TEXT_OCCURRENCE_DIFF_GOLD = {
 
 
 def _native_child_with_map_root_staged(
-    path: Path, *, missing_owner: bool = False, duplicate_count: bool = False,
+    path: Path,
+    *,
+    missing_owner: bool = False,
+    duplicate_count: bool = False,
     shadow: bool = False,
 ) -> tuple[RawFile, dict]:
     raw, _parsed = _native_child(path, "1" * 32, publication=True, schema_version=5)
@@ -435,11 +469,13 @@ def _native_child_with_map_root_staged(
             result.append(["c", base + 3, "new_objects", 1])
         result.append(["e", base + 3, "ok", None])
         if not missing_owner or lane != 39:
-            result.extend([
-                ["b", base + 4, base + 2, "map_apply", 7, None],
-                ["c", base + 4, "new_objects", owners],
-                ["e", base + 4, "ok", None],
-            ])
+            result.extend(
+                [
+                    ["b", base + 4, base + 2, "map_apply", 7, None],
+                    ["c", base + 4, "new_objects", owners],
+                    ["e", base + 4, "ok", None],
+                ]
+            )
         result.append(["e", base + 2, "ok", None])
         for key, value in (
             ("map_root_reuse_candidates", 0),
@@ -454,67 +490,111 @@ def _native_child_with_map_root_staged(
     if shadow:
         inserted += map_events(20, 38, 999, 888)
     request_end = next(
-        index for index, event in enumerate(events)
+        index
+        for index, event in enumerate(events)
         if isinstance(event[4], list) and event[4][:2] == ["e", 3]
     )
-    events[request_end:request_end] = [
-        ["e", 0, "1" * 32, 0, kind] for kind in inserted
-    ]
+    events[request_end:request_end] = [["e", 0, "1" * 32, 0, kind] for kind in inserted]
     for sequence, event in enumerate(events, 1):
         event[1] = event[3] = sequence
     rows[-1].update(
-        closed_ns=len(events) + 1, last_output_seq=len(events),
-        events_attempted=len(events), events_accepted=len(events),
+        closed_ns=len(events) + 1,
+        last_output_seq=len(events),
+        events_attempted=len(events),
+        events_accepted=len(events),
         events_written=len(events),
     )
-    path.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in (rows[0], *events, rows[-1])))
+    path.write_bytes(
+        b"".join(json.dumps(row).encode() + b"\n" for row in (rows[0], *events, rows[-1]))
+    )
     path.chmod(0o600)
     return RawFile.capture(path), parse_timeline(path.read_bytes())
 
 
 def _native_child_with_text_occurrence_diff(
-    path: Path, *, outcomes: tuple[str, ...] = ("ok",),
-    parent_span_id: int = 3, counters: dict[str, int] | None = None,
+    path: Path,
+    *,
+    outcomes: tuple[str, ...] = ("ok",),
+    parent_span_id: int = 3,
+    counters: dict[str, int] | None = None,
     second_request: bool = False,
 ) -> tuple[RawFile, dict]:
     _native_child(path, "1" * 32, publication=True, schema_version=5)
     rows = [json.loads(line) for line in path.read_bytes().splitlines()]
     events = rows[1:-1]
     request_end = next(
-        index for index, event in enumerate(events)
-        if event[4] == ["e", 3, "ok", None]
+        index for index, event in enumerate(events) if event[4] == ["e", 3, "ok", None]
     )
     inserted = []
     for offset, outcome in enumerate(outcomes):
         span_id = 10 + offset
         diff_parent = 20 if second_request and offset == 1 else parent_span_id
         if diff_parent == 20:
-            inserted.extend([
-                ["e", 0, "1" * 32, 0, ["b", 20, None, "request", 1, "request"]],
-                ["e", 0, "1" * 32, 0, {
-                    "type": "request_identity", "span_id": 20,
-                    "request_id": 2, "plane": "control", "connection_id": 2,
-                }],
-            ])
-        inserted.append(["e", 0, "1" * 32, 0, [
-            "b", span_id, diff_parent, "native_text_inventory_diff", 2, None,
-        ]])
+            inserted.extend(
+                [
+                    ["e", 0, "1" * 32, 0, ["b", 20, None, "request", 1, "request"]],
+                    [
+                        "e",
+                        0,
+                        "1" * 32,
+                        0,
+                        {
+                            "type": "request_identity",
+                            "span_id": 20,
+                            "request_id": 2,
+                            "plane": "control",
+                            "connection_id": 2,
+                        },
+                    ],
+                ]
+            )
+        inserted.append(
+            [
+                "e",
+                0,
+                "1" * 32,
+                0,
+                [
+                    "b",
+                    span_id,
+                    diff_parent,
+                    "native_text_inventory_diff",
+                    2,
+                    None,
+                ],
+            ]
+        )
         for key, value in (counters or TEXT_OCCURRENCE_DIFF_GOLD).items():
             inserted.append(["e", 0, "1" * 32, 0, ["c", span_id, key, value]])
-        inserted.append(["e", 0, "1" * 32, 0, [
-            "e", span_id, outcome, 1 if outcome == "error" else None,
-        ]])
+        inserted.append(
+            [
+                "e",
+                0,
+                "1" * 32,
+                0,
+                [
+                    "e",
+                    span_id,
+                    outcome,
+                    1 if outcome == "error" else None,
+                ],
+            ]
+        )
         if diff_parent == 20:
             inserted.append(["e", 0, "1" * 32, 0, ["e", 20, "ok", None]])
     events[request_end:request_end] = inserted
     for sequence, event in enumerate(events, 1):
         event[1] = event[3] = sequence
     rows[-1].update(
-        closed_ns=len(events) + 1, last_output_seq=len(events),
-        events_attempted=len(events), events_accepted=len(events),
+        closed_ns=len(events) + 1,
+        last_output_seq=len(events),
+        events_attempted=len(events),
+        events_accepted=len(events),
         events_written=len(events),
     )
-    path.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in (rows[0], *events, rows[-1])))
+    path.write_bytes(
+        b"".join(json.dumps(row).encode() + b"\n" for row in (rows[0], *events, rows[-1]))
+    )
     path.chmod(0o600)
     return RawFile.capture(path), parse_timeline(path.read_bytes())
 
@@ -527,13 +607,15 @@ def test_native_child_reports_only_scoped_map_root_staged_counts(tmp_path: Path)
         "observed_batches": 1,
         "observed_requests": 1,
         "omitted_requests": 0,
-        "requests": [{
-            "request_span_id": 3,
-            "request_identity": {"request_id": 1, "plane": "control", "connection_id": 1},
-            "map_batches": 1,
-            "terms_staged_objects": 8,
-            "owners_staged_objects": 3,
-        }],
+        "requests": [
+            {
+                "request_span_id": 3,
+                "request_identity": {"request_id": 1, "plane": "control", "connection_id": 1},
+                "map_batches": 1,
+                "terms_staged_objects": 8,
+                "owners_staged_objects": 3,
+            }
+        ],
     }
 
 
@@ -545,10 +627,15 @@ def test_native_child_reports_only_scoped_map_root_staged_counts(tmp_path: Path)
     ),
 )
 def test_native_child_rejects_malformed_scoped_map_root_counts(
-    tmp_path: Path, missing_owner: bool, duplicate_count: bool, reason: str,
+    tmp_path: Path,
+    missing_owner: bool,
+    duplicate_count: bool,
+    reason: str,
 ) -> None:
     raw, parsed = _native_child_with_map_root_staged(
-        tmp_path / "child.jsonl", missing_owner=missing_owner, duplicate_count=duplicate_count,
+        tmp_path / "child.jsonl",
+        missing_owner=missing_owner,
+        duplicate_count=duplicate_count,
     )
     with pytest.raises(ValueError, match=reason):
         _native_child_trace(parsed, raw, publication=True)
@@ -565,42 +652,55 @@ def test_native_product_carries_map_root_staged_counts_without_requiring_them(
         bytes=raw.size, sha256=raw.sha256.removeprefix("sha256:")
     )
     product = _native_validate(summary, children, workload)
-    assert product["children"]["first"]["map_root_staged"]["requests"][0][
-        "terms_staged_objects"
-    ] == 8
+    assert (
+        product["children"]["first"]["map_root_staged"]["requests"][0]["terms_staged_objects"] == 8
+    )
     assert "map_root_staged" not in product["children"]["reopen"]
 
 
 def test_native_child_summarizes_text_occurrence_diff_by_request(tmp_path: Path) -> None:
     raw, parsed = _native_child_with_text_occurrence_diff(
-        tmp_path / "child.jsonl", outcomes=("ok", "error"),
+        tmp_path / "child.jsonl",
+        outcomes=("ok", "error"),
     )
     child = _native_child_trace(parsed, raw, publication=True)
-    assert child["text_occurrence_diff"] == {"requests": [{
-        "request_span_id": 3,
-        "request_identity": {"request_id": 1, "plane": "control", "connection_id": 1},
-        "successful_diffs": 1,
-        "failed_diffs": 1,
-        "counters": {key: value * 2 for key, value in TEXT_OCCURRENCE_DIFF_GOLD.items()},
-    }]}
+    assert child["text_occurrence_diff"] == {
+        "requests": [
+            {
+                "request_span_id": 3,
+                "request_identity": {"request_id": 1, "plane": "control", "connection_id": 1},
+                "successful_diffs": 1,
+                "failed_diffs": 1,
+                "counters": {key: value * 2 for key, value in TEXT_OCCURRENCE_DIFF_GOLD.items()},
+            }
+        ]
+    }
     old_raw, old_parsed = _native_child(
-        tmp_path / "old.jsonl", "2" * 32, publication=True, schema_version=5,
+        tmp_path / "old.jsonl",
+        "2" * 32,
+        publication=True,
+        schema_version=5,
     )
     assert "text_occurrence_diff" not in _native_child_trace(
-        old_parsed, old_raw, publication=True,
+        old_parsed,
+        old_raw,
+        publication=True,
     )
 
 
 def test_native_child_rejects_unattributed_or_overflowed_diff(tmp_path: Path) -> None:
     raw, parsed = _native_child_with_text_occurrence_diff(
-        tmp_path / "unattributed.jsonl", parent_span_id=1,
+        tmp_path / "unattributed.jsonl",
+        parent_span_id=1,
     )
     with pytest.raises(ValueError, match="lacks identified request ancestry"):
         _native_child_trace(parsed, raw, publication=True)
     counters = dict(TEXT_OCCURRENCE_DIFF_GOLD)
     counters["text_occurrence_ram_reuses"] = (1 << 64) - 1
     raw, parsed = _native_child_with_text_occurrence_diff(
-        tmp_path / "overflow.jsonl", outcomes=("ok", "ok"), counters=counters,
+        tmp_path / "overflow.jsonl",
+        outcomes=("ok", "ok"),
+        counters=counters,
     )
     with pytest.raises(ValueError, match="text_occurrence_ram_reuses is not a u64"):
         _native_child_trace(parsed, raw, publication=True)
@@ -608,13 +708,18 @@ def test_native_child_rejects_unattributed_or_overflowed_diff(tmp_path: Path) ->
 
 def test_native_child_keeps_diff_requests_separate(tmp_path: Path) -> None:
     raw, parsed = _native_child_with_text_occurrence_diff(
-        tmp_path / "separate.jsonl", outcomes=("ok", "error"), second_request=True,
+        tmp_path / "separate.jsonl",
+        outcomes=("ok", "error"),
+        second_request=True,
     )
-    requests = _native_child_trace(parsed, raw, publication=True)["text_occurrence_diff"]["requests"]
+    requests = _native_child_trace(parsed, raw, publication=True)["text_occurrence_diff"][
+        "requests"
+    ]
     assert [item["request_span_id"] for item in requests] == [3, 20]
     assert [item["request_identity"]["request_id"] for item in requests] == [1, 2]
     assert [(item["successful_diffs"], item["failed_diffs"]) for item in requests] == [
-        (1, 0), (0, 1),
+        (1, 0),
+        (0, 1),
     ]
     assert all(item["counters"] == TEXT_OCCURRENCE_DIFF_GOLD for item in requests)
 
@@ -623,7 +728,8 @@ def test_native_product_carries_observed_text_occurrence_diff_without_promoting_
     tmp_path: Path,
 ) -> None:
     summary, children, workload = _native_product_fixture(
-        tmp_path, timeline_schema_version=5,
+        tmp_path,
+        timeline_schema_version=5,
     )
     path = children["first"]["trace_file"].path
     raw, parsed = _native_child_with_text_occurrence_diff(path)
@@ -631,9 +737,10 @@ def test_native_product_carries_observed_text_occurrence_diff_without_promoting_
     descriptor = summary["detail"]["child_trace_files"]["captures"][0]
     descriptor.update(bytes=raw.size, sha256=raw.sha256.removeprefix("sha256:"))
     product = _native_validate(summary, children, workload)
-    assert product["children"]["first"]["text_occurrence_diff"]["requests"][0][
-        "counters"
-    ] == TEXT_OCCURRENCE_DIFF_GOLD
+    assert (
+        product["children"]["first"]["text_occurrence_diff"]["requests"][0]["counters"]
+        == TEXT_OCCURRENCE_DIFF_GOLD
+    )
     assert "text_occurrence_diff" not in product["children"]["reopen"]
     assert "text_occurrence_diff" not in product["children"]["first"]["object_io"]
 
@@ -1000,9 +1107,7 @@ def test_native_ordinary_off_keeps_fixed_product_and_cold_reopen_gold(tmp_path: 
         "forged_fanout",
     ),
 )
-def test_native_product_refuses_mutation_count_or_fanout_scope(
-    tmp_path: Path, fault: str
-) -> None:
+def test_native_product_refuses_mutation_count_or_fanout_scope(tmp_path: Path, fault: str) -> None:
     summary, workload = _native_off_fixture(tmp_path)
     detail = summary["detail"]
     counts = detail["source_mutation_count"]
@@ -1843,9 +1948,7 @@ def test_native_two_cycle_product_binds_fixed_churn_order(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("fault", ("missing_churn", "wrong_churn", "bool_churn", "extra_axis"))
-def test_native_two_cycle_product_refuses_mutation_count_drift(
-    tmp_path: Path, fault: str
-) -> None:
+def test_native_two_cycle_product_refuses_mutation_count_drift(tmp_path: Path, fault: str) -> None:
     summary, children, workload = _native_two_cycle_fixture(tmp_path)
     counts = summary["detail"]["source_mutation_count"]
     if fault == "missing_churn":
@@ -2008,10 +2111,12 @@ def _native_child_with_auxiliary_operation(
         kinds.remove(elapsed)
     if boot_on_auxiliary_only:
         kinds = [
-            kind for kind in kinds
+            kind
+            for kind in kinds
             if not is_end(kind, 2)
             and not (
-                isinstance(kind, list) and kind[:2] == ["b", 2] if schema_version == 5
+                isinstance(kind, list) and kind[:2] == ["b", 2]
+                if schema_version == 5
                 else kind.get("type") == "span_begin" and kind.get("span_id") == 2
             )
         ]
@@ -2045,10 +2150,15 @@ def _native_child_with_auxiliary_operation(
         if schema_version == 5:
             records.append(["e", sequence, "1" * 32, sequence, kind])
         else:
-            records.append({
-                "record_type": "event", "output_seq": sequence,
-                "capture_id": "1" * 32, "ts_ns": sequence, "kind": kind,
-            })
+            records.append(
+                {
+                    "record_type": "event",
+                    "output_seq": sequence,
+                    "capture_id": "1" * 32,
+                    "ts_ns": sequence,
+                    "kind": kind,
+                }
+            )
     footer.update(
         closed_ns=len(records) + 1,
         last_output_seq=len(records),
@@ -2056,7 +2166,9 @@ def _native_child_with_auxiliary_operation(
         events_accepted=len(records),
         events_written=len(records),
     )
-    path.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in (header, *records, footer)))
+    path.write_bytes(
+        b"".join(json.dumps(row).encode() + b"\n" for row in (header, *records, footer))
+    )
     return RawFile.capture(path), parse_timeline(path.read_bytes())
 
 
@@ -2069,7 +2181,9 @@ def test_native_child_accepts_independent_operation_around_io_root(
         tmp_path / "child.jsonl", schema_version, before=before
     )
     assert _native_child_trace(parsed, raw, publication=True)["sync"] == {
-        "sync_calls": 3, "sync_failures": 0, "sync_elapsed_ns": 27,
+        "sync_calls": 3,
+        "sync_failures": 0,
+        "sync_elapsed_ns": 27,
     }
 
 
@@ -2115,25 +2229,26 @@ def _native_child_with_summary_counter_order(
     header, *events, footer = (json.loads(line) for line in path.read_bytes().splitlines())
     if schema_version == 5:
         counter = next(
-            event for event in events
+            event
+            for event in events
             if isinstance(event[4], list) and event[4][:3] == ["c", 1, counter_key]
         )
         end = next(
-            event for event in events
-            if isinstance(event[4], list) and event[4][:2] == ["e", 1]
+            event for event in events if isinstance(event[4], list) and event[4][:2] == ["e", 1]
         )
         counter[3] = end[3]
     else:
         counter = next(
-            event for event in events
+            event
+            for event in events
             if event["kind"].get("type") == "counter"
             and event["kind"].get("span_id") == 1
             and event["kind"].get("key") == counter_key
         )
         end = next(
-            event for event in events
-            if event["kind"].get("type") == "span_end"
-            and event["kind"].get("span_id") == 1
+            event
+            for event in events
+            if event["kind"].get("type") == "span_end" and event["kind"].get("span_id") == 1
         )
         counter["ts_ns"] = end["ts_ns"]
     events.remove(counter)
@@ -2178,7 +2293,9 @@ def test_native_child_summary_counter_order_at_equal_timestamp(
             parse_timeline(raw.path.read_bytes()), raw, publication=publication
         )
         assert result["sync"] == {
-            "sync_calls": 3, "sync_failures": 0, "sync_elapsed_ns": 27,
+            "sync_calls": 3,
+            "sync_failures": 0,
+            "sync_elapsed_ns": 27,
         }
 
 
@@ -2189,19 +2306,36 @@ def test_legacy_schema_keeps_its_counter_order_contract(tmp_path: Path) -> None:
     assert parse_timeline(raw.path.read_bytes())["status"] == "complete"
 
 
-@pytest.mark.parametrize("change", [
-    "none", "parent_alias", "same_epoch", "truncated", "swapped", "replacement", "oversized",
-    "reconfigure_only", "no_first_lexical", "no_reopen_lexical", "cancelled_reopen_query",
-    "lexical_before_publication", "prepare_before_apply", "first_boot_after_query",
-    "reopen_boot_after_query",
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "none",
+        "parent_alias",
+        "same_epoch",
+        "truncated",
+        "swapped",
+        "replacement",
+        "oversized",
+        "reconfigure_only",
+        "no_first_lexical",
+        "no_reopen_lexical",
+        "cancelled_reopen_query",
+        "lexical_before_publication",
+        "prepare_before_apply",
+        "first_boot_after_query",
+        "reopen_boot_after_query",
+    ],
+)
 def test_native_corpus_record_checks_both_daemon_epochs(tmp_path: Path, change: str) -> None:
     from tools.benchmark.retrieval.causal_cost_profile import validate_native_corpus_record
 
     first = tmp_path / "first.trace.jsonl"
     reopen = tmp_path / "reopen.trace.jsonl"
     _native_child(
-        first, "1" * 32, publication=True, schema_version=5,
+        first,
+        "1" * 32,
+        publication=True,
+        schema_version=5,
         source_publication=change != "reconfigure_only",
         lexical_witness=None if change == "no_first_lexical" else "ok",
         lexical_before_publication=change == "lexical_before_publication",
@@ -2209,7 +2343,10 @@ def test_native_corpus_record_checks_both_daemon_epochs(tmp_path: Path, change: 
         boot_after_query=change == "first_boot_after_query",
     )
     _native_child(
-        reopen, "2" * 32, publication=False, schema_version=5,
+        reopen,
+        "2" * 32,
+        publication=False,
+        schema_version=5,
         lexical_witness={"no_reopen_lexical": None, "cancelled_reopen_query": "cancelled"}.get(
             change, "ok"
         ),
@@ -2217,7 +2354,10 @@ def test_native_corpus_record_checks_both_daemon_epochs(tmp_path: Path, change: 
     )
     if change == "same_epoch":
         _native_child(
-            tmp_path / "duplicate", "1" * 32, publication=False, schema_version=5,
+            tmp_path / "duplicate",
+            "1" * 32,
+            publication=False,
+            schema_version=5,
             lexical_witness="ok",
         )
         (tmp_path / "duplicate").replace(reopen)
@@ -2250,7 +2390,12 @@ def test_native_corpus_record_checks_both_daemon_epochs(tmp_path: Path, change: 
             "verification": "NOT_RUN",
         },
     }
-    if change in ("no_first_lexical", "no_reopen_lexical", "cancelled_reopen_query", "lexical_before_publication"):
+    if change in (
+        "no_first_lexical",
+        "no_reopen_lexical",
+        "cancelled_reopen_query",
+        "lexical_before_publication",
+    ):
         with pytest.raises(ValueError, match="successful Native lexical request"):
             validate_native_corpus_record(tmp_path, result)
         return
@@ -2971,22 +3116,29 @@ def _paired_stderr_fixture(tmp_path: Path, size: int) -> tuple[RawFile, dict, st
     path.write_bytes(content)
     raw = RawFile.capture(path)
     offset = max(0, size - 8192)
-    prefix = content[:min(offset, 8192)]
-    descriptor.update({
-        "whole_file_bytes_at_drain": size,
-        "tail_offset": offset,
-        "tail_bytes": size - offset,
-        "tail_sha256": hashlib.sha256(content[offset:]).hexdigest(),
-        "retained_budget_bytes": 16384,
-        "scope": "bounded disjoint prefix and tail within 16KiB total; full file content not hashed",
-        "prefix": {"offset": 0, "bytes": len(prefix),
-                   "sha256": hashlib.sha256(prefix).hexdigest()},
-    })
+    prefix = content[: min(offset, 8192)]
+    descriptor.update(
+        {
+            "whole_file_bytes_at_drain": size,
+            "tail_offset": offset,
+            "tail_bytes": size - offset,
+            "tail_sha256": hashlib.sha256(content[offset:]).hexdigest(),
+            "retained_budget_bytes": 16384,
+            "scope": "bounded disjoint prefix and tail within 16KiB total; full file content not hashed",
+            "prefix": {
+                "offset": 0,
+                "bytes": len(prefix),
+                "sha256": hashlib.sha256(prefix).hexdigest(),
+            },
+        }
+    )
     return raw, descriptor, summary["detail"]["child_trace_files"]["captures"][0]["capture_id"]
 
 
 @pytest.mark.parametrize("size", (2048, 8191, 8192, 8193, 16383, 16384, 16385, 32768))
-def test_native_paired_stderr_boundary_and_existing_object_io_contract(tmp_path: Path, size: int) -> None:
+def test_native_paired_stderr_boundary_and_existing_object_io_contract(
+    tmp_path: Path, size: int
+) -> None:
     raw, descriptor, capture_id = _paired_stderr_fixture(tmp_path, size)
     parsed = _native_stderr_summary(raw, descriptor, capture_id)
     assert parsed == {"capture_id": capture_id, "status": "quiescent", **NATIVE_IO_GOLD}
@@ -2994,13 +3146,28 @@ def test_native_paired_stderr_boundary_and_existing_object_io_contract(tmp_path:
     assert descriptor["prefix"]["bytes"] <= descriptor["tail_offset"]
 
 
-@pytest.mark.parametrize("fault", (
-    "missing_prefix", "missing_budget", "missing_pair", "missing_hash", "prefix_hash", "prefix_bytes",
-    "prefix_offset", "prefix_unknown", "budget", "tail_offset", "tail_hash", "bool_bytes",
-    "overflow_bytes", "truncated_summary",
-))
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "missing_prefix",
+        "missing_budget",
+        "missing_pair",
+        "missing_hash",
+        "prefix_hash",
+        "prefix_bytes",
+        "prefix_offset",
+        "prefix_unknown",
+        "budget",
+        "tail_offset",
+        "tail_hash",
+        "bool_bytes",
+        "overflow_bytes",
+        "truncated_summary",
+    ),
+)
 def test_native_paired_stderr_refuses_missing_tampered_or_overbudget_descriptor(
-    tmp_path: Path, fault: str,
+    tmp_path: Path,
+    fault: str,
 ) -> None:
     raw, descriptor, capture_id = _paired_stderr_fixture(tmp_path, 32768)
     if fault == "missing_prefix":
@@ -3062,8 +3229,12 @@ def test_native_paired_stderr_revalidates_raw_file_custody(tmp_path: Path, fault
         _native_stderr_summary(raw, descriptor, capture_id)
 
 
-@pytest.mark.parametrize("method", ("ps_o_rss_kib", "proc_pid_rusage_resident_bytes_start_identity"))
-def test_native_macos_child_rss_methods_preserve_unsupported_aggregate_scope(tmp_path: Path, method: str) -> None:
+@pytest.mark.parametrize(
+    "method", ("ps_o_rss_kib", "proc_pid_rusage_resident_bytes_start_identity")
+)
+def test_native_macos_child_rss_methods_preserve_unsupported_aggregate_scope(
+    tmp_path: Path, method: str
+) -> None:
     summary, children, workload = _native_product_fixture(tmp_path, sampling=True, host_os="macos")
     epochs = summary["detail"]["native_resource_observation"]["epochs"]
     for epoch in epochs:
@@ -3073,8 +3244,12 @@ def test_native_macos_child_rss_methods_preserve_unsupported_aggregate_scope(tmp
     assert all(epoch["child_process_io"]["method"] == "unsupported" for epoch in epochs)
 
 
-@pytest.mark.parametrize("method", ("proc_pid_rusage_phys_footprint", "proc_pid_rusage_peak_rss", "resident_size", None))
-def test_native_macos_child_rss_rejects_footprint_peak_and_missing_method(tmp_path: Path, method: str | None) -> None:
+@pytest.mark.parametrize(
+    "method", ("proc_pid_rusage_phys_footprint", "proc_pid_rusage_peak_rss", "resident_size", None)
+)
+def test_native_macos_child_rss_rejects_footprint_peak_and_missing_method(
+    tmp_path: Path, method: str | None
+) -> None:
     summary, children, workload = _native_product_fixture(tmp_path, sampling=True, host_os="macos")
     summary["detail"]["native_resource_observation"]["epochs"][0]["child_rss"]["method"] = method
     with pytest.raises(ValueError, match="native macOS child RSS method is unsupported"):

@@ -23,12 +23,17 @@ def resolve_path(path: Path) -> Path:
 
 
 def cohort_inputs(
-    manifest_path: Path, manifest: dict, *, publishing_family: str | None = None,
+    manifest_path: Path,
+    manifest: dict,
+    *,
+    publishing_family: str | None = None,
 ) -> Iterator[tuple[str, Path]]:
     for family in manifest["families"]:
         yield "source repository", manifest_path.parent / family["repo"]
         for role in (*RELEASE_ROOTS, *COHORT_FILES, "daemon_config", "selection_path"):
-            if role not in family or (role == "capture" and family["family_id"] == publishing_family):
+            if role not in family or (
+                role == "capture" and family["family_id"] == publishing_family
+            ):
                 continue
             yield role, manifest_path.parent / family[role]
 
@@ -40,12 +45,18 @@ def custody_paths(root: Path) -> tuple[Path, ...]:
         store.runs_dir,
         store.staging_dir,
         store.baselines_dir,
-        *(store.root / name for name in ("captures", "profiles", "work", "failures", ".custody.lock")),
+        *(
+            store.root / name
+            for name in ("captures", "profiles", "work", "failures", ".custody.lock")
+        ),
     )
 
 
 def require_disjoint(
-    writes: Iterable[Path], inputs: Iterable[tuple[str, Path]], *, error: str,
+    writes: Iterable[Path],
+    inputs: Iterable[tuple[str, Path]],
+    *,
+    error: str,
 ) -> None:
     @cache
     def identity(path: Path) -> tuple[int, int] | None:
@@ -61,15 +72,16 @@ def require_disjoint(
     # A filesystem can resolve differently spelled paths to the same
     # directory. Compare ancestry by identity as well as by canonical name.
     destinations = [
-        (target, identity(target), ancestry(target))
-        for target in map(resolve_path, writes)
+        (target, identity(target), ancestry(target)) for target in map(resolve_path, writes)
     ]
     for role, path in inputs:
         source = resolve_path(path)
         source_key, source_ancestry = identity(source), ancestry(source)
         if any(
-            target.is_relative_to(source) or source.is_relative_to(target)
-            or source_key in target_ancestry or target_key in source_ancestry
+            target.is_relative_to(source)
+            or source.is_relative_to(target)
+            or source_key in target_ancestry
+            or target_key in source_ancestry
             for target, target_key, target_ancestry in destinations
         ):
             raise EvidenceError(error.format(role=role))

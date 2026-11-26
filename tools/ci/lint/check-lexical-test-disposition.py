@@ -44,12 +44,14 @@ RETAINED_OLD_Q_TARGET = "crates/quanta-index-lexical/tests/sealed_commitment_cos
 
 # Removal of the adapter and its Cargo feature only proves the old execution
 # path is gone. A body waiver applies to reviewed engine-only test identities.
-ENGINE_ONLY_RETIREMENTS = frozenset({
-    (
-        "crates/quanta-index-lexical/tests/sealed_manifest.rs",
-        "point_inventory_matches_full_inventory_for_digest_and_family_symlink",
-    ),
-})
+ENGINE_ONLY_RETIREMENTS = frozenset(
+    {
+        (
+            "crates/quanta-index-lexical/tests/sealed_manifest.rs",
+            "point_inventory_matches_full_inventory_for_digest_and_family_symlink",
+        ),
+    }
+)
 
 # Sorted, newline-joined IDs from d8a490565, the last committed pre-removal sources.
 # Pin identity outside the editable roster so removing a target and its mapping
@@ -98,9 +100,7 @@ def source_tests(path: Path, source: str) -> list[str]:
 
 
 def git_text(*args: str) -> str:
-    return subprocess.check_output(
-        ["git", "--no-replace-objects", *args], cwd=ROOT
-    ).decode("utf-8")
+    return subprocess.check_output(["git", "--no-replace-objects", *args], cwd=ROOT).decode("utf-8")
 
 
 def replacement_test_ids(candidates: object) -> set[tuple[str, str]]:
@@ -153,11 +153,19 @@ def main(
     def candidate_test_names(path: Path) -> frozenset[str]:
         return frozenset(source_tests(path, read(path)))
 
-    resolve_path = None if revision is None else committed_path_resolver(
-        lambda _root, *args: git_text(*args).encode("utf-8"), ROOT, revision,
+    resolve_path = (
+        None
+        if revision is None
+        else committed_path_resolver(
+            lambda _root, *args: git_text(*args).encode("utf-8"),
+            ROOT,
+            revision,
+        )
     )
     event_matches = retirement_event_matcher(
-        ROOT, lambda relative: read(ROOT / relative), resolve_path=resolve_path,
+        ROOT,
+        lambda relative: read(ROOT / relative),
+        resolve_path=resolve_path,
     )
 
     try:
@@ -255,7 +263,9 @@ def main(
                     f"{relative}: retirement requires VERIFIED proof or a removed frozen engine target"
                 )
             if relative == RETAINED_OLD_Q_TARGET and disposition != "retain":
-                errors.append(f"{relative}: frozen old-Q tests must retain their original disposition")
+                errors.append(
+                    f"{relative}: frozen old-Q tests must retain their original disposition"
+                )
             retained_release = disposition == "retain" and revision is not None
             if retained_release and proof != "VERIFIED":
                 errors.append(f"{relative}: retained old-Q tests require VERIFIED execution")
@@ -278,22 +288,30 @@ def main(
                 try:
                     expected = replacement_test_ids(group.get("candidates"))
                     if disposition == "retain":
-                        retained = {
-                            (relative, test) for test in tests if isinstance(test, str)
-                        }
+                        retained = {(relative, test) for test in tests if isinstance(test, str)}
                         if expected != retained:
-                            raise ValueError("retained candidates differ from the original old-Q tests")
+                            raise ValueError(
+                                "retained candidates differ from the original old-Q tests"
+                            )
                     for candidate_path, case in sorted(expected):
                         if case not in candidate_test_names(ROOT / candidate_path):
-                            raise ValueError(f"replacement test {case!r} is absent from {candidate_path}")
+                            raise ValueError(
+                                f"replacement test {case!r} is absent from {candidate_path}"
+                            )
                     if proof == "VERIFIED":
                         proof_revision = revision
                         proof_read = read
-                        if disposition == "retain" and not inventory_only and proof_revision is None:
+                        if (
+                            disposition == "retain"
+                            and not inventory_only
+                            and proof_revision is None
+                        ):
                             # The working-tree ledger can stage observations, but
                             # retained execution still has to prove committed inputs.
                             if local_retained_revision is None:
-                                local_retained_revision = git_text("rev-parse", "--verify", "HEAD").strip()
+                                local_retained_revision = git_text(
+                                    "rev-parse", "--verify", "HEAD"
+                                ).strip()
                             proof_revision = local_retained_revision
                             retained_source = read(path)
                             if retained_source != git_text("show", f"{proof_revision}:{relative}"):
@@ -301,35 +319,53 @@ def main(
                             local_retained_sources[path] = retained_source
 
                             def proof_read(
-                                observed_path: Path, *, expected_path: Path = path,
+                                observed_path: Path,
+                                *,
+                                expected_path: Path = path,
                                 source: str = retained_source,
                             ) -> str:
                                 if observed_path != expected_path:
-                                    raise ValueError("retained observation names a different test source")
+                                    raise ValueError(
+                                        "retained observation names a different test source"
+                                    )
                                 return source
 
                         observed = check_migration_observations(
-                            group.get("observations"), proof_read,
-                            root=ROOT, source_tests=source_tests,
-                            inventory_only=inventory_only, evidence_dir=evidence_dir,
+                            group.get("observations"),
+                            proof_read,
+                            root=ROOT,
+                            source_tests=source_tests,
+                            inventory_only=inventory_only,
+                            evidence_dir=evidence_dir,
                             release_revision=proof_revision,
                             event_matches=event_matches,
                             executable_digest=executable_digest,
                         )
                         if disposition == "retain" and proof_revision is not None:
                             if evidence_dir is None:
-                                raise ValueError("retained old-Q execution requires Nextest evidence")
+                                raise ValueError(
+                                    "retained old-Q execution requires Nextest evidence"
+                                )
                             for observation in group["observations"]:
                                 manifest = RawFile.capture(
                                     evidence_dir / f"{observation['run_id']}-source-manifest.json"
                                 )
-                                if manifest.sha256 != f"sha256:{observation['source_manifest_sha256']}":
-                                    raise ValueError("retained old-Q source manifest SHA-256 differs")
+                                if (
+                                    manifest.sha256
+                                    != f"sha256:{observation['source_manifest_sha256']}"
+                                ):
+                                    raise ValueError(
+                                        "retained old-Q source manifest SHA-256 differs"
+                                    )
                                 execution = parse_proof_json(manifest.read_control())["execution"]
                                 if execution["legacy_searchd"] is None:
                                     raise ValueError("retained old-Q executable is absent")
                         if observed != expected:
-                            subject = "retained tests" if disposition == "retain" else "declared replacement tests"
+                            subject = (
+                                "retained tests"
+                                if disposition == "retain"
+                                else "declared replacement tests"
+                            )
                             raise ValueError(
                                 f"terminal observations differ from {subject}: "
                                 f"missing={sorted(expected - observed)} extra={sorted(observed - expected)}"
@@ -343,7 +379,9 @@ def main(
                 pending += len(tests)
                 if source_removed or feature_removed:
                     names = ", ".join(str(test) for test in tests)
-                    detail = "".join(f"\n    Missing assertion: {assertion}" for assertion in remaining)
+                    detail = "".join(
+                        f"\n    Missing assertion: {assertion}" for assertion in remaining
+                    )
                     pending_groups.append(f"{relative} [{proof}] {names}\n  {replacement}{detail}")
             for test in tests:
                 if not isinstance(test, str) or not test.isascii() or not test.isidentifier():
@@ -390,7 +428,9 @@ def main(
             relative = path.relative_to(ROOT)
             try:
                 if path.read_bytes() != source.encode("utf-8"):
-                    errors.append(f"{relative}: retained test source changed during proof verification")
+                    errors.append(
+                        f"{relative}: retained test source changed during proof verification"
+                    )
             except OSError as error:
                 errors.append(f"{relative}: cannot recheck retained test source: {error}")
         try:
@@ -414,11 +454,16 @@ if __name__ == "__main__":
         "--revision", help="read the release candidate's committed disposition and test files"
     )
     parser.add_argument(
-        "--inventory-only", action="store_true", help="validate the development roster during migration"
+        "--inventory-only",
+        action="store_true",
+        help="validate the development roster during migration",
     )
     args = parser.parse_args()
     evidence_dir = os.environ.get("QUANTA_RETIREMENT_NEXTEST_EVIDENCE_DIR")
-    raise SystemExit(main(
-        revision=args.revision, inventory_only=args.inventory_only,
-        evidence_dir=Path(evidence_dir) if evidence_dir else None,
-    ))
+    raise SystemExit(
+        main(
+            revision=args.revision,
+            inventory_only=args.inventory_only,
+            evidence_dir=Path(evidence_dir) if evidence_dir else None,
+        )
+    )

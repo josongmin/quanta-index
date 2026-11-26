@@ -324,7 +324,8 @@ def _setup(tmp_path: Path, *, archived: bool = False) -> tuple[dict, Path, Path,
 
 
 def test_detached_ab_captures_original_three_sidecars_from_private_copy(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     options, fixture_dir, marker, runner, head = _prepared_capture(tmp_path)
     executable_scratch = tmp_path / "executable-scratch"

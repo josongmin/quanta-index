@@ -63,13 +63,15 @@ from tools.benchmark.evidence import CONTROL_DOCUMENT_BYTES, _read_control_file 
 CURRENT_SCHEMA_VERSION = 2
 NATIVE_MATRIX_SCHEMA = "native-dsl-matrix-v1"
 NATIVE_DAEMON_RSS_SCOPE = "maximum Linux daemon VmHWM across daemon-backed reports"
-NATIVE_CLIENT_ERROR_IDS = frozenset({
-    "adversarial.unterminated_phrase.native",
-    "adversarial.bad_regex.native",
-    "adversarial.dangling_operator.native",
-    "adversarial.oversized_bytes.native",
-    "adversarial.deep_nesting.native",
-})
+NATIVE_CLIENT_ERROR_IDS = frozenset(
+    {
+        "adversarial.unterminated_phrase.native",
+        "adversarial.bad_regex.native",
+        "adversarial.dangling_operator.native",
+        "adversarial.oversized_bytes.native",
+        "adversarial.deep_nesting.native",
+    }
+)
 FULL_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -212,80 +214,119 @@ def _validate_native_detail(payload: dict, detail: dict, *, role: str, path: Pat
     raw_rows = payload.get("rows")
     native = any(key in detail for key in markers) or (
         isinstance(raw_rows, list)
-        and any(isinstance(row, dict) and row.get("engine_touched") == ["native"]
-                for row in raw_rows)
+        and any(
+            isinstance(row, dict) and row.get("engine_touched") == ["native"] for row in raw_rows
+        )
     )
     if not native:
         return False
     prefix = f"{role} {path} Native DSL"
-    require(detail.get("source_schema") == NATIVE_MATRIX_SCHEMA, f"{prefix} source_schema is invalid")
+    require(
+        detail.get("source_schema") == NATIVE_MATRIX_SCHEMA, f"{prefix} source_schema is invalid"
+    )
     qualification = detail.get("qualification")
-    require(qualification in ("diagnostic", "authority"), f"{prefix} qualification is missing or unknown")
+    require(
+        qualification in ("diagnostic", "authority"),
+        f"{prefix} qualification is missing or unknown",
+    )
     matrix = detail.get("native_matrix")
     require(isinstance(matrix, dict), f"{prefix} native_matrix is missing")
     require(matrix.get("schema") == NATIVE_MATRIX_SCHEMA, f"{prefix} nested schema differs")
     require(matrix.get("qualification") == qualification, f"{prefix} nested qualification differs")
     require(matrix.get("mode") == payload.get("mode"), f"{prefix} nested mode differs")
-    require(matrix.get("git_head") == payload.get("provenance", {}).get("git_head"),
-            f"{prefix} nested source head differs")
-    require(isinstance(detail.get("native_matrix_sha256"), str)
-            and DIGEST_RE.fullmatch(detail["native_matrix_sha256"]) is not None,
-            f"{prefix} raw matrix commitment is missing or malformed")
+    require(
+        matrix.get("git_head") == payload.get("provenance", {}).get("git_head"),
+        f"{prefix} nested source head differs",
+    )
+    require(
+        isinstance(detail.get("native_matrix_sha256"), str)
+        and DIGEST_RE.fullmatch(detail["native_matrix_sha256"]) is not None,
+        f"{prefix} raw matrix commitment is missing or malformed",
+    )
     # The producer hashes the original input bytes. JSON reserialization here
     # cannot verify that commitment because whitespace and field order are lost.
     if qualification != "authority":
         return True
     require(payload.get("host", {}).get("os") == "linux", f"{prefix} authority requires Linux")
-    require(detail.get("resource_scope") == NATIVE_DAEMON_RSS_SCOPE,
-            f"{prefix} authority requires complete daemon VmHWM scope")
+    require(
+        detail.get("resource_scope") == NATIVE_DAEMON_RSS_SCOPE,
+        f"{prefix} authority requires complete daemon VmHWM scope",
+    )
     scenarios = matrix.get("scenarios")
-    require(isinstance(scenarios, list) and len(scenarios) == 33,
-            f"{prefix} authority requires 33 matrix scenarios")
+    require(
+        isinstance(scenarios, list) and len(scenarios) == 33,
+        f"{prefix} authority requires 33 matrix scenarios",
+    )
     kinds: dict[str, int] = {}
     ids: set[str] = set()
     error_ids: set[str] = set()
     maximum = 0
     for index, scenario in enumerate(scenarios):
         require(isinstance(scenario, dict), f"{prefix} scenarios[{index}] is invalid")
-        scenario_id, kind, reports = (scenario.get(key) for key in ("scenario_id", "kind", "reports"))
-        require(isinstance(scenario_id, str) and scenario_id and scenario_id not in ids,
-                f"{prefix} scenarios[{index}] has duplicate or missing identity")
-        require(kind in ("text", "error", "history", "retained")
-                and isinstance(reports, list) and bool(reports),
-                f"{prefix} scenario {scenario_id!r} has invalid kind or reports")
+        scenario_id, kind, reports = (
+            scenario.get(key) for key in ("scenario_id", "kind", "reports")
+        )
+        require(
+            isinstance(scenario_id, str) and scenario_id and scenario_id not in ids,
+            f"{prefix} scenarios[{index}] has duplicate or missing identity",
+        )
+        require(
+            kind in ("text", "error", "history", "retained")
+            and isinstance(reports, list)
+            and bool(reports),
+            f"{prefix} scenario {scenario_id!r} has invalid kind or reports",
+        )
         ids.add(scenario_id)
         kinds[kind] = kinds.get(kind, 0) + 1
         if kind == "error":
             error_ids.add(scenario_id)
         for report in reports:
-            require(isinstance(report, dict), f"{prefix} scenario {scenario_id!r} report is invalid")
+            require(
+                isinstance(report, dict), f"{prefix} scenario {scenario_id!r} report is invalid"
+            )
             peak = report.get("daemon_peak_rss_bytes")
             if kind == "error":
                 require(peak is None, f"{prefix} client error {scenario_id!r} carries daemon RSS")
             else:
-                require(type(peak) is int and peak > 0,
-                        f"{prefix} daemon report {scenario_id!r} lacks positive VmHWM")
+                require(
+                    type(peak) is int and peak > 0,
+                    f"{prefix} daemon report {scenario_id!r} lacks positive VmHWM",
+                )
                 maximum = max(maximum, peak)
-    require(kinds == {"text": 9, "error": 5, "history": 7, "retained": 12},
-            f"{prefix} authority has incomplete Native scenario kinds")
-    require(error_ids == NATIVE_CLIENT_ERROR_IDS,
-            f"{prefix} authority changed the fixed client error scenarios")
-    require(ids == {row.get("scenario_id") for row in payload["rows"]}
-            and len(payload["rows"]) == 33,
-            f"{prefix} matrix and artifact scenario identities differ")
+    require(
+        kinds == {"text": 9, "error": 5, "history": 7, "retained": 12},
+        f"{prefix} authority has incomplete Native scenario kinds",
+    )
+    require(
+        error_ids == NATIVE_CLIENT_ERROR_IDS,
+        f"{prefix} authority changed the fixed client error scenarios",
+    )
+    require(
+        ids == {row.get("scenario_id") for row in payload["rows"]} and len(payload["rows"]) == 33,
+        f"{prefix} matrix and artifact scenario identities differ",
+    )
     for row in payload["rows"]:
         if row["scenario_id"] in error_ids:
-            require(row["engine_touched"] == [] and row["typed_error_code"] == "PARSE_FAIL"
-                    and row["result_shape"] == "typed_error" and type(row["error_count"]) is int
-                    and row["error_count"] > 0,
-                    f"{prefix} client error row has daemon or missing typed error")
+            require(
+                row["engine_touched"] == []
+                and row["typed_error_code"] == "PARSE_FAIL"
+                and row["result_shape"] == "typed_error"
+                and type(row["error_count"]) is int
+                and row["error_count"] > 0,
+                f"{prefix} client error row has daemon or missing typed error",
+            )
         else:
-            require(row["engine_touched"] == ["native"] and row["typed_error_code"] is None,
-                    f"{prefix} daemon row lacks Native engine scope")
+            require(
+                row["engine_touched"] == ["native"] and row["typed_error_code"] is None,
+                f"{prefix} daemon row lacks Native engine scope",
+            )
     resources = payload.get("resources")
-    require(isinstance(resources, dict) and type(resources.get("peak_rss_bytes")) is int
-            and resources["peak_rss_bytes"] == maximum,
-            f"{prefix} artifact peak RSS differs from maximum daemon VmHWM")
+    require(
+        isinstance(resources, dict)
+        and type(resources.get("peak_rss_bytes")) is int
+        and resources["peak_rss_bytes"] == maximum,
+        f"{prefix} artifact peak RSS differs from maximum daemon VmHWM",
+    )
     return True
 
 
@@ -509,9 +550,15 @@ def gate_provenance(baseline: Artifact, current: Artifact, head: str) -> None:
         raise ArtifactRefused("Native and Legacy DSL artifacts require separate baselines")
     for role, artifact in (("baseline", baseline), ("current", current)):
         if artifact.qualification == "diagnostic":
-            raise ArtifactRefused(f"{role} artifact is diagnostic and cannot enter the DSL authority comparison")
-        if artifact.qualification not in (("authority",) if artifact.native_matrix else (None, "authority")):
-            raise ArtifactRefused(f"{role} artifact has missing or unknown DSL authority qualification")
+            raise ArtifactRefused(
+                f"{role} artifact is diagnostic and cannot enter the DSL authority comparison"
+            )
+        if artifact.qualification not in (
+            ("authority",) if artifact.native_matrix else (None, "authority")
+        ):
+            raise ArtifactRefused(
+                f"{role} artifact has missing or unknown DSL authority qualification"
+            )
     if current.git_head != head:
         raise ArtifactRefused(
             f"current artifact git_head {current.git_head} is not HEAD {head}: "
@@ -575,8 +622,12 @@ def require_complete_baseline_candidate(artifact: Artifact) -> None:
     """A baseline must ratchet every declared scenario, not preserve gaps."""
     if artifact.qualification == "diagnostic":
         raise ArtifactRefused("diagnostic DSL capture cannot be admitted as an authority baseline")
-    if artifact.qualification not in (("authority",) if artifact.native_matrix else (None, "authority")):
-        raise ArtifactRefused("baseline candidate has missing or unknown DSL authority qualification")
+    if artifact.qualification not in (
+        ("authority",) if artifact.native_matrix else (None, "authority")
+    ):
+        raise ArtifactRefused(
+            "baseline candidate has missing or unknown DSL authority qualification"
+        )
     if artifact.host_identity[0] != "linux":
         raise ArtifactRefused("baseline candidate was not captured on the canonical Linux host")
     for scenario_id, row in artifact.rows.items():

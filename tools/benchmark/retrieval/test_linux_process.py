@@ -22,8 +22,17 @@ LINUX_PIDFD_AVAILABLE = (
 
 
 def stat(
-    pid, *, ppid=1, pgid=None, start=100, user=0, kernel=0, rss=1,
-    state="S", flags=0, num_threads=1,
+    pid,
+    *,
+    ppid=1,
+    pgid=None,
+    start=100,
+    user=0,
+    kernel=0,
+    rss=1,
+    state="S",
+    flags=0,
+    num_threads=1,
 ):
     # Fields after comm begin at field 3 (state). Indices 6, 17, 11, 12,
     # 19, 21 correspond to flags, thread count, CPU, starttime, and RSS.
@@ -602,8 +611,10 @@ def test_final_ownership_observation_obeys_deadline(
     monkeypatch.setattr(
         linux_process,
         "_release_cgroup_workload",
-        lambda _fd, deadline: clock.now if deadline == absolute_deadline else pytest.fail(
-            "wrong absolute deadline forwarded to release gate"
+        lambda _fd, deadline: (
+            clock.now
+            if deadline == absolute_deadline
+            else pytest.fail("wrong absolute deadline forwarded to release gate")
         ),
     )
     monkeypatch.setattr(linux_process, "_CgroupTracker", lambda *_args: tracker)
@@ -662,9 +673,7 @@ def test_smaps_rollup_rss_parser_uses_kib_with_bounded_exact_field(tmp_path):
     proc_dir = tmp_path / "41"
     proc_dir.mkdir()
     source = proc_dir / "smaps_rollup"
-    source.write_bytes(
-        b"00400000-00500000 ---p 00000000 00:00 0 [rollup]\nRss:  7 kB\nPss: 2 kB\n"
-    )
+    source.write_bytes(b"00400000-00500000 ---p 00000000 00:00 0 [rollup]\nRss:  7 kB\nPss: 2 kB\n")
     assert linux_process._read_smaps_rollup_rss_bytes(41, tmp_path) == 7 * 1024
 
     invalid = (
@@ -804,9 +813,7 @@ def test_cgroup_rss_omits_only_esrch_for_same_single_exiting_member(monkeypatch)
         (linux_process._PF_EXITING, 1, linux_process.ProcessError("malformed smaps")),
     ],
 )
-def test_cgroup_rss_refuses_nonterminal_or_non_esrch_loss(
-    monkeypatch, flags, num_threads, failure
-):
+def test_cgroup_rss_refuses_nonterminal_or_non_esrch_loss(monkeypatch, flags, num_threads, failure):
     rows = {41: stat(41, flags=flags, num_threads=num_threads)}
     owner = _mock_qualified_members(monkeypatch, rows)
 
@@ -815,7 +822,9 @@ def test_cgroup_rss_refuses_nonterminal_or_non_esrch_loss(
 
     monkeypatch.setattr(linux_process, "_read_smaps_rollup_rss_bytes", fail_smaps)
     tracker = linux_process._CgroupTracker(row(41).identity, "/owned", 100, 4096)
-    with pytest.raises(linux_process.ProcessError, match="cannot sample smaps_rollup|no readable live"):
+    with pytest.raises(
+        linux_process.ProcessError, match="cannot sample smaps_rollup|no readable live"
+    ):
         tracker.sample(owner)
     tracker.close()
 
@@ -882,13 +891,12 @@ def test_cgroup_rss_samples_one_worker_after_leader_becomes_zombie(monkeypatch):
         42: stat(42, pgid=41, start=200, rss=1),
         43: stat(43, pgid=41, start=300, rss=1),
     }
-    owner = _mock_qualified_members(
-        monkeypatch, rows, member_pids={41}, thread_pids={41, 42, 43}
-    )
+    owner = _mock_qualified_members(monkeypatch, rows, member_pids={41}, thread_pids={41, 42, 43})
     monkeypatch.setattr(linux_process, "_read_thread_tgid", lambda tid: 41)
     reads = []
     monkeypatch.setattr(
-        linux_process, "_read_smaps_rollup_rss_bytes",
+        linux_process,
+        "_read_smaps_rollup_rss_bytes",
         lambda pid: reads.append(pid) or 64 * 1024 * 1024,
     )
     tracker = linux_process._CgroupTracker(row(41).identity, "/owned", 100, 4096)
@@ -906,8 +914,11 @@ def test_cgroup_rss_retains_smaps_read_before_leader_becomes_zombie(monkeypatch,
     rows = {41: stat(41, state="S", num_threads=2), 42: stat(42, pgid=41, start=200)}
     membership = ["/owned"]
     owner = _mock_qualified_members(
-        monkeypatch, rows, membership=lambda pid: membership[0],
-        member_pids={41}, thread_pids={41, 42},
+        monkeypatch,
+        rows,
+        membership=lambda pid: membership[0],
+        member_pids={41},
+        thread_pids={41, 42},
     )
     reads = []
 
@@ -965,8 +976,11 @@ def test_cgroup_rss_refuses_invalid_thread_representative(monkeypatch, change):
     }
     membership = ["/owned"]
     owner = _mock_qualified_members(
-        monkeypatch, rows, membership=lambda pid: membership[0],
-        member_pids={41}, thread_pids={41, 42},
+        monkeypatch,
+        rows,
+        membership=lambda pid: membership[0],
+        member_pids={41},
+        thread_pids={41, 42},
     )
     tgid_reads = [0]
 
@@ -1008,7 +1022,9 @@ def test_cgroup_rss_refuses_unreadable_live_worker(monkeypatch, failure):
 
     monkeypatch.setattr(linux_process, "_read_smaps_rollup_rss_bytes", fail_smaps)
     tracker = linux_process._CgroupTracker(row(41).identity, "/owned", 100, 4096)
-    with pytest.raises(linux_process.ProcessError, match="cannot sample smaps_rollup for live TID 42"):
+    with pytest.raises(
+        linux_process.ProcessError, match="cannot sample smaps_rollup for live TID 42"
+    ):
         tracker.sample(owner)
     tracker.close()
 
@@ -1049,7 +1065,9 @@ def test_cgroup_rss_refuses_unreadable_live_smaps(monkeypatch, failure):
 
     monkeypatch.setattr(linux_process, "_read_smaps_rollup_rss_bytes", fail_smaps)
     tracker = linux_process._CgroupTracker(row(41).identity, "/owned", 100, 4096)
-    with pytest.raises(linux_process.ProcessError, match="cannot sample smaps_rollup for live PID 41"):
+    with pytest.raises(
+        linux_process.ProcessError, match="cannot sample smaps_rollup for live PID 41"
+    ):
         tracker.sample(owner)
     tracker.close()
 

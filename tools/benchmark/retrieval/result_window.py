@@ -155,7 +155,9 @@ def typed_window(value: object, where: str) -> tuple[int, bool, dict[str, bool]]
         lane_count = typed_count(lane["candidates"], f"{where}.coverage lane candidates")
         if returned == 0 and lane["contributed"]:
             raise WindowEvidenceError(f"{where} empty window has a lane that contributed rows")
-        if logical_empty and (lane["executed"] or lane["filtered_out"] or lane_count != ("exact", 0)):
+        if logical_empty and (
+            lane["executed"] or lane["filtered_out"] or lane_count != ("exact", 0)
+        ):
             raise WindowEvidenceError(f"{where} logical empty window claims backend execution")
         if "cost" in lane and not _is_wire_uint(lane["cost"]):
             raise WindowEvidenceError(f"{where}.coverage lane cost is invalid")

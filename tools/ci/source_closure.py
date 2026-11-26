@@ -691,8 +691,13 @@ def _assert_clean(repo: Path, roots: list[str]) -> None:
 
 def _physical_source_state(info: os.stat_result) -> tuple[int, ...]:
     return (
-        info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
-        info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
     )
 
 
@@ -703,7 +708,8 @@ def require_source_files_unchanged(repo: Path, states: dict[str, tuple[int, ...]
 
 
 def capture_committed_source(
-    repo: Path, expected_head: str | None,
+    repo: Path,
+    expected_head: str | None,
 ) -> tuple[dict[str, str], dict[str, tuple[int, ...]]]:
     """Stream the complete worktree through the committed Git blob and mode checks."""
     from tools.ci.lint.handoff_validation import _consume_repo_regular_file
@@ -719,7 +725,9 @@ def capture_committed_source(
     files: dict[str, str] = {}
     states: dict[str, tuple[int, ...]] = {}
 
-    def inspect(handle: BinaryIO, path: str, mode: bytes, oid: bytes) -> tuple[str, tuple[int, ...]]:
+    def inspect(
+        handle: BinaryIO, path: str, mode: bytes, oid: bytes
+    ) -> tuple[str, tuple[int, ...]]:
         info = os.fstat(handle.fileno())
         executable = bool(info.st_mode & stat.S_IXUSR)
         blob = hashlib.new("sha1" if len(oid) == 40 else "sha256")
@@ -729,7 +737,9 @@ def capture_committed_source(
             blob.update(chunk)
             digest.update(chunk)
         if blob.hexdigest().encode("ascii") != oid or executable != (mode == b"100755"):
-            raise ClosureError(f"refusing dirty relevant source: differs from committed HEAD: {path}")
+            raise ClosureError(
+                f"refusing dirty relevant source: differs from committed HEAD: {path}"
+            )
         return digest.hexdigest(), _physical_source_state(info)
 
     for row in filter(None, tree.split(b"\0")):
@@ -739,7 +749,9 @@ def capture_committed_source(
         if kind != b"blob" or mode not in {b"100644", b"100755"}:
             raise ClosureError(f"release source is not a committed regular file: {path}")
         files[path], states[path] = _consume_repo_regular_file(
-            repo, path, label="release source",
+            repo,
+            path,
+            label="release source",
             consume=partial(inspect, path=path, mode=mode, oid=oid),
         )
 

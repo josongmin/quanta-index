@@ -118,12 +118,22 @@ def test_native_capture_projects_opaque_unjudged_pools_and_binds_raw_files(tmp_p
     ):
         path.write_bytes(raw)
     by_path = {row["path"]: row for row in pack["file_universe"]}
-    source_inputs = (tmp_path / "universe", tmp_path / "binding", tmp_path / "base", tmp_path / "targets", "family")
+    source_inputs = (
+        tmp_path / "universe",
+        tmp_path / "binding",
+        tmp_path / "base",
+        tmp_path / "targets",
+        "family",
+    )
     observed = []
 
     def load(repo, suite, pack_bytes, query_pack, record):
         assert (repo, suite, pack_bytes, query_pack, record) == (
-            checkout, {"suite": 1}, b'{"pack":2}\n', {"pack": 2}, {"capture": 3}
+            checkout,
+            {"suite": 1},
+            b'{"pack":2}\n',
+            {"pack": 2},
+            {"capture": 3},
         )
         return {}, pack, {"secret_score": 0.91}, object()
 
@@ -141,76 +151,143 @@ def test_native_capture_projects_opaque_unjudged_pools_and_binds_raw_files(tmp_p
         native_file_evidence, "prepare_review_candidates", candidates, raising=False
     )
     projected_pack, pools, custody = holdout_review.capture_native_review_pools(
-        checkout, suite_path, query_pack_path, capture_path,
-        pool_ids=("opaque-a", "opaque-b", "opaque-c"), source_inputs=source_inputs,
+        checkout,
+        suite_path,
+        query_pack_path,
+        capture_path,
+        pool_ids=("opaque-a", "opaque-b", "opaque-c"),
+        source_inputs=source_inputs,
     )
     assert projected_pack == pack and observed == [source_inputs]
     assert pools == [
         {
-            "pool_id": "opaque-a", "kind": "retrieval",
+            "pool_id": "opaque-a",
+            "kind": "retrieval",
             "tasks": {"toy.001": [by_path["alternative.py"], by_path["answer.py"]]},
         },
         {
-            "pool_id": "opaque-b", "kind": "retrieval",
+            "pool_id": "opaque-b",
+            "kind": "retrieval",
             "tasks": {"toy.001": [by_path["answer.py"]]},
         },
         {
-            "pool_id": "opaque-c", "kind": "retrieval",
+            "pool_id": "opaque-c",
+            "kind": "retrieval",
             "tasks": {"toy.001": [by_path["control.py"]]},
         },
     ]
-    assert custody["route_pool_ids"] == {"lexical": "opaque-a", "hybrid": "opaque-b", "dense": "opaque-c"}
+    assert custody["route_pool_ids"] == {
+        "lexical": "opaque-a",
+        "hybrid": "opaque-b",
+        "dense": "opaque-c",
+    }
     assert custody["suite_bytes_sha256"] == evaluator.digest(suite_path.read_bytes())
     assert custody["query_pack_bytes_sha256"] == evaluator.digest(query_pack_path.read_bytes())
     assert custody["record_bytes_sha256"] == evaluator.digest(capture_path.read_bytes())
     assert custody["pools_sha256"] == evaluator.digest(evaluator.canonical(pools))
-    assert custody["qualified"] is custody["pool_execution_attested"] is custody["human_provenance_attested"] is False
+    assert (
+        custody["qualified"]
+        is custody["pool_execution_attested"]
+        is custody["human_provenance_attested"]
+        is False
+    )
     forms, _ = holdout_review.prepare(checkout, pack, contexts, pools + controls[2:], seed=42)
     reviewer_bytes = evaluator.canonical(forms)
-    assert all(marker not in reviewer_bytes for marker in (
-        b"lexical", b"hybrid", b"dense", b"opaque-a", b"opaque-b", b"opaque-c", b"secret_score",
-    ))
+    assert all(
+        marker not in reviewer_bytes
+        for marker in (
+            b"lexical",
+            b"hybrid",
+            b"dense",
+            b"opaque-a",
+            b"opaque-b",
+            b"opaque-c",
+            b"secret_score",
+        )
+    )
 
     contexts_path = tmp_path / "contexts.json"
     controls_path = tmp_path / "controls.json"
     output = tmp_path / "review"
     contexts_path.write_bytes(evaluator.canonical(contexts))
     controls_path.write_bytes(evaluator.canonical(controls[2:]))
-    assert holdout_review.main([
-        "prepare-native", "--repo", str(checkout), "--suite", str(suite_path),
-        "--query-pack", str(query_pack_path), "--capture", str(capture_path),
-        "--contexts", str(contexts_path), "--control-pools", str(controls_path),
-        "--output", str(output), "--seed", "42",
-    ]) == 0
+    assert (
+        holdout_review.main(
+            [
+                "prepare-native",
+                "--repo",
+                str(checkout),
+                "--suite",
+                str(suite_path),
+                "--query-pack",
+                str(query_pack_path),
+                "--capture",
+                str(capture_path),
+                "--contexts",
+                str(contexts_path),
+                "--control-pools",
+                str(controls_path),
+                "--output",
+                str(output),
+                "--seed",
+                "42",
+            ]
+        )
+        == 0
+    )
     for slot in (1, 2):
         raw = (output / f"reviewer-{slot}.json").read_bytes()
-        assert all(marker not in raw for marker in (
-            b"lexical", b"hybrid", b"dense", b"route-a", b"route-b", b"route-c",
-        ))
+        assert all(
+            marker not in raw
+            for marker in (
+                b"lexical",
+                b"hybrid",
+                b"dense",
+                b"route-a",
+                b"route-b",
+                b"route-c",
+            )
+        )
         assert all(file["grade"] is None for file in json.loads(raw)["reviews"][0]["files"])
     written = json.loads((output / "owner" / "custody.json").read_bytes())
     assert written["qualified"] is written["native_capture"]["qualified"] is False
     assert written["native_capture"]["record_bytes_sha256"] == custody["record_bytes_sha256"]
     assert written["native_capture"]["route_pool_ids"] == {
-        "lexical": "route-a", "hybrid": "route-b", "dense": "route-c",
+        "lexical": "route-a",
+        "hybrid": "route-b",
+        "dense": "route-c",
     }
     issued_forms = [json.loads((output / f"reviewer-{slot}.json").read_bytes()) for slot in (1, 2)]
-    assert all(form["review_inputs_sha256"] == written["review_inputs_sha256"] for form in issued_forms)
+    assert all(
+        form["review_inputs_sha256"] == written["review_inputs_sha256"] for form in issued_forms
+    )
     completed = _completed_forms(issued_forms)
     _, original_pools, original_capture = holdout_review.capture_native_review_pools(
-        checkout, suite_path, query_pack_path, capture_path, pool_ids=("route-a", "route-b", "route-c"),
+        checkout,
+        suite_path,
+        query_pack_path,
+        capture_path,
+        pool_ids=("route-a", "route-b", "route-c"),
     )
     checked = holdout_review.validate_completed_forms(
-        checkout, pack, contexts, original_pools + controls[2:], completed,
-        seed=42, native_capture=original_capture,
+        checkout,
+        pack,
+        contexts,
+        original_pools + controls[2:],
+        completed,
+        seed=42,
+        native_capture=original_capture,
     )
     assert checked["review_inputs_sha256"] == written["review_inputs_sha256"]
     adjudicated = copy.deepcopy(completed[0])
     adjudicated["reviewer_id"] = "person-3"
-    contracts = {"toy.001": {
-        "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
-        "gold_unit": "distinct_file", "result_unit": "distinct_file",
-    }}
+    contracts = {
+        "toy.001": {
+            "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        }
+    }
     replay_options = {
         "source_inputs": source_inputs,
         "contexts": contexts,
@@ -221,8 +298,12 @@ def test_native_capture_projects_opaque_unjudged_pools_and_binds_raw_files(tmp_p
         "seed": 42,
     }
     replayed = holdout_review.replay_native_review_labels(
-        checkout, suite_path, query_pack_path, capture_path,
-        expected_capture_sha256=custody["record_bytes_sha256"], **replay_options,
+        checkout,
+        suite_path,
+        query_pack_path,
+        capture_path,
+        expected_capture_sha256=custody["record_bytes_sha256"],
+        **replay_options,
     )
     assert replayed["native_capture_sha256"] == custody["record_bytes_sha256"]
     assert replayed["review_inputs_sha256"] == checked["review_inputs_sha256"]
@@ -230,24 +311,40 @@ def test_native_capture_projects_opaque_unjudged_pools_and_binds_raw_files(tmp_p
     changed_forms[0]["reviews"][0]["files"][0]["source_text"] += "\n"
     with pytest.raises(evaluator.EvidenceError, match="review source/candidate changed"):
         holdout_review.replay_native_review_labels(
-            checkout, suite_path, query_pack_path, capture_path,
+            checkout,
+            suite_path,
+            query_pack_path,
+            capture_path,
             expected_capture_sha256=custody["record_bytes_sha256"],
             **(replay_options | {"completed_forms": changed_forms}),
         )
     with pytest.raises(evaluator.EvidenceError, match="raw capture digest differs"):
         holdout_review.replay_native_review_labels(
-            checkout, suite_path, query_pack_path, capture_path,
-            expected_capture_sha256="0" * 64, **replay_options,
+            checkout,
+            suite_path,
+            query_pack_path,
+            capture_path,
+            expected_capture_sha256="0" * 64,
+            **replay_options,
         )
     capture_path.write_bytes(capture_path.read_bytes() + b"\n")
     _, same_pools, replaced_capture = holdout_review.capture_native_review_pools(
-        checkout, suite_path, query_pack_path, capture_path, pool_ids=("route-a", "route-b", "route-c"),
+        checkout,
+        suite_path,
+        query_pack_path,
+        capture_path,
+        pool_ids=("route-a", "route-b", "route-c"),
     )
     assert same_pools == original_pools
     with pytest.raises(evaluator.EvidenceError, match="review_inputs_sha256"):
         holdout_review.validate_completed_forms(
-            checkout, pack, contexts, same_pools + controls[2:], completed,
-            seed=42, native_capture=replaced_capture,
+            checkout,
+            pack,
+            contexts,
+            same_pools + controls[2:],
+            completed,
+            seed=42,
+            native_capture=replaced_capture,
         )
 
 
@@ -257,32 +354,40 @@ def test_native_review_capture_refuses_changed_raw_input(tmp_path, monkeypatch):
     for path in paths:
         path.write_bytes(b"{}\n")
     monkeypatch.setattr(
-        evaluator, "_bind_native_file_inputs", lambda *_args: ({}, pack, {}, object()),
+        evaluator,
+        "_bind_native_file_inputs",
+        lambda *_args: ({}, pack, {}, object()),
     )
 
     def mutate(*_args, **_kwargs):
         paths[2].write_bytes(b'{"changed":true}\n')
         return {"lexical": {"toy.001": []}, "hybrid": {"toy.001": []}, "dense": {"toy.001": []}}
 
-    monkeypatch.setattr(
-        native_file_evidence, "prepare_review_candidates", mutate, raising=False
-    )
+    monkeypatch.setattr(native_file_evidence, "prepare_review_candidates", mutate, raising=False)
     with pytest.raises(evaluator.EvidenceError, match="input changed"):
         holdout_review.capture_native_review_pools(
             checkout, *paths, pool_ids=("opaque-a", "opaque-b", "opaque-c")
         )
 
 
-@pytest.mark.parametrize("pool_ids", [
-    ("opaque-a", "opaque-b"), ("same", "same", "opaque-c"),
-    ("lexical", "opaque-b", "opaque-c"), ("opaque-a", "hybrid-pool", "opaque-c"),
-    ("opaque-a", "opaque-b", "ann-pool"),
-])
+@pytest.mark.parametrize(
+    "pool_ids",
+    [
+        ("opaque-a", "opaque-b"),
+        ("same", "same", "opaque-c"),
+        ("lexical", "opaque-b", "opaque-c"),
+        ("opaque-a", "hybrid-pool", "opaque-c"),
+        ("opaque-a", "opaque-b", "ann-pool"),
+    ],
+)
 def test_native_review_pool_ids_cannot_disclose_route_or_repeat(tmp_path, pool_ids):
     checkout, _pack, _contexts, _controls = _fixture(tmp_path)
     with pytest.raises(evaluator.EvidenceError, match="pool IDs"):
         holdout_review.capture_native_review_pools(
-            checkout, tmp_path / "suite", tmp_path / "pack", tmp_path / "capture",
+            checkout,
+            tmp_path / "suite",
+            tmp_path / "pack",
+            tmp_path / "capture",
             pool_ids=pool_ids,
         )
 
@@ -489,15 +594,29 @@ def test_file_review_issuer_rejects_changed_route_pool_with_same_candidate_union
 
 def test_native_reviewed_labels_bind_frozen_capture_and_task_fields(tmp_path):
     checkout, pack, contexts, pools = _fixture(tmp_path)
-    suite = {key: pack[key] for key in (
-        "schema_version", "suite_id", "repository_commit", "routes", "comparison_contract",
-        "file_universe", "file_universe_digest",
-    )}
+    suite = {
+        key: pack[key]
+        for key in (
+            "schema_version",
+            "suite_id",
+            "repository_commit",
+            "routes",
+            "comparison_contract",
+            "file_universe",
+            "file_universe_digest",
+        )
+    }
     task_id = pack["tasks"][0]["task_id"]
-    suite["tasks"] = [{
-        **pack["tasks"][0], "query_family_id": "family", "split": "eval",
-        "category": "identifier", "answerable": False, "gold": [],
-    }]
+    suite["tasks"] = [
+        {
+            **pack["tasks"][0],
+            "query_family_id": "family",
+            "split": "eval",
+            "category": "identifier",
+            "answerable": False,
+            "gold": [],
+        }
+    ]
     suite, pack, source = evaluator.validate_suite(checkout, suite)
     capture_sha = "1" * 64
     custody = {
@@ -505,20 +624,34 @@ def test_native_reviewed_labels_bind_frozen_capture_and_task_fields(tmp_path):
         "query_pack_sha256": evaluator.digest(evaluator.canonical(pack)),
         "pools_sha256": evaluator.digest(evaluator.canonical(pools[:2])),
     }
-    forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42, native_capture=custody)
+    forms, _ = holdout_review.prepare(
+        checkout, pack, contexts, pools, seed=42, native_capture=custody
+    )
     completed = _completed_forms(forms)
     adjudicated = copy.deepcopy(completed[0])
     adjudicated["reviewer_id"] = "fixture-adjudicator"
-    contracts = {task_id: {
-        "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
-        "gold_unit": "distinct_file", "result_unit": "distinct_file",
-    }}
+    contracts = {
+        task_id: {
+            "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        }
+    }
     receipt = holdout_review.finalize_file_review_labels(
-        checkout, pack, contexts, pools, completed, adjudicated, contracts,
-        seed=42, native_capture=custody,
+        checkout,
+        pack,
+        contexts,
+        pools,
+        completed,
+        adjudicated,
+        contracts,
+        seed=42,
+        native_capture=custody,
     )
     reviewed = holdout_review.bind_native_reviewed_suite(suite, pack, receipt, capture_sha)
-    validated, reviewed_pack, _ = evaluator.validate_suite(checkout, reviewed, source_snapshot=source)
+    validated, reviewed_pack, _ = evaluator.validate_suite(
+        checkout, reviewed, source_snapshot=source
+    )
     assert suite["tasks"][0]["answerable"] is False
     assert validated["tasks"][0]["answerable"] is True
     assert validated["tasks"][0]["category"] == "identifier"
@@ -541,16 +674,26 @@ def test_native_reviewed_labels_bind_frozen_capture_and_task_fields(tmp_path):
         else:
             repeated["adjudicated_form_sha256"] = first_form
         commitments = {
-            key: repeated[key] for key in (
-                "query_pack_sha256", "review_inputs_sha256", "completed_form_sha256",
-                "adjudicated_form_sha256", "native_capture_sha256",
+            key: repeated[key]
+            for key in (
+                "query_pack_sha256",
+                "review_inputs_sha256",
+                "completed_form_sha256",
+                "adjudicated_form_sha256",
+                "native_capture_sha256",
             )
         }
         for label_id, label in repeated["task_labels"].items():
             label_data = {key: value for key, value in label.items() if key != "label_review"}
-            label["label_review"]["evidence_sha256"] = evaluator.digest(evaluator.canonical({
-                **commitments, "task_id": label_id, "label": label_data,
-            }))
+            label["label_review"]["evidence_sha256"] = evaluator.digest(
+                evaluator.canonical(
+                    {
+                        **commitments,
+                        "task_id": label_id,
+                        "label": label_data,
+                    }
+                )
+            )
         with pytest.raises(evaluator.EvidenceError, match="distinct review and adjudication forms"):
             holdout_review.bind_native_reviewed_suite(suite, pack, repeated, capture_sha)
     positive = next(

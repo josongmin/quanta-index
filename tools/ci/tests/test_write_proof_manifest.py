@@ -816,7 +816,9 @@ def test_p12a_manifest_issues_without_p11_or_paired_checkout(
     proof = next(item for item in registry["proofs"] if item["id"] == "p12a-proof-infrastructure")
     selectors = [paths[target] for target in proof["test_authority_targets"]]
     if scenario == "omit-r5":
-        selectors = [path for path in selectors if path != "tools/ci/tests/test_paired_r5_result.py"]
+        selectors = [
+            path for path in selectors if path != "tools/ci/tests/test_paired_r5_result.py"
+        ]
     raw = root / "artifacts/proof-authority/raw"
     inventory = raw / "p12a-inventory.json"
     junit = raw / "p12a-junit.xml"
@@ -893,7 +895,9 @@ def test_p12a_manifest_issues_without_p11_or_paired_checkout(
     }
     assert CHECKER.check_manifest(original, **replay) == []
     original["source"] = CHECKER.proof_source_snapshot(
-        root, manifest_path=manifest, proof=proof,
+        root,
+        manifest_path=manifest,
+        proof=proof,
     )
     assert any(
         "captured execution source differs" in finding.message
@@ -1038,7 +1042,10 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
     for path, refusal in [
         (dependency, "current alias differs from its immutable archive"),
         (root / admission["binary_path"], "release daemon bytes changed during proof"),
-        (checkout / proof["paired_dependency_lock"], "paired release inputs changed before publication"),
+        (
+            checkout / proof["paired_dependency_lock"],
+            "paired release inputs changed before publication",
+        ),
     ]:
         with monkeypatch.context() as temporary:
             prior = path.read_bytes()

@@ -650,9 +650,7 @@ def test_leakage_fingerprints_ignore_layout_but_not_tokens():
 def test_near_copy_survives_repeated_development_revisions(historical_revisions):
     # Revisions have distinct bytes and commits, but one upstream/path retains
     # the same substantial source body. The holdout adds a different tail.
-    body = b"\n".join(
-        f"func f{i}(x int) int {{ return x + {i} }}".encode() for i in range(80)
-    )
+    body = b"\n".join(f"func f{i}(x int) int {{ return x + {i} }}".encode() for i in range(80))
     development = []
     for revision in range(historical_revisions):
         raw = body + f"\nfunc revision_{revision}(x int) int {{ return x * 3 }}\n".encode()
@@ -677,9 +675,7 @@ def test_near_copy_survives_repeated_development_revisions(historical_revisions)
         )
     ]
     with pytest.raises(EvidenceError, match="near-duplicate source"):
-        binding._refuse_cross_split_source(
-            {"development": development, "holdout": holdout}
-        )
+        binding._refuse_cross_split_source({"development": development, "holdout": holdout})
 
 
 @pytest.mark.parametrize("independent_identity", ["upstream", "path"])
@@ -687,9 +683,7 @@ def test_near_copy_survives_repeated_development_revisions(historical_revisions)
 def test_near_copy_document_frequency_counts_independent_sources(
     independent_identity, development_documents
 ):
-    body = b"\n".join(
-        f"func f{i}(x int) int {{ return x + {i} }}".encode() for i in range(80)
-    )
+    body = b"\n".join(f"func f{i}(x int) int {{ return x + {i} }}".encode() for i in range(80))
     development = []
     for index in range(development_documents):
         raw = body + f"\nfunc revision_{index}(x int) int {{ return x * 3 }}\n".encode()
@@ -728,13 +722,9 @@ def test_exact_clone_is_refused_after_repeated_development_revisions():
         ("development", "https://example.invalid/dev", "src/code.go", digest, fingerprints)
         for _ in range(64)
     ]
-    holdout = [
-        ("holdout", "https://example.invalid/holdout", "lib/code.go", digest, fingerprints)
-    ]
+    holdout = [("holdout", "https://example.invalid/holdout", "lib/code.go", digest, fingerprints)]
     with pytest.raises(EvidenceError, match="identical source"):
-        binding._refuse_cross_split_source(
-            {"development": development, "holdout": holdout}
-        )
+        binding._refuse_cross_split_source({"development": development, "holdout": holdout})
 
 
 @pytest.mark.parametrize(
@@ -883,9 +873,7 @@ def test_split_manifest_accepts_distinct_historical_revisions_on_development_sid
     manifest, releases = split_manifest(assignments)
     assert binding.validate_split_manifest(canonical(manifest), releases) == manifest
 
-    assignments[1] = (
-        old_root, old_copy, "historical-alpha-old", "development", ["dev-alpha-2"]
-    )
+    assignments[1] = (old_root, old_copy, "historical-alpha-old", "development", ["dev-alpha-2"])
     manifest, releases = split_manifest(assignments)
     with pytest.raises(EvidenceError, match="repeats one upstream"):
         binding.validate_split_manifest(canonical(manifest), releases)
@@ -920,7 +908,9 @@ def test_split_manifest_accepts_129_historical_revisions_and_disjoint_holdout(
     entries = []
     for index, revision in enumerate(revisions):
         name = f"historical-alpha-{index:03d}"
-        subprocess_git(source_checkout, "worktree", "add", "--detach", "-q", str(checkouts / name), revision)
+        subprocess_git(
+            source_checkout, "worktree", "add", "--detach", "-q", str(checkouts / name), revision
+        )
         entries.append(
             {
                 "name": name,
@@ -932,7 +922,9 @@ def test_split_manifest_accepts_129_historical_revisions_and_disjoint_holdout(
             }
         )
     spec = tmp_path / "historical-recipe.json"
-    spec.write_text(json.dumps({"source_revision": "fixed historical Git fixture", "repositories": entries}))
+    spec.write_text(
+        json.dumps({"source_revision": "fixed historical Git fixture", "repositories": entries})
+    )
     release = tmp_path / "historical-release"
     document = corpus.create(spec, checkouts, release)
     assignments = [

@@ -284,7 +284,9 @@ def test_prepared_install_advance_is_attributed_to_its_posting_phase() -> None:
     }
 
 
-def test_managed_install_external_children_report_exact_closed_groups_without_cross_group_unique_sum() -> None:
+def test_managed_install_external_children_report_exact_closed_groups_without_cross_group_unique_sum() -> (
+    None
+):
     first = dict(zip(EXTERNAL_CHILD_KEYS, (5, 3, 1))) | {REUSED_EXTERNAL_CHILD_KEY: 1}
     second = dict(zip(EXTERNAL_CHILD_KEYS, (4, 2, 2))) | {REUSED_EXTERNAL_CHILD_KEY: 2}
     report = build_native_ingest_report(
@@ -312,7 +314,9 @@ def test_managed_install_external_children_report_exact_closed_groups_without_cr
             "observed_keys": [],
             "reused_external_child_validations": 1,
             "cross_group_child_checks": {
-                "observation": "MISSING", "counts": None, "observed_keys": [],
+                "observation": "MISSING",
+                "counts": None,
+                "observed_keys": [],
             },
         },
         {
@@ -324,7 +328,9 @@ def test_managed_install_external_children_report_exact_closed_groups_without_cr
             "observed_keys": [],
             "reused_external_child_validations": 2,
             "cross_group_child_checks": {
-                "observation": "MISSING", "counts": None, "observed_keys": [],
+                "observation": "MISSING",
+                "counts": None,
+                "observed_keys": [],
             },
         },
         {
@@ -336,11 +342,15 @@ def test_managed_install_external_children_report_exact_closed_groups_without_cr
             "observed_keys": [],
             "reused_external_child_validations": None,
             "cross_group_child_checks": {
-                "observation": "MISSING", "counts": None, "observed_keys": [],
+                "observation": "MISSING",
+                "counts": None,
+                "observed_keys": [],
             },
         },
     ]
-    assert "external_child_groups" not in report["requests"][0]["stages"]["managed_object_install/0"]
+    assert (
+        "external_child_groups" not in report["requests"][0]["stages"]["managed_object_install/0"]
+    )
     assert "unique" not in group  # Per-group uniqueness cannot become a run-wide sum.
 
 
@@ -396,16 +406,27 @@ def test_managed_install_actual_reuse_reports_failed_prefix_without_planned_trip
         _capture(
             _span(1, None, "request", 0, 0, 100, identity=_identity(1)),
             _span(2, 1, "build_prepare", 3, 1, 90),
-            _span(3, 2, "managed_object_install", 3, 10, 20, outcome="error",
-                  counters={REUSED_EXTERNAL_CHILD_KEY: 1}),
-            _span(4, 2, "managed_object_install", 3, 30, 40,
-                  counters={REUSED_EXTERNAL_CHILD_KEY: 0}),
+            _span(
+                3,
+                2,
+                "managed_object_install",
+                3,
+                10,
+                20,
+                outcome="error",
+                counters={REUSED_EXTERNAL_CHILD_KEY: 1},
+            ),
+            _span(
+                4, 2, "managed_object_install", 3, 30, 40, counters={REUSED_EXTERNAL_CHILD_KEY: 0}
+            ),
             _span(5, 2, "managed_object_install", 3, 50, 60),
         )
     )
     groups = report["requests"][0]["stages"]["managed_object_install/3"]["external_child_groups"]
-    assert [(row["observation"], row["reused_external_child_validations"], row["outcome"])
-            for row in groups] == [
+    assert [
+        (row["observation"], row["reused_external_child_validations"], row["outcome"])
+        for row in groups
+    ] == [
         ("MISSING", 1, "error"),
         ("MISSING", 0, "ok"),
         ("MISSING", None, "ok"),

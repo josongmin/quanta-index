@@ -63,8 +63,7 @@ class MachO:
 
     def executable_address(self, address: int) -> bool:
         return any(
-            section.executable
-            and section.address <= address < section.address + section.size
+            section.executable and section.address <= address < section.address + section.size
             for section in self.sections
         )
 
@@ -160,7 +159,9 @@ def parse_macho(data: bytes) -> MachO:
                     section_end = _checked_end(offset, size, segment_end, "__TEXT section bytes")
                     if addr < vmaddr or offset < fileoff or addr - vmaddr != offset - fileoff:
                         raise SymbolMatchError("__TEXT section address/file mapping differs")
-                    sections.append(TextSection(name, addr, size, offset, flags, data[offset:section_end]))
+                    sections.append(
+                        TextSection(name, addr, size, offset, flags, data[offset:section_end])
+                    )
                 text = MachO(vmaddr, vmsize, "", tuple(sections))
         cursor = end
     if cursor != commands_end or text is None or image_uuid is None:
@@ -198,7 +199,9 @@ def matching_text(original: MachO, companion: MachO) -> None:
             raise SymbolMatchError(f"__TEXT section differs: {left.name}")
 
 
-def _sample_addresses(sample: str, module: str, uuid: str, image: MachO) -> tuple[int, dict[int, int]]:
+def _sample_addresses(
+    sample: str, module: str, uuid: str, image: MachO
+) -> tuple[int, dict[int, int]]:
     header = re.findall(r"(?m)^Load Address:\s+(0x[0-9a-fA-F]+)\s*$", sample)
     if len(header) != 1:
         raise SymbolMatchError("sample has no unique Load Address")
@@ -251,7 +254,16 @@ def _sample_addresses(sample: str, module: str, uuid: str, image: MachO) -> tupl
 
 def _atos(companion: Path, base: int, addresses: list[int]) -> list[str]:
     result = subprocess.run(
-        ["/usr/bin/atos", "-arch", "arm64", "-o", str(companion), "-l", hex(base), *(hex(a) for a in addresses)],
+        [
+            "/usr/bin/atos",
+            "-arch",
+            "arm64",
+            "-o",
+            str(companion),
+            "-l",
+            hex(base),
+            *(hex(a) for a in addresses),
+        ],
         capture_output=True,
         check=False,
         timeout=20,

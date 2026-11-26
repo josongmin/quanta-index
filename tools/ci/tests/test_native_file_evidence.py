@@ -94,8 +94,18 @@ def paired():
             "lexical_matched": 3,
             "semantic_coverage": {
                 "instance": [8] * 16,
-                "desired": {"root": None, "schema": [1] * 16, "policy": [2] * 32, "context": [3] * 32},
-                "covered": {"root": None, "schema": [1] * 16, "policy": [2] * 32, "context": [3] * 32},
+                "desired": {
+                    "root": None,
+                    "schema": [1] * 16,
+                    "policy": [2] * 32,
+                    "context": [3] * 32,
+                },
+                "covered": {
+                    "root": None,
+                    "schema": [1] * 16,
+                    "policy": [2] * 32,
+                    "context": [3] * 32,
+                },
                 "searchable": [10] * 32,
                 "status": "Complete",
                 "owners": [9] * 32,
@@ -140,20 +150,32 @@ def test_native_rrf_replay_matches_sdk_binary64_order_at_equal_rational_sum():
     dense = [hit(number, 1 / rank, True) for rank, number in enumerate(dense_owners, 1)]
     row["lexical"].update(matched=len(lexical), hits=lexical)
     row["hybrid"].update(
-        lexical_matched=len(lexical), lexical_pool=lexical, dense_pool=dense,
-        scanned_owners=len(dense), file_top_k=2,
+        lexical_matched=len(lexical),
+        lexical_pool=lexical,
+        dense_pool=dense,
+        scanned_owners=len(dense),
+        file_top_k=2,
         hits=[
-            {"owner": owner(2), "lexical_rank": 6, "dense_rank": 39,
-             "score": float.fromhex("0x1.9dbcc48676f32p-6")},
-            {"owner": owner(1), "lexical_rank": 12, "dense_rank": 28,
-             "score": float.fromhex("0x1.9dbcc48676f31p-6")},
+            {
+                "owner": owner(2),
+                "lexical_rank": 6,
+                "dense_rank": 39,
+                "score": float.fromhex("0x1.9dbcc48676f32p-6"),
+            },
+            {
+                "owner": owner(1),
+                "lexical_rank": 12,
+                "dense_rank": 28,
+                "score": float.fromhex("0x1.9dbcc48676f31p-6"),
+            },
         ],
     )
     for lane, pool in (("lexical", lexical), ("dense", dense)):
         row["pool_hashes"][lane] = native.pool_hash(lane, pool)
     universe = {file["path"] for file in (*lexical, *dense)}
     assert native.replay_pools(row, 39, 2, universe)["hybrid"] == [
-        {"path": "src/2.rs"}, {"path": "src/1.rs"}
+        {"path": "src/2.rs"},
+        {"path": "src/1.rs"},
     ]
     row["hybrid"]["hits"].reverse()
     with pytest.raises(ev.EvidenceError, match="RRF order"):
@@ -162,8 +184,16 @@ def test_native_rrf_replay_matches_sdk_binary64_order_at_equal_rational_sum():
 
 @pytest.mark.parametrize(
     "case",
-    ["source", "projection", "rendered", "wrong_id", "wrong_source", "wrong_policy",
-     "bad_span", "bad_domain"],
+    [
+        "source",
+        "projection",
+        "rendered",
+        "wrong_id",
+        "wrong_source",
+        "wrong_policy",
+        "bad_span",
+        "bad_domain",
+    ],
 )
 def test_native_dense_chunk_replay_checks_sdk_binding_even_with_matching_pool_hash(case):
     row = paired()
@@ -219,10 +249,7 @@ def indexed_fixture():
     source = FrozenFiles()
     view = {"epoch": 1, "sequence": 3}
     cut = {"owners": [1] * 32, "paths": [2] * 32, "frontiers": [3] * 32}
-    universe = [
-        {"path": path, "file_sha256": source.file(path)[2]}
-        for path in sorted(source.raw)
-    ]
+    universe = [{"path": path, "file_sha256": source.file(path)[2]} for path in sorted(source.raw)]
     entries = [
         {
             "owner": owner(index),
@@ -270,9 +297,21 @@ def test_indexed_inventory_authenticates_fixed_raw_body_refs_and_source_cut():
 @pytest.mark.parametrize(
     "mutation",
     [
-        "missing", "duplicate_path", "duplicate_owner", "foreign", "body", "length",
-        "source", "owner_lookup", "lookup_missing", "lookup_duplicate", "view", "cut",
-        "unsorted", "file_instance", "two_producers",
+        "missing",
+        "duplicate_path",
+        "duplicate_owner",
+        "foreign",
+        "body",
+        "length",
+        "source",
+        "owner_lookup",
+        "lookup_missing",
+        "lookup_duplicate",
+        "view",
+        "cut",
+        "unsorted",
+        "file_instance",
+        "two_producers",
     ],
 )
 def test_indexed_inventory_rejects_missing_foreign_or_tampered_rows(mutation):
@@ -297,7 +336,9 @@ def test_indexed_inventory_rejects_missing_foreign_or_tampered_rows(mutation):
     elif mutation == "lookup_missing":
         inventory["owner_lookups"][0]["rows"].pop()
     elif mutation == "lookup_duplicate":
-        inventory["owner_lookups"][0]["rows"].append(copy.deepcopy(inventory["owner_lookups"][0]["rows"][0]))
+        inventory["owner_lookups"][0]["rows"].append(
+            copy.deepcopy(inventory["owner_lookups"][0]["rows"][0])
+        )
     elif mutation == "view":
         inventory["view"]["sequence"] += 1
     elif mutation == "cut":
@@ -341,7 +382,10 @@ def test_native_independent_rrf_preserves_dense_only_and_file_metric_gold():
     assert [hit["path"] for hit in pools["hybrid"]] == ["src/2.rs", "src/1.rs"]
 
 
-@pytest.mark.parametrize("mutation", ["missing", "partial", "stale_binding", "wrong_instance", "false_exhaustive", "bad_scan"])
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "partial", "stale_binding", "wrong_instance", "false_exhaustive", "bad_scan"],
+)
 def test_native_scoring_refuses_unbound_semantic_coverage(mutation):
     row = paired()
     hybrid = row["hybrid"]
@@ -497,8 +541,10 @@ def _replayed_native_family(index: int, family: str, deltas: list[float]) -> dic
         "per_query": [
             {"task_id": task["task_id"], "route": route, "file_mrr_at_10": score}
             for task, delta in zip(tasks, deltas, strict=True)
-            for route, score in (("lexical", 0.0 if delta >= 0 else -delta),
-                                 ("hybrid", delta if delta >= 0 else 0.0))
+            for route, score in (
+                ("lexical", 0.0 if delta >= 0 else -delta),
+                ("hybrid", delta if delta >= 0 else 0.0),
+            )
         ],
     }
     return {"suite": suite, "capture": capture, "report": report}
@@ -510,8 +556,7 @@ def _native_family_cohort() -> tuple[list[dict], dict[str, str], dict[str, str]]
     families = [_replayed_native_family(0, "repo00-a", [1.0] * 19)]
     families.append(_replayed_native_family(0, "repo00-b", [-1.0]))
     families.extend(
-        _replayed_native_family(index, f"repo{index:02d}-a", [-1.0])
-        for index in range(1, 12)
+        _replayed_native_family(index, f"repo{index:02d}-a", [-1.0]) for index in range(1, 12)
     )
     repositories = {f"repo{index:02d}": f"{index + 1:040x}" for index in range(12)}
     strata = {repository: "fixed" for repository in repositories}
@@ -524,7 +569,10 @@ def test_native_composite_family_ci_weights_families_then_repositories() -> None
     assert result["status"] == "native_repository_cluster_diagnostic_unqualified"
     assert result["product_default_decision"] is False
     assert result["runtime_qualified"] is False
-    assert result["repository_cluster_ci"]["aggregation"] == "equal_family_within_repository_equal_repository"
+    assert (
+        result["repository_cluster_ci"]["aggregation"]
+        == "equal_family_within_repository_equal_repository"
+    )
     assert result["repository_cluster_ci"]["repository_count"] == 12
     assert result["repository_cluster_ci"]["family_count"] == 13
     assert result["repository_cluster_ci"]["sample_count"] == 31
@@ -552,12 +600,21 @@ def _overlay_native_family_cohort():
 def test_native_composite_family_ci_overlay_binds_both_suite_digests():
     families, repositories, strata = _overlay_native_family_cohort()
     result = native.repository_cluster_ci_from_native_families(families, repositories, strata)
-    for row, item in zip(result["families"], sorted(families, key=lambda f: (
-        f["report"]["composite_source_binding"]["target_repository"],
-        f["report"]["composite_source_binding"]["family_id"],
-    )), strict=True):
+    for row, item in zip(
+        result["families"],
+        sorted(
+            families,
+            key=lambda f: (
+                f["report"]["composite_source_binding"]["target_repository"],
+                f["report"]["composite_source_binding"]["family_id"],
+            ),
+        ),
+        strict=True,
+    ):
         assert row["suite_commitment_sha256"] == ev.digest(ev.canonical(item["suite"]))
-        assert row["execution_suite_commitment_sha256"] == ev.digest(ev.canonical(item["execution_suite"]))
+        assert row["execution_suite_commitment_sha256"] == ev.digest(
+            ev.canonical(item["execution_suite"])
+        )
         assert row["suite_commitment_sha256"] != row["execution_suite_commitment_sha256"]
 
 
@@ -568,7 +625,9 @@ def test_native_composite_family_ci_overlay_rejects_rebinding(mutation):
         families[0]["execution_suite"]["tasks"][0]["query"] = "forged"
     elif mutation == "capture_digest":
         families[0]["capture"]["suite_commitment_sha256"] = "0" * 64
-        families[0]["report"]["capture_commitment_sha256"] = ev.digest(ev.canonical(families[0]["capture"]))
+        families[0]["report"]["capture_commitment_sha256"] = ev.digest(
+            ev.canonical(families[0]["capture"])
+        )
     else:
         families[0]["report"]["execution_suite_commitment_sha256"] = "0" * 64
     with pytest.raises(ev.EvidenceError):
@@ -578,10 +637,20 @@ def test_native_composite_family_ci_overlay_rejects_rebinding(mutation):
 @pytest.mark.parametrize(
     "mutation",
     [
-        "missing_family", "duplicate_family", "foreign_target", "wrong_target_release",
-        "changed_pool", "wrong_source_release", "duplicate_task", "missing_pair",
-        "ungraded", "wrong_metric", "forged_qualified", "source_only_promoted",
-        "wrong_snapshot_digest", "prefixed_query_digest",
+        "missing_family",
+        "duplicate_family",
+        "foreign_target",
+        "wrong_target_release",
+        "changed_pool",
+        "wrong_source_release",
+        "duplicate_task",
+        "missing_pair",
+        "ungraded",
+        "wrong_metric",
+        "forged_qualified",
+        "source_only_promoted",
+        "wrong_snapshot_digest",
+        "prefixed_query_digest",
     ],
 )
 def test_native_composite_family_ci_rejects_unbound_or_promoted_rows(mutation: str) -> None:
@@ -593,7 +662,9 @@ def test_native_composite_family_ci_rejects_unbound_or_promoted_rows(mutation: s
     elif mutation == "foreign_target":
         families[0]["report"]["composite_source_binding"]["target_repository"] = "foreign"
     elif mutation == "wrong_target_release":
-        families[1]["report"]["composite_source_binding"]["target_release_digest"] = "sha256:" + "d" * 64
+        families[1]["report"]["composite_source_binding"]["target_release_digest"] = (
+            "sha256:" + "d" * 64
+        )
     elif mutation == "changed_pool":
         families[0]["capture"]["tasks"][0]["pool_hashes"] = {"lexical": "f" * 64}
     elif mutation == "wrong_source_release":
@@ -606,7 +677,9 @@ def test_native_composite_family_ci_rejects_unbound_or_promoted_rows(mutation: s
         )
         families[0]["report"]["capture_commitment_sha256"] = ev.digest(ev.canonical(capture))
     elif mutation == "duplicate_task":
-        families[0]["report"]["per_query"].append(copy.deepcopy(families[0]["report"]["per_query"][0]))
+        families[0]["report"]["per_query"].append(
+            copy.deepcopy(families[0]["report"]["per_query"][0])
+        )
     elif mutation == "missing_pair":
         families[0]["report"]["per_query"].pop()
     elif mutation == "ungraded":
@@ -676,11 +749,16 @@ def complete_capture():
     }
     view = {
         "workspace": {
-            "tenant": [1] * 16, "collection": [2] * 16, "worktree": [3] * 16, "slot": [4] * 16,
+            "tenant": [1] * 16,
+            "collection": [2] * 16,
+            "worktree": [3] * 16,
+            "slot": [4] * 16,
         },
         "epoch": 1,
         "sequence": 2,
-        "digest": list(bytes.fromhex("3d20fae5cca46179450ef8f25ecd1c395bd07dcdbe7a56b4ebc4f762f80d125e")),
+        "digest": list(
+            bytes.fromhex("3d20fae5cca46179450ef8f25ecd1c395bd07dcdbe7a56b4ebc4f762f80d125e")
+        ),
     }
     session = [5] * 32
     rows = []
@@ -789,11 +867,10 @@ def complete_capture():
 def source_bound_capture(*, source_local=False):
     suite, pack, capture = complete_capture()
     source = FrozenFiles()
-    source.raw = {f"src/{number}.rs": f"fn item_{number}() {{}}\n".encode() for number in (1, 2, 3, 4)}
-    universe = [
-        {"path": path, "file_sha256": source.file(path)[2]}
-        for path in sorted(source.raw)
-    ]
+    source.raw = {
+        f"src/{number}.rs": f"fn item_{number}() {{}}\n".encode() for number in (1, 2, 3, 4)
+    }
+    universe = [{"path": path, "file_sha256": source.file(path)[2]} for path in sorted(source.raw)]
     for value in (suite, pack, capture):
         value["file_universe_digest"] = ev.digest(ev.canonical(universe))
     suite["file_universe"] = pack["file_universe"] = universe
@@ -817,14 +894,20 @@ def source_bound_capture(*, source_local=False):
     ]
     capture["schema_version"] = 2
     # Fixed QIOBJ001 profile and CatalogView commitments for this fixture.
-    capture["selected_manifest"]["profile"] = list(bytes.fromhex(
-        "dd8bb14a5016359677d23edf175aadaa30998ff65a87326a0b82c02b4080978b"
-        if source_local else "d6881fc2cb0241ab11f78673a32f1e062222e25a730405b3af5f70247b6403e3"
-    ))
-    view["digest"] = list(bytes.fromhex(
-        "f7c7a9fb2a16d8eb4e77e1a7a054e5abbd16f68fa43386bc4c4ba34748dbd535"
-        if source_local else "287a23c6b2680fe6163aa6e13dd05cf298fe0fd0586801a7ddbb3f963f6c940b"
-    ))
+    capture["selected_manifest"]["profile"] = list(
+        bytes.fromhex(
+            "dd8bb14a5016359677d23edf175aadaa30998ff65a87326a0b82c02b4080978b"
+            if source_local
+            else "d6881fc2cb0241ab11f78673a32f1e062222e25a730405b3af5f70247b6403e3"
+        )
+    )
+    view["digest"] = list(
+        bytes.fromhex(
+            "f7c7a9fb2a16d8eb4e77e1a7a054e5abbd16f68fa43386bc4c4ba34748dbd535"
+            if source_local
+            else "287a23c6b2680fe6163aa6e13dd05cf298fe0fd0586801a7ddbb3f963f6c940b"
+        )
+    )
     capture["indexed_universe"] = {
         "view": copy.deepcopy(view),
         "source_cut": copy.deepcopy(cut),
@@ -845,19 +928,23 @@ def source_bound_capture(*, source_local=False):
         "session": capture["released_session"]["session"].copy(),
         "view": copy.deepcopy(capture["selected_manifest"]),
         "profile": {
-            "instances": [{
-                "instance": [number] * 16,
-                "kind": [20 + number] * 16,
-                "group": [30 + number] * 16,
-                "activation": "AsyncCoverage" if number == 8 else "CoreRequired",
-                "input_domain": (
-                    {"Projection": {"projection": [35] * 16, "producer": [36] * 16}}
-                    if number == 8 and not source_local else "SourceLocal"
-                ),
-                "schema": [40 + number] * 16,
-                "policy": [50 + number] * 32,
-                "format": [60 + number] * 16,
-            } for number in (6, 8, 9)]
+            "instances": [
+                {
+                    "instance": [number] * 16,
+                    "kind": [20 + number] * 16,
+                    "group": [30 + number] * 16,
+                    "activation": "AsyncCoverage" if number == 8 else "CoreRequired",
+                    "input_domain": (
+                        {"Projection": {"projection": [35] * 16, "producer": [36] * 16}}
+                        if number == 8 and not source_local
+                        else "SourceLocal"
+                    ),
+                    "schema": [40 + number] * 16,
+                    "policy": [50 + number] * 32,
+                    "format": [60 + number] * 16,
+                }
+                for number in (6, 8, 9)
+            ]
         },
     }
     for row in capture["tasks"]:
@@ -867,9 +954,11 @@ def source_bound_capture(*, source_local=False):
             coverage[field]["policy"] = [58] * 32
             if source_local:
                 coverage[field]["root"] = [10] * 32
-                coverage[field]["context"] = list(bytes.fromhex(
-                    "2afbe302400b2cdbc8a065a0bc06b470f5eb971c95c1f0bec7f5faf14e4a99b4"
-                ))
+                coverage[field]["context"] = list(
+                    bytes.fromhex(
+                        "2afbe302400b2cdbc8a065a0bc06b470f5eb971c95c1f0bec7f5faf14e4a99b4"
+                    )
+                )
     return suite, pack, capture, source
 
 
@@ -897,7 +986,9 @@ def test_native_review_overlay_scores_judged_suite_without_rebinding_capture():
     assert report["metrics"]["hybrid"]["file_mrr_at_10"] == pytest.approx(1 / 3)
 
 
-@pytest.mark.parametrize("mutation", ["query", "source", "unexpected_task_field", "diagnostic_policy"])
+@pytest.mark.parametrize(
+    "mutation", ["query", "source", "unexpected_task_field", "diagnostic_policy"]
+)
 def test_native_review_overlay_rejects_changed_execution_inputs(mutation):
     reviewed, _, _, _ = source_bound_capture(source_local=True)
     original, pack, capture, source = unlabelled_capture()
@@ -921,7 +1012,10 @@ def test_native_review_preparation_retains_pool_membership_without_grading():
     assert pools == {
         "lexical": {"positive": files[:3], "negative": []},
         "hybrid": {"positive": files, "negative": [files[i] for i in (0, 1, 3)]},
-        "dense": {"positive": [files[i] for i in (0, 1, 3)], "negative": [files[i] for i in (0, 1, 3)]},
+        "dense": {
+            "positive": [files[i] for i in (0, 1, 3)],
+            "negative": [files[i] for i in (0, 1, 3)],
+        },
     }
     with pytest.raises(ev.EvidenceError, match="Native file qrels are incomplete"):
         native.evaluate(suite, pack, capture, source)
@@ -958,34 +1052,56 @@ def test_native_review_cli_replays_frozen_unlabelled_inputs(tmp_path, large_capt
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     git = ["git", "-C", str(checkout)]
     subprocess.run([*git, "add", "."], check=True)
-    subprocess.run([
-        *git, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com",
-        "commit", "-qm", "review fixture",
-    ], check=True)
+    subprocess.run(
+        [
+            *git,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.com",
+            "commit",
+            "-qm",
+            "review fixture",
+        ],
+        check=True,
+    )
     commit = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
     suite.update(
-        schema_version=ev.SCHEMA_VERSION, repository_commit=commit, routes=["lexical", "hybrid"],
+        schema_version=ev.SCHEMA_VERSION,
+        repository_commit=commit,
+        routes=["lexical", "hybrid"],
         comparison_contract={
-            "top_k": 10, "tokenizer": ev.TOKENIZER, "tokenizer_budget_version": ev.TOKENIZER_BUDGET_VERSION,
-            "output_unit_policy": "rank_prefix", "span_unit": ev.SPAN_UNIT,
+            "top_k": 10,
+            "tokenizer": ev.TOKENIZER,
+            "tokenizer_budget_version": ev.TOKENIZER_BUDGET_VERSION,
+            "output_unit_policy": "rank_prefix",
+            "span_unit": ev.SPAN_UNIT,
         },
     )
     for task in suite["tasks"]:
         task["query_sha256"] = ev.digest(task["query"].encode())
     suite, pack, _source = ev.validate_suite(checkout, suite)
     capture.update(
-        repository_commit=commit, suite_commitment_sha256=pack["suite_commitment_sha256"],
+        repository_commit=commit,
+        suite_commitment_sha256=pack["suite_commitment_sha256"],
         query_pack_sha256=ev.digest(ev.canonical(pack)),
         query_pack_file_sha256=ev.digest(ev.canonical(pack)),
     )
     task_ids = [task["task_id"] for task in pack["tasks"]]
     contexts = {
-        task_id: {"intent": "file relevance", "provenance": "fixture", "rubric": "Grade the source file."}
+        task_id: {
+            "intent": "file relevance",
+            "provenance": "fixture",
+            "rubric": "Grade the source file.",
+        }
         for task_id in task_ids
     }
     controls = [
-        {"pool_id": kind, "kind": kind,
-         "tasks": {task_id: [pack["file_universe"][index]] for task_id in task_ids}}
+        {
+            "pool_id": kind,
+            "kind": kind,
+            "tasks": {task_id: [pack["file_universe"][index]] for task_id in task_ids},
+        }
         for kind, index in (("source_alternative", 2), ("random_control", 3))
     ]
     args = ["prepare-native", "--repo", str(checkout), "--seed", "42"]
@@ -993,7 +1109,10 @@ def test_native_review_cli_replays_frozen_unlabelled_inputs(tmp_path, large_capt
     if large_capture:
         capture_bytes += b" " * CONTROL_DOCUMENT_BYTES
     for name, value in (
-        ("suite", suite), ("query-pack", pack), ("capture", capture), ("contexts", contexts),
+        ("suite", suite),
+        ("query-pack", pack),
+        ("capture", capture),
+        ("contexts", contexts),
         ("control-pools", controls),
     ):
         path = tmp_path / (name + ".json")
@@ -1013,9 +1132,14 @@ def test_native_review_cli_replays_frozen_unlabelled_inputs(tmp_path, large_capt
 
     # The frozen Git source and actual captured pools become labels only after
     # review; the original suite, query pack and capture stay byte-identical.
-    source_paths = tuple((tmp_path / (name + ".json")).read_bytes() for name in ("suite", "query-pack", "capture"))
+    source_paths = tuple(
+        (tmp_path / (name + ".json")).read_bytes() for name in ("suite", "query-pack", "capture")
+    )
     replay_pack, retrieval_pools, capture_custody = holdout_review.capture_native_review_pools(
-        checkout, tmp_path / "suite.json", tmp_path / "query-pack.json", tmp_path / "capture.json",
+        checkout,
+        tmp_path / "suite.json",
+        tmp_path / "query-pack.json",
+        tmp_path / "capture.json",
         pool_ids=("route-a", "route-b", "route-c"),
     )
     all_pools = retrieval_pools + controls
@@ -1027,7 +1151,9 @@ def test_native_review_cli_replays_frozen_unlabelled_inputs(tmp_path, large_capt
             review["answerable"] = review["task_id"] == "positive"
             review["rationale"] = "Fixture source relevance judgment."
             for file in review["files"]:
-                file["grade"] = 2 if review["task_id"] == "positive" and file["path"] == "src/4.rs" else 0
+                file["grade"] = (
+                    2 if review["task_id"] == "positive" and file["path"] == "src/4.rs" else 0
+                )
                 file["rationale"] = "Fixture source file grade."
         completed.append(filled)
     adjudicated = copy.deepcopy(completed[0])
@@ -1041,26 +1167,43 @@ def test_native_review_cli_replays_frozen_unlabelled_inputs(tmp_path, large_capt
         for task_id in task_ids
     }
     receipt = holdout_review.finalize_file_review_labels(
-        checkout, replay_pack, contexts, all_pools, completed, adjudicated, contracts,
-        seed=42, native_capture=capture_custody,
+        checkout,
+        replay_pack,
+        contexts,
+        all_pools,
+        completed,
+        adjudicated,
+        contracts,
+        seed=42,
+        native_capture=capture_custody,
     )
     receipt_path = tmp_path / "native-reviewed-labels.json"
     receipt_path.write_bytes(ev.canonical(receipt))
     replay = ev.load_native_file_replay(
-        checkout, tmp_path / "suite.json", tmp_path / "query-pack.json", tmp_path / "capture.json",
+        checkout,
+        tmp_path / "suite.json",
+        tmp_path / "query-pack.json",
+        tmp_path / "capture.json",
         reviewed_labels=receipt_path,
     )
     report = replay["report"]
     assert report["graded"] is True
     assert report["suite_commitment_sha256"] == ev.digest(ev.canonical(replay["suite"]))
-    assert report["execution_suite_commitment_sha256"] == ev.digest(ev.canonical(replay["execution_suite"]))
+    assert report["execution_suite_commitment_sha256"] == ev.digest(
+        ev.canonical(replay["execution_suite"])
+    )
     assert report["rank_metrics"]["comparison"]["sample_count"] == 1
     assert report["metrics"]["hybrid"]["file_mrr_at_10"] == pytest.approx(1 / 3)
-    assert source_paths == tuple((tmp_path / (name + ".json")).read_bytes() for name in ("suite", "query-pack", "capture"))
+    assert source_paths == tuple(
+        (tmp_path / (name + ".json")).read_bytes() for name in ("suite", "query-pack", "capture")
+    )
     (tmp_path / "capture.json").write_bytes(capture_bytes + b" ")
     with pytest.raises(ev.EvidenceError, match="frozen query pack or raw capture"):
         ev.load_native_file_replay(
-            checkout, tmp_path / "suite.json", tmp_path / "query-pack.json", tmp_path / "capture.json",
+            checkout,
+            tmp_path / "suite.json",
+            tmp_path / "query-pack.json",
+            tmp_path / "capture.json",
             reviewed_labels=receipt_path,
         )
 
@@ -1070,7 +1213,10 @@ def test_source_bound_native_evaluation_marks_inventory_only_verified(source_loc
     suite, pack, capture, source = source_bound_capture(source_local=source_local)
     report = native.evaluate(suite, pack, capture, source)
     assert report["indexed_universe_verified"] is True
-    assert report["indexed_universe_verification_scope"] == "frozen_body_refs_exact_view_source_owner_lookup_profile"
+    assert (
+        report["indexed_universe_verification_scope"]
+        == "frozen_body_refs_exact_view_source_owner_lookup_profile"
+    )
     assert report["runtime_qualified"] is False
     assert report["product_default_decision"] is False
     assert report["metrics"]["hybrid"]["file_mrr_at_10"] == pytest.approx(1 / 3)
@@ -1083,11 +1229,16 @@ def test_native_source_local_coverage_cannot_name_a_different_source_cut(field):
         coverage = row["hybrid"]["semantic_coverage"]
         coverage["desired"][field][0] ^= 1
         coverage["covered"][field][0] ^= 1
-    with pytest.raises(ev.EvidenceError, match="Native semantic coverage differs from selected SourceCut"):
+    with pytest.raises(
+        ev.EvidenceError, match="Native semantic coverage differs from selected SourceCut"
+    ):
         native.evaluate(suite, pack, capture, source)
 
 
-@pytest.mark.parametrize("change", ["foreign_head", "older_head", "future_floor", "settled_pinned", "settled_target_alive"])
+@pytest.mark.parametrize(
+    "change",
+    ["foreign_head", "older_head", "future_floor", "settled_pinned", "settled_target_alive"],
+)
 def test_native_replay_rejects_settlement_the_sdk_would_refuse(change):
     suite, pack, capture, source = source_bound_capture()
     settlement = capture["settlement"]
@@ -1125,14 +1276,18 @@ def test_native_composite_replay_requires_eval_tasks_from_bound_source_family(
     provenance = {"source_universe_sha256": "0" * 64, "source_binding_sha256": "1" * 64}
     suite["source_provenance"] = {"kind": "composite_git_releases_v1", **provenance}
     capture.update(provenance)
-    pack["suite_commitment_sha256"] = capture["suite_commitment_sha256"] = ev.digest(ev.canonical(suite))
+    pack["suite_commitment_sha256"] = capture["suite_commitment_sha256"] = ev.digest(
+        ev.canonical(suite)
+    )
     capture["query_pack_sha256"] = ev.digest(ev.canonical(pack))
     monkeypatch.setattr(
         composite_source_binding, "verify", lambda *_, **_kwargs: {"family_id": family}
     )
     source_inputs = (tmp_path, tmp_path, tmp_path, tmp_path, family)
     if foreign_family:
-        with pytest.raises(ev.EvidenceError, match="Native composite eval tasks differ from source family"):
+        with pytest.raises(
+            ev.EvidenceError, match="Native composite eval tasks differ from source family"
+        ):
             native.evaluate(suite, pack, capture, source, source_inputs)
     else:
         assert native.evaluate(suite, pack, capture, source, source_inputs)["graded"] is True
@@ -1174,25 +1329,37 @@ def test_native_semantic_coverage_requires_authenticated_profile(field):
         coverage = row["hybrid"]["semantic_coverage"]
         coverage["desired"][field][0] ^= 1
         coverage["covered"][field][0] ^= 1
-    with pytest.raises(ev.EvidenceError, match="Native semantic coverage differs from retained profile"):
+    with pytest.raises(
+        ev.EvidenceError, match="Native semantic coverage differs from retained profile"
+    ):
         native.evaluate(suite, pack, capture, source)
 
 
 def test_native_view_digest_matches_rust_catalog_with_reordered_capture_keys():
     # Fixed native_view_v1 row emitted by Rust for the local benchmark workspace.
     identity = {
-        "workspace": dict(zip(("tenant", "collection", "worktree", "slot"), ([n] * 16 for n in range(1, 5)))),
+        "workspace": dict(
+            zip(("tenant", "collection", "worktree", "slot"), ([n] * 16 for n in range(1, 5)))
+        ),
         "epoch": 1,
         "sequence": 1,
-        "digest": list(bytes.fromhex("a6c711aa458e83884ae3ce9814e48a425a1935d5c8dbe3007951beb5c503269c")),
+        "digest": list(
+            bytes.fromhex("a6c711aa458e83884ae3ce9814e48a425a1935d5c8dbe3007951beb5c503269c")
+        ),
     }
     manifest = {
         "identity": identity,
-        "profile": list(bytes.fromhex("6f1d82914a40548602620af8ba736699afb5fc3e45e1f23d235ced8ca7d93561")),
+        "profile": list(
+            bytes.fromhex("6f1d82914a40548602620af8ba736699afb5fc3e45e1f23d235ced8ca7d93561")
+        ),
         "source": {"owners": None, "paths": None, "frontiers": None},
         "projections": None,
-        "members": list(bytes.fromhex("c2fc75ab0a6234e46ca59d7271ced08348ab02af304bcc5e110710e2c2f54af1")),
-        "coverage": list(bytes.fromhex("6ad09e7be9f7e5a6d28af4a2ecd3810629ea1a941a9d832b99d0f5eca07f2a9e")),
+        "members": list(
+            bytes.fromhex("c2fc75ab0a6234e46ca59d7271ced08348ab02af304bcc5e110710e2c2f54af1")
+        ),
+        "coverage": list(
+            bytes.fromhex("6ad09e7be9f7e5a6d28af4a2ecd3810629ea1a941a9d832b99d0f5eca07f2a9e")
+        ),
     }
     native.verify_selected_view(json.loads(json.dumps(manifest, sort_keys=True)), identity)
 
@@ -1308,7 +1475,9 @@ def test_native_selected_profile_rejects_alias_for_two_query_lanes():
     for row in capture["tasks"]:
         row["hybrid"]["semantic_instance"] = capture["semantic_instance"]
         row["hybrid"]["semantic_coverage"]["instance"] = capture["semantic_instance"]
-    with pytest.raises(ev.EvidenceError, match="Native profile lane and file instances must be distinct"):
+    with pytest.raises(
+        ev.EvidenceError, match="Native profile lane and file instances must be distinct"
+    ):
         native.evaluate(suite, pack, capture, source)
 
 
@@ -1374,9 +1543,7 @@ def test_complete_native_replay_scores_all_qrels_and_does_not_credit_nonempty_ne
     assert report["negative_count"] == 1
     assert report["false_positive_at_10"] == {"lexical": 0, "hybrid": 1}
     observed = {
-        row["route"]: row["status"]
-        for row in report["per_query"]
-        if row["task_id"] == "negative"
+        row["route"]: row["status"] for row in report["per_query"] if row["task_id"] == "negative"
     }
     assert observed == {"lexical": "abstained", "hybrid": "success"}
     comparison = report["rank_metrics"]["comparison"]
@@ -1399,7 +1566,10 @@ def test_native_replay_rejects_duplicate_eval_task_identity(duplicate_in):
         native.evaluate(suite, pack, capture)
 
 
-@pytest.mark.parametrize("traversal,stale", [({"Approximate": {"capped": False}}, 0), ("ExactCapped", 0), ("ExactExhausted", 1)])
+@pytest.mark.parametrize(
+    "traversal,stale",
+    [({"Approximate": {"capped": False}}, 0), ("ExactCapped", 0), ("ExactExhausted", 1)],
+)
 def test_empty_negative_hybrid_requires_exhaustive_semantic_observation(traversal, stale):
     suite, pack, capture = complete_capture()
     negative = capture["tasks"][1]
@@ -1545,9 +1715,18 @@ def _git_backed_native_replay_inputs(tmp_path: Path) -> tuple[Path, Path, Path, 
     subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
     subprocess.run(
         [
-            "git", "-C", str(repo), "-c", "user.name=Native fixture",
-            "-c", "user.email=native@example.invalid", "-c", "commit.gpgsign=false",
-            "commit", "-qm", "source",
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Native fixture",
+            "-c",
+            "user.email=native@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "source",
         ],
         check=True,
     )
@@ -1568,16 +1747,18 @@ def _git_backed_native_replay_inputs(tmp_path: Path) -> tuple[Path, Path, Path, 
         },
     )
     gold_body = fixture_source.raw["src/4.rs"]
-    suite["tasks"][0]["gold"] = [{
-        "path": "src/4.rs",
-        "start_line": 1,
-        "end_line": 1,
-        "start_byte": 0,
-        "end_byte": len(gold_body),
-        "file_sha256": ev.digest(gold_body),
-        "block_sha256": ev.digest(gold_body),
-        "grade": 2,
-    }]
+    suite["tasks"][0]["gold"] = [
+        {
+            "path": "src/4.rs",
+            "start_line": 1,
+            "end_line": 1,
+            "start_byte": 0,
+            "end_byte": len(gold_body),
+            "file_sha256": ev.digest(gold_body),
+            "block_sha256": ev.digest(gold_body),
+            "grade": 2,
+        }
+    ]
     for task in suite["tasks"]:
         task["query_sha256"] = ev.digest(task["query"].encode())
         task["label_review"] = {
@@ -1590,7 +1771,9 @@ def _git_backed_native_replay_inputs(tmp_path: Path) -> tuple[Path, Path, Path, 
     capture["suite_commitment_sha256"] = ev.digest(ev.canonical(suite))
     capture["query_pack_sha256"] = ev.digest(ev.canonical(pack))
     suite_path, pack_path, capture_path = (
-        tmp_path / "suite.json", tmp_path / "pack.json", tmp_path / "capture.json"
+        tmp_path / "suite.json",
+        tmp_path / "pack.json",
+        tmp_path / "capture.json",
     )
     suite_path.write_text(json.dumps(suite), encoding="utf-8")
     pack_bytes = json.dumps(pack, sort_keys=True).encode()
@@ -1604,9 +1787,9 @@ def test_native_file_loader_replays_committed_git_sdk_packet_and_fixed_gold(tmp_
     repo, suite, pack, capture = _git_backed_native_replay_inputs(tmp_path)
     captured = capture.read_bytes()
     commitment = ("sha256:" + ev.digest(captured), len(captured))
-    report = ev.load_native_file_replay(
-        repo, suite, pack, capture, expected_capture=commitment
-    )["report"]
+    report = ev.load_native_file_replay(repo, suite, pack, capture, expected_capture=commitment)[
+        "report"
+    ]
     assert report["indexed_universe_verified"] is True
     assert report["metrics"]["lexical"]["file_mrr_at_10"] == 0
     assert report["metrics"]["hybrid"]["file_mrr_at_10"] == pytest.approx(1 / 3)
@@ -1636,7 +1819,10 @@ def test_native_file_loader_refuses_numeric_alias_in_frozen_blind_pack(tmp_path:
 
     with pytest.raises(ev.EvidenceError, match="Native frozen blind pack differs"):
         ev.load_native_file_replay(
-            repo, suite, pack_path, capture_path,
+            repo,
+            suite,
+            pack_path,
+            capture_path,
             expected_capture=("sha256:" + ev.digest(capture_bytes), len(capture_bytes)),
         )
 
@@ -1653,9 +1839,18 @@ def test_native_file_loader_rejects_changed_git_source_without_core_mocks(
         subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
         subprocess.run(
             [
-                "git", "-C", str(repo), "-c", "user.name=Native fixture",
-                "-c", "user.email=native@example.invalid", "-c", "commit.gpgsign=false",
-                "commit", "-qm", "changed",
+                "git",
+                "-C",
+                str(repo),
+                "-c",
+                "user.name=Native fixture",
+                "-c",
+                "user.email=native@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "changed",
             ],
             check=True,
         )
@@ -1675,7 +1870,9 @@ def test_native_file_loader_rejects_changed_git_source_without_core_mocks(
         ("directory", "checkout directory changed during verification"),
     ],
 )
-def test_native_frozen_repo_rejects_changes_during_clean_status(tmp_path, monkeypatch, change, error):
+def test_native_frozen_repo_rejects_changes_during_clean_status(
+    tmp_path, monkeypatch, change, error
+):
     repo, _, _, _ = _git_backed_native_replay_inputs(tmp_path)
     real_git = ev.retrieval_contract._git
     frozen_head = real_git(repo, "rev-parse", "HEAD")
@@ -1690,8 +1887,17 @@ def test_native_frozen_repo_rejects_changes_during_clean_status(tmp_path, monkey
             assert result == ""
             if change == "head":
                 real_git(
-                    checkout, "-c", "user.name=Native fixture", "-c", "user.email=native@example.invalid",
-                    "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "replacement",
+                    checkout,
+                    "-c",
+                    "user.name=Native fixture",
+                    "-c",
+                    "user.email=native@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--allow-empty",
+                    "-qm",
+                    "replacement",
                 )
             else:
                 repo.rename(tmp_path / "original")

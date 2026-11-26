@@ -391,10 +391,14 @@ def _release_terminal_source(
         if isinstance(result, dict):
             for item in payload["artifacts"]:
                 if item["source_path"] == result.get("events"):
-                    _, raw = _repo_bytes(root, item["path"], label="operational events", checker=checker)
+                    _, raw = _repo_bytes(
+                        root, item["path"], label="operational events", checker=checker
+                    )
                     record = _json_object_bytes(raw, label="operational events")
                     try:
-                        recorded = {key: record["binding"][key] for key in ("source", "source_pair")}
+                        recorded = {
+                            key: record["binding"][key] for key in ("source", "source_pair")
+                        }
                     except (KeyError, TypeError) as error:
                         raise ManifestRefused("operational events lack a source binding") from error
                     break
@@ -430,7 +434,9 @@ def build_manifest(
     }
     missing = required_terminal_keys - set(terminal)
     optional = {"execution_result"}
-    signed_release = proof["id"] in checker.P11_RELEASE_PROOFS and terminal.get("status") == "passed"
+    signed_release = (
+        proof["id"] in checker.P11_RELEASE_PROOFS and terminal.get("status") == "passed"
+    )
     if signed_release:
         optional.add("source_binding")
     extra = set(terminal) - required_terminal_keys - optional
@@ -892,8 +898,10 @@ def _publish_manifest_locked(
                         )
                     else:
                         os.replace(
-                            rollback_name, output_path.name,
-                            src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+                            rollback_name,
+                            output_path.name,
+                            src_dir_fd=parent_fd,
+                            dst_dir_fd=parent_fd,
                         )
                         rollback_name = None
                         os.fsync(parent_fd)

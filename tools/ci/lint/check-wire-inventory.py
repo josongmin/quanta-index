@@ -341,7 +341,8 @@ def native_unit_tags(tree) -> dict[str, set[str]]:
             continue
         macro_name = macro.child_by_field_name("macro")
         if macro_name is None or macro_name.text not in {
-            b"native_serde_enum", b"quanta_index_contract_base::native_serde_enum",
+            b"native_serde_enum",
+            b"quanta_index_contract_base::native_serde_enum",
         }:
             continue
         token_tree = macro.named_children[-1]
@@ -467,9 +468,7 @@ def check_ipc(inventory: dict, root: Path = ROOT) -> list[Finding]:
         try:
             source = path.read_text(encoding="utf-8")
             parsed = (
-                parse_native_enums(source)
-                if rel == NATIVE_IPC_FILE
-                else parse_ipc_enums(source)
+                parse_native_enums(source) if rel == NATIVE_IPC_FILE else parse_ipc_enums(source)
             )
         except ValueError as err:
             findings.append(Finding(rel, str(err)))

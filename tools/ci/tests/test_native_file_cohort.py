@@ -19,27 +19,52 @@ def _git_checkout(path: Path) -> None:
     (path / "source.rs").write_text("fn original() {}\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(path)], check=True)
     subprocess.run(["git", "-C", str(path), "add", "--all"], check=True)
-    subprocess.run([
-        "git", "-C", str(path), "-c", "user.name=Native fixture",
-        "-c", "user.email=native@example.invalid", "-c", "commit.gpgsign=false",
-        "commit", "-qm", "original",
-    ], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "-c",
+            "user.name=Native fixture",
+            "-c",
+            "user.email=native@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "original",
+        ],
+        check=True,
+    )
 
 
 def _advance_git_head(path: Path) -> None:
     (path / "source.rs").write_text("fn successor() {}\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(path), "add", "--all"], check=True)
-    subprocess.run([
-        "git", "-C", str(path), "-c", "user.name=Native fixture",
-        "-c", "user.email=native@example.invalid", "-c", "commit.gpgsign=false",
-        "commit", "-qm", "successor",
-    ], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "-c",
+            "user.name=Native fixture",
+            "-c",
+            "user.email=native@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "successor",
+        ],
+        check=True,
+    )
 
 
 def _bind_fixture_to_git(item: dict, repo: Path) -> dict:
     replay = copy.deepcopy(item)
     commit = subprocess.check_output(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        text=True,
     ).strip()
     replay["suite"]["repository_commit"] = commit
     replay["capture"]["repository_commit"] = commit
@@ -49,9 +74,7 @@ def _bind_fixture_to_git(item: dict, repo: Path) -> dict:
     suite_digest = ev.digest(ev.canonical(replay["suite"]))
     replay["capture"]["suite_commitment_sha256"] = suite_digest
     replay["report"]["suite_commitment_sha256"] = suite_digest
-    replay["report"]["capture_commitment_sha256"] = ev.digest(
-        ev.canonical(replay["capture"])
-    )
+    replay["report"]["capture_commitment_sha256"] = ev.digest(ev.canonical(replay["capture"]))
     return replay
 
 
@@ -118,10 +141,19 @@ def test_native_file_cohort_v2_accepts_one_runtime_mode(selected, tmp_path):
     assert all(("selection_path" in row) == selected for row in manifest["families"])
 
 
-@pytest.mark.parametrize("mutation", [
-    "mixed_mode", "partial_selection", "duplicate_config", "duplicate_selection",
-    "config_alias", "selection_alias", "malformed_config_sha", "malformed_selection_sha",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "mixed_mode",
+        "partial_selection",
+        "duplicate_config",
+        "duplicate_selection",
+        "config_alias",
+        "selection_alias",
+        "malformed_config_sha",
+        "malformed_selection_sha",
+    ],
+)
 def test_native_file_cohort_v2_rejects_runtime_path_or_mode_drift(mutation, tmp_path):
     path = _runtime_manifest(tmp_path, selected=True)
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -153,10 +185,7 @@ def test_native_file_cohort_cli_replays_and_publishes_repository_equal_gold(
     tmp_path = tmp_path.resolve()
     manifest_path, replayed = _manifest(tmp_path)
     _write_replay_inputs(manifest_path)
-    by_family = {
-        item["report"]["composite_source_binding"]["family_id"]: item
-        for item in replayed
-    }
+    by_family = {item["report"]["composite_source_binding"]["family_id"]: item for item in replayed}
     calls = []
 
     def replay(repo, suite, query_pack, capture, source_inputs, **commitments):
@@ -166,20 +195,30 @@ def test_native_file_cohort_cli_replays_and_publishes_repository_equal_gold(
     monkeypatch.setattr(ev, "load_native_file_replay", replay, raising=False)
     monkeypatch.setattr(ev, "verify_repo", lambda repo, _commit: repo.resolve())
     output = tmp_path / "result.json"
-    assert ev.main([
-        "evaluate-native-file-cohort", "--manifest", str(manifest_path),
-        "--output", str(output),
-    ]) == 0
+    assert (
+        ev.main(
+            [
+                "evaluate-native-file-cohort",
+                "--manifest",
+                str(manifest_path),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
     value = json.loads(output.read_text(encoding="utf-8"))
     assert len(calls) == 13
     assert calls[0][0] == tmp_path / "inputs/0/repo"
     assert calls[0][4][0] == tmp_path / "inputs/0/universe.json"
     for _repo, suite, pack, capture, source, commitments in calls:
-        inputs = dict(zip(
-            ("suite", "query_pack", "capture", "source_universe", "source_binding"),
-            (suite, pack, capture, *source[:2]),
-            strict=True,
-        ))
+        inputs = dict(
+            zip(
+                ("suite", "query_pack", "capture", "source_universe", "source_binding"),
+                (suite, pack, capture, *source[:2]),
+                strict=True,
+            )
+        )
         for key, path in inputs.items():
             raw = path.read_bytes()
             assert commitments[f"expected_{key}"] == ("sha256:" + ev.digest(raw), len(raw))
@@ -196,8 +235,13 @@ def test_native_file_cohort_cli_replays_and_publishes_repository_equal_gold(
 @pytest.mark.parametrize(
     "mutation",
     [
-        "injected_report", "injected_qualification", "missing_input", "duplicate_family",
-        "duplicate_capture", "wrong_profile", "duplicate_json_key",
+        "injected_report",
+        "injected_qualification",
+        "missing_input",
+        "duplicate_family",
+        "duplicate_capture",
+        "wrong_profile",
+        "duplicate_json_key",
     ],
 )
 def test_native_file_cohort_cli_rejects_invalid_manifest_before_replay(
@@ -218,19 +262,30 @@ def test_native_file_cohort_cli_rejects_invalid_manifest_before_replay(
     elif mutation == "wrong_profile":
         manifest["profile"] = "qualified_native_file"
     if mutation == "duplicate_json_key":
-        path.write_text(path.read_text(encoding="utf-8").replace(
-            '"schema_version": 1', '"schema_version": 1, "schema_version": 1', 1
-        ), encoding="utf-8")
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                '"schema_version": 1', '"schema_version": 1, "schema_version": 1', 1
+            ),
+            encoding="utf-8",
+        )
     else:
         path.write_text(json.dumps(manifest), encoding="utf-8")
     monkeypatch.setattr(
         ev, "load_native_file_replay", lambda *_: pytest.fail("invalid manifest reached replay")
     )
     output = tmp_path / "result.json"
-    assert ev.main([
-        "evaluate-native-file-cohort", "--manifest", str(path),
-        "--output", str(output),
-    ]) == 2
+    assert (
+        ev.main(
+            [
+                "evaluate-native-file-cohort",
+                "--manifest",
+                str(path),
+                "--output",
+                str(output),
+            ]
+        )
+        == 2
+    )
     assert not output.exists()
 
 
@@ -279,9 +334,18 @@ def test_native_file_cohort_refuses_inputs_changed_during_replay(
 
     monkeypatch.setattr(ev, "load_native_file_replay", replay)
     output = tmp_path / "report.json"
-    assert ev.main([
-        "evaluate-native-file-cohort", "--manifest", str(manifest_path), "--output", str(output),
-    ]) == 2
+    assert (
+        ev.main(
+            [
+                "evaluate-native-file-cohort",
+                "--manifest",
+                str(manifest_path),
+                "--output",
+                str(output),
+            ]
+        )
+        == 2
+    )
     assert calls
     assert "commitment" in capsys.readouterr().err
     assert not output.exists()
@@ -322,13 +386,22 @@ def test_native_evaluation_cli_rejects_existing_output_before_replay(
         output.write_bytes(b"original evidence\n")
     if output_kind == "runner":
         arguments = [
-            "evaluate-native-file", "--repo", str(tmp_path), "--suite", "suite.json",
-            "--query-pack", "pack.json", "--runner", str(output),
+            "evaluate-native-file",
+            "--repo",
+            str(tmp_path),
+            "--suite",
+            "suite.json",
+            "--query-pack",
+            "pack.json",
+            "--runner",
+            str(output),
         ]
     else:
         arguments = ["evaluate-native-file-cohort", "--manifest", str(output)]
     for attr in ("evaluate_native_file_cohort", "load_native_file_replay"):
-        monkeypatch.setattr(ev, attr, lambda *_, **__: pytest.fail("existing output reached replay"))
+        monkeypatch.setattr(
+            ev, attr, lambda *_, **__: pytest.fail("existing output reached replay")
+        )
     assert ev.main([*arguments, "--output", str(output)]) == 2
     assert "output already exists" in capsys.readouterr().err
     if output_kind == "dangling_symlink":
@@ -347,15 +420,26 @@ def test_native_evaluation_cli_does_not_truncate_output_created_during_replay(
         return {"result": "new"}
 
     monkeypatch.setattr(ev, "evaluate_native_file_cohort", replay)
-    assert ev.main([
-        "evaluate-native-file-cohort", "--manifest", "manifest.json", "--output", str(output),
-    ]) == 2
+    assert (
+        ev.main(
+            [
+                "evaluate-native-file-cohort",
+                "--manifest",
+                "manifest.json",
+                "--output",
+                str(output),
+            ]
+        )
+        == 2
+    )
     assert output.read_bytes() == b"concurrent report\n"
 
 
 @pytest.mark.parametrize("case_alias", [False, True])
 def test_native_file_evaluation_refuses_output_inside_source_checkout(
-    tmp_path: Path, capsys: pytest.CaptureFixture, case_alias: bool,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    case_alias: bool,
 ) -> None:
     from tools.ci.tests.test_native_file_evidence import _git_backed_native_replay_inputs
 
@@ -366,10 +450,24 @@ def test_native_file_evaluation_refuses_output_inside_source_checkout(
         if not destination.is_dir() or not destination.samefile(repo):
             pytest.skip("test volume does not resolve case aliases")
     output = destination / "report.json"
-    assert ev.main([
-        "evaluate-native-file", "--repo", str(repo), "--suite", str(suite),
-        "--query-pack", str(pack), "--runner", str(capture), "--output", str(output),
-    ]) == 2
+    assert (
+        ev.main(
+            [
+                "evaluate-native-file",
+                "--repo",
+                str(repo),
+                "--suite",
+                str(suite),
+                "--query-pack",
+                str(pack),
+                "--runner",
+                str(capture),
+                "--output",
+                str(output),
+            ]
+        )
+        == 2
+    )
     assert "Native report output overlaps source repository" in capsys.readouterr().err
     assert not output.exists()
     assert ev.load_native_file_replay(repo, suite, pack, capture)["report"]
@@ -391,10 +489,24 @@ def test_native_file_evaluation_rechecks_git_head_after_scoring(
 
     monkeypatch.setattr(native_file_evidence, "evaluate", evaluate)
     output = tmp_path / "report.json"
-    assert ev.main([
-        "evaluate-native-file", "--repo", str(repo), "--suite", str(suite),
-        "--query-pack", str(pack), "--runner", str(capture), "--output", str(output),
-    ]) == 2
+    assert (
+        ev.main(
+            [
+                "evaluate-native-file",
+                "--repo",
+                str(repo),
+                "--suite",
+                str(suite),
+                "--query-pack",
+                str(pack),
+                "--runner",
+                str(capture),
+                "--output",
+                str(output),
+            ]
+        )
+        == 2
+    )
     assert not output.exists()
 
 
@@ -403,21 +515,27 @@ def test_native_cohort_refuses_output_inside_release_input(
 ) -> None:
     manifest_path, replayed = _manifest(tmp_path)
     _write_replay_inputs(manifest_path)
-    by_family = {
-        item["report"]["composite_source_binding"]["family_id"]: item
-        for item in replayed
-    }
+    by_family = {item["report"]["composite_source_binding"]["family_id"]: item for item in replayed}
     monkeypatch.setattr(
-        ev, "load_native_file_replay",
+        ev,
+        "load_native_file_replay",
         lambda *args, **_options: copy.deepcopy(by_family[args[-1][-1]]),
     )
     release = tmp_path / json.loads(manifest_path.read_bytes())["families"][0]["base_release"]
     release.mkdir(parents=True)
     output = release / "report.json"
-    assert ev.main([
-        "evaluate-native-file-cohort", "--manifest", str(manifest_path),
-        "--output", str(output),
-    ]) == 2
+    assert (
+        ev.main(
+            [
+                "evaluate-native-file-cohort",
+                "--manifest",
+                str(manifest_path),
+                "--output",
+                str(output),
+            ]
+        )
+        == 2
+    )
     assert not output.exists()
 
 
@@ -437,10 +555,18 @@ def test_native_cohort_refuses_output_parent_alias_changed_during_replay(
         return {"result": "new"}
 
     monkeypatch.setattr(ev, "evaluate_native_file_cohort", replay)
-    assert ev.main([
-        "evaluate-native-file-cohort", "--manifest", str(tmp_path / "manifest.json"),
-        "--output", str(output),
-    ]) == 2
+    assert (
+        ev.main(
+            [
+                "evaluate-native-file-cohort",
+                "--manifest",
+                str(tmp_path / "manifest.json"),
+                "--output",
+                str(output),
+            ]
+        )
+        == 2
+    )
     assert not (first / "report.json").exists()
     assert not (second / "report.json").exists()
 
@@ -459,7 +585,8 @@ def test_native_cohort_rechecks_git_head_after_aggregation(
         _git_checkout(repo)
         by_family[entry["family_id"]] = _bind_fixture_to_git(item, repo)
     monkeypatch.setattr(
-        ev, "load_native_file_replay",
+        ev,
+        "load_native_file_replay",
         lambda *args, **_options: copy.deepcopy(by_family[args[-1][-1]]),
     )
     original_aggregate = native_file_evidence.repository_cluster_ci_from_native_families
@@ -470,7 +597,9 @@ def test_native_cohort_rechecks_git_head_after_aggregation(
         _advance_git_head(changed_repo)
         return result
 
-    monkeypatch.setattr(native_file_evidence, "repository_cluster_ci_from_native_families", aggregate)
+    monkeypatch.setattr(
+        native_file_evidence, "repository_cluster_ci_from_native_families", aggregate
+    )
     with pytest.raises(ev.EvidenceError, match="HEAD|checkout"):
         ev.evaluate_native_file_cohort(manifest_path)
 
@@ -487,8 +616,15 @@ def test_native_evaluation_cli_refuses_cyclic_input_without_traceback(
 
         _repo, suite, pack, capture = _git_backed_native_replay_inputs(tmp_path)
         args = [
-            command, "--repo", str(cyclic), "--suite", str(suite),
-            "--query-pack", str(pack), "--runner", str(capture),
+            command,
+            "--repo",
+            str(cyclic),
+            "--suite",
+            str(suite),
+            "--query-pack",
+            str(pack),
+            "--runner",
+            str(capture),
         ]
     else:
         args = [command, "--manifest", str(cyclic)]

@@ -16,12 +16,25 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def signed_product_active(key, root, manifest_sha, *, generation=1, role_digests=None,
-                          native_recovery=None, native_facts_publication=None, domain=None):
+def signed_product_active(
+    key,
+    root,
+    manifest_sha,
+    *,
+    generation=1,
+    role_digests=None,
+    native_recovery=None,
+    native_facts_publication=None,
+    domain=None,
+):
     payload = {
-        "schema_version": ("semantica-installed-product-active/v3" if native_facts_publication is not None
-                           else "semantica-installed-product-active/v2" if native_recovery is not None
-                           else "semantica-installed-product-active/v1"),
+        "schema_version": (
+            "semantica-installed-product-active/v3"
+            if native_facts_publication is not None
+            else "semantica-installed-product-active/v2"
+            if native_recovery is not None
+            else "semantica-installed-product-active/v1"
+        ),
         "install_root": str(root),
         "generation": generation,
         "ag5_active_record_sha256": "a" * 64,
@@ -39,13 +52,22 @@ def signed_product_active(key, root, manifest_sha, *, generation=1, role_digests
         payload["native_facts_publication"] = native_facts_publication
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii")
     if domain is None:
-        domain = (b"semantica.installed-product-active.v3\n" if native_facts_publication is not None
-                  else b"semantica.installed-product-active.v2\n" if native_recovery is not None
-                  else b"semantica.installed-product-active.v1\n")
+        domain = (
+            b"semantica.installed-product-active.v3\n"
+            if native_facts_publication is not None
+            else b"semantica.installed-product-active.v2\n"
+            if native_recovery is not None
+            else b"semantica.installed-product-active.v1\n"
+        )
     signature = key.sign(domain + canonical).hex()
-    return json.dumps(
-        {"payload": payload, "signature_hex": signature}, sort_keys=True, separators=(",", ":"),
-    ).encode("ascii") + b"\n"
+    return (
+        json.dumps(
+            {"payload": payload, "signature_hex": signature},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        + b"\n"
+    )
 
 
 def native_recovery_fixture(selected, root):
@@ -71,7 +93,8 @@ def test_f_accepts_signed_v3_native_facts_publication(tmp_path):
     facts = native_facts_publication_fixture(selected, tmp_path.resolve())
     active = signed_product_active(key, tmp_path, "f" * 64, native_facts_publication=facts)
     verified = approval.verify_installed_product_generation(
-        active, key.public_key().public_bytes_raw(),
+        active,
+        key.public_key().public_bytes_raw(),
     )
     assert verified["schema_version"] == "semantica-installed-product-active/v3"
     assert verified["native_facts_publication"] == facts
@@ -84,7 +107,10 @@ def test_f_rejects_v3_wrong_domain_and_native_facts_publication_fields(tmp_path)
     public = key.public_key().public_bytes_raw()
     facts = native_facts_publication_fixture(selected, tmp_path.resolve())
     wrong_domain = signed_product_active(
-        key, tmp_path, "f" * 64, native_facts_publication=facts,
+        key,
+        tmp_path,
+        "f" * 64,
+        native_facts_publication=facts,
         domain=b"semantica.installed-product-active.v2\n",
     )
     with pytest.raises(ValueError, match="signature differs"):
@@ -102,7 +128,10 @@ def test_f_rejects_v3_wrong_domain_and_native_facts_publication_fields(tmp_path)
         with pytest.raises(ValueError, match="payload differs"):
             approval.verify_installed_product_generation(active, public)
     mixed = signed_product_active(
-        key, tmp_path, "f" * 64, native_recovery=native_recovery_fixture(selected, tmp_path.resolve()),
+        key,
+        tmp_path,
+        "f" * 64,
+        native_recovery=native_recovery_fixture(selected, tmp_path.resolve()),
         native_facts_publication=facts,
     )
     with pytest.raises(ValueError, match="payload differs"):
@@ -115,13 +144,18 @@ def test_f_accepts_signed_v2_native_recovery_and_preserves_v1(tmp_path):
     manifest_sha = "f" * 64
     v1 = signed_product_active(key, tmp_path, manifest_sha)
     assert "native_recovery" not in approval.verify_installed_product_generation(
-        v1, key.public_key().public_bytes_raw(),
+        v1,
+        key.public_key().public_bytes_raw(),
     )
     recovery = native_recovery_fixture(selected, tmp_path.resolve())
     v2 = signed_product_active(key, tmp_path, manifest_sha, native_recovery=recovery)
-    assert approval.verify_installed_product_generation(
-        v2, key.public_key().public_bytes_raw(),
-    )["native_recovery"] == recovery
+    assert (
+        approval.verify_installed_product_generation(
+            v2,
+            key.public_key().public_bytes_raw(),
+        )["native_recovery"]
+        == recovery
+    )
 
 
 def test_f_rejects_v2_wrong_domain_schema_and_native_recovery_fields(tmp_path):
@@ -130,13 +164,19 @@ def test_f_rejects_v2_wrong_domain_schema_and_native_recovery_fields(tmp_path):
     public = key.public_key().public_bytes_raw()
     recovery = native_recovery_fixture(selected, tmp_path.resolve())
     wrong_domain = signed_product_active(
-        key, tmp_path, "f" * 64, native_recovery=recovery,
+        key,
+        tmp_path,
+        "f" * 64,
+        native_recovery=recovery,
         domain=b"semantica.installed-product-active.v1\n",
     )
     with pytest.raises(ValueError, match="signature differs"):
         approval.verify_installed_product_generation(wrong_domain, public)
     wrong_schema = signed_product_active(
-        key, tmp_path, "f" * 64, native_recovery=recovery,
+        key,
+        tmp_path,
+        "f" * 64,
+        native_recovery=recovery,
         role_digests={"schema_version": "semantica-installed-product-active/v3"},
     )
     with pytest.raises(ValueError, match="payload differs"):
@@ -189,9 +229,13 @@ def selection_fixture(root, *, binary_bytes=b"test Q ELF", retired_policy=False)
     selection_path.write_bytes(launcher._selection_payload(selected))
     selection_path.chmod(0o600)
     policy.write_bytes(b'{"decision":"approved"}')
-    request = dict(deployment_root=str(root), selection_path=str(selection_path),
-                   selection_sha256=sha(selection_path.read_bytes()),
-                   decision_policy_path=str(policy), decision_policy_sha256=sha(policy.read_bytes()))
+    request = dict(
+        deployment_root=str(root),
+        selection_path=str(selection_path),
+        selection_sha256=sha(selection_path.read_bytes()),
+        decision_policy_path=str(policy),
+        decision_policy_sha256=sha(policy.read_bytes()),
+    )
     return selected, request
 
 
@@ -202,13 +246,19 @@ def test_retirement_approval_binds_schema3_policy_and_uses_distinct_domain(tmp_p
     key = Ed25519PrivateKey.generate()
     active = signed_product_active(key, tmp_path, sha(manifest))
     payload = approval.binding(
-        selected, request["selection_sha256"], request["decision_policy_sha256"],
-        sha(active), sha(manifest), selection_path=request["selection_path"],
+        selected,
+        request["selection_sha256"],
+        request["decision_policy_sha256"],
+        sha(active),
+        sha(manifest),
+        selection_path=request["selection_path"],
     )
     assert payload["schema_version"] == approval.RETIREMENT_SCHEMA
     assert payload["selection_path"] == request["selection_path"]
     assert payload["retired_projection_policy"] == {
-        "object_hex": "e" * 64, "sha256_hex": "f" * 64, "identity_count": 2,
+        "object_hex": "e" * 64,
+        "sha256_hex": "f" * 64,
+        "identity_count": 2,
     }
     receipt = {"payload": payload, "signature_hex": key.sign(approval.signing_bytes(payload)).hex()}
     installed = {
@@ -218,7 +268,10 @@ def test_retirement_approval_binds_schema3_policy_and_uses_distinct_domain(tmp_p
     }
     monkeypatch.setattr(approval, "_installed_bytes", lambda path, _limit: installed[path.name])
     approval.verify_installed_approval(
-        receipt, selected, request["selection_sha256"], request["decision_policy_sha256"],
+        receipt,
+        selected,
+        request["selection_sha256"],
+        request["decision_policy_sha256"],
         selection_path=request["selection_path"],
     )
     approval_file = tmp_path / "approved-native-q.json"
@@ -228,17 +281,23 @@ def test_retirement_approval_binds_schema3_policy_and_uses_distinct_domain(tmp_p
     monkeypatch.setattr(launcher, "_run_selected_command", launched)
     with pytest.raises(launcher.SelectionError, match="requires signed release approval"):
         launcher.serve_selection(request["selection_path"])
-    assert launcher.serve_selection(
-        request["selection_path"], approval_path=approval_file,
-        decision_policy_path=Path(request["decision_policy_path"]),
-    ) == 0
+    assert (
+        launcher.serve_selection(
+            request["selection_path"],
+            approval_path=approval_file,
+            decision_policy_path=Path(request["decision_policy_path"]),
+        )
+        == 0
+    )
     launched.assert_called_once()
     assert launched.call_args.kwargs["retirement_approval"] == (
-        approval_file, Path(request["decision_policy_path"]),
+        approval_file,
+        Path(request["decision_policy_path"]),
     )
     with pytest.raises(launcher.SelectionError, match="release approval differs"):
         launcher.serve_selection(
-            request["selection_path"], approval_path=approval_file,
+            request["selection_path"],
+            approval_path=approval_file,
             decision_policy_path=Path(request["selection_path"]),
         )
     wrong_domain = {
@@ -247,22 +306,36 @@ def test_retirement_approval_binds_schema3_policy_and_uses_distinct_domain(tmp_p
     }
     with pytest.raises(ValueError, match="signature differs"):
         approval.verify_installed_approval(
-            wrong_domain, selected, request["selection_sha256"],
-            request["decision_policy_sha256"], selection_path=request["selection_path"],
+            wrong_domain,
+            selected,
+            request["selection_sha256"],
+            request["decision_policy_sha256"],
+            selection_path=request["selection_path"],
         )
     for changed in (
-        {**payload, "retired_projection_policy": {**payload["retired_projection_policy"], "identity_count": 1}},
+        {
+            **payload,
+            "retired_projection_policy": {
+                **payload["retired_projection_policy"],
+                "identity_count": 1,
+            },
+        },
         {**payload, "schema_version": approval.SCHEMA},
     ):
         with pytest.raises(ValueError, match="differs from the selected installation"):
             approval.verify_installed_approval(
                 {"payload": changed, "signature_hex": receipt["signature_hex"]},
-                selected, request["selection_sha256"], request["decision_policy_sha256"],
+                selected,
+                request["selection_sha256"],
+                request["decision_policy_sha256"],
                 selection_path=request["selection_path"],
             )
     with pytest.raises(ValueError, match="selection path differs"):
         approval.verify_installed_approval(
-            receipt, selected, request["selection_sha256"], request["decision_policy_sha256"],
+            receipt,
+            selected,
+            request["selection_sha256"],
+            request["decision_policy_sha256"],
             selection_path=tmp_path / "missing-selection.json",
         )
 
@@ -283,18 +356,25 @@ def test_retired_serve_child_inherits_exact_deployment_lock_and_locators(tmp_pat
         f"Path({str(output)!r}).write_text(json.dumps({{'approval': os.environ['QUANTA_NATIVE_RETIREMENT_APPROVAL_PATH_V2'], 'policy': os.environ['QUANTA_NATIVE_RETIREMENT_DECISION_POLICY_PATH_V2']}}))\n"
     )
     _selected, request = selection_fixture(
-        tmp_path.resolve(), binary_bytes=program.encode(), retired_policy=True,
+        tmp_path.resolve(),
+        binary_bytes=program.encode(),
+        retired_policy=True,
     )
     approval_file = tmp_path / "approved-native-q.json"
     approval_file.write_text('{"payload":{},"signature_hex":"00"}')
     approval_file.chmod(0o600)
     monkeypatch.setattr(approval, "verify_installed_approval", lambda *_args, **_kwargs: None)
-    assert launcher.serve_selection(
-        request["selection_path"], approval_path=approval_file,
-        decision_policy_path=Path(request["decision_policy_path"]),
-    ) == 0
+    assert (
+        launcher.serve_selection(
+            request["selection_path"],
+            approval_path=approval_file,
+            decision_policy_path=Path(request["decision_policy_path"]),
+        )
+        == 0
+    )
     assert json.loads(output.read_text()) == {
-        "approval": str(approval_file), "policy": request["decision_policy_path"],
+        "approval": str(approval_file),
+        "policy": request["decision_policy_path"],
     }
 
 
@@ -312,8 +392,11 @@ def test_retirement_approval_publishes_canonical_receipt_and_replays_exactly(tmp
     monkeypatch.setattr(launcher, "_run_selected_command", Mock(return_value=0))
     target = tmp_path / "approved-native-q.json"
     call = dict(
-        q_sha256=selected.binary_sha256, active_sha256=sha(active),
-        manifest_sha256=sha(manifest), sign=key.sign, launcher=launcher,
+        q_sha256=selected.binary_sha256,
+        active_sha256=sha(active),
+        manifest_sha256=sha(manifest),
+        sign=key.sign,
+        launcher=launcher,
         receipt_path=target,
     )
     original = launcher._publish_control_file_locked
@@ -322,6 +405,7 @@ def test_retirement_approval_publishes_canonical_receipt_and_replays_exactly(tmp
         def fault(point):
             if point == "after_file_fsync":
                 raise RuntimeError("injected pre-rename failure")
+
         return original(*args, fault_hook=fault, **kwargs)
 
     monkeypatch.setattr(launcher, "_publish_control_file_locked", fail_before_rename)
@@ -337,7 +421,8 @@ def test_retirement_approval_publishes_canonical_receipt_and_replays_exactly(tmp
     assert target.read_bytes() == exact
     with pytest.raises(ValueError, match="deployment-root file"):
         approval.approve_selected_install(
-            request, **{**call, "receipt_path": tmp_path.parent / "foreign.json"},
+            request,
+            **{**call, "receipt_path": tmp_path.parent / "foreign.json"},
         )
     target.write_bytes(b"foreign")
     with pytest.raises(launcher.PersistenceUncertain, match="retained control file"):
@@ -355,8 +440,12 @@ def test_d_approves_the_selected_q_and_f_requires_the_same_install(tmp_path, mon
     monkeypatch.setattr(launcher, "_run_selected_command", boot)
     boot.return_value = 0
     issued = approval.approve_selected_install(
-        request, q_sha256=selected.binary_sha256, active_sha256=sha(active),
-        manifest_sha256=manifest_sha, sign=private_key.sign, launcher=launcher,
+        request,
+        q_sha256=selected.binary_sha256,
+        active_sha256=sha(active),
+        manifest_sha256=manifest_sha,
+        sign=private_key.sign,
+        launcher=launcher,
     )
     boot.assert_called_once()
     assert boot.call_args.args[:2] == (selected, "verify-native-state")
@@ -368,20 +457,35 @@ def test_d_approves_the_selected_q_and_f_requires_the_same_install(tmp_path, mon
     }
     monkeypatch.setattr(approval, "_installed_bytes", lambda path, _limit: installed[path.name])
     approval.verify_installed_approval(
-        issued, selected, request["selection_sha256"], request["decision_policy_sha256"],
+        issued,
+        selected,
+        request["selection_sha256"],
+        request["decision_policy_sha256"],
     )
     with pytest.raises(ValueError, match="differs from the selected installation"):
         approval.verify_installed_approval(issued, selected, request["selection_sha256"], "0" * 64)
-    foreign = {**issued, "signature_hex": Ed25519PrivateKey.generate().sign(
-        approval.signing_bytes(issued["payload"])).hex()}
+    foreign = {
+        **issued,
+        "signature_hex": Ed25519PrivateKey.generate()
+        .sign(approval.signing_bytes(issued["payload"]))
+        .hex(),
+    }
     with pytest.raises(ValueError, match="signature differs"):
         approval.verify_installed_approval(
-            foreign, selected, request["selection_sha256"], request["decision_policy_sha256"],
+            foreign,
+            selected,
+            request["selection_sha256"],
+            request["decision_policy_sha256"],
         )
-    installed["active-generation.json"] = signed_product_active(private_key, tmp_path, manifest_sha, generation=2)
+    installed["active-generation.json"] = signed_product_active(
+        private_key, tmp_path, manifest_sha, generation=2
+    )
     with pytest.raises(ValueError, match="differs from the selected installation"):
         approval.verify_installed_approval(
-            issued, selected, request["selection_sha256"], request["decision_policy_sha256"],
+            issued,
+            selected,
+            request["selection_sha256"],
+            request["decision_policy_sha256"],
         )
 
 
@@ -395,8 +499,11 @@ def test_f_requires_v2_recovery_to_approve_the_same_q(tmp_path, monkeypatch, for
         recovery[foreign_digest] = "1" * 64
     active = signed_product_active(key, tmp_path, sha(manifest), native_recovery=recovery)
     payload = approval.binding(
-        selected, request["selection_sha256"], request["decision_policy_sha256"],
-        sha(active), sha(manifest),
+        selected,
+        request["selection_sha256"],
+        request["decision_policy_sha256"],
+        sha(active),
+        sha(manifest),
     )
     receipt = {"payload": payload, "signature_hex": key.sign(approval.signing_bytes(payload)).hex()}
     installed = {
@@ -407,17 +514,25 @@ def test_f_requires_v2_recovery_to_approve_the_same_q(tmp_path, monkeypatch, for
     monkeypatch.setattr(approval, "_installed_bytes", lambda path, _limit: installed[path.name])
     if foreign_digest is None:
         approval.verify_installed_approval(
-            receipt, selected, request["selection_sha256"], request["decision_policy_sha256"],
+            receipt,
+            selected,
+            request["selection_sha256"],
+            request["decision_policy_sha256"],
         )
     else:
         with pytest.raises(ValueError, match="differs from installed recovery approval"):
             approval.verify_installed_approval(
-                receipt, selected, request["selection_sha256"], request["decision_policy_sha256"],
+                receipt,
+                selected,
+                request["selection_sha256"],
+                request["decision_policy_sha256"],
             )
 
 
 @pytest.mark.parametrize("foreign_digest", [None, "q_image_sha256", "q_config_sha256"])
-def test_f_requires_v3_facts_publication_to_approve_the_same_q(tmp_path, monkeypatch, foreign_digest):
+def test_f_requires_v3_facts_publication_to_approve_the_same_q(
+    tmp_path, monkeypatch, foreign_digest
+):
     selected, request = selection_fixture(tmp_path.resolve())
     manifest = b"installed four-role release"
     key = Ed25519PrivateKey.generate()
@@ -426,8 +541,11 @@ def test_f_requires_v3_facts_publication_to_approve_the_same_q(tmp_path, monkeyp
         facts[foreign_digest] = "1" * 64
     active = signed_product_active(key, tmp_path, sha(manifest), native_facts_publication=facts)
     payload = approval.binding(
-        selected, request["selection_sha256"], request["decision_policy_sha256"],
-        sha(active), sha(manifest),
+        selected,
+        request["selection_sha256"],
+        request["decision_policy_sha256"],
+        sha(active),
+        sha(manifest),
     )
     receipt = {"payload": payload, "signature_hex": key.sign(approval.signing_bytes(payload)).hex()}
     installed = {
@@ -438,26 +556,42 @@ def test_f_requires_v3_facts_publication_to_approve_the_same_q(tmp_path, monkeyp
     monkeypatch.setattr(approval, "_installed_bytes", lambda path, _limit: installed[path.name])
     if foreign_digest is None:
         approval.verify_installed_approval(
-            receipt, selected, request["selection_sha256"], request["decision_policy_sha256"],
+            receipt,
+            selected,
+            request["selection_sha256"],
+            request["decision_policy_sha256"],
         )
     else:
         with pytest.raises(ValueError, match="differs from installed recovery approval"):
             approval.verify_installed_approval(
-                receipt, selected, request["selection_sha256"], request["decision_policy_sha256"],
+                receipt,
+                selected,
+                request["selection_sha256"],
+                request["decision_policy_sha256"],
             )
 
 
 @pytest.mark.parametrize("generation_signer", ["unsigned", "foreign"])
-def test_f_requires_active_generation_signature_under_installed_key(tmp_path, monkeypatch, generation_signer):
+def test_f_requires_active_generation_signature_under_installed_key(
+    tmp_path, monkeypatch, generation_signer
+):
     selected, request = selection_fixture(tmp_path.resolve())
     manifest = b"installed four-role release"
     key = Ed25519PrivateKey.generate()
     active = signed_product_active(Ed25519PrivateKey.generate(), tmp_path, sha(manifest))
     if generation_signer == "unsigned":
         active = json.dumps({"payload": json.loads(active)["payload"]}).encode()
-    payload = approval.binding(selected, request["selection_sha256"], request["decision_policy_sha256"],
-                               sha(active), sha(manifest))
-    signed_q_approval = {"payload": payload, "signature_hex": key.sign(approval.signing_bytes(payload)).hex()}
+    payload = approval.binding(
+        selected,
+        request["selection_sha256"],
+        request["decision_policy_sha256"],
+        sha(active),
+        sha(manifest),
+    )
+    signed_q_approval = {
+        "payload": payload,
+        "signature_hex": key.sign(approval.signing_bytes(payload)).hex(),
+    }
     installed = {
         "active-generation.json": active,
         "deployment-public-key.bin": key.public_key().public_bytes_raw(),
@@ -467,7 +601,10 @@ def test_f_requires_active_generation_signature_under_installed_key(tmp_path, mo
 
     with pytest.raises(ValueError, match="installed Product generation signature"):
         approval.verify_installed_approval(
-            signed_q_approval, selected, request["selection_sha256"], request["decision_policy_sha256"],
+            signed_q_approval,
+            selected,
+            request["selection_sha256"],
+            request["decision_policy_sha256"],
         )
 
 
@@ -499,7 +636,9 @@ def test_d_refuses_a_foreign_elf_or_changed_policy_before_signing(tmp_path, monk
         approval.approve_selected_install(request, q_sha256="3" * 64, **kwargs)
     with pytest.raises(ValueError, match="decision policy changed"):
         approval.approve_selected_install(
-            dict(request, decision_policy_sha256="4" * 64), q_sha256=selected.binary_sha256, **kwargs,
+            dict(request, decision_policy_sha256="4" * 64),
+            q_sha256=selected.binary_sha256,
+            **kwargs,
         )
     boot.assert_not_called()
     sign.assert_not_called()
@@ -517,19 +656,28 @@ def test_d_refuses_a_policy_change_during_boot_verification(tmp_path, monkeypatc
     sign = Mock()
     with pytest.raises(ValueError, match="decision policy changed"):
         approval.approve_selected_install(
-            request, q_sha256=selected.binary_sha256, active_sha256="1" * 64,
-            manifest_sha256="2" * 64, sign=sign, launcher=launcher,
+            request,
+            q_sha256=selected.binary_sha256,
+            active_sha256="1" * 64,
+            manifest_sha256="2" * 64,
+            sign=sign,
+            launcher=launcher,
         )
     sign.assert_not_called()
 
 
-@pytest.mark.parametrize(("changed_input", "expected_error"), [
-    ("policy", "release selection or decision policy changed"),
-    ("selection", "release selection or decision policy changed"),
-    ("config", "native config SHA-256 changed"),
-    ("binary", "selected binary SHA-256 changed"),
-])
-def test_d_refuses_changed_inputs_after_signing(tmp_path, monkeypatch, changed_input, expected_error):
+@pytest.mark.parametrize(
+    ("changed_input", "expected_error"),
+    [
+        ("policy", "release selection or decision policy changed"),
+        ("selection", "release selection or decision policy changed"),
+        ("config", "native config SHA-256 changed"),
+        ("binary", "selected binary SHA-256 changed"),
+    ],
+)
+def test_d_refuses_changed_inputs_after_signing(
+    tmp_path, monkeypatch, changed_input, expected_error
+):
     selected, request = selection_fixture(tmp_path.resolve())
     key = Ed25519PrivateKey.generate()
     path = {
@@ -546,8 +694,12 @@ def test_d_refuses_changed_inputs_after_signing(tmp_path, monkeypatch, changed_i
 
     with pytest.raises((ValueError, launcher.SelectionError), match=expected_error):
         approval.approve_selected_install(
-            request, q_sha256=selected.binary_sha256, active_sha256="1" * 64,
-            manifest_sha256="2" * 64, sign=sign_with_changed_input, launcher=launcher,
+            request,
+            q_sha256=selected.binary_sha256,
+            active_sha256="1" * 64,
+            manifest_sha256="2" * 64,
+            sign=sign_with_changed_input,
+            launcher=launcher,
         )
 
 
@@ -567,7 +719,9 @@ def test_f_requires_the_installed_trust_directory_chain_to_be_protected(tmp_path
             values[0] &= ~0o022
         return os.stat_result(values)
 
-    monkeypatch.setattr(Path, "lstat", lambda path: owned_metadata(lstat(path), trusted=path != trust))
+    monkeypatch.setattr(
+        Path, "lstat", lambda path: owned_metadata(lstat(path), trusted=path != trust)
+    )
     monkeypatch.setattr(os, "fstat", lambda fd: owned_metadata(fstat(fd), trusted=True))
     with pytest.raises(ValueError, match="protected installed directory"):
         approval._installed_bytes(key, 32)

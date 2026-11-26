@@ -35,13 +35,15 @@ def project_checker(tmp_path, monkeypatch):
         lines = ["[[targets]]", f"path = {json.dumps(source)}"]
         if feature is not None:
             lines.append(f"required_feature = {json.dumps(feature)}")
-        lines.extend([
-            "[[targets.dispositions]]",
-            'disposition = "retire"' if feature else 'disposition = "retain"',
-            'proof = "NOT_APPLICABLE"' if feature else 'proof = "NOT_RUN"',
-            'replacement = "fixture for checker behavior"',
-            f"tests = {json.dumps(tests)}",
-        ])
+        lines.extend(
+            [
+                "[[targets.dispositions]]",
+                'disposition = "retire"' if feature else 'disposition = "retain"',
+                'proof = "NOT_APPLICABLE"' if feature else 'proof = "NOT_RUN"',
+                'replacement = "fixture for checker behavior"',
+                f"tests = {json.dumps(tests)}",
+            ]
+        )
         sections.append("\n".join(lines))
         if feature is not None:
             continue
@@ -58,18 +60,27 @@ def project_checker(tmp_path, monkeypatch):
 @pytest.fixture
 def checker(project_checker, monkeypatch):
     # Other cases isolate one gate at a time using a synthetic retired roster.
-    targets = project_checker.tomllib.loads(project_checker.MANIFEST.read_text(encoding="utf-8"))["targets"]
-    monkeypatch.setattr(project_checker, "ENGINE_ONLY_RETIREMENTS", frozenset(
-        (target["path"], test)
-        for target in targets if "required_feature" in target
-        for group in target["dispositions"]
-        for test in group["tests"]
-    ))
+    targets = project_checker.tomllib.loads(project_checker.MANIFEST.read_text(encoding="utf-8"))[
+        "targets"
+    ]
+    monkeypatch.setattr(
+        project_checker,
+        "ENGINE_ONLY_RETIREMENTS",
+        frozenset(
+            (target["path"], test)
+            for target in targets
+            if "required_feature" in target
+            for group in target["dispositions"]
+            for test in group["tests"]
+        ),
+    )
     return project_checker
 
 
 @pytest.mark.parametrize("inventory_only", [True, False])
-def test_engine_removal_does_not_waive_public_and_data_contracts(project_checker, capsys, inventory_only):
+def test_engine_removal_does_not_waive_public_and_data_contracts(
+    project_checker, capsys, inventory_only
+):
     assert project_checker.main(inventory_only=inventory_only) == 1
     errors = capsys.readouterr().err
     assert "engine-only retirement is not recorded" in errors
@@ -194,7 +205,10 @@ def test_migration_cannot_claim_it_has_no_applicable_body(checker, capsys):
     ],
 )
 def test_verified_migration_requires_current_named_nextest_observation(
-    checker, capsys, evidence, expected_error,
+    checker,
+    capsys,
+    evidence,
+    expected_error,
 ):
     source = "crates/quanta-index-lexical/tests/replacement.rs"
     path = checker.ROOT / source
@@ -237,7 +251,10 @@ def test_verified_migration_requires_current_named_nextest_observation(
         ("wrong_digest", "terminal SHA-256 differs"),
         ("different_pass", "has no PASS"),
         ("unrelated_valid_case", "terminal observations differ from declared replacement tests"),
-        ("unobserved_required_case", "terminal observations differ from declared replacement tests"),
+        (
+            "unobserved_required_case",
+            "terminal observations differ from declared replacement tests",
+        ),
         ("no_declared_cases", "requires explicit replacement tests"),
         ("truncated", "incomplete suite events"),
         ("valid", None),
@@ -247,19 +264,36 @@ def test_verified_migration_requires_current_named_nextest_observation(
         ("release_wrong_tree", "frozen source tree SHA-256 differs"),
         ("release_unbound_terminal", "source manifest events_sha256 differs from the observation"),
         ("release_unbound_binary", "lacks its revision and terminal binding"),
-        ("release_swapped_binary", "Nextest collection differs from the built executable inventory"),
+        (
+            "release_swapped_binary",
+            "Nextest collection differs from the built executable inventory",
+        ),
         ("release_changed_binary", "retained Nextest executable bytes differ"),
-        ("release_wrong_feature_command", "retained Nextest commands differ from the recorded selection"),
-        ("release_wrong_selection", "Nextest collection contains a target outside the recorded selection"),
+        (
+            "release_wrong_feature_command",
+            "retained Nextest commands differ from the recorded selection",
+        ),
+        (
+            "release_wrong_selection",
+            "Nextest collection contains a target outside the recorded selection",
+        ),
         ("release_missing_test_target", "Nextest collection lacks recorded test targets"),
         ("release_missing_lib_target", "Nextest collection lacks the recorded library target"),
-        ("release_wrong_workspace", "Nextest build metadata differs from the workspace or its Cargo target"),
-        ("release_unbound_legacy_path", "old-Q execution path differs from the retained executable"),
+        (
+            "release_wrong_workspace",
+            "Nextest build metadata differs from the workspace or its Cargo target",
+        ),
+        (
+            "release_unbound_legacy_path",
+            "old-Q execution path differs from the retained executable",
+        ),
         ("release_changed_legacy_binary", "old-Q executable SHA-256 differs"),
         ("release_valid", "retained old-Q tests require VERIFIED execution"),
     ],
 )
-def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypatch, evidence, expected_error):
+def test_retirement_requires_complete_nextest_evidence(
+    checker, capsys, monkeypatch, evidence, expected_error
+):
     crate = "quanta-index-lexical"
     test_source = f"crates/{crate}/tests/replacement.rs"
     library_event = evidence in {"same_leaf_different_library_module", "valid_library_module"}
@@ -297,8 +331,10 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypa
     binary_id = f"{crate}::{target}"
     target_dir = checker.ROOT / f"{run_id}-target"
     binary = {
-        "binary-id": binary_id, "binary-path": str(target_dir / "replacement"),
-        "binary-name": target, "kind": kind,
+        "binary-id": binary_id,
+        "binary-path": str(target_dir / "replacement"),
+        "binary-name": target,
+        "kind": kind,
     }
     build_metadata = {
         "target-directory": str(target_dir),
@@ -347,11 +383,18 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypa
             receipt_fields += f', inventory_sha256 = "{inventory_digest}"'
     release = evidence.startswith("release_")
     if release:
-        monkeypatch.setattr(retirement_nextest, "release_capture_batches", lambda *_: [{
-            "features": [], "expected_events": [event],
-        }])
-    candidate_lock = b'version = 4\n# candidate lock\n'
-    stale_lock = b'version = 4\n# previous lock\n'
+        monkeypatch.setattr(
+            retirement_nextest,
+            "release_capture_batches",
+            lambda *_: [
+                {
+                    "features": [],
+                    "expected_events": [event],
+                }
+            ],
+        )
+    candidate_lock = b"version = 4\n# candidate lock\n"
+    stale_lock = b"version = 4\n# previous lock\n"
     lock = checker.ROOT / "Cargo.lock"
     implementation = checker.ROOT / "crates/quanta-index-lexical/src/lib.rs"
     manifest_path = str(checker.MANIFEST.relative_to(checker.ROOT))
@@ -359,7 +402,8 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypa
     def git(*args):
         return subprocess.check_output(
             ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", *args],
-            cwd=checker.ROOT, text=True,
+            cwd=checker.ROOT,
+            text=True,
         ).strip()
 
     if release:
@@ -367,8 +411,17 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypa
         implementation.parent.mkdir()
         implementation.write_text("fn before() {}\n", encoding="utf-8")
         git("init", "-q")
-        (checker.ROOT / ".git/info/exclude").write_text("/*-inventory.json\n/*-nextest.jsonl\n", encoding="utf-8")
-        git("add", manifest_path, "Cargo.toml", "Cargo.lock", "crates", "tools/ci/test-authority.toml")
+        (checker.ROOT / ".git/info/exclude").write_text(
+            "/*-inventory.json\n/*-nextest.jsonl\n", encoding="utf-8"
+        )
+        git(
+            "add",
+            manifest_path,
+            "Cargo.toml",
+            "Cargo.lock",
+            "crates",
+            "tools/ci/test-authority.toml",
+        )
         git("commit", "-qm", "executed source")
         run_revision = git("rev-parse", "HEAD")
 
@@ -387,31 +440,43 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypa
             built = dict(binary)
             if evidence == "release_swapped_binary":
                 built["binary-path"] = str(target_dir / "different-replacement")
-            binaries_bytes = json.dumps({
-                "rust-build-meta": build_metadata,
-                "rust-binaries": {binary_id: built},
-            }).encode()
-            cargo_bytes = json.dumps({
-                "target_directory": str(target_dir),
-                "workspace_root": str(
-                    checker.ROOT / "unrelated-source" if evidence == "release_wrong_workspace" else checker.ROOT
-                ),
-            }).encode()
+            binaries_bytes = json.dumps(
+                {
+                    "rust-build-meta": build_metadata,
+                    "rust-binaries": {binary_id: built},
+                }
+            ).encode()
+            cargo_bytes = json.dumps(
+                {
+                    "target_directory": str(target_dir),
+                    "workspace_root": str(
+                        checker.ROOT / "unrelated-source"
+                        if evidence == "release_wrong_workspace"
+                        else checker.ROOT
+                    ),
+                }
+            ).encode()
             (checker.ROOT / f"{run_id}-binaries.json").write_bytes(binaries_bytes)
             (checker.ROOT / f"{run_id}-cargo.json").write_bytes(cargo_bytes)
             target_dir.mkdir()
             executable = target_dir / "replacement"
-            executable.write_bytes(b"changed binary" if evidence == "release_changed_binary" else b"test binary")
+            executable.write_bytes(
+                b"changed binary" if evidence == "release_changed_binary" else b"test binary"
+            )
             selection = {
-                "lane": "test-integration-lane", "package": crate,
+                "lane": "test-integration-lane",
+                "package": crate,
                 "include_lib": evidence == "release_missing_lib_target",
                 "test_targets": ["unrelated" if evidence == "release_wrong_selection" else target],
-                "filterset": "test(=replacement)", "features": [],
+                "filterset": "test(=replacement)",
+                "features": [],
             }
             if evidence == "release_missing_test_target":
                 selection["test_targets"].append("uncollected")
             commands = retirement_nextest._execution_commands(
-                selection, checker.ROOT / f"{run_id}-binaries.json", checker.ROOT / f"{run_id}-cargo.json",
+                selection,
+                checker.ROOT / f"{run_id}-binaries.json",
+                checker.ROOT / f"{run_id}-cargo.json",
             )
             if evidence == "release_wrong_feature_command":
                 commands["cargo.json"].extend(["--features", f"{crate}/different"])
@@ -419,10 +484,19 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypa
             if evidence in {"release_changed_legacy_binary", "release_unbound_legacy_path"}:
                 retained = target_dir / "legacy-searchd"
                 retained.write_bytes(
-                    b"replacement old daemon" if evidence == "release_changed_legacy_binary" else b"old daemon"
+                    b"replacement old daemon"
+                    if evidence == "release_changed_legacy_binary"
+                    else b"old daemon"
                 )
-                executed = checker.ROOT / "old-searchd" if evidence == "release_unbound_legacy_path" else retained
-                legacy = {"path": str(executed), "sha256": hashlib.sha256(b"old daemon").hexdigest()}
+                executed = (
+                    checker.ROOT / "old-searchd"
+                    if evidence == "release_unbound_legacy_path"
+                    else retained
+                )
+                legacy = {
+                    "path": str(executed),
+                    "sha256": hashlib.sha256(b"old daemon").hexdigest(),
+                }
             source_binding["execution"] = {
                 "workspace_root": str(checker.ROOT),
                 "binaries_sha256": "sha256:" + hashlib.sha256(binaries_bytes).hexdigest(),
@@ -434,7 +508,9 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypa
             }
         source_manifest = json.dumps(source_binding).encode()
         (checker.ROOT / f"{run_id}-source-manifest.json").write_bytes(source_manifest)
-        receipt_fields += f', source_manifest_sha256 = "{hashlib.sha256(source_manifest).hexdigest()}"'
+        receipt_fields += (
+            f', source_manifest_sha256 = "{hashlib.sha256(source_manifest).hexdigest()}"'
+        )
     observation = (
         f'observations = [{{source = "{source}", case = "replacement", '
         f'source_sha256 = "{hashlib.sha256(body).hexdigest()}", run_id = "{run_id}"{receipt_fields}}}]'
@@ -446,7 +522,8 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypa
         cases.append("required_behavior")
     candidates = (
         f'candidates = [{{path = "{source}", tests = {json.dumps(cases)}}}]\n'
-        if evidence != "no_declared_cases" else ""
+        if evidence != "no_declared_cases"
+        else ""
     )
     roster = checker.MANIFEST.read_text(encoding="utf-8").replace(
         'disposition = "retire"\nproof = "NOT_APPLICABLE"',
@@ -466,14 +543,19 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypa
         lock.write_bytes(stale_lock)
     if evidence == "events_only":
         assert checker.main(inventory_only=True) == 0
-    assert checker.main(revision=revision, evidence_dir=checker.ROOT) == (0 if expected_error is None else 1)
+    assert checker.main(revision=revision, evidence_dir=checker.ROOT) == (
+        0 if expected_error is None else 1
+    )
     if expected_error is not None:
         errors = capsys.readouterr().err
         assert expected_error in errors
         if evidence == "release_valid":
             assert "sealed_manifest.rs" not in errors
         else:
-            assert "sealed_manifest.rs: source was removed with 43 test IDs still lacking VERIFIED" in errors
+            assert (
+                "sealed_manifest.rs: source was removed with 43 test IDs still lacking VERIFIED"
+                in errors
+            )
             assert "sealed_manifest.rs [BLOCKED]" in errors
 
 
@@ -496,7 +578,8 @@ def test_release_source_manifest_rejects_checkout_drift(tmp_path, monkeypatch, s
     def git(*args):
         return subprocess.check_output(
             ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", *args],
-            cwd=checkout, text=True,
+            cwd=checkout,
+            text=True,
         ).strip()
 
     git("init", "-q")
@@ -540,16 +623,38 @@ def test_release_source_manifest_rejects_checkout_drift(tmp_path, monkeypatch, s
         retirement_nextest.release_source_manifest(checkout, revision, inventory, events)
 
 
-@pytest.mark.parametrize("changed", [
-    None, "test", "native-daemon", "old-q", "supplier-removed", "test-restored",
-    "old-q-restored", "metadata-restored", "retained-dylib", "extra-selection", "omitted-selection",
-    "outside-roster", "retained-outside-roster", "outside-roster-without-expectation",
-    "outside-profile", "outside-profile-without-expectation", "retained-outside-profile",
-    "retained-outside-roster-without-expectation", "roster-resume", "roster-changed-terminal",
-    "native-stale-old-q", "native-platform-drift", "retained-native-platform-drift",
-    "manifest-publication-source-drift", "manifest-publication-directory-replaced",
-    "manifest-publication-file-replaced", "manifest-publication-destination-replaced",
-])
+@pytest.mark.parametrize(
+    "changed",
+    [
+        None,
+        "test",
+        "native-daemon",
+        "old-q",
+        "supplier-removed",
+        "test-restored",
+        "old-q-restored",
+        "metadata-restored",
+        "retained-dylib",
+        "extra-selection",
+        "omitted-selection",
+        "outside-roster",
+        "retained-outside-roster",
+        "outside-roster-without-expectation",
+        "outside-profile",
+        "outside-profile-without-expectation",
+        "retained-outside-profile",
+        "retained-outside-roster-without-expectation",
+        "roster-resume",
+        "roster-changed-terminal",
+        "native-stale-old-q",
+        "native-platform-drift",
+        "retained-native-platform-drift",
+        "manifest-publication-source-drift",
+        "manifest-publication-directory-replaced",
+        "manifest-publication-file-replaced",
+        "manifest-publication-destination-replaced",
+    ],
+)
 def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, monkeypatch, changed):
     checkout = tmp_path / "source"
     checkout.mkdir()
@@ -570,14 +675,25 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
     monkeypatch.setenv(retirement_nextest.LEGACY_BINARY_ENV, str(legacy_path))
     monkeypatch.setenv(retirement_nextest.LEGACY_SHA_ENV, legacy_sha)
     uses_old_q = changed not in {
-        "native-stale-old-q", "native-platform-drift", "retained-native-platform-drift",
+        "native-stale-old-q",
+        "native-platform-drift",
+        "retained-native-platform-drift",
     }
     if uses_old_q:
-        monkeypatch.setattr(retirement_nextest, "OLD_Q_TARGETS", {"quanta-index-lexical": {"replacement"}})
-        monkeypatch.setattr(retirement_nextest, "_approved_linux_old_q_sha256", lambda *_: legacy_sha)
-        monkeypatch.setattr(retirement_nextest, "platform", SimpleNamespace(
-            system=lambda: "Linux", machine=lambda: "x86_64",
-        ))
+        monkeypatch.setattr(
+            retirement_nextest, "OLD_Q_TARGETS", {"quanta-index-lexical": {"replacement"}}
+        )
+        monkeypatch.setattr(
+            retirement_nextest, "_approved_linux_old_q_sha256", lambda *_: legacy_sha
+        )
+        monkeypatch.setattr(
+            retirement_nextest,
+            "platform",
+            SimpleNamespace(
+                system=lambda: "Linux",
+                machine=lambda: "x86_64",
+            ),
+        )
     else:
         legacy_path.unlink()
     platforms = {"host": {"platform": {"triple": "x86_64-unknown-linux-gnu"}}, "targets": []}
@@ -603,13 +719,20 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         executable = target / "replacement"
         daemon = target / "debug/quanta-index-searchd"
         dylib = target / "debug/deps/libnative.dylib"
-        row = {"binary-id": binary_id, "binary-path": str(executable), "binary-name": "replacement", "kind": "test"}
+        row = {
+            "binary-id": binary_id,
+            "binary-path": str(executable),
+            "binary-name": "replacement",
+            "kind": "test",
+        }
         rows = {binary_id: row}
         for name, kind in extra_targets.items():
             extra_id = f"quanta-index-lexical::{name}"
             rows[extra_id] = {
-                "binary-id": extra_id, "binary-path": str(target / name),
-                "binary-name": name, "kind": kind,
+                "binary-id": extra_id,
+                "binary-path": str(target / name),
+                "binary-name": name,
+                "kind": kind,
             }
         args = argv[3:]
         calls.append(args)
@@ -621,38 +744,62 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             dylib.parent.mkdir(parents=True)
             daemon.write_bytes(b"native daemon")
             dylib.write_bytes(b"native library")
-            stdout.write(json.dumps({
-                "rust-build-meta": {
-                    "target-directory": str(target),
-                    "platforms": platforms,
-                    "non-test-binaries": {
-                        "test-subject": [
-                            {"name": "quanta-index-searchd", "kind": "bin-exe", "path": "debug/quanta-index-searchd"},
-                            {"name": "native", "kind": "dylib", "path": "debug/deps/libnative.dylib"},
-                        ],
-                    },
-                },
-                "rust-binaries": rows,
-            }).encode())
+            stdout.write(
+                json.dumps(
+                    {
+                        "rust-build-meta": {
+                            "target-directory": str(target),
+                            "platforms": platforms,
+                            "non-test-binaries": {
+                                "test-subject": [
+                                    {
+                                        "name": "quanta-index-searchd",
+                                        "kind": "bin-exe",
+                                        "path": "debug/quanta-index-searchd",
+                                    },
+                                    {
+                                        "name": "native",
+                                        "kind": "dylib",
+                                        "path": "debug/deps/libnative.dylib",
+                                    },
+                                ],
+                            },
+                        },
+                        "rust-binaries": rows,
+                    }
+                ).encode()
+            )
         elif args[0] == "metadata":
-            stdout.write(json.dumps({"workspace_root": str(checkout), "target_directory": str(target)}).encode())
+            stdout.write(
+                json.dumps(
+                    {"workspace_root": str(checkout), "target_directory": str(target)}
+                ).encode()
+            )
         elif args[1] == "list":
             cases = {"passes": {"ignored": False, "filter-match": {"status": "matches"}}}
             if changed in {"extra-selection", "outside-roster-without-expectation"}:
                 cases["unexpected"] = dict(cases["passes"])
-            stdout.write(json.dumps({
-                "test-count": len(cases),
-                "rust-build-meta": {
-                    "platforms": other_platforms if changed == "native-platform-drift" else platforms,
-                },
-                "rust-suites": {
-                    name: {
-                        **built, "package-name": "quanta-index-lexical", "status": "listed",
-                        "testcases": cases if name == binary_id else {},
+            stdout.write(
+                json.dumps(
+                    {
+                        "test-count": len(cases),
+                        "rust-build-meta": {
+                            "platforms": other_platforms
+                            if changed == "native-platform-drift"
+                            else platforms,
+                        },
+                        "rust-suites": {
+                            name: {
+                                **built,
+                                "package-name": "quanta-index-lexical",
+                                "status": "listed",
+                                "testcases": cases if name == binary_id else {},
+                            }
+                            for name, built in rows.items()
+                        },
                     }
-                    for name, built in rows.items()
-                },
-            }).encode())
+                ).encode()
+            )
         else:
             assert args[1] == "run" and env["NEXTEST_EXPERIMENTAL_LIBTEST_JSON"] == "1"
             if changed == "test":
@@ -675,15 +822,26 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             executed = [event]
             if changed == "outside-roster-without-expectation":
                 executed.append(binary_id + "$unexpected")
-            events = [{"type": "suite", "event": "started", "test_count": len(executed), "nextest": meta}]
+            events = [
+                {"type": "suite", "event": "started", "test_count": len(executed), "nextest": meta}
+            ]
             for name in executed:
-                events.extend((
-                    {"type": "test", "event": "started", "name": name},
-                    {"type": "test", "event": "ok", "name": name},
-                ))
-            events.append({
-                "type": "suite", "event": "ok", "passed": len(executed), "failed": 0, "ignored": 0, "nextest": meta,
-            })
+                events.extend(
+                    (
+                        {"type": "test", "event": "started", "name": name},
+                        {"type": "test", "event": "ok", "name": name},
+                    )
+                )
+            events.append(
+                {
+                    "type": "suite",
+                    "event": "ok",
+                    "passed": len(executed),
+                    "failed": 0,
+                    "ignored": 0,
+                    "nextest": meta,
+                }
+            )
             for line in events:
                 stdout.write((json.dumps(line) + "\n").encode())
 
@@ -692,17 +850,28 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
     monkeypatch.setattr(retirement_nextest, "release_tree_sha256", lambda *_: "a" * 64)
     committed_events = {event, binary_id + "$missing"}
     committed_features = ["quanta-index-lexical/native-one", "quanta-index-lexical/native-two"]
-    monkeypatch.setattr(retirement_nextest, "release_capture_batches", lambda *_: [{
-        "features": committed_features, "expected_events": sorted(committed_events),
-    }])
+    monkeypatch.setattr(
+        retirement_nextest,
+        "release_capture_batches",
+        lambda *_: [
+            {
+                "features": committed_features,
+                "expected_events": sorted(committed_events),
+            }
+        ],
+    )
     monkeypatch.setattr(retirement_nextest, "subprocess", SimpleNamespace(run=run))
     args = dict(
-        lane="test-integration-lane", package="quanta-index-lexical",
-        include_lib=True, test_targets=["replacement", "additional"],
-        filterset="test(=passes)", features=["native-one, native-two"],
+        lane="test-integration-lane",
+        package="quanta-index-lexical",
+        include_lib=True,
+        test_targets=["replacement", "additional"],
+        filterset="test(=passes)",
+        features=["native-one, native-two"],
         expected_events=[event],
     )
     if changed == "manifest-publication-source-drift":
+
         def refuse_after_publish(*_):
             if any(evidence.glob("*-source-manifest.json")):
                 raise ValueError("retirement source changed during manifest publication")
@@ -724,8 +893,12 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             evidence.mkdir()
             return manifest
 
-        monkeypatch.setattr(retirement_nextest, "_source_manifest_for_execution", replace_directory_after_readback)
-        with pytest.raises(ValueError, match="retirement evidence directory changed during capture"):
+        monkeypatch.setattr(
+            retirement_nextest, "_source_manifest_for_execution", replace_directory_after_readback
+        )
+        with pytest.raises(
+            ValueError, match="retirement evidence directory changed during capture"
+        ):
             retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
         assert len(calls) == 4
         assert list(retained_evidence.glob("*-nextest.jsonl"))
@@ -742,7 +915,9 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             return original_link(source, destination, **kwargs)
 
         monkeypatch.setattr(retirement_nextest.os, "link", link_replaced_manifest)
-        with pytest.raises(ValueError, match="published retirement manifest differs from the prepared file"):
+        with pytest.raises(
+            ValueError, match="published retirement manifest differs from the prepared file"
+        ):
             retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
         assert len(calls) == 4
         assert list(evidence.glob("*-nextest.jsonl"))
@@ -760,7 +935,9 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             candidate.replace(published)
 
         monkeypatch.setattr(retirement_nextest.os, "link", link_then_replace_destination)
-        with pytest.raises(ValueError, match="published retirement manifest differs from the prepared file"):
+        with pytest.raises(
+            ValueError, match="published retirement manifest differs from the prepared file"
+        ):
             retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
         assert len(calls) == 4
         assert list(evidence.glob("*-nextest.jsonl"))
@@ -770,7 +947,9 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         args["features"].append("extra")
         if changed == "outside-profile-without-expectation":
             del args["expected_events"]
-        with pytest.raises(ValueError, match="features differ from the committed retirement profile"):
+        with pytest.raises(
+            ValueError, match="features differ from the committed retirement profile"
+        ):
             retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
         assert len(calls) == (0 if changed == "outside-profile" else 3)
         assert not list(evidence.glob("*-nextest.jsonl"))
@@ -792,7 +971,9 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
     if changed in {"extra-selection", "omitted-selection"}:
         if changed == "omitted-selection":
             args["expected_events"].append(binary_id + "$missing")
-        message = r"extra=\[.*unexpected" if changed == "extra-selection" else r"missing=\[.*missing"
+        message = (
+            r"extra=\[.*unexpected" if changed == "extra-selection" else r"missing=\[.*missing"
+        )
         with pytest.raises(ValueError, match=message):
             retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
         assert len(calls) == 3
@@ -806,9 +987,16 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         assert not list(evidence.glob("*-source-manifest.json"))
         return
     if changed not in {
-        None, "supplier-removed", "retained-dylib", "retained-outside-roster", "retained-outside-profile",
-        "retained-outside-roster-without-expectation", "roster-resume", "roster-changed-terminal",
-        "native-stale-old-q", "retained-native-platform-drift",
+        None,
+        "supplier-removed",
+        "retained-dylib",
+        "retained-outside-roster",
+        "retained-outside-profile",
+        "retained-outside-roster-without-expectation",
+        "roster-resume",
+        "roster-changed-terminal",
+        "native-stale-old-q",
+        "retained-native-platform-drift",
     }:
         with pytest.raises(ValueError, match="build inputs or evidence changed"):
             retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
@@ -822,20 +1010,26 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             f"quanta-index-lexical::{name}": hashlib.sha256(b"test binary").hexdigest()
             for name in ("replacement", *extra_targets)
         }
-        expected_executables.update({
-            "runtime/debug/quanta-index-searchd": hashlib.sha256(b"native daemon").hexdigest(),
-            "runtime/debug/deps/libnative.dylib": hashlib.sha256(b"native library").hexdigest(),
-        })
+        expected_executables.update(
+            {
+                "runtime/debug/quanta-index-searchd": hashlib.sha256(b"native daemon").hexdigest(),
+                "runtime/debug/deps/libnative.dylib": hashlib.sha256(b"native library").hexdigest(),
+            }
+        )
         assert manifest["execution"]["executables"] == expected_executables
         run_id = path.name.removesuffix("-source-manifest.json")
         target = evidence / f"{run_id}-target"
-        expected_legacy = {
-            "path": str(target / "legacy-searchd"), "sha256": legacy_sha,
-        } if uses_old_q else None
+        expected_legacy = (
+            {
+                "path": str(target / "legacy-searchd"),
+                "sha256": legacy_sha,
+            }
+            if uses_old_q
+            else None
+        )
         assert manifest["execution"]["legacy_searchd"] == expected_legacy
         assert list(manifest["execution"]["commands"].values()) == [
-            ["--lane", args["lane"], *cmd]
-            for cmd in (calls[0], calls[1], calls[2], calls[3])
+            ["--lane", args["lane"], *cmd] for cmd in (calls[0], calls[1], calls[2], calls[3])
         ]
         relocated = evidence.rename(tmp_path / "relocated")
         legacy_path.unlink(missing_ok=True)
@@ -847,7 +1041,9 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             selection = manifest["execution"]["selection"]
             selection["features"].append("quanta-index-lexical/extra")
             manifest["execution"]["commands"] = retirement_nextest._execution_commands(
-                selection, evidence / f"{run_id}-binaries.json", evidence / f"{run_id}-cargo.json",
+                selection,
+                evidence / f"{run_id}-binaries.json",
+                evidence / f"{run_id}-cargo.json",
             )
             retained_manifest.write_text(json.dumps(manifest), encoding="utf-8")
         elif changed == "retained-native-platform-drift":
@@ -874,7 +1070,9 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             with pytest.raises(ValueError, match="outside the committed retirement roster"):
                 retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "c" * 40)
         elif changed == "retained-outside-profile":
-            with pytest.raises(ValueError, match="features differ from the committed retirement profile"):
+            with pytest.raises(
+                ValueError, match="features differ from the committed retirement profile"
+            ):
                 retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "b" * 40)
         elif changed == "retained-native-platform-drift":
             with pytest.raises(ValueError, match="collection platform differs from the build"):
@@ -883,9 +1081,14 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "b" * 40)
         if changed in {"roster-resume", "roster-changed-terminal"}:
             selection = manifest["execution"]["selection"]
-            monkeypatch.setattr(retirement_nextest, "release_capture_batches", lambda *_: [selection])
+            monkeypatch.setattr(
+                retirement_nextest, "release_capture_batches", lambda *_: [selection]
+            )
             captures = retirement_nextest.capture_release_roster(
-                checkout, "b" * 40, relocated, lane=selection["lane"],
+                checkout,
+                "b" * 40,
+                relocated,
+                lane=selection["lane"],
             )
             if changed == "roster-changed-terminal":
                 terminal = relocated / f"{run_id}-nextest.jsonl"
@@ -895,11 +1098,26 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             else:
                 assert list(captures) == [retained_manifest]
     assert len(calls) == 4
-    resolution = ["--locked", "--offline", "--no-default-features", "--features",
-                  "quanta-index-lexical/native-one,quanta-index-lexical/native-two"]
+    resolution = [
+        "--locked",
+        "--offline",
+        "--no-default-features",
+        "--features",
+        "quanta-index-lexical/native-one,quanta-index-lexical/native-two",
+    ]
     assert calls[0][2:] == [
-        *resolution, "-p", "quanta-index-lexical", "--lib", "--test", "replacement",
-        "--test", "additional", "--list-type", "binaries-only", "--message-format", "json",
+        *resolution,
+        "-p",
+        "quanta-index-lexical",
+        "--lib",
+        "--test",
+        "replacement",
+        "--test",
+        "additional",
+        "--list-type",
+        "binaries-only",
+        "--message-format",
+        "json",
     ]
     assert calls[1] == ["metadata", "--format-version", "1", *resolution]
     assert calls[2][:2] == ["nextest", "list"] and calls[3][:2] == ["nextest", "run"]
@@ -910,21 +1128,38 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
 def test_runtime_artifact_path_must_be_canonical_under_target(tmp_path, runtime_path):
     target = tmp_path / "target"
     binaries = tmp_path / "binaries.json"
-    binaries.write_text(json.dumps({
-        "rust-build-meta": {
-            "target-directory": str(target),
-            "non-test-binaries": {"test-subject": [{"path": runtime_path}]},
-        },
-        "rust-binaries": {"test-binary": {"binary-id": "test-binary", "binary-path": str(target / "test")}},
-    }), encoding="utf-8")
+    binaries.write_text(
+        json.dumps(
+            {
+                "rust-build-meta": {
+                    "target-directory": str(target),
+                    "non-test-binaries": {"test-subject": [{"path": runtime_path}]},
+                },
+                "rust-binaries": {
+                    "test-binary": {"binary-id": "test-binary", "binary-path": str(target / "test")}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     cargo = tmp_path / "cargo.json"
-    cargo.write_text(json.dumps({
-        "target_directory": str(target), "workspace_root": str(tmp_path),
-    }), encoding="utf-8")
+    cargo.write_text(
+        json.dumps(
+            {
+                "target_directory": str(target),
+                "workspace_root": str(tmp_path),
+            }
+        ),
+        encoding="utf-8",
+    )
 
-    with pytest.raises(ValueError, match="runtime artifact is outside its Cargo target or has a noncanonical path"):
+    with pytest.raises(
+        ValueError, match="runtime artifact is outside its Cargo target or has a noncanonical path"
+    ):
         retirement_nextest._build_paths(
-            retirement_nextest.RawFile.capture(binaries), retirement_nextest.RawFile.capture(cargo), root=tmp_path,
+            retirement_nextest.RawFile.capture(binaries),
+            retirement_nextest.RawFile.capture(cargo),
+            root=tmp_path,
         )
 
 
@@ -936,7 +1171,8 @@ def test_release_roster_resolves_committed_events_and_deduplicates_shared_witnes
     inventory = tmp_path / "tools/ci/inventory"
     inventory.mkdir(parents=True)
     (inventory.parent / "test-authority.toml").write_text(
-        f'[[integration_targets]]\npath = "{path}"\nowner = "quanta-index-lexical"\n', encoding="utf-8",
+        f'[[integration_targets]]\npath = "{path}"\nowner = "quanta-index-lexical"\n',
+        encoding="utf-8",
     )
     lexical = inventory / "lexical-test-disposition.toml"
     lexical.write_text(
@@ -947,7 +1183,7 @@ def test_release_roster_resolves_committed_events_and_deduplicates_shared_witnes
         encoding="utf-8",
     )
     (inventory / "runtime-legacy-migration.toml").write_text(
-        'exact_oracles = []\n[[current_proofs]]\n'
+        "exact_oracles = []\n[[current_proofs]]\n"
         f'candidates = [{{path = "{path}", tests = ["replacement"]}}]\n',
         encoding="utf-8",
     )
@@ -959,7 +1195,8 @@ def test_release_roster_resolves_committed_events_and_deduplicates_shared_witnes
     def git(*args):
         return subprocess.check_output(
             ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", *args],
-            cwd=tmp_path, text=True,
+            cwd=tmp_path,
+            text=True,
         ).strip()
 
     git("init", "-q")
@@ -967,24 +1204,32 @@ def test_release_roster_resolves_committed_events_and_deduplicates_shared_witnes
     git("commit", "-qm", "committed roster")
     revision = git("rev-parse", "HEAD")
     lexical.write_text("targets = []\n", encoding="utf-8")
-    (inventory.parent / "test-authority.toml").write_text("integration_targets = []\n", encoding="utf-8")
+    (inventory.parent / "test-authority.toml").write_text(
+        "integration_targets = []\n", encoding="utf-8"
+    )
 
     assert retirement_nextest.release_event_roster(tmp_path, revision) == {
         "quanta-index-lexical::retained$keep": {"source": path, "case": "keep"},
         "quanta-index-lexical::retained$replacement": {"source": path, "case": "replacement"},
     }
-    assert retirement_nextest.release_capture_batches(tmp_path, revision) == [{
-        "package": "quanta-index-lexical", "include_lib": False,
-        "test_targets": ["retained"], "features": ["quanta-index-lexical/retirement"],
-        "filterset": "(binary(=retained) & (test(=keep) | test(=replacement)))",
-        "expected_events": [
-            "quanta-index-lexical::retained$keep",
-            "quanta-index-lexical::retained$replacement",
-        ],
-    }]
+    assert retirement_nextest.release_capture_batches(tmp_path, revision) == [
+        {
+            "package": "quanta-index-lexical",
+            "include_lib": False,
+            "test_targets": ["retained"],
+            "features": ["quanta-index-lexical/retirement"],
+            "filterset": "(binary(=retained) & (test(=keep) | test(=replacement)))",
+            "expected_events": [
+                "quanta-index-lexical::retained$keep",
+                "quanta-index-lexical::retained$replacement",
+            ],
+        }
+    ]
 
 
-def test_capture_roster_admits_pending_batches_before_work_and_serializes_owners(tmp_path, monkeypatch):
+def test_capture_roster_admits_pending_batches_before_work_and_serializes_owners(
+    tmp_path, monkeypatch
+):
     checkout = tmp_path / "source"
     checkout.mkdir()
     evidence = tmp_path / "evidence"
@@ -993,7 +1238,11 @@ def test_capture_roster_admits_pending_batches_before_work_and_serializes_owners
     legacy = "quanta-index-lexical::legacy_existing$retained"
     batches = [
         {"package": "quanta-index-core", "test_targets": [], "expected_events": [native]},
-        {"package": "quanta-index-lexical", "test_targets": ["legacy_existing"], "expected_events": [legacy]},
+        {
+            "package": "quanta-index-lexical",
+            "test_targets": ["legacy_existing"],
+            "expected_events": [legacy],
+        },
     ]
     monkeypatch.setattr(retirement_nextest, "_require_frozen_checkout", lambda *_: None)
     monkeypatch.setattr(retirement_nextest, "release_capture_batches", lambda *_: batches)
@@ -1011,7 +1260,9 @@ def test_capture_roster_admits_pending_batches_before_work_and_serializes_owners
     monkeypatch.setattr(retirement_nextest, "capture_release_execution", capture)
 
     def run():
-        return retirement_nextest.capture_release_roster(checkout, "b" * 40, evidence, lane="proof-lane")
+        return retirement_nextest.capture_release_roster(
+            checkout, "b" * 40, evidence, lane="proof-lane"
+        )
 
     with pytest.raises(ValueError, match="retained old-Q executable is absent"):
         list(run())
@@ -1125,7 +1376,10 @@ def test_shipment_checks_committed_roster_not_working_tree(checker, capsys):
         ["git", "rev-parse", "HEAD"], cwd=checker.ROOT, text=True
     ).strip()
     assert checker.main(revision=approved_revision) == 1
-    assert "sealed_commitment_cost.rs: retained old-Q tests require VERIFIED execution" in capsys.readouterr().err
+    assert (
+        "sealed_commitment_cost.rs: retained old-Q tests require VERIFIED execution"
+        in capsys.readouterr().err
+    )
 
 
 @pytest.mark.parametrize(
@@ -1144,13 +1398,21 @@ def test_shipment_checks_committed_roster_not_working_tree(checker, capsys):
         ("missing_platform", "Nextest host and target platform metadata is absent or invalid"),
         ("dirty_source", "retained test source differs from committed HEAD"),
         ("source_swap", "observation source changed"),
-        ("source_swap_with_original_observation", "retained test source changed during proof verification"),
+        (
+            "source_swap_with_original_observation",
+            "retained test source changed during proof verification",
+        ),
         ("head_advance", "HEAD changed during retained proof verification"),
         ("relabeled_pending", "frozen old-Q tests must retain their original disposition"),
     ],
 )
 def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
-    checker, tmp_path, capsys, monkeypatch, evidence, expected_error,
+    checker,
+    tmp_path,
+    capsys,
+    monkeypatch,
+    evidence,
+    expected_error,
 ):
     source = "crates/quanta-index-lexical/tests/sealed_commitment_cost.rs"
     cases = [
@@ -1160,9 +1422,16 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
     body = (checker.ROOT / source).read_bytes()
     package, target = "quanta-index-lexical", "sealed_commitment_cost"
     binary_id = f"{package}::{target}"
-    monkeypatch.setattr(retirement_nextest, "release_capture_batches", lambda *_: [{
-        "features": [], "expected_events": [f"{binary_id}${case}" for case in cases],
-    }])
+    monkeypatch.setattr(
+        retirement_nextest,
+        "release_capture_batches",
+        lambda *_: [
+            {
+                "features": [],
+                "expected_events": [f"{binary_id}${case}" for case in cases],
+            }
+        ],
+    )
     run_id = "3739620b-a0ff-451d-897f-e5a32fc146eb"
     evidence_dir = tmp_path.with_name(f"{tmp_path.name}-retained-evidence")
     evidence_dir.mkdir()
@@ -1172,9 +1441,16 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
     binary.write_bytes(b"retained test executable")
     old_q = target_dir / "legacy-searchd"
     approved_digest = hashlib.sha256(b"old daemon").hexdigest()
-    old_q.write_bytes(b"changed old daemon" if evidence in {
-        "changed_old_q", "unapproved_old_q", "dirty_approval",
-    } else b"old daemon")
+    old_q.write_bytes(
+        b"changed old daemon"
+        if evidence
+        in {
+            "changed_old_q",
+            "unapproved_old_q",
+            "dirty_approval",
+        }
+        else b"old daemon"
+    )
     legacy_digest = (
         hashlib.sha256(old_q.read_bytes()).hexdigest()
         if evidence in {"unapproved_old_q", "dirty_approval"}
@@ -1188,8 +1464,10 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
     )
     circleci.write_text(ci_config, encoding="utf-8")
     row = {
-        "binary-id": binary_id, "binary-path": str(binary),
-        "binary-name": target, "kind": "test",
+        "binary-id": binary_id,
+        "binary-path": str(binary),
+        "binary-name": target,
+        "kind": "test",
     }
     linux = "x86_64-unknown-linux-gnu"
     darwin = "aarch64-apple-darwin"
@@ -1210,40 +1488,63 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
     )
     if evidence == "missing_platform":
         builds = {"target-directory": str(target_dir)}
-    binaries_bytes = json.dumps({
-        "rust-build-meta": builds,
-        "rust-binaries": {binary_id: row},
-    }).encode()
-    cargo_bytes = json.dumps({
-        "target_directory": str(target_dir), "workspace_root": str(checker.ROOT),
-    }).encode()
-    inventory_bytes = json.dumps({
-        "rust-build-meta": platform_metadata(darwin) if evidence == "collection_platform_drift" else builds,
-        "test-count": len(cases),
-        "rust-suites": {binary_id: {
-            **row, "package-name": package, "status": "listed",
-            "testcases": {
-                case: {"ignored": False, "filter-match": {"status": "matches"}}
-                for case in cases
+    binaries_bytes = json.dumps(
+        {
+            "rust-build-meta": builds,
+            "rust-binaries": {binary_id: row},
+        }
+    ).encode()
+    cargo_bytes = json.dumps(
+        {
+            "target_directory": str(target_dir),
+            "workspace_root": str(checker.ROOT),
+        }
+    ).encode()
+    inventory_bytes = json.dumps(
+        {
+            "rust-build-meta": platform_metadata(darwin)
+            if evidence == "collection_platform_drift"
+            else builds,
+            "test-count": len(cases),
+            "rust-suites": {
+                binary_id: {
+                    **row,
+                    "package-name": package,
+                    "status": "listed",
+                    "testcases": {
+                        case: {"ignored": False, "filter-match": {"status": "matches"}}
+                        for case in cases
+                    },
+                }
             },
-        }},
-    }).encode()
+        }
+    ).encode()
     meta = {"crate": package, "test_binary": target, "kind": "test"}
     events = [{"type": "suite", "event": "started", "test_count": len(cases), "nextest": meta}]
     for case in cases:
         event = f"{binary_id}${case}"
-        events.extend((
-            {"type": "test", "event": "started", "name": event},
-            {"type": "test", "event": "ok", "name": event},
-        ))
-    events.append({
-        "type": "suite", "event": "ok", "passed": len(cases),
-        "failed": 0, "ignored": 0, "nextest": meta,
-    })
+        events.extend(
+            (
+                {"type": "test", "event": "started", "name": event},
+                {"type": "test", "event": "ok", "name": event},
+            )
+        )
+    events.append(
+        {
+            "type": "suite",
+            "event": "ok",
+            "passed": len(cases),
+            "failed": 0,
+            "ignored": 0,
+            "nextest": meta,
+        }
+    )
     events_bytes = "".join(json.dumps(event) + "\n" for event in events).encode()
     for suffix, payload in (
-        ("binaries.json", binaries_bytes), ("cargo.json", cargo_bytes),
-        ("inventory.json", inventory_bytes), ("nextest.jsonl", events_bytes),
+        ("binaries.json", binaries_bytes),
+        ("cargo.json", cargo_bytes),
+        ("inventory.json", inventory_bytes),
+        ("nextest.jsonl", events_bytes),
     ):
         (evidence_dir / f"{run_id}-{suffix}").write_bytes(payload)
     catalog = checker.ROOT / "tools/ci/test-authority.toml"
@@ -1255,7 +1556,8 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
     def git(*args):
         return subprocess.check_output(
             ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", *args],
-            cwd=checker.ROOT, text=True,
+            cwd=checker.ROOT,
+            text=True,
         ).strip()
 
     git("init", "-q")
@@ -1263,9 +1565,12 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
     git("commit", "-qm", "executed source")
     run_revision = git("rev-parse", "HEAD")
     selection = {
-        "lane": "test-integration-lane", "package": package,
-        "include_lib": False, "test_targets": [target],
-        "filterset": "test(sealed_commitment_cost)", "features": [],
+        "lane": "test-integration-lane",
+        "package": package,
+        "include_lib": False,
+        "test_targets": [target],
+        "filterset": "test(sealed_commitment_cost)",
+        "features": [],
     }
     commands = retirement_nextest._execution_commands(
         selection,
@@ -1282,9 +1587,13 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
             "binaries_sha256": "sha256:" + hashlib.sha256(binaries_bytes).hexdigest(),
             "cargo_sha256": "sha256:" + hashlib.sha256(cargo_bytes).hexdigest(),
             "executables": {binary_id: hashlib.sha256(binary.read_bytes()).hexdigest()},
-            "selection": selection, "commands": commands,
-            "legacy_searchd": None if evidence == "without_old_q" else {
-                "path": str(old_q), "sha256": legacy_digest,
+            "selection": selection,
+            "commands": commands,
+            "legacy_searchd": None
+            if evidence == "without_old_q"
+            else {
+                "path": str(old_q),
+                "sha256": legacy_digest,
             },
         },
     }
@@ -1302,18 +1611,29 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
         observed_event = f"{binary_id}${case}"
         if evidence == "foreign" and index == 1:
             observed_event = f"{package}::other_target${case}"
-        observations.append({
-            "source": source, "case": case, "source_sha256": hashlib.sha256(observed_body).hexdigest(),
-            "run_id": run_id, "event": observed_event,
-            "events_sha256": manifest["events_sha256"],
-            "inventory_sha256": manifest["inventory_sha256"],
-            "source_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-        })
+        observations.append(
+            {
+                "source": source,
+                "case": case,
+                "source_sha256": hashlib.sha256(observed_body).hexdigest(),
+                "run_id": run_id,
+                "event": observed_event,
+                "events_sha256": manifest["events_sha256"],
+                "inventory_sha256": manifest["inventory_sha256"],
+                "source_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            }
+        )
     roster = checker.MANIFEST.read_text(encoding="utf-8")
-    toml_observations = "[" + ", ".join(
-        "{" + ", ".join(f"{key} = {json.dumps(value)}" for key, value in observation.items()) + "}"
-        for observation in observations
-    ) + "]"
+    toml_observations = (
+        "["
+        + ", ".join(
+            "{"
+            + ", ".join(f"{key} = {json.dumps(value)}" for key, value in observation.items())
+            + "}"
+            for observation in observations
+        )
+        + "]"
+    )
     pending_retain = 'disposition = "retain"\nproof = "NOT_RUN"'
     if evidence == "relabeled_pending":
         roster = roster.replace(pending_retain, 'disposition = "migrate"\nproof = "NOT_RUN"', 1)
@@ -1322,7 +1642,7 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
             pending_retain,
             'disposition = "retain"\nproof = "VERIFIED"\n'
             f'candidates = [{{path = "{source}", tests = {json.dumps(cases)}}}]\n'
-            f'observations = {toml_observations}',
+            f"observations = {toml_observations}",
             1,
         )
     checker.MANIFEST.write_text(roster, encoding="utf-8")
@@ -1383,11 +1703,18 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
 )
 @pytest.mark.parametrize(
     ("provide_binary", "error"),
-    [(False, "retained old-Q executable is absent"),
-     (True, "does not match the committed approved Linux old-Q SHA-256")],
+    [
+        (False, "retained old-Q executable is absent"),
+        (True, "does not match the committed approved Linux old-Q SHA-256"),
+    ],
 )
 def test_retained_old_q_capture_rejects_a_missing_or_self_pinned_binary_before_build(
-    tmp_path, monkeypatch, package, target, provide_binary, error,
+    tmp_path,
+    monkeypatch,
+    package,
+    target,
+    provide_binary,
+    error,
 ):
     checkout = tmp_path / "checkout"
     circleci = checkout / ".circleci/config.yml"
@@ -1399,11 +1726,24 @@ def test_retained_old_q_capture_rejects_a_missing_or_self_pinned_binary_before_b
     )
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
-    subprocess.run([
-        "git", "-C", str(checkout), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
-        "commit", "-qm", "approved fixture",
-    ], check=True)
-    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-qm",
+            "approved fixture",
+        ],
+        check=True,
+    )
+    revision = subprocess.check_output(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+    ).strip()
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     for key in (retirement_nextest.LEGACY_BINARY_ENV, retirement_nextest.LEGACY_SHA_ENV):
@@ -1413,12 +1753,23 @@ def test_retained_old_q_capture_rejects_a_missing_or_self_pinned_binary_before_b
         foreign.write_bytes(b"unapproved executable with a valid self-reported digest")
         foreign.chmod(0o700)
         monkeypatch.setenv(retirement_nextest.LEGACY_BINARY_ENV, str(foreign))
-        monkeypatch.setenv(retirement_nextest.LEGACY_SHA_ENV, hashlib.sha256(foreign.read_bytes()).hexdigest())
-    monkeypatch.setattr(retirement_nextest, "_capture_frozen_checkout", lambda *_: pytest.fail("entered capture"))
+        monkeypatch.setenv(
+            retirement_nextest.LEGACY_SHA_ENV, hashlib.sha256(foreign.read_bytes()).hexdigest()
+        )
+    monkeypatch.setattr(
+        retirement_nextest, "_capture_frozen_checkout", lambda *_: pytest.fail("entered capture")
+    )
     with pytest.raises(ValueError, match=error):
         retirement_nextest.capture_release_execution(
-            checkout, revision, evidence, lane="test-integration-lane", package=package,
-            include_lib=False, test_targets=[target], filterset="all()", features=[],
+            checkout,
+            revision,
+            evidence,
+            lane="test-integration-lane",
+            package=package,
+            include_lib=False,
+            test_targets=[target],
+            filterset="all()",
+            features=[],
         )
     assert not list(evidence.iterdir())
 
@@ -1431,7 +1782,9 @@ def test_retained_old_q_capture_rejects_a_missing_or_self_pinned_binary_before_b
         ("aarch64-unknown-linux-gnu", "aarch64-apple-darwin", "requires a Linux host and target"),
     ],
 )
-def test_boot_inventory_platform_preserves_linux_inotify_coverage(tmp_path, host, build_target, expected_error):
+def test_boot_inventory_platform_preserves_linux_inotify_coverage(
+    tmp_path, host, build_target, expected_error
+):
     meta = {
         "platforms": {
             "host": {"platform": {"triple": host}},
@@ -1455,10 +1808,16 @@ def test_boot_inventory_platform_preserves_linux_inotify_coverage(tmp_path, host
     [
         ("x86_64-unknown-linux-gnu", None, None),
         ("aarch64-apple-darwin", None, "requires x86-64 Linux host and target"),
-        ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "requires x86-64 Linux host and target"),
+        (
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "requires x86-64 Linux host and target",
+        ),
     ],
 )
-def test_runtime_old_q_platform_matches_the_approved_binary(tmp_path, target, host, build_target, expected_error):
+def test_runtime_old_q_platform_matches_the_approved_binary(
+    tmp_path, target, host, build_target, expected_error
+):
     meta = {
         "platforms": {
             "host": {"platform": {"triple": host}},
@@ -1482,11 +1841,20 @@ def test_boot_inventory_capture_refuses_darwin_before_build(tmp_path, monkeypatc
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     monkeypatch.setattr(retirement_nextest.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(retirement_nextest, "_capture_frozen_checkout", lambda *_: pytest.fail("entered capture"))
+    monkeypatch.setattr(
+        retirement_nextest, "_capture_frozen_checkout", lambda *_: pytest.fail("entered capture")
+    )
     with pytest.raises(ValueError, match="retirement capture requires a Linux host"):
         retirement_nextest.capture_release_execution(
-            checkout, "a" * 40, evidence, lane="test-integration-lane", package="quanta-index-lexical",
-            include_lib=False, test_targets=["boot_inventory_data"], filterset="all()", features=[],
+            checkout,
+            "a" * 40,
+            evidence,
+            lane="test-integration-lane",
+            package="quanta-index-lexical",
+            include_lib=False,
+            test_targets=["boot_inventory_data"],
+            filterset="all()",
+            features=[],
         )
     assert not list(evidence.iterdir())
 

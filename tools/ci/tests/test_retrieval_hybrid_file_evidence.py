@@ -53,10 +53,17 @@ def _fixed_pool_digest(rows: list[tuple[str, str, float]]) -> list[int]:
 def test_hybrid_file_model_revision_cannot_bypass_declared_selector(selector):
     from tools.benchmark.retrieval import run
 
-    validated = {"capture": {"system": "quanta", "run": {
-        "route_provenance": {"hybrid_file": {"capture_id": "model"}},
-        "captures": {"model": {"model": "other-real-model", "model_revision": "other-revision"}},
-    }}}
+    validated = {
+        "capture": {
+            "system": "quanta",
+            "run": {
+                "route_provenance": {"hybrid_file": {"capture_id": "model"}},
+                "captures": {
+                    "model": {"model": "other-real-model", "model_revision": "other-revision"}
+                },
+            },
+        }
+    }
     assert not run._quanta_semantic_capture_identity_matches(validated, selector, {"hybrid_file"})
     suffix = "full-length-v1" if selector == "potion-code" else "full-length-v2"
     validated["capture"]["run"]["captures"]["model"] = {
@@ -115,13 +122,15 @@ def _window(returned: int, lane: str) -> dict:
         "coverage": {
             "examined": {"kind": "exact", "value": returned},
             "exhaustion_proof": {"kind": "probe_exhausted", "fetched": returned},
-            "lanes": [{
-                "lane": "hybrid_file." + lane,
-                "executed": True,
-                "contributed": returned > 0,
-                "filtered_out": 0,
-                "candidates": {"kind": "exact", "value": returned},
-            }],
+            "lanes": [
+                {
+                    "lane": "hybrid_file." + lane,
+                    "executed": True,
+                    "contributed": returned > 0,
+                    "filtered_out": 0,
+                    "candidates": {"kind": "exact", "value": returned},
+                }
+            ],
         },
     }
     if returned == 0:
@@ -148,8 +157,9 @@ def _candidate(path: str, unit_id: str, score: float, snippet: str) -> dict:
     }
 
 
-def _witness(path: str, unit_id: str, file_rank: int, chunk_rank: int, score: float,
-             snippet: str) -> dict:
+def _witness(
+    path: str, unit_id: str, file_rank: int, chunk_rank: int, score: float, snippet: str
+) -> dict:
     return {
         "file_rank": file_rank,
         "chunk_rank": chunk_rank,
@@ -157,8 +167,9 @@ def _witness(path: str, unit_id: str, file_rank: int, chunk_rank: int, score: fl
     }
 
 
-def _proved_row(path: str, unit_id: str, source: bytes, digest: str, score: float,
-                rank: int) -> dict:
+def _proved_row(
+    path: str, unit_id: str, source: bytes, digest: str, score: float, rank: int
+) -> dict:
     # A one-line published chunk spans the complete immutable source fixture.
     return {
         "path": path,
@@ -211,40 +222,47 @@ def _result() -> dict:
                 },
                 "selected_active_head": {
                     "generation": {
-                        lane.lower(): {"repo_id": REPO, "revision_id": REVISION,
-                                       "manifest_generation": 1, "track": lane,
-                                       "manifest_digest": "manifest-digest"}
+                        lane.lower(): {
+                            "repo_id": REPO,
+                            "revision_id": REVISION,
+                            "manifest_generation": 1,
+                            "track": lane,
+                            "manifest_digest": "manifest-digest",
+                        }
                         for lane in ("Lexical", "Semantic")
-                    } | {"semantic_content": {
-                        "row_root_digest": "sha256:" + "a" * 64,
-                        "membership_root_digest": "sha256:" + "b" * 64,
-                    }},
-                    "activation_token": {"root_incarnation": [1] * 16,
-                                         "activation_sequence": 1},
+                    }
+                    | {
+                        "semantic_content": {
+                            "row_root_digest": "sha256:" + "a" * 64,
+                            "membership_root_digest": "sha256:" + "b" * 64,
+                        }
+                    },
+                    "activation_token": {"root_incarnation": [1] * 16, "activation_sequence": 1},
                 },
                 "file_top_k": 3,
                 "bounded_file_count": 2,
-                "lexical_pool_sha256": _fixed_pool_digest([
-                    (a, "alpha-lexical-chunk", 0.75),
-                ]),
-                "dense_pool_sha256": _fixed_pool_digest([
-                    (a, "alpha-dense-chunk", 0.25),
-                    (b, "beta-dense-chunk", 0.5),
-                ]),
+                "lexical_pool_sha256": _fixed_pool_digest(
+                    [
+                        (a, "alpha-lexical-chunk", 0.75),
+                    ]
+                ),
+                "dense_pool_sha256": _fixed_pool_digest(
+                    [
+                        (a, "alpha-dense-chunk", 0.25),
+                        (b, "beta-dense-chunk", 0.5),
+                    ]
+                ),
                 "results": [
                     {
                         "file": {"source_repo_id": REPO, "repo_relative_path": a},
-                        "lexical": _witness(a, "alpha-lexical-chunk", 1, 1, 0.75,
-                                            "alpha token\n"),
-                        "dense": _witness(a, "alpha-dense-chunk", 1, 1, 0.25,
-                                          "alpha token\n"),
+                        "lexical": _witness(a, "alpha-lexical-chunk", 1, 1, 0.75, "alpha token\n"),
+                        "dense": _witness(a, "alpha-dense-chunk", 1, 1, 0.25, "alpha token\n"),
                         "file_rrf_score": ALPHA_RRF,
                     },
                     {
                         "file": {"source_repo_id": REPO, "repo_relative_path": b},
                         "lexical": None,
-                        "dense": _witness(b, "beta-dense-chunk", 2, 2, 0.5,
-                                          "beta token\n"),
+                        "dense": _witness(b, "beta-dense-chunk", 2, 2, 0.5, "beta token\n"),
                         "file_rrf_score": BETA_RRF,
                     },
                 ],
@@ -307,7 +325,9 @@ def test_file_witness_accepts_source_bound_utf8_preview_and_refuses_metadata_dri
         validate_result(bad_source, _capture(), 4)
 
     bad_preview = deepcopy(row)
-    _response(bad_preview)["results"][0]["lexical"]["candidate"]["preview"]["original_context"]["end"] -= 1
+    _response(bad_preview)["results"][0]["lexical"]["candidate"]["preview"]["original_context"][
+        "end"
+    ] -= 1
     with pytest.raises(HybridFileEvidenceError):
         validate_result(bad_preview, _capture(), 4)
 
@@ -338,9 +358,14 @@ def test_file_witness_accepts_optional_source_and_preview_wire_variants() -> Non
     candidate["snippet"] = "src/alpha.go"
     candidate["highlights"] = [{"start": 0, "len": 3}]
     candidate["preview"] = {
-        "kind": "path", "source": deepcopy(source), "chunk_start_byte": None,
-        "original_focus": None, "original_context": None, "normalized_focus": None,
-        "normalization_equivalent": False, "unavailable_reason": None,
+        "kind": "path",
+        "source": deepcopy(source),
+        "chunk_start_byte": None,
+        "original_focus": None,
+        "original_context": None,
+        "normalized_focus": None,
+        "normalization_equivalent": False,
+        "unavailable_reason": None,
     }
     validate_result(path_preview, _capture(), 4)
 
@@ -350,9 +375,14 @@ def test_file_witness_accepts_optional_source_and_preview_wire_variants() -> Non
     candidate["snippet_hit_offset"] = None
     candidate["highlights"] = []
     candidate["preview"] = {
-        "kind": "source_chunk", "source": None, "chunk_start_byte": None,
-        "original_focus": None, "original_context": None, "normalized_focus": None,
-        "normalization_equivalent": False, "unavailable_reason": "source_not_provided",
+        "kind": "source_chunk",
+        "source": None,
+        "chunk_start_byte": None,
+        "original_focus": None,
+        "original_context": None,
+        "normalized_focus": None,
+        "normalization_equivalent": False,
+        "unavailable_reason": "source_not_provided",
     }
     validate_result(unavailable, _capture(), 4)
 
@@ -416,14 +446,27 @@ def test_file_witness_refuses_score_outside_finite_f32() -> None:
         validate_result(result, _capture(), 4)
 
 
-@pytest.mark.parametrize("mutation", [
-    lambda head: None,
-    lambda head: {**head, "activation_token": {**head["activation_token"],
-                                                "root_incarnation": [0] * 16}},
-    lambda head: {**head, "generation": {**head["generation"], "semantic": {
-        **head["generation"]["semantic"], "manifest_generation": 2,
-    }}},
-], ids=["missing", "zero-activation-root", "semantic-generation-drift"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda head: None,
+        lambda head: {
+            **head,
+            "activation_token": {**head["activation_token"], "root_incarnation": [0] * 16},
+        },
+        lambda head: {
+            **head,
+            "generation": {
+                **head["generation"],
+                "semantic": {
+                    **head["generation"]["semantic"],
+                    "manifest_generation": 2,
+                },
+            },
+        },
+    ],
+    ids=["missing", "zero-activation-root", "semantic-generation-drift"],
+)
 def test_bench_record_requires_valid_sdk_active_head(mutation) -> None:
     result = _result()
     response = _response(result)
@@ -441,9 +484,11 @@ def test_file_witness_refuses_score_perturbation_that_reverses_a_tie() -> None:
     alpha["dense"] = None
     beta["dense"].update(file_rank=1, chunk_rank=1)
     response["dense_window"] = _window(1, "dense")
-    response["dense_pool_sha256"] = _fixed_pool_digest([
-        ("src/beta.go", "beta-dense-chunk", 0.5),
-    ])
+    response["dense_pool_sha256"] = _fixed_pool_digest(
+        [
+            ("src/beta.go", "beta-dense-chunk", 0.5),
+        ]
+    )
     tied_score = 1 / 61
     for hit, row in zip(response["results"], result["candidates"]):
         hit["file_rrf_score"] = row["score"] = tied_score
@@ -453,9 +498,7 @@ def test_file_witness_refuses_score_perturbation_that_reverses_a_tie() -> None:
     result["candidates"].reverse()
     for rank, row in enumerate(result["candidates"], 1):
         row["rank"] = rank
-    beta["file_rrf_score"] = result["candidates"][0]["score"] = math.nextafter(
-        tied_score, math.inf
-    )
+    beta["file_rrf_score"] = result["candidates"][0]["score"] = math.nextafter(tied_score, math.inf)
     with pytest.raises(HybridFileEvidenceError, match="RRF score differs"):
         validate_result(result, _capture(), 4)
 
@@ -489,32 +532,53 @@ def test_truncated_file_page_requires_space_for_intervening_files() -> None:
 def test_ordered_pool_digest_matches_independent_f32_transcript() -> None:
     pin = {"repo_id": REPO, "revision_id": REVISION, "manifest_generation": 1}
     rows = [
-        {"source_repo_id": REPO, "path": "src/alpha.go",
-         "candidate_id": "alpha-lexical-chunk", "score": 0.75},
-        {"source_repo_id": REPO, "path": "src/beta.go",
-         "candidate_id": "beta-dense-chunk", "score": 0.5},
+        {
+            "source_repo_id": REPO,
+            "path": "src/alpha.go",
+            "candidate_id": "alpha-lexical-chunk",
+            "score": 0.75,
+        },
+        {
+            "source_repo_id": REPO,
+            "path": "src/beta.go",
+            "candidate_id": "beta-dense-chunk",
+            "score": 0.5,
+        },
     ]
-    expected = _fixed_pool_digest([
-        ("src/alpha.go", "alpha-lexical-chunk", 0.75),
-        ("src/beta.go", "beta-dense-chunk", 0.5),
-    ])
-    assert bytes(expected).hex() == "e303e7b4ea3cd717736fa324845185caec3f226124aba6c2590c71f3a1d6457e"
+    expected = _fixed_pool_digest(
+        [
+            ("src/alpha.go", "alpha-lexical-chunk", 0.75),
+            ("src/beta.go", "beta-dense-chunk", 0.5),
+        ]
+    )
+    assert (
+        bytes(expected).hex() == "e303e7b4ea3cd717736fa324845185caec3f226124aba6c2590c71f3a1d6457e"
+    )
     assert ordered_pool_sha256_v1(pin, rows) == expected
     assert ordered_pool_sha256_v1(pin, list(reversed(rows))) != expected
     assert ordered_pool_sha256_v1(pin, rows[:1]) != expected
     other_source = [{**rows[0], "source_repo_id": "other-source"}]
     assert ordered_pool_sha256_v1(pin, other_source) != ordered_pool_sha256_v1(pin, rows[:1])
     assert ordered_pool_sha256_v1(pin, other_source) == ordered_pool_sha256_v1(
-        pin, deepcopy(other_source))
+        pin, deepcopy(other_source)
+    )
 
 
 def test_ordered_pool_digest_f32_json_roundtrip_and_signed_zero_fixed_golden() -> None:
     pin = {"repo_id": "generic-file", "revision_id": "rev-1", "manifest_generation": 1}
     rows = [
-        {"source_repo_id": "other-source", "path": "src/a.go",
-         "candidate_id": "positive", "score": 0.1},
-        {"source_repo_id": "generic-file", "path": "src/b.go",
-         "candidate_id": "negative", "score": -0.0},
+        {
+            "source_repo_id": "other-source",
+            "path": "src/a.go",
+            "candidate_id": "positive",
+            "score": 0.1,
+        },
+        {
+            "source_repo_id": "generic-file",
+            "path": "src/b.go",
+            "candidate_id": "negative",
+            "score": -0.0,
+        },
     ]
     transcript = bytearray(b"quanta-index/hybrid-file/ordered-pool/v1\0")
 
@@ -602,7 +666,22 @@ def test_completed_file_response_keeps_fixed_cross_language_score_bits_without_m
     assert completed_output_sha256(row) == completed_output_sha256(before)
 
 
-@pytest.mark.parametrize("mutation", ["rank", "file_score", "raw_score", "file", "cap", "file_cap", "echo_cap", "bounded_count", "lexical_pool", "dense_pool", "pin"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "rank",
+        "file_score",
+        "raw_score",
+        "file",
+        "cap",
+        "file_cap",
+        "echo_cap",
+        "bounded_count",
+        "lexical_pool",
+        "dense_pool",
+        "pin",
+    ],
+)
 def test_completed_file_response_hash_binds_semantic_evidence(mutation):
     from tools.benchmark.retrieval.retrieval_contract import completed_output_sha256
 
@@ -641,7 +720,9 @@ def test_completed_file_response_rejects_unrelated_floats_and_bad_raw_scores():
 
     for value in (True, "0.5", float("inf"), 10**400):
         row = _completed_file_row()
-        row["hybrid_file_evidence"]["response"]["results"][0]["lexical"]["candidate"]["score"] = value
+        row["hybrid_file_evidence"]["response"]["results"][0]["lexical"]["candidate"]["score"] = (
+            value
+        )
         with pytest.raises(ValueError):
             completed_output_sha256(row)
     row = _completed_file_row()
@@ -656,11 +737,17 @@ def _partial(window: dict, kind: str) -> None:
     window["coverage"].pop("exhaustion_proof")
     window["coverage"]["examined"] = {"kind": "at_least", "value": count}
     window["outcome"] = (
-        {"kind": "lower_bound", "continuation": False} if kind == "lower_bound" else
-        {"kind": "capped_unknown", "cap": max(1, count)} if kind == "capped_unknown" else
-        {"kind": "interrupted_partial", "reason": "deadline"} if kind == "interrupted_partial"
-        else {"kind": "approximate", "method": "ann_search",
-              "quality_contract": {"examined_lower_bound": count}}
+        {"kind": "lower_bound", "continuation": False}
+        if kind == "lower_bound"
+        else {"kind": "capped_unknown", "cap": max(1, count)}
+        if kind == "capped_unknown"
+        else {"kind": "interrupted_partial", "reason": "deadline"}
+        if kind == "interrupted_partial"
+        else {
+            "kind": "approximate",
+            "method": "ann_search",
+            "quality_contract": {"examined_lower_bound": count},
+        }
     )
 
 
@@ -672,7 +759,8 @@ def test_exhausted_short_page_preserves_full_wire_and_source_bytes() -> None:
     assert row["candidates"][0]["file_sha256"] == ALPHA_SHA256
     assert row["candidates"][1]["file_sha256"] == BETA_SHA256
     assert [hit["file_rrf_score"] for hit in _response(row)["results"]] == [
-        ALPHA_RRF, BETA_RRF,
+        ALPHA_RRF,
+        BETA_RRF,
     ]
     validate_result(row, _capture(), 4)
 
@@ -808,15 +896,15 @@ def test_short_bounded_file_union_keeps_candidates_without_claiming_exhaustion()
         lambda x: x["candidates"][0].update(path="src/beta.go"),
         lambda x: x["candidates"][0].update(start_line=2),
         lambda x: x["candidates"][0]["span_accounting"].update(unit_id="alpha-dense-chunk"),
-        lambda x: _response(x)["results"][0]["lexical"]["candidate"].update(
-            revision_id="forged"),
+        lambda x: _response(x)["results"][0]["lexical"]["candidate"].update(revision_id="forged"),
         lambda x: _response(x)["lexical_window"]["coverage"].update(lanes=[]),
         lambda x: _response(x)["dense_window"]["coverage"]["lanes"][0].update(
-            lane="hybrid_file.lexical"),
-        lambda x: _response(x)["dense_window"]["coverage"]["lanes"][0].update(
-            contributed=False),
+            lane="hybrid_file.lexical"
+        ),
+        lambda x: _response(x)["dense_window"]["coverage"]["lanes"][0].update(contributed=False),
         lambda x: _response(x)["dense_window"]["coverage"]["lanes"][0]["candidates"].update(
-            value=1),
+            value=1
+        ),
         lambda x: x.update(status="capped"),
         lambda x: x.update(status="success", candidates=[]),
     ],
@@ -920,9 +1008,7 @@ def _measured_diagnostic(result: dict) -> dict:
 def test_measured_diagnostic_binds_full_sdk_response_to_record() -> None:
     result = _result()
     diagnostic = _measured_diagnostic(result)
-    result["hybrid_file_evidence"]["response"] = deepcopy(
-        diagnostic["response"]["typed_response"]
-    )
+    result["hybrid_file_evidence"]["response"] = deepcopy(diagnostic["response"]["typed_response"])
     raw = deepcopy(diagnostic["response"]["typed_response"])
     assert raw["explanation"]["ranker_weights_hash"] == [0] * 32
     assert raw["explanation"]["contributions"] == []
@@ -944,17 +1030,18 @@ def test_measured_diagnostic_binds_full_sdk_response_to_record() -> None:
         )
 
 
-@pytest.mark.parametrize("field,value", [
-    ("candidate_id", "substituted-chunk"),
-    ("score", 123.0),
-    ("score", math.nextafter(ALPHA_RRF, math.inf)),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("candidate_id", "substituted-chunk"),
+        ("score", 123.0),
+        ("score", math.nextafter(ALPHA_RRF, math.inf)),
+    ],
+)
 def test_measured_file_diagnostic_refuses_candidate_identity_or_score_drift(field, value) -> None:
     result = _result()
     diagnostic = _measured_diagnostic(result)
-    result["hybrid_file_evidence"]["response"] = deepcopy(
-        diagnostic["response"]["typed_response"]
-    )
+    result["hybrid_file_evidence"]["response"] = deepcopy(diagnostic["response"]["typed_response"])
     diagnostic["candidates"][0][field] = value
     with pytest.raises(run.RunError, match="file candidate differs from record or SDK witness"):
         run._validate_diagnostic_response_v3(
@@ -982,7 +1069,9 @@ def test_hybrid_file_initial_fetch_uses_its_own_plan_prefix() -> None:
     with pytest.raises(run.RunError, match="initial fetch"):
         run._validate_hybrid_initial_fetch(
             [{"stage": "plan", "detail": "hybrid.internal_top_k=25"}],
-            4, policy, prefix="hybrid_file",
+            4,
+            policy,
+            prefix="hybrid_file",
         )
 
 
@@ -1010,9 +1099,10 @@ def test_evaluator_accepts_bound_natural_language_pin_and_file_rrf_ordering() ->
         "route_provenance": {"hybrid_file": {"capture_id": "q0"}},
     }
     results = {("HF-1", "hybrid_file"): _result()}
-    assert evaluator._route_ordering(
-        run_record, "hybrid_file", results, ["HF-1"]
-    ) == "file_rrf_desc_lexical_presence_key_v1"
+    assert (
+        evaluator._route_ordering(run_record, "hybrid_file", results, ["HF-1"])
+        == "file_rrf_desc_lexical_presence_key_v1"
+    )
     forged = deepcopy(results)
     forged[("HF-1", "hybrid_file")]["ordering"] = "score_desc_path_tiebreak"
     with pytest.raises(evaluator.EvidenceError, match="ordering differs"):

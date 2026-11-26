@@ -92,13 +92,10 @@ def macho(
     return bytes(payload)
 
 
-def sample(
-    *, module: str = "quanta-index-searchd", load: int = LOAD, uuid: bytes = UUID
-) -> str:
+def sample(*, module: str = "quanta-index-searchd", load: int = LOAD, uuid: bytes = UUID) -> str:
     hex_uuid = uuid.hex().upper()
     dashed_uuid = (
-        f"{hex_uuid[:8]}-{hex_uuid[8:12]}-{hex_uuid[12:16]}-"
-        f"{hex_uuid[16:20]}-{hex_uuid[20:]}"
+        f"{hex_uuid[:8]}-{hex_uuid[8:12]}-{hex_uuid[12:16]}-{hex_uuid[16:20]}-{hex_uuid[20:]}"
     )
     return (
         f"Load Address:    {load:#x}\n"
@@ -107,17 +104,25 @@ def sample(
         f"    +   ! 3 ???  (in {module})  load address {load:#x} + 0x200  [{load + 0x200:#x}]\n"
         f"    + 2 ???  (in {module})  load address {load:#x} + 0x204  [{load + 0x204:#x}]\n"
         "Binary Images:\n"
-        f"       {load:#x} - {load + 0xfff:#x} +{module} (???) "
+        f"       {load:#x} - {load + 0xFFF:#x} +{module} (???) "
         f"<{dashed_uuid}> /private/tmp/{module}\n"
     )
 
 
-def inputs(tmp_path: Path, *, original: bytes | None = None, companion: bytes | None = None, report: str | None = None):
+def inputs(
+    tmp_path: Path,
+    *,
+    original: bytes | None = None,
+    companion: bytes | None = None,
+    report: str | None = None,
+):
     old = tmp_path / "quanta-index-searchd"
     new = tmp_path / "companion"
     text = tmp_path / "sample.txt"
     old.write_bytes(original if original is not None else macho())
-    new.write_bytes(companion if companion is not None else macho(uuid=b"\xaa" * 16, header_flags=17))
+    new.write_bytes(
+        companion if companion is not None else macho(uuid=b"\xaa" * 16, header_flags=17)
+    )
     text.write_text(report if report is not None else sample())
     return old, new, text, hashlib.sha256(old.read_bytes()).hexdigest()
 
@@ -156,7 +161,9 @@ def test_same_code_allows_distinct_header_uuid_and_retains_unresolved(tmp_path: 
         macho()[:90],
     ],
 )
-def test_code_address_arch_fat_and_truncated_candidates_refuse(tmp_path: Path, candidate: bytes) -> None:
+def test_code_address_arch_fat_and_truncated_candidates_refuse(
+    tmp_path: Path, candidate: bytes
+) -> None:
     old, new, text, digest = inputs(tmp_path, companion=candidate)
     with pytest.raises(SymbolMatchError):
         analyze(old, digest, new, text, old.name, atos=lambda *_args: pytest.fail("atos called"))

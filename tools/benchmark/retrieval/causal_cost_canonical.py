@@ -100,10 +100,13 @@ def canonical_profile(capture: dict, product: dict, *, execution_binding: dict) 
             if name not in phases:
                 raise ValueError(f"canonical {family} has no verified phase owner")
             owner = capture["spans"][row["span_id"]]
-            if owner["outcome"] != "ok" or (
-                family in BM25_STAGES and owner["stage"] != BM25_STAGES[family]
-            ) or (
-                family == "object_install_aggregates" and owner["stage"] != "managed_object_install"
+            if (
+                owner["outcome"] != "ok"
+                or (family in BM25_STAGES and owner["stage"] != BM25_STAGES[family])
+                or (
+                    family == "object_install_aggregates"
+                    and owner["stage"] != "managed_object_install"
+                )
             ):
                 raise ValueError("canonical aggregate owner stage/outcome differs")
             dimension = row.get(
@@ -111,7 +114,8 @@ def canonical_profile(capture: dict, product: dict, *, execution_binding: dict) 
                 row.get(
                     "kind",
                     row.get(
-                        "phase", (row.get("reason"), row.get("refs_bucket"), row.get("bytes_bucket"))
+                        "phase",
+                        (row.get("reason"), row.get("refs_bucket"), row.get("bytes_bucket")),
                     ),
                 ),
             )

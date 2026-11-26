@@ -360,11 +360,18 @@ def _publish_aggregate_locked(
             source_pair = payload.get("source_pair")
             observed_identity = (
                 daemon.get("sha256") if isinstance(daemon, dict) else None,
-                source_pair.get("source", {}).get("head") if isinstance(source_pair, dict) else None,
+                source_pair.get("source", {}).get("head")
+                if isinstance(source_pair, dict)
+                else None,
                 payload.get("source", {}).get("head"),
             )
-            if payload.get("production_ready") is not True or observed_identity != required_release_identity:
-                raise AggregateRefused("aggregate is not ready for the required Q/S release identity")
+            if (
+                payload.get("production_ready") is not True
+                or observed_identity != required_release_identity
+            ):
+                raise AggregateRefused(
+                    "aggregate is not ready for the required Q/S release identity"
+                )
         try:
             schema = checker._payload_json(
                 root, registry["aggregate"]["schema"], label="aggregate schema"

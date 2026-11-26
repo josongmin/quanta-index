@@ -203,18 +203,26 @@ def retirement_event_resolver(
             return f"{package}::{target}", modules
 
         rows = integration_rows()
-        ancestors = [parent.with_suffix(".rs") for parent in relative.parents if parent != Path(".")]
+        ancestors = [
+            parent.with_suffix(".rs") for parent in relative.parents if parent != Path(".")
+        ]
         mounted = next((path for path in (relative, *ancestors) if path in rows), None)
         if mounted is None or rows[mounted]["owner"] != package:
             raise ValueError(f"{relative} lacks a registered integration test owner")
         target = rows[mounted].get("target", mounted.stem)
         modules = []
         if target != mounted.stem:
-            modules.append(mounted_test_module(
-                root, root / mounted, package, target, list(rows.values()),
-                read_source=lambda name: read_source(name).encode("utf-8"),
-                resolve_path=resolve_path,
-            ))
+            modules.append(
+                mounted_test_module(
+                    root,
+                    root / mounted,
+                    package,
+                    target,
+                    list(rows.values()),
+                    read_source=lambda name: read_source(name).encode("utf-8"),
+                    resolve_path=resolve_path,
+                )
+            )
         if mounted != relative:
             tail = relative.relative_to(mounted.with_suffix(""))
             parent = mounted

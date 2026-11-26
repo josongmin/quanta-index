@@ -63,7 +63,9 @@ def test_native_capture_cannot_run_as_a_bare_python_module() -> None:
 
 @pytest.mark.parametrize("require_signed_install", [False, True])
 def test_native_file_capture_cli_forwards_plan_to_registered_capture(
-    tmp_path, monkeypatch, require_signed_install,
+    tmp_path,
+    monkeypatch,
+    require_signed_install,
 ):
     import native_file_capture
 
@@ -250,7 +252,9 @@ def test_compare_runs_only_declared_dsl_baseline_pairs(monkeypatch, tmp_path: Pa
 
 @pytest.mark.parametrize("input_position", [-2, -1], ids=["baseline", "current"])
 def test_compare_rejects_dsl_pair_replaced_between_modes(
-    monkeypatch, tmp_path: Path, input_position: int,
+    monkeypatch,
+    tmp_path: Path,
+    input_position: int,
 ) -> None:
     _write_dsl_comparison_files(tmp_path)
     observed: list[str] = []
@@ -259,10 +263,12 @@ def test_compare_rejects_dsl_pair_replaced_between_modes(
         path = Path(command[input_position])
         observed.append(path.read_text(encoding="utf-8"))
         if path.name == "warm-matrix.json":
-            MODULE.publish_dsl_baseline_pair([
-                (path.parent / f"{mode}-matrix.json", f"replacement {mode}")
-                for mode in ("warm", "cold")
-            ])
+            MODULE.publish_dsl_baseline_pair(
+                [
+                    (path.parent / f"{mode}-matrix.json", f"replacement {mode}")
+                    for mode in ("warm", "cold")
+                ]
+            )
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
@@ -696,14 +702,20 @@ def test_dsl_native_plan_rejects_replaced_inputs_and_another_head(tmp_path: Path
         MODULE._read_dsl_native_plan(plan, "a" * 40)
 
 
-@pytest.mark.parametrize(("cold_fault", "refusal"), [
-    (None, None),
-    ("daemon", "Native DSL cold output differs"),
-    ("concurrency", "concurrency 0"),
-    ("legacy", "Native DSL cold output differs"),
-])
+@pytest.mark.parametrize(
+    ("cold_fault", "refusal"),
+    [
+        (None, None),
+        ("daemon", "Native DSL cold output differs"),
+        ("concurrency", "concurrency 0"),
+        ("legacy", "Native DSL cold output differs"),
+    ],
+)
 def test_dsl_native_outputs_validate_pair_before_replacing_current(
-    monkeypatch, tmp_path: Path, cold_fault: str | None, refusal: str | None,
+    monkeypatch,
+    tmp_path: Path,
+    cold_fault: str | None,
+    refusal: str | None,
 ) -> None:
     from tools.ci.tests.test_compare_dsl_bench import _native_authority_artifact
 
@@ -735,7 +747,8 @@ def test_dsl_native_outputs_validate_pair_before_replacing_current(
                     if row["engine_touched"] == ["native"]:
                         row["engine_touched"] = ["lexical"]
         (prepared / f"{mode}-matrix.json").write_text(
-            json.dumps(payload), encoding="utf-8",
+            json.dumps(payload),
+            encoding="utf-8",
         )
 
     checker = MODULE._load_lint_module(REPO_ROOT)
@@ -753,14 +766,21 @@ def test_dsl_native_outputs_validate_pair_before_replacing_current(
     preflight = tmp_path / "preflight.json"
     preflight.write_bytes(b"fixed receipt")
     args = (
-        tmp_path, head, manifest, prepared, plan, pins, preflight,
+        tmp_path,
+        head,
+        manifest,
+        prepared,
+        plan,
+        pins,
+        preflight,
         hashlib.sha256(b"fixed receipt").hexdigest(),
     )
     if refusal:
         with pytest.raises(MODULE.EvidenceError, match=refusal):
             MODULE._publish_dsl_native_outputs(*args)
         assert {mode: path.read_text() for mode, path in current.items()} == {
-            "warm": "prior warm", "cold": "prior cold",
+            "warm": "prior warm",
+            "cold": "prior cold",
         }
     else:
         digests = MODULE._publish_dsl_native_outputs(*args)
@@ -891,7 +911,9 @@ def test_dsl_admission_does_not_write_warm_if_cold_is_invalid(monkeypatch, tmp_p
 
 @pytest.mark.parametrize("replace_cold", [False, True])
 def test_dsl_admission_writes_only_the_guarded_capture(
-    monkeypatch, tmp_path: Path, replace_cold: bool,
+    monkeypatch,
+    tmp_path: Path,
+    replace_cold: bool,
 ) -> None:
     manifest = MODULE.load_manifest()
     profile = MODULE.load_profiles()["dsl-authority"]
@@ -903,7 +925,9 @@ def test_dsl_admission_writes_only_the_guarded_capture(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(mode, encoding="utf-8")
     if replace_cold:
-        (tmp_path / "artifacts/dsl-bench/cold-matrix.json").write_text("other run", encoding="utf-8")
+        (tmp_path / "artifacts/dsl-bench/cold-matrix.json").write_text(
+            "other run", encoding="utf-8"
+        )
 
     def fake_load(path, *, role, content=None):
         mode = "warm" if path.name.startswith("warm") else "cold"
@@ -1118,7 +1142,9 @@ def test_dsl_baseline_pair_restores_latest_intervening_publication(
         nonlocal intervened
         if directory == tmp_path.parent and not intervened:
             intervened = True
-            MODULE.publish_dsl_baseline_pair([(warm, "intervening warm"), (cold, "intervening cold")])
+            MODULE.publish_dsl_baseline_pair(
+                [(warm, "intervening warm"), (cold, "intervening cold")]
+            )
         real_sync(directory)
 
     def fail_second_publication(destination: Path, content: str) -> None:
@@ -1243,14 +1269,24 @@ def test_dsl_criterion_plan_uses_the_no_features_capture_rail(capsys) -> None:
 
 def test_frozen_openai_ab_rejects_invalid_pin_before_launch(tmp_path, capsys) -> None:
     out = tmp_path / "results"
-    assert MODULE.main([
-        "capture-frozen-openai-ab",
-        "--runner", str(tmp_path / "relevance_openai_ab"),
-        "--runner-sha256", "invalid",
-        "--source-checkout", str(tmp_path),
-        "--source-head", "a" * 40,
-        "--out", str(out),
-    ]) == 2
+    assert (
+        MODULE.main(
+            [
+                "capture-frozen-openai-ab",
+                "--runner",
+                str(tmp_path / "relevance_openai_ab"),
+                "--runner-sha256",
+                "invalid",
+                "--source-checkout",
+                str(tmp_path),
+                "--source-head",
+                "a" * 40,
+                "--out",
+                str(out),
+            ]
+        )
+        == 2
+    )
     assert "runner SHA-256 is missing or invalid" in capsys.readouterr().err
     assert not out.exists()
 

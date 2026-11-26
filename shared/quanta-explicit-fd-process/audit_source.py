@@ -99,10 +99,7 @@ def audit_package(root: Path) -> list[str]:
             "reviewed_changes",
         }:
             return ["invalid audit baseline schema"]
-        if (
-            baseline["schema_version"] != 2
-            or baseline["source_count"] != RELOCATION_SOURCE_COUNT
-        ):
+        if baseline["schema_version"] != 2 or baseline["source_count"] != RELOCATION_SOURCE_COUNT:
             return ["invalid audit baseline version or source count"]
         if (
             baseline["original_cohort_sha256"] != ORIGINAL_COHORT_SHA256
@@ -118,9 +115,9 @@ def audit_package(root: Path) -> list[str]:
             or not isinstance(reviewed_changes, dict)
         ):
             return ["invalid audited source inventory"]
-        relocation_bytes = json.dumps(
-            relocation, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        relocation_bytes = json.dumps(relocation, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
         if hashlib.sha256(relocation_bytes).hexdigest() != RELOCATION_INVENTORY_SHA256:
             return ["relocation source inventory changed"]
         files = relocation | reviewed_changes

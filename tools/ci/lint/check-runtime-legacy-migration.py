@@ -178,8 +178,14 @@ def runtime_event_matcher(revision: str | None) -> Callable[[Path, str, str], bo
             return (ROOT / relative).read_text(encoding="utf-8")
         return git_text("show", f"{revision}:{relative}")
 
-    resolve_path = None if revision is None else committed_path_resolver(
-        lambda _root, *args: git_text(*args).encode("utf-8"), ROOT, revision,
+    resolve_path = (
+        None
+        if revision is None
+        else committed_path_resolver(
+            lambda _root, *args: git_text(*args).encode("utf-8"),
+            ROOT,
+            revision,
+        )
     )
     return retirement_event_matcher(ROOT, read, resolve_path=resolve_path)
 
@@ -197,7 +203,9 @@ def main(
     executable_digest = retained_executable_digests()
 
     def validate_execution(
-        entry: dict, candidates: set[tuple[str, str]], context: str,
+        entry: dict,
+        candidates: set[tuple[str, str]],
+        context: str,
     ) -> None:
         if entry.get("proof") != "VERIFIED":
             return
@@ -300,9 +308,7 @@ def main(
             if revision is None
             else current_source(CURRENT_PERF_PATH.as_posix(), revision)
         )
-        current_public_tests = set(
-            source_tests(str(CURRENT_PERF), public_source)
-        )
+        current_public_tests = set(source_tests(str(CURRENT_PERF), public_source))
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         errors.append(f"{CURRENT_PERF}: cannot read current public routes: {error}")
         current_public_tests = set()
@@ -427,7 +433,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     evidence_dir = os.environ.get("QUANTA_RETIREMENT_NEXTEST_EVIDENCE_DIR")
-    raise SystemExit(main(
-        revision=args.revision, require_execution=args.require_execution,
-        evidence_dir=Path(evidence_dir) if evidence_dir else None,
-    ))
+    raise SystemExit(
+        main(
+            revision=args.revision,
+            require_execution=args.require_execution,
+            evidence_dir=Path(evidence_dir) if evidence_dir else None,
+        )
+    )

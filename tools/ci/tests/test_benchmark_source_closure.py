@@ -148,9 +148,7 @@ def test_native_release_approval_is_bound_by_retrieval_closure() -> None:
     module = _closure_module()
     paths = set(module.PROFILES["benchmark-retrieval"]["paths"])
     assert "tools/ci/tests/test_native_release_approval.py" in paths
-    imports = module._python_import_roots(
-        REPO_ROOT, ["tools/benchmark/native_file_capture.py"]
-    )
+    imports = module._python_import_roots(REPO_ROOT, ["tools/benchmark/native_file_capture.py"])
     assert {
         "tools/deployment/native_release_approval.py",
         "tools/deployment/launcher.py",

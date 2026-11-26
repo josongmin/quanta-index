@@ -42,14 +42,29 @@ def _ps_rows(pids: tuple[int, ...] | None) -> dict[int, Process]:
         if not pids or any(pid < 1 for pid in pids):
             raise MonitorError("invalid targeted PID selection")
         command.extend(("-p", ",".join(str(pid) for pid in sorted(set(pids)))))
-    command.extend((
-        "-ww", "-o", "pid=", "-o", "ppid=", "-o", "rss=", "-o", "lstart=", "-o", "command=",
-    ))
+    command.extend(
+        (
+            "-ww",
+            "-o",
+            "pid=",
+            "-o",
+            "ppid=",
+            "-o",
+            "rss=",
+            "-o",
+            "lstart=",
+            "-o",
+            "command=",
+        )
+    )
     result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
-    if ((pids is None and result.returncode != 0)
-            or (pids is not None and result.returncode not in (0, 1))
-            or (pids is not None and result.returncode == 1 and result.stdout)
-            or result.stderr or len(result.stdout) > 16 * 1024 * 1024):
+    if (
+        (pids is None and result.returncode != 0)
+        or (pids is not None and result.returncode not in (0, 1))
+        or (pids is not None and result.returncode == 1 and result.stdout)
+        or result.stderr
+        or len(result.stdout) > 16 * 1024 * 1024
+    ):
         raise MonitorError("process snapshot unavailable or oversized")
     rows: dict[int, Process] = {}
     for line in result.stdout.splitlines():
@@ -87,7 +102,7 @@ def _argv_after_executable(row: Process, executable: Path) -> list[str] | None:
     if not row.command.startswith(prefix):
         return None
     try:
-        return shlex.split(row.command[len(prefix):])
+        return shlex.split(row.command[len(prefix) :])
     except ValueError as error:
         raise MonitorError("malformed selected process argv") from error
 
@@ -116,10 +131,17 @@ class NativeProcessMonitor:
         compiler_seconds: float = 30.0,
         max_daemons: int = 8,
     ) -> None:
-        if (root_pid < 1 or not selector or not test_executable.is_absolute()
-                or not daemon_executable.is_absolute() or max_daemons < 1
-                or not math.isfinite(sample_seconds) or sample_seconds < 1
-                or not math.isfinite(compiler_seconds) or compiler_seconds < 30):
+        if (
+            root_pid < 1
+            or not selector
+            or not test_executable.is_absolute()
+            or not daemon_executable.is_absolute()
+            or max_daemons < 1
+            or not math.isfinite(sample_seconds)
+            or sample_seconds < 1
+            or not math.isfinite(compiler_seconds)
+            or compiler_seconds < 30
+        ):
             raise ValueError("invalid monitor bounds")
         self.root_pid = root_pid
         self.test_executable = test_executable
@@ -161,10 +183,14 @@ class NativeProcessMonitor:
             self.root = root
         else:
             self._same(self.root, root, "admission root")
-        matches = [row for row in rows.values()
-                   if (args := _argv_after_executable(row, self.test_executable)) is not None
-                   and args.count(self.selector) == 1 and args.count("--exact") == 1
-                   and _descends_from(rows, row.pid, self.root_pid)]
+        matches = [
+            row
+            for row in rows.values()
+            if (args := _argv_after_executable(row, self.test_executable)) is not None
+            and args.count(self.selector) == 1
+            and args.count("--exact") == 1
+            and _descends_from(rows, row.pid, self.root_pid)
+        ]
         if len(matches) > 1:
             raise MonitorError("multiple selected owned tests")
         if self.test is None:
@@ -180,10 +206,13 @@ class NativeProcessMonitor:
             if not matches:
                 raise MonitorError("selected test left the owned process tree")
             self._same(self.test, matches[0], "selected test")
-        candidates = [row for row in rows.values()
-                      if row.ppid == self.test.pid
-                      and (args := _argv_after_executable(row, self.daemon_executable)) is not None
-                      and args[:1] == ["serve-native"]]
+        candidates = [
+            row
+            for row in rows.values()
+            if row.ppid == self.test.pid
+            and (args := _argv_after_executable(row, self.daemon_executable)) is not None
+            and args[:1] == ["serve-native"]
+        ]
         if len(candidates) > 1:
             raise MonitorError("multiple direct owned daemons")
         if not candidates:
@@ -212,7 +241,9 @@ class NativeProcessMonitor:
             raise MonitorError("config validator did not return a SHA-256 digest")
         self.active = daemon
         self.daemons[daemon.pid] = {
-            "process": daemon.identity(), "config_path": str(config), "config_sha256": digest,
+            "process": daemon.identity(),
+            "config_path": str(config),
+            "config_sha256": digest,
         }
 
     def _rss(self, rows: Mapping[int, Process]) -> None:
@@ -238,8 +269,11 @@ class NativeProcessMonitor:
                 counts[name] += 1
         self.compiler_samples += 1
         self.compiler_last = counts.copy()
-        self.compiler_max = (counts.copy() if self.compiler_max is None else
-                             {name: max(self.compiler_max[name], counts[name]) for name in counts})
+        self.compiler_max = (
+            counts.copy()
+            if self.compiler_max is None
+            else {name: max(self.compiler_max[name], counts[name]) for name in counts}
+        )
         self.next_compilers = at + self.compiler_seconds
 
     def sample(self) -> None:
@@ -317,5 +351,5 @@ class NativeProcessMonitor:
             "rss_max_observed_aggregate_kib": self.rss_max_kib,
             "rss_qualification": "NOT_RUN",
             "limitation": "sampled owned test plus simultaneous direct daemon RSS lower bound; "
-                          "short-lived and between-sample peaks and full host quiet are unobserved",
+            "short-lived and between-sample peaks and full host quiet are unobserved",
         }

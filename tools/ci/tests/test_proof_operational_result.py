@@ -576,10 +576,16 @@ def test_actual_frontdoor_retains_staged_refusal(proof_id, monkeypatch, tmp_path
 
 
 @pytest.mark.parametrize(
-    "change", (
-        "no-transition", "actor-drift", "output-drift", "signing-output-drift",
-        "signing-events-drift", "canonical", "ignored-output",
-    )
+    "change",
+    (
+        "no-transition",
+        "actor-drift",
+        "output-drift",
+        "signing-output-drift",
+        "signing-events-drift",
+        "canonical",
+        "ignored-output",
+    ),
 )
 def test_real_process_orchestration_checks_independent_state(evidence, monkeypatch, change):
     import socket
@@ -615,6 +621,7 @@ def test_real_process_orchestration_checks_independent_state(evidence, monkeypat
         "signing-events-drift": output / "events.json",
     }.get(change)
     if signing_drift is not None:
+
         def sign_then_change(key, proof_id, statement):
             signature = sign_statement(key, proof_id, statement)
             if statement != b"P11 signing preflight":
@@ -736,7 +743,8 @@ def test_inadmissible_pre_state_never_invokes_action(tmp_path, monkeypatch, proo
 
 
 @pytest.mark.parametrize(
-    "field", ("state_root", "binary_path", "config_path", "config_sha256", "release_manifest_sha256", None)
+    "field",
+    ("state_root", "binary_path", "config_path", "config_sha256", "release_manifest_sha256", None),
 )
 def test_frontdoor_checks_target_and_holds_proof_lock_through_publication(
     tmp_path, monkeypatch, capsys, field
@@ -912,7 +920,9 @@ def test_target_summary_cannot_relabel_the_archived_contract(evidence):
         module.derive_operational_result(root, proof, result, artifacts, binding)
 
 
-@pytest.mark.parametrize("field", ("state_root", "binary_path", "config_sha256", "release_manifest_sha256"))
+@pytest.mark.parametrize(
+    "field", ("state_root", "binary_path", "config_sha256", "release_manifest_sha256")
+)
 def test_aggregate_requires_one_target_and_configuration(field):
     checker = module._checker()
     root = Path(module.__file__).resolve().parents[2]

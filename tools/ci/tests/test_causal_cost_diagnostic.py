@@ -337,9 +337,9 @@ def test_text_shape_zero_owner_is_complete_and_missing_lane48_tuple_is_invalid()
         build_index(capture)
     capture["spans"][9]["stage"] = "native_text_inventory_diff"
     index = build_index(capture)
-    group = query_index(
-        index, worker_span_id=3, stage="native_text_inventory_prepare", lane=48
-    )["workers"]["3"]["groups"][0]
+    group = query_index(index, worker_span_id=3, stage="native_text_inventory_prepare", lane=48)[
+        "workers"
+    ]["3"]["groups"][0]
     assert group["count"] == 1
     assert group["direct_counters"] == {
         "text_case_occurrences": 0,
@@ -451,20 +451,32 @@ def test_worker_index_keeps_cpu_per_span_only_when_group_observation_is_partial_
 ) -> None:
     capture = _capture()
     capture["spans"][9] = _span(
-        9, 3, "native_source_apply", 3, 24, 40,
+        9,
+        3,
+        "native_source_apply",
+        3,
+        24,
+        40,
         counters={"thread_cpu_ns": 7, "bytes_read": 3},
     )
     second_counters = {"bytes_read": 5}
     if second_cpu is not None:
         second_counters["thread_cpu_ns"] = second_cpu
     capture["spans"][10] = _span(
-        10, 3, "native_source_apply", 3, 30, 45, counters=second_counters,
+        10,
+        3,
+        "native_source_apply",
+        3,
+        30,
+        45,
+        counters=second_counters,
     )
     original = copy.deepcopy(capture)
 
     index = build_index(capture)
     group = next(
-        row for row in index["workers"]["3"]["groups"]
+        row
+        for row in index["workers"]["3"]["groups"]
         if row["stage"] == "native_source_apply" and row["lane_id"] == 3
     )
     assert (group["count"], group["sum_ns"], group["union_ns"]) == (2, 31, 21)
@@ -479,7 +491,8 @@ def test_worker_index_keeps_cpu_per_span_only_when_group_observation_is_partial_
 
     stale = copy.deepcopy(index)
     stale_group = next(
-        row for row in stale["workers"]["3"]["groups"]
+        row
+        for row in stale["workers"]["3"]["groups"]
         if row["stage"] == "native_source_apply" and row["lane_id"] == 3
     )
     stale_group["direct_counters"]["thread_cpu_ns"] = 7 + (second_cpu or 0)
