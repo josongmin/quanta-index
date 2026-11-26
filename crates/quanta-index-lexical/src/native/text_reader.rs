@@ -24,8 +24,8 @@ use quanta_index_contract::{
 };
 use quanta_index_core::index::{
     FiniteScore, IndexError, IndexQueryPort, MemoryLease, MemoryLifetime, ObjectRef, OwnerKey,
-    QueryOutcome, QueryReadContext, SourceRecordOwner, WorkBudget, WorkUsage, effort::ResourceNeed,
-    owner_map_key, ports::IndexBuildPort,
+    QueryOutcome, QueryReadContext, SourcePathOwners, SourceRecordOwner, WorkBudget, WorkUsage,
+    effort::ResourceNeed, owner_map_key, ports::IndexBuildPort, visit_repository_path_sources,
 };
 
 /// A planned request retains the canonical lexical plan and a bounded result cap.
@@ -624,10 +624,22 @@ impl NativeTextReader {
         Ok((owned, memory))
     }
 
-    fn selected_path_owner(
+    fn validate_overlay_path_claim(
         path: &str,
+        overlay_owner: OwnerKey,
+        overlay: &[TextOverlayReadDocument],
         context: &mut QueryReadContext<'_>,
-    ) -> Result<Option<OwnerKey>, IndexError> {
+    ) -> Result<(), IndexError> {
+        let check_owner = |owner| {
+            if owner != overlay_owner
+                && overlay
+                    .binary_search_by_key(&owner, |row| row.owner)
+                    .is_err()
+            {
+                return Err(IndexError::Conflict);
+            }
+            Ok(())
+        };
         let key_bytes = path
             .len()
             .checked_add(5)
@@ -651,10 +663,22 @@ impl NativeTextReader {
                 .maps
                 .lookup(context.ticket.view.source.paths, &key, context.budget)?
         else {
-            return Ok(None);
+            return Ok(());
         };
-        let owner =
-            quanta_index_core::index::owner_from_path_map_value(marker_ref, context.budget)?;
+        let owner = match SourcePathOwners::decode(marker_ref, context.budget)? {
+            SourcePathOwners::LegacyOwner(owner) => owner,
+            SourcePathOwners::Repositories(root) => {
+                return visit_repository_path_sources(
+                    root,
+                    path,
+                    context.ticket.view.source.owners,
+                    context.maps,
+                    context.objects,
+                    context.budget,
+                    &mut |owner, _source, _record, _budget| check_owner(owner),
+                );
+            }
+        };
         let source = context
             .maps
             .lookup_object(
@@ -680,7 +704,7 @@ impl NativeTextReader {
                 "native text overlay reverse path differs from selected source".into(),
             ));
         }
-        Ok(Some(owner))
+        check_owner(owner)
     }
 }
 
@@ -860,15 +884,12 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
                         return Err(IndexError::Conflict);
                     }
                 }
-                if let Some(selected_owner) = Self::selected_path_owner(source.path, context)? {
-                    let masked = request
-                        .overlay
-                        .binary_search_by_key(&selected_owner, |row| row.owner)
-                        .is_ok();
-                    if selected_owner != source.owner && !masked {
-                        return Err(IndexError::Conflict);
-                    }
-                }
+                Self::validate_overlay_path_claim(
+                    source.path,
+                    source.owner,
+                    &request.overlay,
+                    context,
+                )?;
             }
             Some(self.index.prepare_overlay_corpus(
                 member,

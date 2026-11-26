@@ -1922,30 +1922,6 @@ impl NativeTextIndex {
                 let source = source.ok_or_else(|| {
                     IndexError::BackendViolation("text candidate lost source".into())
                 })?;
-                let (regex_present, path_match) =
-                    if regex_program.has_content() || !plan.filters.paths.is_empty() {
-                        match source {
-                            NativeTextHitSource::Durable(source_ref) => {
-                                regex_program.evaluate(
-                                    self,
-                                    owner,
-                                    source_ref,
-                                    path_mode,
-                                    &mut context,
-                                )?
-                            }
-                            NativeTextHitSource::Overlay { .. } => {
-                                let overlay_source = overlay_source.ok_or(IndexError::Conflict)?;
-                                regex_program.evaluate_overlay(
-                                    overlay_source.path,
-                                    overlay_source.body,
-                                    context.budget,
-                                )?
-                            }
-                        }
-                    } else {
-                        (0, true)
-                    };
                 let selected = match source {
                     NativeTextHitSource::Durable(reference) => {
                         selection.matches(owner, reference)?
@@ -1957,6 +1933,29 @@ impl NativeTextIndex {
                             .as_ref()
                             .is_none_or(|path| path.as_str() == overlay_source.path)
                     }
+                };
+                let (regex_present, path_match) = if selected
+                    && (regex_program.has_content() || !plan.filters.paths.is_empty())
+                {
+                    match source {
+                        NativeTextHitSource::Durable(source_ref) => regex_program.evaluate(
+                            self,
+                            owner,
+                            source_ref,
+                            path_mode,
+                            &mut context,
+                        )?,
+                        NativeTextHitSource::Overlay { .. } => {
+                            let overlay_source = overlay_source.ok_or(IndexError::Conflict)?;
+                            regex_program.evaluate_overlay(
+                                overlay_source.path,
+                                overlay_source.body,
+                                context.budget,
+                            )?
+                        }
+                    }
+                } else {
+                    (0, true)
                 };
                 let contains_present = if source_contains_count == 0 || !selected || !path_match {
                     0
