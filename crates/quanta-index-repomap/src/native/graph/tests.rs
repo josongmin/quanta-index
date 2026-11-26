@@ -1014,10 +1014,11 @@ mod projection_retention {
             incoming: graph_roots.3,
         };
         let mut stale_root = serde_json::to_value(old_root)?;
-        stale_root
+        let _removed_epoch = stale_root
             .as_object_mut()
             .ok_or("graph root must serialize as a record")?
-            .remove("facts_epoch");
+            .remove("facts_epoch")
+            .ok_or("graph root must serialize its facts epoch")?;
         if serde_json::from_value::<GraphRoot>(stale_root).is_ok() {
             return Err("graph root accepted old wire without typed-facts epoch".into());
         }
