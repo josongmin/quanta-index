@@ -1,16 +1,16 @@
 //! Provisional Native Source-only export frames. The selected predecessor
 //! lease and physical Catalog, not these DTOs, establish source authority.
 
-use super::frame_body_replay::BodyReplay;
 use super::{
     CatalogView, Digest, ImmutableOperation, NativeProtectedSourceHeadV1, ObjectRef, UpdateRequest,
 };
+use super::{frame_body_replay::BodyReplay, source_restore::FrameJsonValueCheckV1};
 use crate::native_cutover_evidence_v1::{
     NativeCutoverEvidenceSourcePublicationBindingV1, NativeCutoverEvidenceTargetV1,
 };
 use crate::{RepoId, RevisionId, SourceFileRevision};
 use quanta_index_contract_base::NativeCutoverDigest64V1;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::io::{self, Write};
 
@@ -387,14 +387,89 @@ pub enum NativeSourceSnapshotExportFrameV1 {
     },
 }
 
-macro_rules! native_source_frame_decode {
-    ($result:expr; $body:ty => $variant:ident { $($field:ident),+ $(,)? }) => {{
-        let body: $body = $result?;
-        Ok(NativeSourceSnapshotExportFrameV1::$variant { $($field: body.$field,)+ })
-    }};
+struct NativeSourceFieldKeyV1(&'static [&'static str]);
+
+impl<'de> serde::de::DeserializeSeed<'de> for NativeSourceFieldKeyV1 {
+    type Value = &'static str;
+
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        decoder.deserialize_identifier(self)
+    }
 }
 
-#[derive(Clone, Copy)]
+impl serde::de::Visitor<'_> for NativeSourceFieldKeyV1 {
+    type Value = &'static str;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a Native Source export frame field")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, field: &str) -> Result<Self::Value, E> {
+        self.0
+            .iter()
+            .copied()
+            .find(|known| *known == field)
+            .ok_or_else(|| E::unknown_field(field, self.0))
+    }
+
+    fn visit_bytes<E: serde::de::Error>(self, field: &[u8]) -> Result<Self::Value, E> {
+        let name = std::str::from_utf8(field)
+            .map_err(|_| E::invalid_value(serde::de::Unexpected::Bytes(field), &self))?;
+        self.visit_str(name)
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, field: u64) -> Result<Self::Value, E> {
+        usize::try_from(field)
+            .ok()
+            .and_then(|ordinal| self.0.get(ordinal))
+            .copied()
+            .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Unsigned(field), &self))
+    }
+}
+
+macro_rules! native_source_frame_decode {
+    ($decoder:expr, $variant:ident { $($field:ident: $ty:ty $(= $default:ident)?),+ $(,)? }) => {{
+        const FIELDS: &[&str] = &[$(stringify!($field)),+];
+        struct BodyVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for BodyVisitor {
+            type Value = NativeSourceSnapshotExportFrameV1;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(concat!("struct variant ", stringify!($variant)))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                $(let mut $field: Option<$ty> = None;)+
+                while let Some(key) = map.next_key_seed(NativeSourceFieldKeyV1(FIELDS))? {
+                    match key {
+                        $(stringify!($field) => {
+                            if $field.is_some() {
+                                return Err(serde::de::Error::duplicate_field(stringify!($field)));
+                            }
+                            $field = Some(map.next_value::<$ty>()?);
+                        },)+
+                        _ => unreachable!("closed field seed only returns schema keys"),
+                    }
+                }
+                Ok(NativeSourceSnapshotExportFrameV1::$variant {
+                    $($field: native_source_frame_decode!(@field $field $(= $default)?),)+
+                })
+            }
+        }
+
+        // Derived struct variants inside the adjacent body have a map visitor.
+        $decoder.deserialize_any(BodyVisitor)
+    }};
+    (@field $field:ident) => {
+        $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
+    (@field $field:ident = default) => {
+        $field.unwrap_or_default()
+    };
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum NativeSourceFrameKindV1 {
     HeadBegin,
     FileBegin,
@@ -443,14 +518,6 @@ impl NativeSourceFrameKindV1 {
             "inventory_complete" => Ok(Self::InventoryComplete),
             _ => Err(E::unknown_variant(name, Self::NAMES)),
         }
-    }
-
-    fn decode_deferred<E: serde::de::Error>(
-        self,
-        value: BodyReplay<'_>,
-    ) -> Result<NativeSourceSnapshotExportFrameV1, E> {
-        serde::de::DeserializeSeed::deserialize(NativeSourceFrameBodySeedV1(self), value)
-            .map_err(E::custom)
     }
 }
 
@@ -639,200 +706,260 @@ impl Serialize for NativeSourceSnapshotExportFrameV1 {
     }
 }
 
-struct NativeSourceHeadBeginBodyV1 {
-    source_root_nonce: Digest,
-    source_routes: ObjectRef,
-    repo_id: RepoId,
-    revision_id: RevisionId,
-    source_head: NativeProtectedSourceHeadV1,
-    file_count: u64,
-}
-crate::native_serde_struct!([serde_identifier] NativeSourceHeadBeginBodyV1 {
-    source_root_nonce: Digest, source_routes: ObjectRef, repo_id: RepoId,
-    revision_id: RevisionId, source_head: NativeProtectedSourceHeadV1, file_count: u64,
-});
-
-struct NativeSourceFileBeginBodyV1 {
-    source: SourceFileRevision,
-    text_admitted: bool,
-    source_bytes: u64,
-    language: Option<String>,
-}
-crate::native_serde_struct!([serde_identifier] NativeSourceFileBeginBodyV1 {
-    source: SourceFileRevision, text_admitted: bool, source_bytes: u64,
-    language: Option<String> = default,
-});
-
-struct NativeSourceFileChunkBodyV1 {
-    offset: u64,
-    bytes: Vec<u8>,
-}
-crate::native_serde_struct!([serde_identifier] NativeSourceFileChunkBodyV1 {
-    offset: u64, bytes: Vec<u8>,
-});
-
-struct NativeSourceFileEndBodyV1 {
-    source: SourceFileRevision,
-}
-crate::native_serde_struct!([serde_identifier] NativeSourceFileEndBodyV1 {
-    source: SourceFileRevision,
-});
-
-struct NativeSourceHeadCompleteBodyV1 {
-    repo_id: RepoId,
-    revision_id: RevisionId,
-    file_count: u64,
-    file_census_sha256: Digest,
-}
-crate::native_serde_struct!([serde_identifier] NativeSourceHeadCompleteBodyV1 {
-    repo_id: RepoId, revision_id: RevisionId, file_count: u64, file_census_sha256: Digest,
-});
-
-struct NativeSourceRetiredIdentityBodyV1 {
-    projection: super::ProjectionId,
-    instance: super::IndexInstanceId,
-}
-crate::native_serde_struct!([serde_identifier] NativeSourceRetiredIdentityBodyV1 {
-    projection: super::ProjectionId, instance: super::IndexInstanceId,
-});
-
-struct NativeSourceInventoryCompleteBodyV1 {
-    source_root_nonce: Digest,
-    source_routes: ObjectRef,
-    head_count: u64,
-    route_head_count: u64,
-    retired_identity_count: u64,
-    file_census_sha256: Digest,
-    transcript_sha256: Digest,
-}
-crate::native_serde_struct!([serde_identifier] NativeSourceInventoryCompleteBodyV1 {
-    source_root_nonce: Digest, source_routes: ObjectRef, head_count: u64,
-    route_head_count: u64, retired_identity_count: u64, file_census_sha256: Digest,
-    transcript_sha256: Digest,
-});
-
 struct NativeSourceFrameBodySeedV1(NativeSourceFrameKindV1);
 
 impl<'de> serde::de::DeserializeSeed<'de> for NativeSourceFrameBodySeedV1 {
     type Value = NativeSourceSnapshotExportFrameV1;
 
-    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
         match self.0 {
             NativeSourceFrameKindV1::HeadBegin => native_source_frame_decode!(
-                Deserialize::deserialize(decoder);
-                NativeSourceHeadBeginBodyV1 => HeadBegin {
-                    source_root_nonce, source_routes, repo_id, revision_id, source_head, file_count
+                decoder,
+                HeadBegin {
+                    source_root_nonce: Digest,
+                    source_routes: ObjectRef,
+                    repo_id: RepoId,
+                    revision_id: RevisionId,
+                    source_head: NativeProtectedSourceHeadV1,
+                    file_count: u64,
                 }
             ),
-            NativeSourceFrameKindV1::FileBegin => native_source_frame_decode!(
-                Deserialize::deserialize(decoder);
-                NativeSourceFileBeginBodyV1 => FileBegin {
-                    source, text_admitted, source_bytes, language
-                }
-            ),
-            NativeSourceFrameKindV1::FileChunk => native_source_frame_decode!(
-                Deserialize::deserialize(decoder);
-                NativeSourceFileChunkBodyV1 => FileChunk { offset, bytes }
-            ),
+            NativeSourceFrameKindV1::FileBegin => native_source_frame_decode!(decoder, FileBegin {
+                source: SourceFileRevision,
+                text_admitted: bool,
+                source_bytes: u64,
+                language: Option<String> = default,
+            }),
+            NativeSourceFrameKindV1::FileChunk => native_source_frame_decode!(decoder, FileChunk {
+                offset: u64,
+                bytes: Vec<u8>,
+            }),
             NativeSourceFrameKindV1::FileEnd => native_source_frame_decode!(
-                Deserialize::deserialize(decoder);
-                NativeSourceFileEndBodyV1 => FileEnd { source }
+                decoder,
+                FileEnd {
+                    source: SourceFileRevision,
+                }
             ),
             NativeSourceFrameKindV1::HeadComplete => native_source_frame_decode!(
-                Deserialize::deserialize(decoder);
-                NativeSourceHeadCompleteBodyV1 => HeadComplete {
-                    repo_id, revision_id, file_count, file_census_sha256
+                decoder,
+                HeadComplete {
+                    repo_id: RepoId,
+                    revision_id: RevisionId,
+                    file_count: u64,
+                    file_census_sha256: Digest,
                 }
             ),
             NativeSourceFrameKindV1::RetiredProjectionIdentity => native_source_frame_decode!(
-                Deserialize::deserialize(decoder);
-                NativeSourceRetiredIdentityBodyV1 => RetiredProjectionIdentity {
-                    projection, instance
+                decoder,
+                RetiredProjectionIdentity {
+                    projection: super::ProjectionId,
+                    instance: super::IndexInstanceId,
                 }
             ),
             NativeSourceFrameKindV1::InventoryComplete => native_source_frame_decode!(
-                Deserialize::deserialize(decoder);
-                NativeSourceInventoryCompleteBodyV1 => InventoryComplete {
-                    source_root_nonce, source_routes, head_count, route_head_count,
-                    retired_identity_count, file_census_sha256, transcript_sha256
+                decoder,
+                InventoryComplete {
+                    source_root_nonce: Digest,
+                    source_routes: ObjectRef,
+                    head_count: u64,
+                    route_head_count: u64,
+                    retired_identity_count: u64,
+                    file_census_sha256: Digest,
+                    transcript_sha256: Digest,
                 }
             ),
         }
     }
 }
 
-impl<'de> Deserialize<'de> for NativeSourceSnapshotExportFrameV1 {
-    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
-        struct FrameVisitor;
-        impl<'de> serde::de::Visitor<'de> for FrameVisitor {
-            type Value = NativeSourceSnapshotExportFrameV1;
+struct NativeSourceFrameVisitorV1(Option<NativeSourceFrameKindV1>);
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("an adjacent-tag Native Source export frame")
-            }
+impl<'de> serde::de::Visitor<'de> for NativeSourceFrameVisitorV1 {
+    type Value = NativeSourceSnapshotExportFrameV1;
 
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> Result<Self::Value, A::Error> {
-                const FIELDS: &[&str] = &["kind", "body"];
-                let mut kind = None;
-                let mut body = None;
-                let mut deferred_body = None;
-                let mut body_seen = false;
-                while let Some(key) = map.next_key_seed(
-                    quanta_index_contract_base::ClosedFieldKeySeedV1(FIELDS).serde_identifier(),
-                )? {
-                    match key {
-                        "kind" => {
-                            if kind.is_some() {
-                                return Err(serde::de::Error::duplicate_field("kind"));
-                            }
-                            kind = Some(map.next_value::<NativeSourceFrameKindV1>()?);
-                        }
-                        "body" => {
-                            if body_seen {
-                                return Err(serde::de::Error::duplicate_field("body"));
-                            }
-                            body_seen = true;
-                            if let Some(kind) = kind {
-                                body =
-                                    Some(map.next_value_seed(NativeSourceFrameBodySeedV1(kind))?);
-                            } else {
-                                deferred_body = Some(map.next_value::<BodyReplay<'de>>()?);
-                            }
-                        }
-                        _ => unreachable!("closed frame field seed only returns schema keys"),
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an adjacent-tag Native Source export frame")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        const FIELDS: &[&str] = &["kind", "body"];
+        let mut kind = None;
+        let mut body = None;
+        let mut deferred_body = None;
+        let mut body_seen = false;
+        while let Some(key) = map.next_key_seed(NativeSourceFieldKeyV1(FIELDS))? {
+            match key {
+                "kind" => {
+                    if kind.is_some() {
+                        return Err(serde::de::Error::duplicate_field("kind"));
+                    }
+                    let actual = map.next_value::<NativeSourceFrameKindV1>()?;
+                    if self.0.is_some_and(|expected| expected != actual) {
+                        return Err(serde::de::Error::custom(
+                            "Native Source frame kind changed between passes",
+                        ));
+                    }
+                    kind = Some(actual);
+                }
+                "body" => {
+                    if body_seen {
+                        return Err(serde::de::Error::duplicate_field("body"));
+                    }
+                    body_seen = true;
+                    if let Some(kind) = kind.or(self.0) {
+                        body = Some(map.next_value_seed(NativeSourceFrameBodySeedV1(kind))?);
+                    } else {
+                        deferred_body = Some(map.next_value::<BodyReplay<'de>>()?);
                     }
                 }
-                let kind = kind.ok_or_else(|| serde::de::Error::missing_field("kind"))?;
-                if let Some(value) = deferred_body {
-                    body = Some(kind.decode_deferred(value)?);
-                }
-                body.ok_or_else(|| serde::de::Error::missing_field("body"))
-            }
-
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                self,
-                mut seq: A,
-            ) -> Result<Self::Value, A::Error> {
-                let kind = seq
-                    .next_element::<NativeSourceFrameKindV1>()?
-                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
-                let body = seq
-                    .next_element_seed(NativeSourceFrameBodySeedV1(kind))?
-                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
-                if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
-                    return Err(serde::de::Error::invalid_length(3, &self));
-                }
-                Ok(body)
+                _ => unreachable!("closed frame field seed only returns schema keys"),
             }
         }
+        let kind = kind.ok_or_else(|| serde::de::Error::missing_field("kind"))?;
+        if let Some(value) = deferred_body {
+            body = Some(
+                serde::de::DeserializeSeed::deserialize(NativeSourceFrameBodySeedV1(kind), value)
+                    .map_err(<A::Error as serde::de::Error>::custom)?,
+            );
+        }
+        body.ok_or_else(|| serde::de::Error::missing_field("body"))
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let kind = seq
+            .next_element::<NativeSourceFrameKindV1>()?
+            .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+        if self.0.is_some_and(|expected| expected != kind) {
+            return Err(serde::de::Error::custom(
+                "Native Source frame kind changed between passes",
+            ));
+        }
+        let body = seq
+            .next_element_seed(NativeSourceFrameBodySeedV1(kind))?
+            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+        if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+            return Err(serde::de::Error::invalid_length(3, &self));
+        }
+        Ok(body)
+    }
+}
+
+impl<'de> Deserialize<'de> for NativeSourceSnapshotExportFrameV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
         decoder.deserialize_struct(
             "NativeSourceSnapshotExportFrameV1",
             &["kind", "body"],
-            FrameVisitor,
+            NativeSourceFrameVisitorV1(None),
         )
+    }
+}
+
+struct NativeSourceFrameKindReadV1;
+
+impl NativeSourceFrameKindReadV1 {
+    fn decode(bytes: &[u8]) -> Result<NativeSourceFrameKindV1, serde_json::Error> {
+        struct KindReader;
+        impl<'de> serde::de::DeserializeSeed<'de> for KindReader {
+            type Value = NativeSourceFrameKindV1;
+
+            fn deserialize<D: serde::Deserializer<'de>>(
+                self,
+                decoder: D,
+            ) -> Result<Self::Value, D::Error> {
+                struct KindVisitor;
+                impl<'de> serde::de::Visitor<'de> for KindVisitor {
+                    type Value = NativeSourceFrameKindV1;
+
+                    fn expecting(
+                        &self,
+                        formatter: &mut std::fmt::Formatter<'_>,
+                    ) -> std::fmt::Result {
+                        formatter.write_str("an adjacent-tag Native Source export frame")
+                    }
+
+                    fn visit_map<A: serde::de::MapAccess<'de>>(
+                        self,
+                        mut map: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        const FIELDS: &[&str] = &["kind", "body"];
+                        let mut kind = None;
+                        let mut body_seen = false;
+                        while let Some(key) = map.next_key_seed(NativeSourceFieldKeyV1(FIELDS))? {
+                            match key {
+                                "kind" => {
+                                    if kind.is_some() {
+                                        return Err(serde::de::Error::duplicate_field("kind"));
+                                    }
+                                    kind = Some(map.next_value::<NativeSourceFrameKindV1>()?);
+                                }
+                                "body" => {
+                                    if body_seen {
+                                        return Err(serde::de::Error::duplicate_field("body"));
+                                    }
+                                    if kind.is_none() {
+                                        let _: FrameJsonValueCheckV1 = map.next_value()?;
+                                    } else {
+                                        let _: serde::de::IgnoredAny = map.next_value()?;
+                                    }
+                                    body_seen = true;
+                                }
+                                _ => {
+                                    unreachable!("closed frame field seed only returns schema keys")
+                                }
+                            }
+                        }
+                        let kind = kind.ok_or_else(|| serde::de::Error::missing_field("kind"))?;
+                        if !body_seen {
+                            return Err(serde::de::Error::missing_field("body"));
+                        }
+                        Ok(kind)
+                    }
+
+                    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                        self,
+                        mut seq: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        let kind = seq
+                            .next_element::<NativeSourceFrameKindV1>()?
+                            .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                        let _: serde::de::IgnoredAny = seq
+                            .next_element()?
+                            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                        if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                            return Err(serde::de::Error::invalid_length(3, &self));
+                        }
+                        Ok(kind)
+                    }
+                }
+                decoder.deserialize_struct(
+                    "NativeSourceSnapshotExportFrameV1",
+                    &["kind", "body"],
+                    KindVisitor,
+                )
+            }
+        }
+
+        let mut decoder = serde_json::Deserializer::from_slice(bytes);
+        let kind = serde::de::DeserializeSeed::deserialize(KindReader, &mut decoder)?;
+        decoder.end()?;
+        Ok(kind)
+    }
+}
+
+impl NativeSourceSnapshotExportFrameV1 {
+    /// Decode one already framed JSON payload without retaining an untyped body.
+    /// The caller owns frame-length and work/memory admission before this call.
+    pub fn decode_json_v1(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        let kind = NativeSourceFrameKindReadV1::decode(bytes)?;
+        let mut decoder = serde_json::Deserializer::from_slice(bytes);
+        let frame = serde::Deserializer::deserialize_struct(
+            &mut decoder,
+            "NativeSourceSnapshotExportFrameV1",
+            &["kind", "body"],
+            NativeSourceFrameVisitorV1(Some(kind)),
+        )?;
+        decoder.end()?;
+        Ok(frame)
     }
 }
 
@@ -850,6 +977,13 @@ mod frame_wire_tests {
             serde_json::to_string(&frame).unwrap(),
             r#"{"kind":"file_chunk","body":{"offset":2,"bytes":[4,5]}}"#
         );
+        assert_eq!(
+            NativeSourceSnapshotExportFrameV1::decode_json_v1(
+                br#"{"kind":"file_chunk","body":{"offset":2,"bytes":[4,5]}}"#
+            )
+            .unwrap(),
+            frame
+        );
         let body_first: NativeSourceSnapshotExportFrameV1 =
             serde_json::from_str(r#"{"body":{"offset":2,"bytes":[4,5]},"kind":"file_chunk"}"#)
                 .unwrap();
@@ -863,39 +997,23 @@ mod frame_wire_tests {
     }
 
     #[test]
-    fn file_chunk_body_first_cbor_accepts_positional_and_byte_field_names() {
-        // {"body": [2, []], "kind": "file_chunk"}
-        const POSITIONAL: &[u8] = &[
-            0xa2, 0x64, b'b', b'o', b'd', b'y', 0x82, 0x02, 0x80, 0x64, b'k', b'i', b'n', b'd',
-            0x6a, b'f', b'i', b'l', b'e', b'_', b'c', b'h', b'u', b'n', b'k',
-        ];
+    fn file_chunk_body_first_cbor_accepts_byte_field_names() {
         // {"body": {h'6f6666736574': 2, h'6279746573': []}, "kind": "file_chunk"}
-        const BYTE_KEYS: &[u8] = &[
-            0xa2, 0x64, b'b', b'o', b'd', b'y', 0xa2, 0x46, b'o', b'f', b'f', b's', b'e', b't',
-            0x02, 0x45, b'b', b'y', b't', b'e', b's', 0x80, 0x64, b'k', b'i', b'n', b'd', 0x6a,
-            b'f', b'i', b'l', b'e', b'_', b'c', b'h', b'u', b'n', b'k',
-        ];
-        for wire in [POSITIONAL, BYTE_KEYS] {
-            let frame: NativeSourceSnapshotExportFrameV1 = ciborium::from_reader(wire).unwrap();
-            assert_eq!(
-                frame,
-                NativeSourceSnapshotExportFrameV1::FileChunk {
-                    offset: 2,
-                    bytes: vec![],
-                }
-            );
-        }
+        const WIRE: &[u8] = b"\xa2\x64body\xa2\x46offset\x02\x45bytes\x80\x64kind\x6afile_chunk";
+        let frame: NativeSourceSnapshotExportFrameV1 = ciborium::from_reader(WIRE).unwrap();
+        assert_eq!(
+            frame,
+            NativeSourceSnapshotExportFrameV1::FileChunk {
+                offset: 2,
+                bytes: vec![],
+            }
+        );
     }
 
     #[test]
-    fn file_chunk_outer_positional_cbor_matches_fixed_wire() {
-        // ["file_chunk", [2, [4, 5]]] is the original adjacent-tag
-        // struct sequence representation accepted by Serde.
-        const WIRE: &[u8] = &[
-            0x82, 0x6a, b'f', b'i', b'l', b'e', b'_', b'c', b'h', b'u', b'n', b'k', 0x82, 0x02,
-            0x82, 0x04, 0x05,
-        ];
-        let frame: NativeSourceSnapshotExportFrameV1 = ciborium::from_reader(WIRE).unwrap();
+    fn file_chunk_outer_positional_json_accepts_a_map_body() {
+        const WIRE: &str = r#"["file_chunk",{"offset":2,"bytes":[4,5]}]"#;
+        let frame: NativeSourceSnapshotExportFrameV1 = serde_json::from_str(WIRE).unwrap();
         assert_eq!(
             frame,
             NativeSourceSnapshotExportFrameV1::FileChunk {
@@ -903,5 +1021,107 @@ mod frame_wire_tests {
                 bytes: vec![4, 5],
             }
         );
+    }
+
+    #[test]
+    fn adjacent_tag_requires_a_closed_map_body_in_either_key_order() {
+        for rejected in [
+            r#"{"kind":"file_chunk","body":[2,[4,5]]}"#,
+            r#"{"body":[2,[4,5]],"kind":"file_chunk"}"#,
+            r#"{"body":{"offset":2,"offset":3,"bytes":[]},"kind":"file_chunk"}"#,
+            r#"{"body":{"offset":2,"bytes":[],"extra":false},"kind":"file_chunk"}"#,
+            r#"{"kind":"file_chunk","body":{"offset":2,"bytes":[]},"extra":false}"#,
+        ] {
+            assert!(serde_json::from_str::<NativeSourceSnapshotExportFrameV1>(rejected).is_err());
+        }
+        const CBOR_BODY_FIRST: &[u8] = b"\xa2\x64body\x82\x02\x80\x64kind\x6afile_chunk";
+        const CBOR_OUTER_SEQ: &[u8] = b"\x82\x6afile_chunk\x82\x02\x80";
+        for rejected in [CBOR_BODY_FIRST, CBOR_OUTER_SEQ] {
+            assert!(
+                ciborium::from_reader::<NativeSourceSnapshotExportFrameV1, _>(rejected).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn body_first_file_begin_preserves_optional_language() {
+        let source = SourceFileRevision {
+            file: crate::SourceFileKey {
+                source_repo_id: RepoId::new("repo").unwrap(),
+                repo_relative_path: crate::RepoRelativePath::new("src/lib.rs"),
+            },
+            revision_id: RevisionId::new("rev").unwrap(),
+            source_sha256: [2; 32],
+        };
+        let input = serde_json::to_string(&source).unwrap();
+        let expected = NativeSourceSnapshotExportFrameV1::FileBegin {
+            source,
+            text_admitted: true,
+            source_bytes: 4,
+            language: None,
+        };
+        for language in ["", ",\"language\":null"] {
+            let wire = format!(
+                "{{\"body\":{{\"source\":{input},\"text_admitted\":true,\"source_bytes\":4{language}}},\"kind\":\"file_begin\"}}"
+            );
+            let actual = serde_json::from_str::<NativeSourceSnapshotExportFrameV1>(&wire).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(
+                NativeSourceSnapshotExportFrameV1::decode_json_v1(wire.as_bytes()).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn body_first_json_decodes_without_replay_and_rejects_malformed_frames() {
+        use crate::index::frame_body_replay::BODY_REPLAY_ENTRY_COUNT;
+
+        let mut wire = Vec::with_capacity(2 * 64 * 1024 + 96);
+        wire.extend_from_slice(br#"{"body":{"offset":0,"bytes":["#);
+        for index in 0..64 * 1024 {
+            if index != 0 {
+                wire.push(b',');
+            }
+            wire.push(b'0');
+        }
+        wire.extend_from_slice(br#"]},"kind":"file_chunk"}"#);
+
+        BODY_REPLAY_ENTRY_COUNT.with(|count| count.set(0));
+        let frame = NativeSourceSnapshotExportFrameV1::decode_json_v1(&wire).unwrap();
+        assert!(
+            matches!(frame, NativeSourceSnapshotExportFrameV1::FileChunk { offset: 0, bytes } if bytes.len() == 64 * 1024)
+        );
+        BODY_REPLAY_ENTRY_COUNT.with(|count| assert_eq!(count.get(), 0));
+        let _: NativeSourceSnapshotExportFrameV1 =
+            serde_json::from_slice(br#"{"body":{"offset":0,"bytes":[]},"kind":"file_chunk"}"#)
+                .unwrap();
+        BODY_REPLAY_ENTRY_COUNT.with(|count| assert!(count.get() > 0));
+
+        assert_eq!(
+            NativeSourceSnapshotExportFrameV1::decode_json_v1(
+                br#"["file_chunk",{"offset":2,"bytes":[4,5]}]"#
+            )
+            .unwrap(),
+            NativeSourceSnapshotExportFrameV1::FileChunk {
+                offset: 2,
+                bytes: vec![4, 5],
+            }
+        );
+
+        for malformed in [
+            &br#"{"body":{"offset":0,"bytes":[]},"kind":"file_chunk","kind":"file_end"}"#[..],
+            br#"{"body":{"offset":0,"offset":1,"bytes":[]},"kind":"file_chunk"}"#,
+            br#"{"body":{"offset":0,"bytes":[],"extra":1},"kind":"file_chunk"}"#,
+            br#"{"body":{"offset":0,"bytes":[]},"kind":"file_chunk","extra":1}"#,
+            br#"{"body":{"offset":0,"bytes":[},"kind":"file_chunk"}"#,
+            br#"{"body":{"offset":0,"bytes":[]},"kind":"file_chunk"}{}"#,
+            br#"{"body":{"offset":0,"bytes":[]},"kind":2}"#,
+            br#"{"kind":"file_chunk","body":[0,[]]}"#,
+            br#"{"body":[0,[]],"kind":"file_chunk"}"#,
+            br#"["file_chunk",[0,[]]]"#,
+        ] {
+            assert!(NativeSourceSnapshotExportFrameV1::decode_json_v1(malformed).is_err());
+        }
     }
 }
