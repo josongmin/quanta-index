@@ -255,8 +255,8 @@ where
     Ok(value)
 }
 
-/// Decode one value and return its consumed byte count. Definite text and byte
-/// lengths are checked against the remaining slice before allocation.
+/// Decode one value and return its consumed byte count. Definite owned scalars
+/// reserve one backing after checking their length against the remaining input.
 pub fn from_slice_with_definite_scalars<T: de::DeserializeOwned>(
     bytes: &[u8],
 ) -> Result<(T, usize), Error<<&[u8] as Read>::Error, String>> {
@@ -344,6 +344,14 @@ where
     fn read_text(&mut self, length: Option<usize>) -> Result<String, Error<R::Error, P>> {
         self.check_length(length, 0)?;
         let mut value = String::new();
+        if self.definite_bound.is_some()
+            && self.owner.is_none()
+            && let Some(length) = length
+        {
+            value
+                .try_reserve_exact(length)
+                .map_err(|_| Error::semantic(None, "CBOR text backing allocation refused"))?;
+        }
         let mut parts = self.tokens.text(length);
         while let Some(mut part) = parts.pull()? {
             while let Some(chunk) = part.pull(self.scratch)? {
@@ -379,6 +387,14 @@ where
         sequence: bool,
     ) -> Result<Vec<u8>, Error<R::Error, P>> {
         let mut value = Vec::new();
+        if self.definite_bound.is_some()
+            && self.owner.is_none()
+            && let Some(length) = length
+        {
+            value
+                .try_reserve_exact(length)
+                .map_err(|_| Error::semantic(None, "CBOR bytes backing allocation refused"))?;
+        }
         let mut parts = self.tokens.bytes(length);
         while let Some(mut part) = parts.pull()? {
             while let Some(chunk) = part.pull(self.scratch)? {
@@ -1565,6 +1581,43 @@ mod edge_tests {
         let truncated: Result<(Vec<u8>, usize), _> =
             from_slice_with_definite_scalars(&[0x5a, 0xff, 0xff, 0xff, 0xff]);
         assert!(matches!(truncated, Err(Error::Syntax(5))));
+    }
+
+    #[test]
+    fn definite_owned_scalars_fit_their_declared_backing() {
+        struct OwnedBytes(Vec<u8>);
+        impl<'de> Deserialize<'de> for OwnedBytes {
+            fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+                struct BytesVisitor;
+                impl Visitor<'_> for BytesVisitor {
+                    type Value = OwnedBytes;
+
+                    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        f.write_str("an owned byte string")
+                    }
+
+                    fn visit_byte_buf<E: de::Error>(self, bytes: Vec<u8>) -> Result<OwnedBytes, E> {
+                        Ok(OwnedBytes(bytes))
+                    }
+                }
+                decoder.deserialize_byte_buf(BytesVisitor)
+            }
+        }
+
+        let payload = "é".repeat(2_501);
+        let length = u16::try_from(payload.len()).unwrap().to_be_bytes();
+        let mut wire = vec![0x79, length[0], length[1]];
+        wire.extend(payload.as_bytes());
+        let (text, consumed): (String, _) = from_slice_with_definite_scalars(&wire).unwrap();
+        assert_eq!(text, payload);
+        assert_eq!(consumed, wire.len());
+        assert_eq!(text.capacity(), payload.len());
+
+        wire[0] = 0x59;
+        let (OwnedBytes(bytes), consumed) = from_slice_with_definite_scalars(&wire).unwrap();
+        assert_eq!(bytes, payload.as_bytes());
+        assert_eq!(consumed, wire.len());
+        assert_eq!(bytes.capacity(), payload.len());
     }
 
     #[test]
