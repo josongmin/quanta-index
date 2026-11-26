@@ -136,6 +136,7 @@ mod tests {
     };
     use quanta_index_core::index::{MemoryLease, MemoryLeaseOwner, MemoryScopePort, WorkLimits};
     use quanta_index_ipc::MemoryScope;
+    use sha2::{Digest as _, Sha256};
     use std::{
         sync::{
             Arc,
@@ -155,7 +156,8 @@ mod tests {
 
     impl MemoryScopePort for TestMemory {
         fn reserve(&self, bytes: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
-            self.0
+            let _previous_live = self
+                .0
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
                     live.checked_add(bytes).filter(|next| *next <= 1 << 20)
                 })
@@ -182,7 +184,7 @@ mod tests {
         };
         let mut bytes = Vec::new();
         let mut encode_scratch = [IndexInstanceId([0; 16]); 1];
-        encode_retired_projection_policy_v1(
+        let policy_sha256 = encode_retired_projection_policy_v1(
             header,
             &[old],
             &mut encode_scratch,
@@ -190,6 +192,7 @@ mod tests {
             &mut bytes,
         )
         .unwrap();
+        assert_eq!(policy_sha256, Digest(Sha256::digest(&bytes).into()));
         let mut sorted_instances = [IndexInstanceId([0; 16]); 1];
         let policy =
             decode_retired_projection_policy_v1(&bytes, &mut sorted_instances, &mut || {
