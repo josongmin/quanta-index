@@ -82,6 +82,8 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
         ),
         "rust-derive-allowlist": (
             "crates/quanta-index-core/src/lib.rs",
+            "shared/quanta-installed-artifact-trust/src/lib.rs",
+            "shared/quanta-explicit-fd-process/src/lib.rs",
             "tools/ci/lint/check-rust-derive-allowlist.py",
             "tools/ci/lint/rust_attribute_policy.py",
         ),

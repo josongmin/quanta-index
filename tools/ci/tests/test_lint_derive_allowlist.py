@@ -88,19 +88,31 @@ def test_clippy_attribute_is_not_a_derive(tmp_path: Path):
     assert MODULE.audit_file(f) == []
 
 
-def test_owned_source_inventory_includes_crates_and_benchmarks(tmp_path: Path):
+def test_owned_source_inventory_includes_crates_benchmarks_and_shared(tmp_path: Path):
     crates = tmp_path / "crates"
     benchmarks = tmp_path / "benchmarks"
+    shared = tmp_path / "shared"
     crate_source = crates / "demo" / "src" / "lib.rs"
     benchmark_source = benchmarks / "demo" / "src" / "main.rs"
-    for source in (crate_source, benchmark_source):
+    shared_source = shared / "owned" / "src" / "lib.rs"
+    for source in (crate_source, benchmark_source, shared_source):
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text("#[derive(Debug)]\nstruct Demo;\n", encoding="utf-8")
 
-    assert MODULE.rust_source_files((crates, benchmarks)) == [
+    assert MODULE.rust_source_files((crates, benchmarks, shared)) == [
         benchmark_source,
         crate_source,
+        shared_source,
     ]
+
+
+def test_default_inventory_covers_both_owned_shared_packages():
+    sources = set(MODULE.rust_source_files())
+    for relative in (
+        "shared/quanta-installed-artifact-trust/src/lib.rs",
+        "shared/quanta-explicit-fd-process/src/lib.rs",
+    ):
+        assert REPO_ROOT / relative in sources
 
 
 def test_main_returns_zero_on_clean_repo():
