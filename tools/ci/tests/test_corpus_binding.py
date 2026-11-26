@@ -898,21 +898,21 @@ def test_split_manifest_accepts_129_historical_revisions_and_disjoint_holdout(
 
     dev_root, _dev_doc = split_releases["dev_only"]
     hold_root, hold_doc = split_releases["hold_only"]
-    source = tmp_path / "historical-source"
+    source_checkout = tmp_path / "historical-source"
     subprocess.run(
-        ["git", "clone", "-q", str(dev_root / "bundles" / "alpha.bundle"), str(source)],
+        ["git", "clone", "-q", str(dev_root / "bundles" / "alpha.bundle"), str(source_checkout)],
         check=True,
     )
-    subprocess_git(source, "config", "user.name", "Fixture")
-    subprocess_git(source, "config", "user.email", "fixture@localhost")
-    revisions = [subprocess_git(source, "rev-parse", "HEAD").decode().strip()]
+    subprocess_git(source_checkout, "config", "user.name", "Fixture")
+    subprocess_git(source_checkout, "config", "user.email", "fixture@localhost")
+    revisions = [subprocess_git(source_checkout, "rev-parse", "HEAD").decode().strip()]
     for index in range(1, 129):
-        (source / "src" / "revision.rs").write_text(
+        (source_checkout / "src" / "revision.rs").write_text(
             f"pub const HISTORICAL_REVISION: usize = {index};\n"
         )
-        subprocess_git(source, "add", "src/revision.rs")
-        subprocess_git(source, "commit", "-qm", f"historical revision {index}")
-        revisions.append(subprocess_git(source, "rev-parse", "HEAD").decode().strip())
+        subprocess_git(source_checkout, "add", "src/revision.rs")
+        subprocess_git(source_checkout, "commit", "-qm", f"historical revision {index}")
+        revisions.append(subprocess_git(source_checkout, "rev-parse", "HEAD").decode().strip())
     assert len(set(revisions)) == 129
 
     checkouts = tmp_path / "historical-checkouts"
@@ -920,7 +920,7 @@ def test_split_manifest_accepts_129_historical_revisions_and_disjoint_holdout(
     entries = []
     for index, revision in enumerate(revisions):
         name = f"historical-alpha-{index:03d}"
-        subprocess_git(source, "worktree", "add", "--detach", "-q", str(checkouts / name), revision)
+        subprocess_git(source_checkout, "worktree", "add", "--detach", "-q", str(checkouts / name), revision)
         entries.append(
             {
                 "name": name,

@@ -1120,7 +1120,16 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
             detached = raw_root / f"detached-{publication_name}"
             write = runner._write_output_temporary
 
-            def replace_output_parent(parent, name, content):
+            def replace_output_parent(
+                parent,
+                name,
+                content,
+                *,
+                publication_name=publication_name,
+                previous_candidates=previous_candidates,
+                detached=detached,
+                write=write,
+            ):
                 if name == publication_name:
                     (candidate_dir,) = set(raw_root.glob("paired-*")) - previous_candidates
                     candidate_dir.rename(detached)

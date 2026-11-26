@@ -35,7 +35,7 @@ import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import BinaryIO, Callable, Optional, Tuple, TypeVar
+from typing import BinaryIO, Callable, Optional, TypeVar
 
 FORMAT_VERSION = 2
 MAX_SELECTION_BYTES = 64 * 1024
@@ -119,7 +119,7 @@ _PROCESS_ENV = frozenset({"HOME", "PATH", "TMPDIR", "XDG_CACHE_HOME", "LANG", "L
 _ALLOWED_ENV = _CONFIG_ENV | _PROCESS_ENV
 FaultHook = Callable[[str], None]
 ControlDocument = TypeVar("ControlDocument")
-CandidateSourcePublication = Tuple[str, str, str, int, Optional[str], Optional[Tuple[str, str, int]]]
+CandidateSourcePublication = tuple[str, str, str, int, Optional[str], Optional[tuple[str, str, int]]]
 
 
 class SelectionError(Exception):
