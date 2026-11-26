@@ -257,7 +257,14 @@ fn selected_native_wire_v1(fixture: &PreparedNativeFixture) -> TestResult<Vec<u8
 
 #[cfg(target_os = "linux")]
 fn select_native_fixture_v1(fixture: &PreparedNativeFixture) -> TestResult {
-    let registry = compose_boot_registry(&fixture.config)?;
+    select_native_fixture_with_registry_v1(fixture, compose_boot_registry(&fixture.config)?)
+}
+
+#[cfg(target_os = "linux")]
+fn select_native_fixture_with_registry_v1(
+    fixture: &PreparedNativeFixture,
+    registry: AdapterRegistry,
+) -> TestResult {
     let command = NativeStateCommandV1 {
         mode: NativeCommandModeV1::Select,
         config_path: fixture.config_path.clone(),
@@ -417,6 +424,70 @@ fn held_previous_native_reads_selected_boot_and_refuses_stale_identity_v1() -> T
             "unsettled previous Native ingress passed held-root quiescence",
         )
     })
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn retained_v20_tree_boot_is_a_source_witness_but_not_a_current_candidate() -> TestResult {
+    let mut old = prepare_native_fixture_with_tree(true, true)?;
+    let mut fresh = prepare_native_fixture_with_tree(false, true)?;
+    old.running.stop()?;
+    fresh.running.stop()?;
+    select_native_fixture_with_registry_v1(&old, retained_tree_v20_registry(&old.config)?)?;
+    select_native_fixture_v1(&fresh)?;
+    let old_wire = selected_native_wire_v1(&old)?;
+    probe_previous_native_v1(&old, &fresh, &old_wire, |selected, budget| {
+        let held = boot::restore_forward::HeldPreviousNativeV1::acquire_v1(selected, budget)?;
+        held.require_current_and_retired_v1(budget)?;
+        Ok(())
+    })?;
+    let current_registry = compose_boot_registry(&old.config)?;
+    boot::with_admitted_control_budget(&old.config, request(), false, |budget, _| {
+        boot::with_boot_authority(&old.config, budget, |authority, budget| {
+            let snapshot = quanta_index_catalog::verify_native_boot_catalog(
+                &old.root,
+                authority.io.as_ref(),
+                budget,
+            )?;
+            let selected = snapshot
+                .selected
+                .as_ref()
+                .ok_or(IndexError::SnapshotUnavailable)?;
+            for candidate in [false, true] {
+                let strict = boot::authenticate(
+                    &authority,
+                    &snapshot,
+                    selected,
+                    &current_registry,
+                    old.config.resources.physical.inventory.max_entries,
+                    None,
+                    false,
+                    candidate,
+                    budget,
+                );
+                anyhow::ensure!(strict.is_err(), "old Tree policy passed current BOOT");
+            }
+            let wrong_history = boot::authenticate_retained_source_v20(
+                &authority,
+                &snapshot,
+                selected,
+                &current_registry,
+                old.config.resources.physical.inventory.max_entries,
+                quanta_index_kernel::RetainedSourceTreePolicyV20 {
+                    descriptor: old.config.text,
+                    previous: Digest([0; 32]),
+                    current: old.config.text_recipe.output_policy(),
+                },
+                budget,
+            );
+            anyhow::ensure!(
+                wrong_history.is_err(),
+                "foreign Tree recipe passed retained BOOT"
+            );
+            Ok(())
+        })
+    })?;
+    Ok(())
 }
 
 #[test]
