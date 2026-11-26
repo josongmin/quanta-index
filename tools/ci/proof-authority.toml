@@ -100,8 +100,9 @@ required_host = "any"
 
 [[proofs]]
 id = "p02a-repomap-compiler"
-authority_state = "executable"
+authority_state = "staged"
 execution_mode = "test-authority"
+staged_reason = "The dedicated RepoMap query and its bounded-query test were retired. The remaining compiler tests cover the legacy library, not the current Native Source product route; product proof migration is pending."
 ticket = "S21-03"
 family = "A"
 checkpoint = "M1"
@@ -115,7 +116,7 @@ source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_scopes = ["p02a-repomap-compiler"]
-test_authority_targets = ["repomap-compiler-owner-v1", "repomap-bounded-query", "repomap-owner-surface"]
+test_authority_targets = ["repomap-compiler-owner-v1", "repomap-owner-surface"]
 dependencies = ["p01-canonical-identity"]
 artifact = "artifacts/proof-authority/p02a-repomap-compiler.json"
 required_host = "any"
