@@ -839,9 +839,12 @@ def test_pr_coverage_uses_exact_base_and_fails_closed(tmp_path):
     tools.mkdir()
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    for path in (tools / "git", tools / "uv", scripts / "cargow"):
+    for path in (tools / "git", tools / "uv", tools / "just", scripts / "cargow"):
         path.write_text(
             "#!/bin/sh\n"
+            'if [ "${0##*/}" = git ] && [ "$1" = rev-parse ]; then\n'
+            '    printf "%s\\n" "$TEST_HEAD"; exit 0\n'
+            "fi\n"
             'printf "%s %s\\n" "${0##*/}" "$*"\n'
             'if [ "${0##*/}" = "${FAIL_COMMAND:-}" ]; then exit 19; fi\n',
             encoding="utf-8",
@@ -849,25 +852,24 @@ def test_pr_coverage_uses_exact_base_and_fails_closed(tmp_path):
         path.chmod(0o700)
 
     base = "1a" * 20
-    lcov = "/tmp/quanta-index-coverage.lcov"
+    candidate = "2b" * 20
     expected = [
         f"git fetch --no-tags origin {base}",
         f"git cat-file -e {base}^{{commit}}",
         "uv run --frozen --extra dev python -m pytest "
         "tools/ci/tests/test_check_changed_line_coverage.py -q",
-        "cargow --lane coverage-lane llvm-cov nextest --workspace --all-features --locked "
-        f"--lcov --output-path {lcov}",
-        "uv run --frozen --extra dev python tools/ci/lint/check-changed-line-coverage.py "
-        f"--lcov {lcov} --base {base} --minimum-percent 90",
+        f"just rust-coverage-changed {base} 90",
     ]
 
-    def run(base_sha, fail_command=""):
+    def run(base_sha, fail_command="", head=candidate):
         return subprocess.run(
             ["bash", "-c", coverage["command"]],
             cwd=tmp_path,
             env={
                 "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
                 "CI_PR_BASE_SHA": base_sha,
+                "CIRCLE_SHA1": candidate,
+                "TEST_HEAD": head,
                 "FAIL_COMMAND": fail_command,
             },
             capture_output=True,
@@ -883,9 +885,13 @@ def test_pr_coverage_uses_exact_base_and_fails_closed(tmp_path):
     accepted = run(base)
     assert accepted.returncode == 0, accepted.stderr
     assert accepted.stdout.splitlines() == expected
-    failed = run(base, fail_command="cargow")
+    wrong_head = run(base, head=base)
+    assert wrong_head.returncode == 2
+    assert "PR coverage requires the checked-out CircleCI SHA" in wrong_head.stderr
+    assert wrong_head.stdout.splitlines() == expected[:-1]
+    failed = run(base, fail_command="just")
     assert failed.returncode == 19
-    assert failed.stdout.splitlines() == expected[:-1]
+    assert failed.stdout.splitlines() == expected
 
 
 def test_bench_capacity_matches_worker_without_changing_compile_scope():

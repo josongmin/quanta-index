@@ -608,12 +608,11 @@ jobs:
             git fetch --no-tags origin "$CI_PR_BASE_SHA"
             git cat-file -e "${CI_PR_BASE_SHA}^{commit}"
             uv run --frozen --extra dev python -m pytest tools/ci/tests/test_check_changed_line_coverage.py -q
-            ./scripts/cargow --lane coverage-lane llvm-cov nextest \
-              --workspace --all-features --locked --lcov \
-              --output-path /tmp/quanta-index-coverage.lcov
-            uv run --frozen --extra dev python tools/ci/lint/check-changed-line-coverage.py \
-              --lcov /tmp/quanta-index-coverage.lcov \
-              --base "$CI_PR_BASE_SHA" --minimum-percent 90
+            if [[ "$(git rev-parse HEAD)" != "$CIRCLE_SHA1" ]]; then
+              echo "PR coverage requires the checked-out CircleCI SHA" >&2
+              exit 2
+            fi
+            just rust-coverage-changed "$CI_PR_BASE_SHA" 90
       - run: *verify_unchanged_worker_source
       - store_artifacts:
           path: artifacts/test-authority
