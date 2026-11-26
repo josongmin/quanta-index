@@ -417,6 +417,7 @@ def require_live_approved_q(request: dict, payload: dict, daemon_sha256: str) ->
             expected = approval.binding(
                 selection, selection_sha, policy_sha,
                 payload["active_generation_sha256"], payload["release_manifest_sha256"],
+                selection_path=selection_path,
             )
             if approval.signing_bytes(expected) != approval.signing_bytes(payload):
                 raise ValueError("signed Q approval differs from the installed selection or policy")
@@ -438,6 +439,7 @@ def shipped_bundle_findings(
     from tools.ci.proof_operational_result import installation_identity
     from tools.deployment.native_release_approval import (
         PRODUCT_ACTIVE_MAX_BYTES,
+        RETIREMENT_SCHEMA,
         SCHEMA,
         require_matching_installed_recovery,
         signing_bytes,
@@ -475,7 +477,7 @@ def shipped_bundle_findings(
     signature = approval["signature_hex"]
     if (
         not isinstance(payload, dict)
-        or payload.get("schema_version") != SCHEMA
+        or payload.get("schema_version") not in (SCHEMA, RETIREMENT_SCHEMA)
         or payload.get("active_generation_sha256") != active_sha256
         or payload.get("release_manifest_sha256") != manifest_sha
         or payload.get("q_elf_sha256") != daemon_sha256

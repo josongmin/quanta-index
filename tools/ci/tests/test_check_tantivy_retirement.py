@@ -897,7 +897,7 @@ def test_archive_without_a_recorded_stream_digest_is_unavailable(release_build, 
 
 
 @pytest.fixture
-def shipped_release(release_build, tmp_path):
+def shipped_release(release_build, tmp_path, request):
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -1021,12 +1021,16 @@ def shipped_release(release_build, tmp_path):
     ))
     deployment = tmp_path / "q-deployment"
     deployment.mkdir(mode=0o700)
-    selected_q, approval_request = selection_fixture(deployment, binary_bytes=binary.read_bytes())
+    selected_q, approval_request = selection_fixture(
+        deployment, binary_bytes=binary.read_bytes(),
+        retired_policy=getattr(request, "param", False),
+    )
     request_path = deployment / "approval-request.json"
     request_path.write_text(json.dumps(approval_request))
     payload = binding(
         selected_q, approval_request["selection_sha256"], approval_request["decision_policy_sha256"],
         checker.hashlib.sha256(active_bytes).hexdigest(), manifest_sha,
+        selection_path=approval_request["selection_path"],
     )
     readback = tmp_path / "LOCAL-INSTALLED-LINUX-PRODUCED.json"
     readback.write_text(json.dumps({
@@ -1041,6 +1045,23 @@ def shipped_release(release_build, tmp_path):
         checker, evidence, binary, events, receipt_sha, cli_evidence, cli_events,
         cli_receipt_sha, bundle, readback, trust, request_path, selected_q,
     )
+
+
+@pytest.mark.parametrize("shipped_release", [True], indirect=True)
+def test_shipped_retirement_approval_uses_selected_policy(shipped_release):
+    checker, _, binary, _, _, _, _, _, bundle, readback, trust, request, selected_q = shipped_release
+    assert checker.shipped_bundle_findings(
+        bundle, readback, checker.file_sha256(binary), "b" * 40,
+        approval_request_path=request, trust_root=trust,
+    ) == (str(selected_q.state_root), selected_q.native_config_sha256, bundle.name)
+
+    policy = Path(json.loads(request.read_text())["decision_policy_path"])
+    policy.write_text('{"decision":"rejected"}')
+    with pytest.raises(ValueError, match="selection or decision policy changed"):
+        checker.shipped_bundle_findings(
+            bundle, readback, checker.file_sha256(binary), "b" * 40,
+            approval_request_path=request, trust_root=trust,
+        )
 
 
 @pytest.mark.parametrize("fault", [
