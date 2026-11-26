@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use quanta_index_contract::{
-    BatchPublishReceipt, GenerationPin, IngestOperationKindV1,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    BatchPublishReceipt, GenerationPin, IngestOperationKindV1, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse,
 };
 use quanta_index_core::publication_admission::{
     CatalogPublicationFundingPort, CatalogPublicationFundingScope, PublicationResourceAdmissionPort,
@@ -13,9 +13,8 @@ use quanta_index_core::publication_admission::{
 use quanta_index_core::{
     CATALOG_ROW_CORRUPT_CODE, ClaimOutcomeV1, CoreError, FileContributorIngestPort,
     FileOwnershipIngestPort, IdempotencyCatalogPort, IdempotencyKeyV1, IngestBatchBodyV1,
-    OperationInspectV1, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1,
-    SearchCorpusIngestPort, now_unix_ms,
+    OperationInspectV1, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
+    RepoTopicIngestPort, RequestBudgetV1, SearchCorpusIngestPort, now_unix_ms,
 };
 use quanta_index_ipc::{BatchDigestVerdictV1, verify_batch_digest_v1};
 
@@ -101,7 +100,7 @@ impl SearchPlaneIngestDispatcher {
         repo_meta: Arc<dyn RepoMetaIngestPort + Send + Sync>,
         runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
         structural: Arc<dyn StructuralIngestPort + Send + Sync>,
-            idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
+        idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
         source_publication: Arc<dyn quanta_index_core::SourcePublicationCatalogPort>,
         source_authority: Arc<dyn super::ports::SearchCorpusAuthorityInspectPort>,
     ) -> Self {
@@ -764,8 +763,7 @@ impl SearchPlaneIngestDispatcher {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::StructuralReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
-            }
- // QI-LXB-01 / QI-HIST-01 / QI-RT-02 / QI-STR-02: history /
+            } // QI-LXB-01 / QI-HIST-01 / QI-RT-02 / QI-STR-02: history /
               // dirty / structural batches now have first-class arms above.
               // No fallback arm needed.
         }

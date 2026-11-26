@@ -7,11 +7,10 @@ use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{
     BorrowedAuxiliaryIngestIpcRequestEnvelopeV1, BorrowedAuxiliaryIngestIpcRequestV1,
-    DiagnosticAttemptFieldV1,
-    DiagnosticAttemptOutcomeV1, DiagnosticAttemptTokenV1, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponseEnvelope, SearchPlaneIngestIpcRequestEnvelope,
-    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponseEnvelope,
+    DiagnosticAttemptFieldV1, DiagnosticAttemptOutcomeV1, DiagnosticAttemptTokenV1,
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponseEnvelope,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponseEnvelope,
 };
 use quanta_index_ipc::{
     AdmittedClientResponseBody, CborPayloadLengthProgressErrorV1, ClientIoPolicy,
@@ -84,7 +83,6 @@ pub(crate) trait ControlTransport: Send + Sync {
     ) -> Result<SearchPlaneControlIpcResponseEnvelope, SdkError> {
         send_with_attempt(request, source, false, |request| self.send(request))
     }
-
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -168,7 +166,6 @@ impl ControlTransport for UdsControlTransport {
             self.inner.send_negotiated(plain, linked)
         })
     }
-
 }
 
 /// QI-SDK-01: typed ingest transport.
@@ -310,7 +307,6 @@ impl<'a> DiagnosticAttemptEnvelope for BorrowedAuxiliaryIngestIpcRequestEnvelope
         &self.payload
     }
 }
-
 
 fn send_with_attempt<Envelope, Response>(
     mut request: Envelope,

@@ -14,9 +14,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::sync::OnceLock;
 
-mod pinned_file_mappings_v1;
 #[cfg(target_os = "linux")]
 mod connected_peer_image_v1;
+mod pinned_file_mappings_v1;
 mod retained_regular_file_v1;
 
 const STDIO_HELPER_MARKER_V1: &str = "QUANTA_EXPLICIT_FD_STDIO_HELPER_V1";
@@ -403,7 +403,10 @@ fn explicit_unix_datagram_mapping_rejects_wrong_or_inheritable_sources_v1() {
     )
     .with_child_unix_datagram_v1(socket_v1.as_fd(), 9)
     .expect_err("inheritable parent socket must fail closed");
-    assert_eq!(error_v1, ExplicitFdProcessErrorV1::SourceDescriptorNotCloseOnExec);
+    assert_eq!(
+        error_v1,
+        ExplicitFdProcessErrorV1::SourceDescriptorNotCloseOnExec
+    );
 
     let stream_v1 = UnixStream::pair().expect("create stream pair").0;
     set_cloexec_v1(stream_v1.as_raw_fd());
@@ -415,7 +418,10 @@ fn explicit_unix_datagram_mapping_rejects_wrong_or_inheritable_sources_v1() {
     )
     .with_child_unix_datagram_v1(stream_v1.as_fd(), 9)
     .expect_err("stream source must fail closed");
-    assert_eq!(error_v1, ExplicitFdProcessErrorV1::InvalidChildUnixDatagramDescriptor);
+    assert_eq!(
+        error_v1,
+        ExplicitFdProcessErrorV1::InvalidChildUnixDatagramDescriptor
+    );
 }
 
 #[test]
@@ -566,8 +572,14 @@ fn child_probe_unrelated_fd_is_closed_v1() {
         .expect("parse descriptor probe");
     // SAFETY: F_GETFD observes whether the inherited numeric descriptor exists.
     let result_v1 = unsafe { libc::fcntl(raw_v1, libc::F_GETFD) };
-    assert_eq!(result_v1, -1, "unrelated parent descriptor leaked into child");
-    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+    assert_eq!(
+        result_v1, -1,
+        "unrelated parent descriptor leaked into child"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EBADF)
+    );
 }
 
 #[test]
@@ -664,8 +676,11 @@ fn child_probe_pipe_holding_descendant_v1() {
             libc::_exit(0);
         }
     }
-    std::fs::write(identity_path_v1, format!("{} {descendant_pid_v1}\n", std::process::id()))
-        .expect("write descendant identity");
+    std::fs::write(
+        identity_path_v1,
+        format!("{} {descendant_pid_v1}\n", std::process::id()),
+    )
+    .expect("write descendant identity");
     if mode_v1 == "leader-exits" {
         return;
     }
@@ -702,16 +717,26 @@ fn inheritable_source_descriptor_is_rejected_without_parent_mutation_v1() {
     let source_v1 = File::open(&current_executable_v1).expect("open current test executable");
     // SAFETY: dup returns a new owned descriptor without FD_CLOEXEC.
     let raw_v1 = unsafe { libc::dup(source_v1.as_raw_fd()) };
-    assert!(raw_v1 >= 0, "dup must create the negative fixture descriptor");
+    assert!(
+        raw_v1 >= 0,
+        "dup must create the negative fixture descriptor"
+    );
     // SAFETY: successful dup returned a fresh descriptor owned by the test.
     let inheritable_v1 = unsafe { OwnedFd::from_raw_fd(raw_v1) };
     let error_v1 =
         PinnedExecutableV1::try_pin_v1(&inheritable_v1, &sha256_path_v1(&current_executable_v1))
             .expect_err("inheritable source must fail closed");
-    assert_eq!(error_v1, ExplicitFdProcessErrorV1::SourceDescriptorNotCloseOnExec);
+    assert_eq!(
+        error_v1,
+        ExplicitFdProcessErrorV1::SourceDescriptorNotCloseOnExec
+    );
     // SAFETY: F_GETFD reads flags from the still-live negative fixture.
     let flags_v1 = unsafe { libc::fcntl(inheritable_v1.as_raw_fd(), libc::F_GETFD) };
-    assert_eq!(flags_v1 & libc::FD_CLOEXEC, 0, "launcher must not mutate parent flags");
+    assert_eq!(
+        flags_v1 & libc::FD_CLOEXEC,
+        0,
+        "launcher must not mutate parent flags"
+    );
 }
 
 #[test]
@@ -721,7 +746,10 @@ fn writable_regular_file_cannot_enter_authority_mapping_v1() {
     let digest_v1 = sha256_path_v1(source_v1.path());
     let error_v1 = PinnedReadOnlyFileV1::try_pin_v1(source_v1.as_file(), &digest_v1)
         .expect_err("read-write descriptor must fail closed");
-    assert_eq!(error_v1, ExplicitFdProcessErrorV1::SourceDescriptorNotReadOnly);
+    assert_eq!(
+        error_v1,
+        ExplicitFdProcessErrorV1::SourceDescriptorNotReadOnly
+    );
 }
 
 #[test]
@@ -741,7 +769,10 @@ fn dropped_child_is_killed_and_reaped_v1() {
     // SAFETY: a successful Drop already reaped this formerly-owned PID.
     let wait_v1 = unsafe { libc::waitpid(pid_v1, &mut status_v1, libc::WNOHANG) };
     assert_eq!(wait_v1, -1, "child Drop must leave no waitable zombie");
-    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
 }
 
 #[test]
@@ -769,7 +800,10 @@ fn try_wait_reports_running_then_reaps_after_kill_v1() {
         std::thread::sleep(std::time::Duration::from_millis(1));
     };
     assert!(!status_v1.success());
-    assert_eq!(child_v1.try_wait_v1(), Err(ExplicitFdProcessErrorV1::ChildAlreadyWaited));
+    assert_eq!(
+        child_v1.try_wait_v1(),
+        Err(ExplicitFdProcessErrorV1::ChildAlreadyWaited)
+    );
 }
 
 #[test]
@@ -816,7 +850,10 @@ fn isolated_kill_after_leader_exit_reaps_zombie_v1() {
     while !crate::platform::observe_pid_exit_without_reap_v1(pid_v1, true)
         .expect("observe owned group leader")
     {
-        assert!(std::time::Instant::now() < deadline_v1, "group leader must exit before cleanup");
+        assert!(
+            std::time::Instant::now() < deadline_v1,
+            "group leader must exit before cleanup"
+        );
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     child_v1
@@ -831,8 +868,14 @@ fn isolated_kill_after_leader_exit_reaps_zombie_v1() {
     );
     let mut status_v1 = 0;
     // SAFETY: try_wait_v1 reaped the owned leader before this observation.
-    assert_eq!(unsafe { libc::waitpid(pid_v1, &mut status_v1, libc::WNOHANG) }, -1);
-    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+    assert_eq!(
+        unsafe { libc::waitpid(pid_v1, &mut status_v1, libc::WNOHANG) },
+        -1
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
 }
 
 #[test]
@@ -871,7 +914,10 @@ fn isolated_wait_terminates_same_group_descendant_after_clean_leader_exit_v1() {
             panic!("clean group wait exceeded owner-test deadline: {error_v1}");
         }
     };
-    assert!(status_v1.success(), "group cleanup must preserve leader status");
+    assert!(
+        status_v1.success(),
+        "group cleanup must preserve leader status"
+    );
     let deadline_v1 = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         // SAFETY: signal zero only observes the recorded fixture PID.
@@ -937,7 +983,10 @@ fn spawn_pipe_holding_descendant_v1(mode_v1: &str) -> (ExplicitFdChildV1, File, 
     // SAFETY: the descendant remains live for the fixture duration, so its
     // process-group identity directly proves inheritance from the isolated
     // leader even when the leader-exits mode has already closed the leader.
-    assert_eq!(unsafe { libc::getpgid(descendant_pid_v1) }, child_v1.pid_v1());
+    assert_eq!(
+        unsafe { libc::getpgid(descendant_pid_v1) },
+        child_v1.pid_v1()
+    );
     (child_v1, stdout_v1, descendant_pid_v1)
 }
 
@@ -1041,7 +1090,10 @@ fn cloexec_pipe_v1() -> (OwnedFd, OwnedFd) {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: pipe2 initializes two fresh CLOEXEC descriptors.
-        assert_eq!(unsafe { libc::pipe2(descriptors_v1.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        assert_eq!(
+            unsafe { libc::pipe2(descriptors_v1.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
     }
     #[cfg(target_os = "macos")]
     {
@@ -1051,7 +1103,10 @@ fn cloexec_pipe_v1() -> (OwnedFd, OwnedFd) {
         assert_eq!(unsafe { libc::pipe(descriptors_v1.as_mut_ptr()) }, 0);
         for descriptor_v1 in descriptors_v1 {
             // SAFETY: F_SETFD marks the isolated test descriptor CLOEXEC.
-            assert_eq!(unsafe { libc::fcntl(descriptor_v1, libc::F_SETFD, libc::FD_CLOEXEC) }, 0);
+            assert_eq!(
+                unsafe { libc::fcntl(descriptor_v1, libc::F_SETFD, libc::FD_CLOEXEC) },
+                0
+            );
         }
     }
     // SAFETY: pipe/pipe2 returned two fresh descriptors owned by the test.
@@ -1082,5 +1137,8 @@ fn assert_helper_success_v1(
 }
 
 fn sha256_path_v1(path_v1: &std::path::Path) -> String {
-    format!("{:x}", Sha256::digest(std::fs::read(path_v1).expect("read digest fixture")))
+    format!(
+        "{:x}",
+        Sha256::digest(std::fs::read(path_v1).expect("read digest fixture"))
+    )
 }

@@ -308,7 +308,6 @@ fn history_batch() -> HistoryIngestBatch {
     batch
 }
 
-
 #[test]
 fn admitted_auxiliary_public_sdk_uds_preserves_roots_and_refuses_wrong_replies() {
     use quanta_index_contract::{
@@ -499,7 +498,6 @@ fn all_auxiliary_admitted_public_routes_use_canonical_uds_receipts() {
                 | SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)
                 | SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(_)
                 | SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(_)
-
                 | SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)
                 | SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_)) => {
                     panic!("unexpected auxiliary request: {other:?}")

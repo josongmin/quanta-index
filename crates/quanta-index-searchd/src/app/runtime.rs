@@ -40,13 +40,12 @@ use quanta_index_core::{
     IntegrityScrubPort, L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort,
     MutationCoordinatorPort, ProcessMemoryProbePort, ProviderBudgetLedger,
     QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort,
-    RequestBudgetV1, SealedGenerationIdentityProbePort, SealedGenerationReclaimPort,
-    SealedGenerationScanPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
-    SemanticContentRootsPort, SemanticEgressPolicyV1, SemanticIndexOpenPort, SemanticIngestPort,
-    SemanticScopeStreamBuildPort, StructuralError, StructuralMatchBinding,
-    StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider, TrackDiskUsagePort,
-    WriterIdleSweepPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SealedGenerationIdentityProbePort,
+    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
+    SearchCorpusIngestPort, SemanticContentRootsPort, SemanticEgressPolicyV1,
+    SemanticIndexOpenPort, SemanticIngestPort, SemanticScopeStreamBuildPort, StructuralError,
+    StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
+    TrackDiskUsagePort, WriterIdleSweepPort,
 };
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache,
@@ -1244,9 +1243,7 @@ struct LedgerStructuralProducer {
 
 impl LedgerStructuralProducer {
     fn new(ledger: Arc<RwLock<Ledger>>) -> Self {
-        Self {
-            ledger,
-        }
+        Self { ledger }
     }
 }
 
@@ -1299,22 +1296,22 @@ impl StructuralProducerPort for LedgerStructuralProducer {
         budget: &RequestBudgetV1,
     ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
         execute_structural_snapshot_v1(request, budget, |pin| {
-        Ok(self
-            .ledger
-            .read()
-            .map_err(|err| {
-                StructuralError::ProducerExecution(format!("structural ledger poisoned: {err}"))
-            })?
-            .structural_read_at(
-                &pin.repo_id,
-                &pin.revision_id,
-                pin.manifest_generation,
-                Some(request.aux_epoch),
-                Instant::now(),
-            )
-            .map_err(map_structural_read_error)?
-            .ok_or(StructuralError::GenerationNotReady)?
-            .state)
+            Ok(self
+                .ledger
+                .read()
+                .map_err(|err| {
+                    StructuralError::ProducerExecution(format!("structural ledger poisoned: {err}"))
+                })?
+                .structural_read_at(
+                    &pin.repo_id,
+                    &pin.revision_id,
+                    pin.manifest_generation,
+                    Some(request.aux_epoch),
+                    Instant::now(),
+                )
+                .map_err(map_structural_read_error)?
+                .ok_or(StructuralError::GenerationNotReady)?
+                .state)
         })
     }
 }
@@ -2250,7 +2247,7 @@ impl SearchdRuntime {
             SearchPlaneDispatcher::new_with_obs(
                 Arc::clone(&lex_open_port),
                 Arc::clone(&sem_open_port),
-        snapshots.clone(),
+                snapshots.clone(),
                 Arc::new(LedgerStructuralProducer::new(Arc::clone(&ledger))),
                 Arc::clone(&ledger),
                 activation_catalog.clone(),

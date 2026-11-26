@@ -62,7 +62,10 @@ mod tests {
         ];
         let _view_v1 = BorrowedEnvironmentV1::try_new_v1(&entries_v1, &pointers_v1).unwrap();
         #[cfg(target_os = "linux")]
-        assert!(std::ptr::eq(_view_v1.pointers_v1().as_ptr(), pointers_v1.as_ptr()));
+        assert!(std::ptr::eq(
+            _view_v1.pointers_v1().as_ptr(),
+            pointers_v1.as_ptr()
+        ));
         #[cfg(target_os = "linux")]
         assert_eq!(BorrowedEnvironmentV1::empty_v1().pointers_v1().len(), 1);
         for invalid_v1 in [

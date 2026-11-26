@@ -148,7 +148,9 @@ impl ReplayedHistorySourceV1 {
             .ok_or_else(|| corrupt_history("Native History epoch overflow"))?;
         let body = read_history_batch(batch, budget)?;
         if body.replaces == 0 && body.deletes == 0 {
-            return Err(corrupt_history("Native History original contains no mutations"));
+            return Err(corrupt_history(
+                "Native History original contains no mutations",
+            ));
         }
         apply_history_body(
             &mut self.state,
@@ -166,8 +168,14 @@ impl ReplayedHistorySourceV1 {
             })
             .map_err(|error| history_work_error(budget, error))?;
         self.cut.replay_start = native_replay_position(
-            b"qidx.native.history.append.v1\0", &self.cut, operation,
-            next_view_sequence, epoch, input, body.digest, snapshot,
+            b"qidx.native.history.append.v1\0",
+            &self.cut,
+            operation,
+            next_view_sequence,
+            epoch,
+            input,
+            body.digest,
+            snapshot,
         );
         self.cut.snapshot_digest = snapshot;
         self.cut.durable_epoch = epoch;
@@ -189,12 +197,20 @@ impl ReplayedHistorySourceV1 {
         batch: &HistoryIngestBatch,
         budget: &mut WorkBudget,
     ) -> Result<Self, CoreError> {
-        let manifest = batch.manifest_digest.as_deref().filter(|value| !value.is_empty())
+        let manifest = batch
+            .manifest_digest
+            .as_deref()
+            .filter(|value| !value.is_empty())
             .ok_or_else(|| corrupt_history("Native History successor manifest is absent"))?;
-        if !self.cut.generation.is_next_generation_of_repo_v1(&batch.repo_id, batch.generation)
+        if !self
+            .cut
+            .generation
+            .is_next_generation_of_repo_v1(&batch.repo_id, batch.generation)
             || next_view_sequence == 0
         {
-            return Err(corrupt_history("Native History generation does not succeed the prior scope"));
+            return Err(corrupt_history(
+                "Native History generation does not succeed the prior scope",
+            ));
         }
         let identity = ReplayCustody::for_generation(
             &batch.repo_id,
@@ -206,18 +222,44 @@ impl ReplayedHistorySourceV1 {
         let epoch = AuxEpochV1::new(1);
         let body = read_history_batch(batch, budget)?;
         if body.replaces == 0 && body.deletes == 0 {
-            return Err(corrupt_history("Native History original contains no mutations"));
+            return Err(corrupt_history(
+                "Native History original contains no mutations",
+            ));
         }
-        apply_history_body(&mut self.state, &mut self._custody, epoch.get(), batch, &body, budget)?;
+        apply_history_body(
+            &mut self.state,
+            &mut self._custody,
+            epoch.get(),
+            batch,
+            &body,
+            budget,
+        )?;
         let snapshot = history_snapshot_digest(&generation, epoch, &self.state, budget)?;
-        budget.charge(WorkUsage { bytes: 384, ..WorkUsage::default() })
+        budget
+            .charge(WorkUsage {
+                bytes: 384,
+                ..WorkUsage::default()
+            })
             .map_err(|error| history_work_error(budget, error))?;
         let replay = native_replay_position(
-            b"qidx.native.history.generation.v1\0", &self.cut, operation,
-            next_view_sequence, epoch, input, body.digest, snapshot,
+            b"qidx.native.history.generation.v1\0",
+            &self.cut,
+            operation,
+            next_view_sequence,
+            epoch,
+            input,
+            body.digest,
+            snapshot,
         );
-        budget.checkpoint().map_err(|error| history_work_error(budget, error))?;
-        self.cut = HistorySourceCutV1 { generation, durable_epoch: epoch, snapshot_digest: snapshot, replay_start: replay };
+        budget
+            .checkpoint()
+            .map_err(|error| history_work_error(budget, error))?;
+        self.cut = HistorySourceCutV1 {
+            generation,
+            durable_epoch: epoch,
+            snapshot_digest: snapshot,
+            replay_start: replay,
+        };
         self.sequence = next_view_sequence;
         self.manifest_digest = Some(manifest.to_owned());
         self._custody.generation_identity = identity.generation_identity;
@@ -242,8 +284,14 @@ impl ReplayedHistorySourceV1 {
 }
 
 fn native_replay_position(
-    domain: &[u8], prior: &HistorySourceCutV1, operation: OperationKey,
-    view_sequence: u64, epoch: AuxEpochV1, input: ObjectRef, body: [u8; 32], snapshot: Digest,
+    domain: &[u8],
+    prior: &HistorySourceCutV1,
+    operation: OperationKey,
+    view_sequence: u64,
+    epoch: AuxEpochV1,
+    input: ObjectRef,
+    body: [u8; 32],
+    snapshot: Digest,
 ) -> Digest {
     let mut replay = Sha256::new();
     replay.update(domain);

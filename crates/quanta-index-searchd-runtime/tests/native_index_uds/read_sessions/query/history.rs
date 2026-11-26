@@ -1112,23 +1112,24 @@ fn source_and_next_history_generation_round_trip(resync: bool) -> TestResult {
         instance: IndexInstanceId([88; 16]),
         ..history_spec()
     };
-    let setup = (|| -> TestResult<_> {
-        let client = NativeUdsClient::new(&socket);
-        let configured = create_text_workspace(&client)?;
-        let (source_view, old_source_ref) =
-            publish_text_owner(&client, configured, 2, 1, "old.rs", "needle old source")?;
-        let live = published(&client.submit(
-            stage_history(&client, source_view, 3, &full_input, None, full_cut.clone())?,
-            &budget(),
-        )?)?;
-        let old = client.read_view(ViewSelection::Exact(live), &budget())?;
-        let next = ManifestGeneration::new(
-            full.generation
-                .get()
-                .checked_add(1)
-                .ok_or("generation overflow")?,
-        );
-        let prepare = |sequence,
+    let setup =
+        (|| -> TestResult<_> {
+            let client = NativeUdsClient::new(&socket);
+            let configured = create_text_workspace(&client)?;
+            let (source_view, old_source_ref) =
+                publish_text_owner(&client, configured, 2, 1, "old.rs", "needle old source")?;
+            let live = published(&client.submit(
+                stage_history(&client, source_view, 3, &full_input, None, full_cut.clone())?,
+                &budget(),
+            )?)?;
+            let old = client.read_view(ViewSelection::Exact(live), &budget())?;
+            let next = ManifestGeneration::new(
+                full.generation
+                    .get()
+                    .checked_add(1)
+                    .ok_or("generation overflow")?,
+            );
+            let prepare = |sequence,
                        generation,
                        forged_recency|
          -> TestResult<(UpdateRequest, HistoryGenerationInputV1, ObjectRef)> {
@@ -1268,62 +1269,66 @@ fn source_and_next_history_generation_round_trip(resync: bool) -> TestResult {
             };
             Ok((request, closure, next_source))
         };
-        assert!(matches!(
-            client.submit(prepare(4, full.generation, false)?.0, &budget())?,
-            SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))
-        ));
-        assert!(matches!(
-            client.submit(prepare(5, next, true)?.0, &budget())?,
-            SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))
-        ));
-        let (mut wrong_prior, _, _) = prepare(6, next, false)?;
-        let transition = match &mut wrong_prior.kind {
-            UpdateKind::SourceHistoryAdvance(transition)
-            | UpdateKind::SourceHistoryResync { transition, .. } => transition,
-            _ => return Err("expected a combined publication to test the prior cut".into()),
-        };
-        transition.history.expected.generation.revision_id = next_revision.clone();
-        assert!(matches!(
-            client.submit(wrong_prior, &budget())?,
-            SubmitOutcome::Terminal(OperationStatus::Refused(_))
-        ));
-        if resync {
-            let (mut stale, _, _) = prepare(7, next, false)?;
-            let UpdateKind::SourceHistoryResync { prior_epoch, .. } = &mut stale.kind else {
-                return Err("expected a resync to test the prior Source epoch".into());
-            };
-            *prior_epoch = 0;
             assert!(matches!(
-                client.submit(stale, &budget()),
-                Err(quanta_index_sdk::native_uds::NativeUdsError::Refused(error))
-                    if error.code == NativeIndexErrorCode::Conflict
+                client.submit(prepare(4, full.generation, false)?.0, &budget())?,
+                SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))
             ));
-        }
-        let latest = ViewSelection::Latest {
-            workspace: workspace(),
-            epoch: 1,
-        };
-        assert_eq!(client.read_view(latest, &budget())?, old);
-        if resync {
-            let page = client.list_producer_source_owners(
-                ViewSelection::Exact(live), operation(2).producer, None, 2, &budget(),
-            )?;
-            assert_eq!(page.source_epoch, Some(1));
-            let [owner] = page.rows.as_slice() else {
-                return Err("refused History must retain exactly the old Source owner".into());
+            assert!(matches!(
+                client.submit(prepare(5, next, true)?.0, &budget())?,
+                SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))
+            ));
+            let (mut wrong_prior, _, _) = prepare(6, next, false)?;
+            let transition = match &mut wrong_prior.kind {
+                UpdateKind::SourceHistoryAdvance(transition)
+                | UpdateKind::SourceHistoryResync { transition, .. } => transition,
+                _ => return Err("expected a combined publication to test the prior cut".into()),
             };
-            assert_eq!(owner.owner.stable_id, StableOwnerId([1; 16]));
-            assert_eq!(owner.source, old_source_ref);
-        }
-        let (request, expected_inputs, next_source) =
-            prepare(if resync { 8 } else { 7 }, next, false)?;
-        let view = published(&client.submit(request.clone(), &budget())?)?;
-        assert_eq!(view.sequence, live.sequence + 1);
-        let published_view = client.read_view(latest, &budget())?;
-        assert_eq!(published_view.identity, view);
-        assert_ne!(published_view.source, old.source);
-        Ok((request, published_view, next, expected_inputs, next_source))
-    })();
+            transition.history.expected.generation.revision_id = next_revision.clone();
+            assert!(matches!(
+                client.submit(wrong_prior, &budget())?,
+                SubmitOutcome::Terminal(OperationStatus::Refused(_))
+            ));
+            if resync {
+                let (mut stale, _, _) = prepare(7, next, false)?;
+                let UpdateKind::SourceHistoryResync { prior_epoch, .. } = &mut stale.kind else {
+                    return Err("expected a resync to test the prior Source epoch".into());
+                };
+                *prior_epoch = 0;
+                assert!(matches!(
+                    client.submit(stale, &budget()),
+                    Err(quanta_index_sdk::native_uds::NativeUdsError::Refused(error))
+                        if error.code == NativeIndexErrorCode::Conflict
+                ));
+            }
+            let latest = ViewSelection::Latest {
+                workspace: workspace(),
+                epoch: 1,
+            };
+            assert_eq!(client.read_view(latest, &budget())?, old);
+            if resync {
+                let page = client.list_producer_source_owners(
+                    ViewSelection::Exact(live),
+                    operation(2).producer,
+                    None,
+                    2,
+                    &budget(),
+                )?;
+                assert_eq!(page.source_epoch, Some(1));
+                let [owner] = page.rows.as_slice() else {
+                    return Err("refused History must retain exactly the old Source owner".into());
+                };
+                assert_eq!(owner.owner.stable_id, StableOwnerId([1; 16]));
+                assert_eq!(owner.source, old_source_ref);
+            }
+            let (request, expected_inputs, next_source) =
+                prepare(if resync { 8 } else { 7 }, next, false)?;
+            let view = published(&client.submit(request.clone(), &budget())?)?;
+            assert_eq!(view.sequence, live.sequence + 1);
+            let published_view = client.read_view(latest, &budget())?;
+            assert_eq!(published_view.identity, view);
+            assert_ne!(published_view.source, old.source);
+            Ok((request, published_view, next, expected_inputs, next_source))
+        })();
     let stopped = running.stop();
     let (request, published_view, next, expected_inputs, next_source) = setup?;
     stopped?;
@@ -1342,16 +1347,25 @@ fn source_and_next_history_generation_round_trip(resync: bool) -> TestResult {
             OperationStatus::Published(observed) if observed == view
         ));
         assert_eq!(client.read_view(latest, &budget())?, published_view);
-        let expected_source_input = request.kind.history_generation_advance_v1()
-            .ok_or("expected the combined publication request")?.input;
+        let expected_source_input = request
+            .kind
+            .history_generation_advance_v1()
+            .ok_or("expected the combined publication request")?
+            .input;
         if resync {
             let page = client.list_producer_source_owners(
-                ViewSelection::Exact(view), request.operation.producer, None, 2, &budget(),
+                ViewSelection::Exact(view),
+                request.operation.producer,
+                None,
+                2,
+                &budget(),
             )?;
             assert_eq!(page.source_epoch, Some(2));
             assert_eq!(page.source, published_view.source);
             let [owner] = page.rows.as_slice() else {
-                return Err("recovered SourceResync must retain exactly the replacement owner".into());
+                return Err(
+                    "recovered SourceResync must retain exactly the replacement owner".into(),
+                );
             };
             assert_eq!(owner.owner.stable_id, StableOwnerId([2; 16]));
             assert_eq!(owner.source, next_source);

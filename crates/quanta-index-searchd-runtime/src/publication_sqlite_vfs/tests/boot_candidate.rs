@@ -46,7 +46,8 @@ struct PublicationReadScope(Arc<PublicationReadMeter>);
 impl MemoryScopePort for PublicationReadScope {
     fn reserve(&self, bytes: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
         let limit = self.0.limit.load(Ordering::SeqCst);
-        let _previous_live = self.0
+        let _previous_live = self
+            .0
             .live
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
                 used.checked_add(bytes).filter(|total| *total <= limit)
@@ -389,7 +390,10 @@ fn candidate_and_selected_are_distinct_in_one_read_without_catalog_mutation() ->
     require(
         matches!(
             verify_native_boot_current_candidate(
-                &fixture.root, fixture.vfs.as_ref(), seeded.other, &mut work,
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                seeded.other,
+                &mut work,
             ),
             Err(IndexError::Conflict)
         ),
@@ -710,7 +714,10 @@ fn published_full_and_current_native_share_selected_snapshot_without_aliasing() 
     let (full, current, boot) = seeded.ok_or("paired Catalog fixture absent")?;
     let before = files(&fixture.root)?;
     let candidate = verify_native_boot_current_candidate(
-        &fixture.root, fixture.vfs.as_ref(), key(35), &mut read_budget()?,
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        key(35),
+        &mut read_budget()?,
     )?;
     require(
         candidate.manifest().publication.identity == boot.identity,
@@ -837,7 +844,10 @@ fn legacy_history_recovery_observes_every_intermediate_publication() -> TestResu
         ),
         "the selected BOOT was accepted as its own anchor",
     )?;
-    require(files(&fixture.root)? == before, "history boot read wrote bytes")?;
+    require(
+        files(&fixture.root)? == before,
+        "history boot read wrote bytes",
+    )?;
     fixture.vfs.drain_retirements()?;
     Ok(())
 }

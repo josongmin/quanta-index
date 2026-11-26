@@ -1,8 +1,5 @@
 use super::*;
 
-
-
-
 #[test]
 fn history_query_routes_through_typed_query_variant() {
     let query = Arc::new(StubQueryTransport::new(

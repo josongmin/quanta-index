@@ -54,7 +54,9 @@ pub(super) fn load_verified(
     let input = source_input::load_history_batch_object(closure.original, context)?;
     let recency = closure
         .repo_commit_recency
-        .map(|child| source_input::load_history_object::<RepoCommitRecencyIngestBatch>(child, context))
+        .map(|child| {
+            source_input::load_history_object::<RepoCommitRecencyIngestBatch>(child, context)
+        })
         .transpose()?;
     verify_recency(
         &input.value,

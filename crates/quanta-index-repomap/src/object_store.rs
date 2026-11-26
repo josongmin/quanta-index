@@ -309,8 +309,16 @@ pub fn visit_existing_active_repomap_compiled_payload_v1(
     visit: &mut dyn FnMut(&[u8], &mut WorkBudget) -> Result<(), ExistingFileReadFailureV1>,
 ) -> Result<VerifiedActiveRepoMapFilesV1, ExistingFileReadFailureV1> {
     RepoMapObjectStore::with_existing_active_candidate_compiled_payload_v1(
-        root, candidate, receipts, owner, maximum_bytes, io, budget, visit,
-    ).map(|(files, ())| files)
+        root,
+        candidate,
+        receipts,
+        owner,
+        maximum_bytes,
+        io,
+        budget,
+        visit,
+    )
+    .map(|(files, ())| files)
 }
 
 impl RepoMapObjectStore {
@@ -327,9 +335,16 @@ impl RepoMapObjectStore {
         budget: &mut quanta_index_core::index::WorkBudget,
     ) -> Result<VerifiedActiveRepoMapFilesV1, ExistingFileReadFailureV1> {
         Self::with_existing_active_candidate_compiled_payload_v1(
-            root, candidate, receipts, owner, maximum_bytes, io, budget,
+            root,
+            candidate,
+            receipts,
+            owner,
+            maximum_bytes,
+            io,
+            budget,
             &mut |_payload, _budget| Ok(()),
-        ).map(|(files, ())| files)
+        )
+        .map(|(files, ())| files)
     }
 
     fn with_existing_active_candidate_compiled_payload_v1<R>(
@@ -429,12 +444,15 @@ impl RepoMapObjectStore {
         crate::materializer::validate_compiled_payload(envelope.compiled_payload())?;
         let visited = visit(envelope.compiled_payload(), budget)?;
         budget.checkpoint()?;
-        Ok((VerifiedActiveRepoMapFilesV1 {
-            digest,
-            owner,
-            uuid: uuid_identity,
-            object: object_identity,
-        }, visited))
+        Ok((
+            VerifiedActiveRepoMapFilesV1 {
+                digest,
+                owner,
+                uuid: uuid_identity,
+                object: object_identity,
+            },
+            visited,
+        ))
     }
 
     /// Open (creating if needed) the layout-V3 root and its security

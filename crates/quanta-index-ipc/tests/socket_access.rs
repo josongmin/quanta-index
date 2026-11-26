@@ -73,7 +73,6 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse> 
             other @ (SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(_)
             | SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
-
             | SearchPlaneControlIpcRequest::SearchCorpusActiveHead(_)
             | SearchPlaneControlIpcRequest::GenerationStatus(_)
             | SearchPlaneControlIpcRequest::MetricsSnapshot(_)
@@ -231,8 +230,6 @@ fn expect_snapshot(response: SearchPlaneControlIpcResponse, repo: &str) -> TestR
         }
         other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
         | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-
-
         | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
         | SearchPlaneControlIpcResponse::Error(_)
         | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)

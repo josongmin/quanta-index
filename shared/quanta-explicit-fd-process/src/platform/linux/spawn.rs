@@ -93,7 +93,9 @@ pub(super) fn spawn_borrowed_argv_v1(
     let z3_seccomp_filter_v1: Option<Vec<libc::sock_filter>> = if confined_z3_v1 {
         #[cfg(target_arch = "x86_64")]
         {
-            Some(super::solver_seccomp_v1::filter_v1(sources_v1.executable_v1.as_raw_fd()))
+            Some(super::solver_seccomp_v1::filter_v1(
+                sources_v1.executable_v1.as_raw_fd(),
+            ))
         }
         #[cfg(not(target_arch = "x86_64"))]
         {
@@ -397,8 +399,9 @@ fn duplicate_extra_sources_v1(
                 let opened_v1 = file_v1.inner_v1.try_open_read_only_for_spawn_v1()?;
                 cursor_v1.duplicate_v1(opened_v1.as_fd())
             }
-            _ => cursor_v1
-                .duplicate_v1(ExplicitFdSpawnRequestV1::mapping_source_descriptor_v1(mapping_v1)),
+            _ => cursor_v1.duplicate_v1(ExplicitFdSpawnRequestV1::mapping_source_descriptor_v1(
+                mapping_v1,
+            )),
         })
         .collect()
 }
@@ -538,7 +541,13 @@ unsafe fn child_exec_v1(plan_v1: &ChildExecPlanV1<'_>) -> ! {
     // SAFETY: closes only ranges excluded from the sorted keep set.
     if let Err(errno_v1) = unsafe { close_unintended_descriptors_v1(plan_v1.kept_descriptors_v1) } {
         // SAFETY: fixed error payload over parent-prepared pipe.
-        unsafe { child_fail_v1(plan_v1.error_descriptor_v1, CHILD_STAGE_CLOSE_RANGE_V1, errno_v1) }
+        unsafe {
+            child_fail_v1(
+                plan_v1.error_descriptor_v1,
+                CHILD_STAGE_CLOSE_RANGE_V1,
+                errno_v1,
+            )
+        }
     }
     if let Some(filter_v1) = plan_v1.z3_seccomp_filter_v1 {
         let program_v1 = libc::sock_fprog {
@@ -578,7 +587,13 @@ unsafe fn child_exec_v1(plan_v1: &ChildExecPlanV1<'_>) -> ! {
         )
     };
     // SAFETY: execveat returned only on failure.
-    unsafe { child_fail_v1(plan_v1.error_descriptor_v1, CHILD_STAGE_EXEC_V1, child_errno_v1()) }
+    unsafe {
+        child_fail_v1(
+            plan_v1.error_descriptor_v1,
+            CHILD_STAGE_EXEC_V1,
+            child_errno_v1(),
+        )
+    }
 }
 
 // SAFETY: called only from the audited post-fork child transaction.
@@ -590,7 +605,11 @@ unsafe fn child_apply_working_directory_v1(plan_v1: &ChildExecPlanV1<'_>) {
     if unsafe { libc::fchdir(working_directory_v1) } != 0 {
         // SAFETY: fixed error payload over parent-prepared pipe.
         unsafe {
-            child_fail_v1(plan_v1.error_descriptor_v1, CHILD_STAGE_FCHDIR_V1, child_errno_v1())
+            child_fail_v1(
+                plan_v1.error_descriptor_v1,
+                CHILD_STAGE_FCHDIR_V1,
+                child_errno_v1(),
+            )
         }
     }
 }
@@ -602,7 +621,11 @@ unsafe fn child_apply_mappings_v1(plan_v1: &ChildExecPlanV1<'_>) {
         if unsafe { libc::dup3(mapping_v1.source_v1, mapping_v1.destination_v1, 0) } < 0 {
             // SAFETY: fixed error payload over parent-prepared pipe.
             unsafe {
-                child_fail_v1(plan_v1.error_descriptor_v1, CHILD_STAGE_DUP_V1, child_errno_v1())
+                child_fail_v1(
+                    plan_v1.error_descriptor_v1,
+                    CHILD_STAGE_DUP_V1,
+                    child_errno_v1(),
+                )
             }
         }
     }
@@ -718,7 +741,10 @@ fn read_child_error_v1(
             .try_into()
             .map_err(|_| spawn_error_v1("decode_child_error_errno_v1"))?,
     );
-    Ok(Some(ExplicitFdProcessErrorV1::ChildSetup { stage_v1, errno_v1 }))
+    Ok(Some(ExplicitFdProcessErrorV1::ChildSetup {
+        stage_v1,
+        errno_v1,
+    }))
 }
 
 pub(super) fn reap_failed_child_v1(pid_v1: libc::pid_t) {

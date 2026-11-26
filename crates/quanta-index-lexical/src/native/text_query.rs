@@ -68,8 +68,7 @@ fn next_path_hit(
     let Some((owner, source)) = cursor.next(context.maps, context.budget)? else {
         return Ok(None);
     };
-    let record =
-        super::text::authenticated_text_source(index, owner, Some(source), true, context)?;
+    let record = super::text::authenticated_text_source(index, owner, Some(source), true, context)?;
     Ok(Some(PathHit {
         owner,
         source,
@@ -2010,73 +2009,72 @@ impl NativeTextIndex {
                     }
                 };
                 let evaluate_phrase = |ordinal: usize, first: usize, count: usize, cap: u32| {
-                        let end = first
-                            .checked_add(count)
+                    let end = first
+                        .checked_add(count)
+                        .ok_or(IndexError::ResourceLimited)?;
+                    let order = term_remap.get(first..end).ok_or_else(|| {
+                        IndexError::BackendViolation("phrase term range exceeds query".into())
+                    })?;
+                    let mut positional = [&[][..]; MAX_CONTENT_LEAVES];
+                    let mut mask = 0u64;
+                    for (slot, index) in order.iter().enumerate() {
+                        let bit = 1u64
+                            .checked_shl(
+                                u32::try_from(*index)
+                                    .map_err(|_error| IndexError::ResourceLimited)?,
+                            )
                             .ok_or(IndexError::ResourceLimited)?;
-                        let order = term_remap.get(first..end).ok_or_else(|| {
-                            IndexError::BackendViolation("phrase term range exceeds query".into())
-                        })?;
-                        let mut positional = [&[][..]; MAX_CONTENT_LEAVES];
-                        let mut mask = 0u64;
-                        for (slot, index) in order.iter().enumerate() {
-                            let bit = 1u64
-                                .checked_shl(
-                                    u32::try_from(*index)
-                                        .map_err(|_error| IndexError::ResourceLimited)?,
-                                )
-                                .ok_or(IndexError::ResourceLimited)?;
-                            if present & bit == 0 {
-                                return Ok(MatchState::default());
-                            }
-                            let positions = if let Some((corpus, _)) =
-                                overlay.filter(|_| overlay_document.is_some())
-                            {
-                                corpus
-                                    .term_hit(
-                                        owner,
-                                        cursors
-                                            .get(*index)
-                                            .ok_or(IndexError::ResourceLimited)?
-                                            .key(),
-                                    )
-                                    .ok_or_else(|| {
-                                        IndexError::BackendViolation(
-                                            "overlay phrase candidate lacks posting".into(),
-                                        )
-                                    })?
-                                    .positions
-                            } else {
-                                &heads
-                                    .get(*index)
-                                    .and_then(Option::as_ref)
-                                    .filter(|hit| hit.owner == owner)
-                                    .ok_or_else(|| {
-                                        IndexError::BackendViolation(
-                                            "phrase candidate lacks validated posting".into(),
-                                        )
-                                    })?
-                                    .occurrence
-                                    .positions
-                            };
-                            *positional
-                                .get_mut(slot)
-                                .ok_or(IndexError::ResourceLimited)? = positions;
-                            mask |= bit;
+                        if present & bit == 0 {
+                            return Ok(MatchState::default());
                         }
-                        let candidates = phrase_candidates
-                            .get_mut(ordinal)
-                            .ok_or(IndexError::ResourceLimited)?;
-                        *candidates = candidates
-                            .checked_add(1)
-                            .filter(|next| *next <= cap)
-                            .ok_or(IndexError::ResourceLimited)?;
-                        let positions =
-                            positional.get(..count).ok_or(IndexError::ResourceLimited)?;
-                        let matched = observation.phrase(positions, context.budget)?;
-                        Ok(MatchState {
-                            matched,
-                            positive_terms: if matched { mask } else { 0 },
-                        })
+                        let positions = if let Some((corpus, _)) =
+                            overlay.filter(|_| overlay_document.is_some())
+                        {
+                            corpus
+                                .term_hit(
+                                    owner,
+                                    cursors
+                                        .get(*index)
+                                        .ok_or(IndexError::ResourceLimited)?
+                                        .key(),
+                                )
+                                .ok_or_else(|| {
+                                    IndexError::BackendViolation(
+                                        "overlay phrase candidate lacks posting".into(),
+                                    )
+                                })?
+                                .positions
+                        } else {
+                            &heads
+                                .get(*index)
+                                .and_then(Option::as_ref)
+                                .filter(|hit| hit.owner == owner)
+                                .ok_or_else(|| {
+                                    IndexError::BackendViolation(
+                                        "phrase candidate lacks validated posting".into(),
+                                    )
+                                })?
+                                .occurrence
+                                .positions
+                        };
+                        *positional
+                            .get_mut(slot)
+                            .ok_or(IndexError::ResourceLimited)? = positions;
+                        mask |= bit;
+                    }
+                    let candidates = phrase_candidates
+                        .get_mut(ordinal)
+                        .ok_or(IndexError::ResourceLimited)?;
+                    *candidates = candidates
+                        .checked_add(1)
+                        .filter(|next| *next <= cap)
+                        .ok_or(IndexError::ResourceLimited)?;
+                    let positions = positional.get(..count).ok_or(IndexError::ResourceLimited)?;
+                    let matched = observation.phrase(positions, context.budget)?;
+                    Ok(MatchState {
+                        matched,
+                        positive_terms: if matched { mask } else { 0 },
+                    })
                 };
                 let mut truth = with_preview.then(ClauseTruth::default);
                 let matching = if let Some(trace) = truth.as_mut() {
@@ -2332,7 +2330,9 @@ impl NativeTextIndex {
         match (heap, preview) {
             (TextHeap::Ranked(heap), None) => {
                 ranked.hits.extend(heap.drain().map(|hit| hit.0));
-                ranked.hits.sort_unstable_by(|a, b| compare_rank(a.score, a.owner, b.score, b.owner));
+                ranked
+                    .hits
+                    .sort_unstable_by(|a, b| compare_rank(a.score, a.owner, b.score, b.owner));
             }
             (TextHeap::Preview(heap), Some(visitor)) => {
                 let sorted = std::mem::take(heap).into_sorted_vec();
@@ -2356,8 +2356,8 @@ impl NativeTextIndex {
     }
 }
 
-mod preview_truth;
 mod preview_projection;
+mod preview_truth;
 
 #[cfg(test)]
 #[path = "text_query/count_tests.rs"]

@@ -213,7 +213,9 @@ impl PublicationFileDeletions {
                 return Err(contract("pending deletion belongs to another output"));
             }
             if sidecar_private_parent != prior.ticket.has_sidecar_private_parent() {
-                return Err(contract("pending deletion belongs to another parent policy"));
+                return Err(contract(
+                    "pending deletion belongs to another parent policy",
+                ));
             }
             self.reconcile_pending(pending)
         } else if pending.is_some() {

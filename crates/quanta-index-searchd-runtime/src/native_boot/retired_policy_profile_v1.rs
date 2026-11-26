@@ -2,8 +2,8 @@
 //! physically authenticated old Published profile.
 
 use quanta_index_contract::index::{
-    IndexInstanceId, IndexProfile, InputDomain, NativeProtectedRepoMapHeadV1, RetiredProjectionIdentityV1,
-    RetiredProjectionPolicyViewV1,
+    IndexInstanceId, IndexProfile, InputDomain, NativeProtectedRepoMapHeadV1,
+    RetiredProjectionIdentityV1, RetiredProjectionPolicyViewV1,
 };
 use quanta_index_core::index::{IndexError, MemoryLifetime, WorkBudget};
 use quanta_index_storage::FileObjectReader;
@@ -38,7 +38,11 @@ pub(crate) fn old_repomap_identity_v1(
         if spec.instance != head.instance {
             continue;
         }
-        let InputDomain::Projection { projection, producer } = spec.input_domain else {
+        let InputDomain::Projection {
+            projection,
+            producer,
+        } = spec.input_domain
+        else {
             return Err(IndexError::DigestConflict);
         };
         if producer != head.operation.key.producer || identity.is_some() {
@@ -85,7 +89,9 @@ pub(crate) fn reject_candidate_profile_overlap_v1(
             _ => quanta_index_contract::index::ProjectionId([0; 16]),
         };
         if retired_projection_present_v1(policy, projection, budget)?
-            || sorted_instances.binary_search_by_key(&spec.instance.0, |instance| instance.0).is_ok()
+            || sorted_instances
+                .binary_search_by_key(&spec.instance.0, |instance| instance.0)
+                .is_ok()
         {
             return Err(IndexError::DigestConflict);
         }
@@ -103,7 +109,9 @@ pub(crate) fn retired_projection_present_v1(
     while lower < upper {
         budget.checkpoint()?;
         let middle = lower + (upper - lower) / 2;
-        let prior = policy.identity_v1(middle).ok_or(IndexError::DigestConflict)?;
+        let prior = policy
+            .identity_v1(middle)
+            .ok_or(IndexError::DigestConflict)?;
         if prior.projection.0 < projection.0 {
             lower = middle + 1;
         } else {
@@ -111,7 +119,11 @@ pub(crate) fn retired_projection_present_v1(
         }
     }
     Ok(lower < policy.len_v1()
-        && policy.identity_v1(lower).ok_or(IndexError::DigestConflict)?.projection == projection)
+        && policy
+            .identity_v1(lower)
+            .ok_or(IndexError::DigestConflict)?
+            .projection
+            == projection)
 }
 
 #[cfg(test)]
@@ -120,11 +132,17 @@ mod tests {
     use quanta_index_contract::index::{
         Digest, GroupActivation, IndexKind, InstanceSpec, ObjectRef, ProducerId, ProjectionId,
         PublicationGroupId, RetiredProjectionPolicyHeaderV1, SchemaId, StorageFormatId,
-        encode_retired_projection_policy_v1, decode_retired_projection_policy_v1,
+        decode_retired_projection_policy_v1, encode_retired_projection_policy_v1,
     };
     use quanta_index_core::index::{MemoryLease, MemoryLeaseOwner, MemoryScopePort, WorkLimits};
     use quanta_index_ipc::MemoryScope;
-    use std::{sync::{Arc, atomic::{AtomicU64, Ordering}}, time::{Duration, Instant}};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
+        time::{Duration, Instant},
+    };
 
     #[derive(Clone, Default)]
     struct TestMemory(Arc<AtomicU64>);
@@ -137,9 +155,11 @@ mod tests {
 
     impl MemoryScopePort for TestMemory {
         fn reserve(&self, bytes: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
-            self.0.fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
-                live.checked_add(bytes).filter(|next| *next <= 1 << 20)
-            }).map_err(|_| IndexError::ResourceLimited)?;
+            self.0
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
+                    live.checked_add(bytes).filter(|next| *next <= 1 << 20)
+                })
+                .map_err(|_| IndexError::ResourceLimited)?;
             Ok(MemoryLease::new(bytes, Arc::new(self.clone())))
         }
     }
@@ -157,20 +177,33 @@ mod tests {
             candidate_profile_ref: ObjectRef(Digest([6; 32])),
         };
         let old = RetiredProjectionIdentityV1 {
-            projection: ProjectionId([7; 16]), instance: IndexInstanceId([8; 16]),
+            projection: ProjectionId([7; 16]),
+            instance: IndexInstanceId([8; 16]),
         };
         let mut bytes = Vec::new();
         let mut encode_scratch = [IndexInstanceId([0; 16]); 1];
         encode_retired_projection_policy_v1(
-            header, &[old], &mut encode_scratch, &mut || Ok::<(), ()>(()), &mut bytes,
-        ).unwrap();
+            header,
+            &[old],
+            &mut encode_scratch,
+            &mut || Ok::<(), ()>(()),
+            &mut bytes,
+        )
+        .unwrap();
         let mut sorted_instances = [IndexInstanceId([0; 16]); 1];
-        let policy = decode_retired_projection_policy_v1(
-            &bytes, &mut sorted_instances, &mut || Ok::<(), ()>(()),
-        ).unwrap();
+        let policy =
+            decode_retired_projection_policy_v1(&bytes, &mut sorted_instances, &mut || {
+                Ok::<(), ()>(())
+            })
+            .unwrap();
         let memory_owner = TestMemory::default();
         let mut budget = WorkBudget::new(
-            WorkLimits { reads: 1_000, writes: 0, bytes: 1 << 20, mutations: 0 },
+            WorkLimits {
+                reads: 1_000,
+                writes: 0,
+                bytes: 1 << 20,
+                mutations: 0,
+            },
             Instant::now() + Duration::from_secs(30),
         );
         budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(memory_owner.clone()))));
@@ -180,29 +213,54 @@ mod tests {
             group: PublicationGroupId([11; 16]),
             activation: GroupActivation::CoreRequired,
             input_domain: InputDomain::Projection {
-                projection: ProjectionId([12; 16]), producer: ProducerId([13; 16]),
+                projection: ProjectionId([12; 16]),
+                producer: ProducerId([13; 16]),
             },
             schema: SchemaId([14; 16]),
             policy: Digest([15; 32]),
             format: StorageFormatId([16; 16]),
         };
-        let profile = |spec| serde_json::to_vec(&IndexProfile { instances: vec![spec] }).unwrap();
-        assert!(reject_candidate_profile_overlap_v1(
-            &policy, &sorted_instances, &profile(independent_graph.clone()), &mut budget,
-        ).is_ok());
+        let profile = |spec| {
+            serde_json::to_vec(&IndexProfile {
+                instances: vec![spec],
+            })
+            .unwrap()
+        };
+        assert!(
+            reject_candidate_profile_overlap_v1(
+                &policy,
+                &sorted_instances,
+                &profile(independent_graph.clone()),
+                &mut budget,
+            )
+            .is_ok()
+        );
         assert!(retired_projection_present_v1(&policy, old.projection, &mut budget).unwrap());
         let mut old_projection = independent_graph.clone();
         old_projection.input_domain = InputDomain::Projection {
-            projection: old.projection, producer: ProducerId([13; 16]),
+            projection: old.projection,
+            producer: ProducerId([13; 16]),
         };
-        assert!(reject_candidate_profile_overlap_v1(
-            &policy, &sorted_instances, &profile(old_projection), &mut budget,
-        ).is_err());
+        assert!(
+            reject_candidate_profile_overlap_v1(
+                &policy,
+                &sorted_instances,
+                &profile(old_projection),
+                &mut budget,
+            )
+            .is_err()
+        );
         let mut old_instance = independent_graph;
         old_instance.instance = old.instance;
-        assert!(reject_candidate_profile_overlap_v1(
-            &policy, &sorted_instances, &profile(old_instance), &mut budget,
-        ).is_err());
+        assert!(
+            reject_candidate_profile_overlap_v1(
+                &policy,
+                &sorted_instances,
+                &profile(old_instance),
+                &mut budget,
+            )
+            .is_err()
+        );
         assert_eq!(memory_owner.0.load(Ordering::Acquire), 0);
     }
 }

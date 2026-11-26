@@ -1,14 +1,14 @@
 //! Selected Q retirement approval consumer. Environment paths are locators;
 //! only the fixed installed S trust key and selected BOOT can grant authority.
 
-use super::{Digest, NativeStateCommandV1, ValidatedConfig};
 #[cfg(target_os = "linux")]
 use super::Sha256;
+use super::{Digest, NativeStateCommandV1, ValidatedConfig};
 use anyhow::Result;
-#[cfg(target_os = "linux")]
-use anyhow::{anyhow, ensure};
 #[cfg(not(target_os = "linux"))]
 use anyhow::bail;
+#[cfg(target_os = "linux")]
+use anyhow::{anyhow, ensure};
 #[cfg(target_os = "linux")]
 use sha2::Digest as _;
 #[cfg(target_os = "linux")]

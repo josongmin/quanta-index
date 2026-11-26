@@ -288,11 +288,17 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 })
             }
             NativeIndexRequest::ListProducerProjectionOwnersV1 {
-                view, projection, producer, after, limit,
+                view,
+                projection,
+                producer,
+                after,
+                limit,
             } => {
                 let mut work = take_work();
-                self.list_producer_projection_owners_v1(view, projection, producer, after, limit, &mut work)
-                    .map(NativeReply::ProducerProjectionOwnersV1)
+                self.list_producer_projection_owners_v1(
+                    view, projection, producer, after, limit, &mut work,
+                )
+                .map(NativeReply::ProducerProjectionOwnersV1)
             }
             NativeIndexRequest::DiffProjectionSourceOwners {
                 selection,
@@ -424,7 +430,9 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
             )),
             other @ (NativeIndexRequest::CreateWorkspace { .. }
             | NativeIndexRequest::SealCandidateWithSourceRoutes { .. }
-            | NativeIndexRequest::SealCandidateWithSourceRoutesAndRetiredPolicyV1 { .. }
+            | NativeIndexRequest::SealCandidateWithSourceRoutesAndRetiredPolicyV1 {
+                ..
+            }
             | NativeIndexRequest::SealCandidateWithRetiredPolicyOnlyV1 { .. }
             | NativeIndexRequest::BeginInput(_)
             | NativeIndexRequest::ReopenInputWithRootForSourceStageV1 { .. }

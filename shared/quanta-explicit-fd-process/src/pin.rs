@@ -11,9 +11,11 @@ fn executable_source_identity_v1(
 ) -> Result<platform::DescriptorIdentityV1, ExplicitFdProcessErrorV1> {
     validate_cloexec_read_only_source_v1(source_v1)?;
     let identity_v1 = platform::descriptor_identity_v1(source_v1)?;
-    if !identity_v1.regular_file_v1 || identity_v1.size_v1 == 0
+    if !identity_v1.regular_file_v1
+        || identity_v1.size_v1 == 0
         || identity_v1.size_v1 > MAX_PINNED_EXECUTABLE_BYTES_V1
-        || identity_v1.mode_v1 & 0o111 == 0 {
+        || identity_v1.mode_v1 & 0o111 == 0
+    {
         return Err(ExplicitFdProcessErrorV1::InvalidExecutableDescriptor);
     }
     Ok(identity_v1)
@@ -31,14 +33,22 @@ pub struct ObservedExecutableImageV1 {
 #[cfg(target_os = "linux")]
 impl ObservedExecutableImageV1 {
     /// Take the already-admitted actual kernel descriptor without another dup.
-    pub fn try_from_owned_descriptor_v1(descriptor_v1: OwnedFd) -> Result<Self, ExplicitFdProcessErrorV1> {
+    pub fn try_from_owned_descriptor_v1(
+        descriptor_v1: OwnedFd,
+    ) -> Result<Self, ExplicitFdProcessErrorV1> {
         let identity_v1 = executable_source_identity_v1(descriptor_v1.as_fd())?;
-        Ok(Self { descriptor_v1, identity_v1 })
+        Ok(Self {
+            descriptor_v1,
+            identity_v1,
+        })
     }
 
     /// Both retained and live image objects must still match the first actual
     /// observation. A new image with equal bytes is a different observation.
-    pub fn verify_live_descriptor_v1(&self, live_v1: BorrowedFd<'_>) -> Result<(), ExplicitFdProcessErrorV1> {
+    pub fn verify_live_descriptor_v1(
+        &self,
+        live_v1: BorrowedFd<'_>,
+    ) -> Result<(), ExplicitFdProcessErrorV1> {
         let retained_v1 = executable_source_identity_v1(self.descriptor_v1.as_fd())?;
         let live_v1 = executable_source_identity_v1(live_v1)?;
         if retained_v1 != self.identity_v1 || live_v1 != self.identity_v1 {
@@ -49,7 +59,9 @@ impl ObservedExecutableImageV1 {
 }
 #[cfg(target_os = "linux")]
 impl AsFd for ObservedExecutableImageV1 {
-    fn as_fd(&self) -> BorrowedFd<'_> { self.descriptor_v1.as_fd() }
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.descriptor_v1.as_fd()
+    }
 }
 
 #[derive(Clone)]
@@ -118,7 +130,11 @@ impl PinnedExecutableV1 {
         self.verify_v1()?;
         validate_cloexec_read_only_source_v1(loaded_v1.as_fd())?;
         let observed_v1 = platform::descriptor_identity_v1(loaded_v1.as_fd())?;
-        if self.inner_v1.platform_v1.matches_loaded_identity_v1(&observed_v1) {
+        if self
+            .inner_v1
+            .platform_v1
+            .matches_loaded_identity_v1(&observed_v1)
+        {
             return Ok(());
         }
         let current_source_v1 = platform::descriptor_identity_v1(self.inner_v1.source_v1.as_fd())?;

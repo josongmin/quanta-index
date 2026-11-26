@@ -115,7 +115,11 @@ impl DarwinStdioFifosV1 {
             // SAFETY: mkfifoat is rooted at the unique private directory and
             // each constant is NUL-terminated with a distinct name.
             if unsafe {
-                libc::mkfifoat(self.directory_v1.as_raw_fd(), name_v1.as_ptr().cast(), 0o600)
+                libc::mkfifoat(
+                    self.directory_v1.as_raw_fd(),
+                    name_v1.as_ptr().cast(),
+                    0o600,
+                )
             } != 0
             {
                 return Err(custody_error_v1("mkfifoat_stdio_v1"));
@@ -125,13 +129,19 @@ impl DarwinStdioFifosV1 {
     }
 
     fn open_parent_ends_v1(&mut self) -> Result<(), ExplicitFdProcessErrorV1> {
-        self.stdin_guard_v1 =
-            Some(open_fifo_v1(&self.stdin_path_v1, libc::O_RDONLY | libc::O_NONBLOCK)?);
+        self.stdin_guard_v1 = Some(open_fifo_v1(
+            &self.stdin_path_v1,
+            libc::O_RDONLY | libc::O_NONBLOCK,
+        )?);
         self.parent_stdin_v1 = Some(open_fifo_v1(&self.stdin_path_v1, libc::O_WRONLY)?);
-        self.parent_stdout_v1 =
-            Some(open_fifo_v1(&self.stdout_path_v1, libc::O_RDONLY | libc::O_NONBLOCK)?);
-        self.parent_stderr_v1 =
-            Some(open_fifo_v1(&self.stderr_path_v1, libc::O_RDONLY | libc::O_NONBLOCK)?);
+        self.parent_stdout_v1 = Some(open_fifo_v1(
+            &self.stdout_path_v1,
+            libc::O_RDONLY | libc::O_NONBLOCK,
+        )?);
+        self.parent_stderr_v1 = Some(open_fifo_v1(
+            &self.stderr_path_v1,
+            libc::O_RDONLY | libc::O_NONBLOCK,
+        )?);
         Ok(())
     }
 
@@ -245,8 +255,12 @@ fn open_directory_v1(path_v1: &CStr) -> Result<OwnedFd, ExplicitFdProcessErrorV1
 
 fn open_fifo_v1(path_v1: &CStr, flags_v1: i32) -> Result<OwnedFd, ExplicitFdProcessErrorV1> {
     // SAFETY: open atomically applies CLOEXEC; O_NOFOLLOW prevents substitution.
-    let raw_v1 =
-        unsafe { libc::open(path_v1.as_ptr(), flags_v1 | libc::O_CLOEXEC | libc::O_NOFOLLOW) };
+    let raw_v1 = unsafe {
+        libc::open(
+            path_v1.as_ptr(),
+            flags_v1 | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
     owned_fd_v1(raw_v1, "open_stdio_fifo_v1")
 }
 
@@ -270,7 +284,11 @@ fn clear_nonblocking_v1(descriptor_v1: BorrowedFd<'_>) -> Result<(), ExplicitFdP
     // SAFETY: F_SETFL changes only the non-inheritance status flags; FD_CLOEXEC
     // remains set and is never cleared.
     if unsafe {
-        libc::fcntl(descriptor_v1.as_raw_fd(), libc::F_SETFL, flags_v1 & !libc::O_NONBLOCK)
+        libc::fcntl(
+            descriptor_v1.as_raw_fd(),
+            libc::F_SETFL,
+            flags_v1 & !libc::O_NONBLOCK,
+        )
     } != 0
     {
         return Err(custody_error_v1("fcntl_setfl_stdio_v1"));
@@ -375,9 +393,15 @@ mod tests {
         assert_eq!(unsafe { libc::mkfifo(second_c_v1.as_ptr(), 0o600) }, 0);
         let second_v1 = open_fifo_v1(&second_c_v1, libc::O_RDWR).expect("open second FIFO");
         // SAFETY: immutable flags are set only on the two test-owned FIFOs.
-        assert_eq!(unsafe { libc::chflags(first_c_v1.as_ptr(), libc::UF_IMMUTABLE) }, 0);
+        assert_eq!(
+            unsafe { libc::chflags(first_c_v1.as_ptr(), libc::UF_IMMUTABLE) },
+            0
+        );
         // SAFETY: immutable flags are set only on the two test-owned FIFOs.
-        assert_eq!(unsafe { libc::chflags(second_c_v1.as_ptr(), libc::UF_IMMUTABLE) }, 0);
+        assert_eq!(
+            unsafe { libc::chflags(second_c_v1.as_ptr(), libc::UF_IMMUTABLE) },
+            0
+        );
         verify_fifo_binding_v1(&second_c_v1, second_v1.as_fd())
             .expect("matching immutable FIFO binding");
         assert!(verify_fifo_binding_v1(&first_c_v1, second_v1.as_fd()).is_err());

@@ -140,10 +140,10 @@ rust-profile-history-summary-json:
     source scripts/quanta-index-env.sh && python3 tools/ci/timing/rust_profile_history.py summary --json
 
 fmt:
-    {{cargo}} --lane fmt-lane fmt --all
+    QUANTA_INDEX_RUSTFMT_CARGO={{quote(cargo)}} ./scripts/run-rustfmt-owned.sh
 
 fmt-check:
-    {{cargo}} --lane fmt-lane fmt --all -- --check
+    QUANTA_INDEX_RUSTFMT_CARGO={{quote(cargo)}} ./scripts/run-rustfmt-owned.sh -- --check
 
 rust-check lane="all-targets-lane":
     {{cargo}} --lane {{lane}} check --workspace --all-targets --all-features --locked

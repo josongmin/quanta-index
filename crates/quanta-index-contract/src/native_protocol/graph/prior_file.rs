@@ -3,15 +3,15 @@
 use std::collections::BTreeSet;
 
 use crate::{
+    RepoMapNode, RepoMapNodeRef, RepoRelativePath,
     bounded_cluster_members::BoundedVecV1,
     index::{IndexInstanceId, ObjectRef, OwnerKey, ViewRef},
-    RepoMapNode, RepoMapNodeRef, RepoRelativePath,
 };
-use serde::{de, ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeStruct};
 
 use super::{
-    GraphEdge, NativeGraphResult, NativeRepoMapFileFactsV1, MAX_NATIVE_GRAPH_EDGES,
-    MAX_NATIVE_GRAPH_ITEMS,
+    GraphEdge, MAX_NATIVE_GRAPH_EDGES, MAX_NATIVE_GRAPH_ITEMS, NativeGraphResult,
+    NativeRepoMapFileFactsV1,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -378,13 +378,13 @@ mod affected_tests {
     use super::super::{GraphNode, NativeGraphRow};
     use super::*;
     use crate::{
+        ChunkId, RepoMapChunkExactness, RepoMapChunkNode, RepoMapEdgeKind, RepoRelativePath,
+        SymbolId,
         index::{
             CollectionId, Digest, ProducerId, SlotId, StableOwnerId, TenantId, WorkspaceKey,
             WorktreeId,
         },
         lex::LanguageCode,
-        ChunkId, RepoMapChunkExactness, RepoMapChunkNode, RepoMapEdgeKind, RepoRelativePath,
-        SymbolId,
     };
 
     #[test]

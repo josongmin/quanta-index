@@ -65,7 +65,6 @@ fn legacy_query_text(syntax: TextQuerySyntax, query: &str, top_k: u32) -> TextQu
     }
 }
 
-
 #[test]
 fn native_rejects_legacy_runtime_metadata_in_both_syntaxes_before_socket_io() {
     let (_directory, listener, client) = native_query_listener();

@@ -45,7 +45,7 @@ jobs:
           components: rustfmt
 
       - name: rust fmt
-        run: ./scripts/cargow fmt --all -- --check
+        run: ./scripts/run-rustfmt-owned.sh -- --check
 
   rust-clippy:
     runs-on: ubuntu-latest

@@ -2,8 +2,8 @@
 
 use super::{
     MapEntries, PreparedRows,
-    entry_edits::{Edits, Stamp},
     dense_posting::{wire as dense_wire, write as dense_write},
+    entry_edits::{Edits, Stamp},
     entry_map::{BlockDraft, EntryMap, EntryMapUse, INLINE_ENTRIES, SmallMap, directory},
     posting_witness::OccurrenceDigestWitness,
 };

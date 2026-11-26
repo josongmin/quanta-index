@@ -10,9 +10,8 @@ use super::{
     OwnedWorkPolicy, OwnedWorkReport, OwnerInputBinding, OwnerKey, OwnerMemberBinding,
     OwnerMutationSet, PlanContext, PlanDecision, PreparedPublication, ProjectionBinding,
     ReclaimCandidate, ReclaimDrainPage, ReclaimPermit, ReclaimTarget, ReclaimWork, ReclaimWorkPage,
-    Refusal, RegisteredObject, RetiringRef, SourceEvent, StoredObject,
-    TicketRecord, ViewRef, ViewSelection, WorkAction, WorkBudget, WorkClaim, WorkIntent, WorkStatus,
-    WorkspaceKey,
+    Refusal, RegisteredObject, RetiringRef, SourceEvent, StoredObject, TicketRecord, ViewRef,
+    ViewSelection, WorkAction, WorkBudget, WorkClaim, WorkIntent, WorkStatus, WorkspaceKey,
 };
 use quanta_index_contract::native_protocol::SourceStageReplayReceiptV1;
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
@@ -903,8 +902,17 @@ pub trait OperationJournalPort: Send + Sync {
         &self,
         key: OperationKey,
         budget: &mut WorkBudget,
-    ) -> Result<(OperationStatus, Option<quanta_index_contract::index::ProjectionReplayStamp>), IndexError> {
-        Ok((self.inspect(key, OperationInspectAccess::Request(budget))?, None))
+    ) -> Result<
+        (
+            OperationStatus,
+            Option<quanta_index_contract::index::ProjectionReplayStamp>,
+        ),
+        IndexError,
+    > {
+        Ok((
+            self.inspect(key, OperationInspectAccess::Request(budget))?,
+            None,
+        ))
     }
     /// Exact Published operation metadata. This is not a Catalog read pin and
     /// must not substitute the current head or read immutable object bodies.

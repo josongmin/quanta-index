@@ -22,10 +22,10 @@ use quanta_index_core::{
     BATCH_DIGEST_MISMATCH_CODE, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
     IdempotencyCatalogPort as _, IdempotencyKeyV1, IngestBatchBodyV1, IngestResourcePolicy,
     OperationInspectV1, OperationJournalStateV1, PublicationValidationOwner,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, RequestProviderStageV1,
-    RequestStageDiagnosticPortV1, SearchCorpusIngestPort, SemanticIngestPort,
-    SemanticStreamWindowPolicy, SourceEventAllocationOutcomeV1, SourceEventAllocationRequestV1,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
+    RepoTopicIngestPort, RequestBudgetV1, RequestProviderStageV1, RequestStageDiagnosticPortV1,
+    SearchCorpusIngestPort, SemanticIngestPort, SemanticStreamWindowPolicy,
+    SourceEventAllocationOutcomeV1, SourceEventAllocationRequestV1,
     SourcePublicationCatalogPort as _, TextEmbeddingProvider,
 };
 use quanta_index_ipc::{canonical_batch_digest_v1, stamp_batch_digest_v1};
@@ -538,7 +538,6 @@ fn overlay_receipt(response: SearchPlaneIngestIpcResponse) -> Result<BatchPublis
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-
         | SearchPlaneIngestIpcResponse::Error(_)) => {
             Err(format!("expected lexical overlay receipt, got {other:?}"))
         }
@@ -1319,7 +1318,6 @@ fn typed_code_of(
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
         | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => None,
@@ -1340,7 +1338,6 @@ fn receipt_of(response: SearchPlaneIngestIpcResponse) -> Result<BatchPublishRece
         | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
         | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)) => {

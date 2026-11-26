@@ -85,7 +85,10 @@ impl fmt::Display for ExplicitFdProcessErrorV1 {
                 errno_v1,
             } => write!(formatter_v1, "{operation_v1} failed with errno {errno_v1}"),
             Self::ChildSetup { stage_v1, errno_v1 } => {
-                write!(formatter_v1, "child setup stage {stage_v1} failed with errno {errno_v1}")
+                write!(
+                    formatter_v1,
+                    "child setup stage {stage_v1} failed with errno {errno_v1}"
+                )
             }
             _ => unreachable!("static error variants were handled before structured formatting"),
         }

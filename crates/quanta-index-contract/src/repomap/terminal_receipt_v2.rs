@@ -1026,7 +1026,6 @@ mod tests {
         ciborium::ser::into_writer(&borrowed_publish, &mut borrowed)
             .expect("borrowed publish wire");
         assert_eq!(owned, borrowed);
-
     }
 
     #[test]

@@ -344,7 +344,11 @@ fn cleanup_launch_image_v1(
             if let Some(file_v1) = file_v1 {
                 libc::fchflags(file_v1.as_raw_fd(), 0);
             }
-            libc::unlinkat(directory_v1.as_raw_fd(), LAUNCH_FILE_NAME_V1.as_ptr().cast(), 0);
+            libc::unlinkat(
+                directory_v1.as_raw_fd(),
+                LAUNCH_FILE_NAME_V1.as_ptr().cast(),
+                0,
+            );
         }
         libc::rmdir(directory_path_v1.as_ptr());
     }
@@ -391,7 +395,10 @@ mod tests {
             // SAFETY: the flag is applied only to the test-owned directory and
             // its launch guard clears it during cleanup.
             unsafe {
-                libc::fchflags(directory_mutation_v1.directory_v1.as_raw_fd(), libc::UF_IMMUTABLE)
+                libc::fchflags(
+                    directory_mutation_v1.directory_v1.as_raw_fd(),
+                    libc::UF_IMMUTABLE,
+                )
             },
             0
         );

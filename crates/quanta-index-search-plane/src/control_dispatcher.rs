@@ -8,15 +8,12 @@ use std::sync::Arc;
 
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    MetricsSnapshotV1,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+    MetricsSnapshotV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusActivationCasAck,
     SearchPlaneSearchCorpusRollbackCasAck, TrackReadinessRecord,
 };
-use quanta_index_core::{
-    CoreError, RequestBudgetV1, SourcePublicationCatalogPort,
-};
+use quanta_index_core::{CoreError, RequestBudgetV1, SourcePublicationCatalogPort};
 
 use crate::observability::ObservabilityScrape;
 use crate::quarantine::QuarantineService;
@@ -96,7 +93,6 @@ impl ControlCapabilityV1 {
             | SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(_)
             | SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
-
             | SearchPlaneControlIpcRequest::QuarantineDiscard(_) => Self::Admin,
         }
     }
@@ -549,8 +545,7 @@ mod tests {
     };
     use quanta_index_core::{
         CoreError, GenerationQuarantineReasonV1, MetricPointV1, MetricSourcePort,
-        QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RequestBudgetV1,
-        SourcePublicationCatalogPort as _,
+        QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RequestBudgetV1, SourcePublicationCatalogPort as _,
     };
     use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -618,7 +613,6 @@ mod tests {
             semantic_content: generation.semantic_content().clone(),
         })
     }
-
 
     /// Openers whose generations are sealed under `manifest-digest-<generation>`.
     ///
@@ -1104,8 +1098,6 @@ mod tests {
         match other {
             SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-
-
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -1128,8 +1120,6 @@ mod tests {
             SearchPlaneControlIpcResponse::Error(error) => error.code,
             ref other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-
-
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -1319,8 +1309,6 @@ mod tests {
             }
             ref other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-
-
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -1342,8 +1330,6 @@ mod tests {
             }
             ref other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-
-
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -1411,8 +1397,6 @@ mod tests {
             SearchPlaneControlIpcResponse::Error(error) => Err(error),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-
-
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -1576,15 +1560,12 @@ mod tests {
         Ok(())
     }
 
-
     fn into_error_code(
         response: SearchPlaneControlIpcResponse,
     ) -> Result<quanta_index_contract::SearchPlaneErrorCodeV2, Box<dyn std::error::Error>> {
         match response {
             SearchPlaneControlIpcResponse::Error(err) => Ok(err.code),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
-
-
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
@@ -1599,7 +1580,6 @@ mod tests {
             }
         }
     }
-
 
     #[test]
     fn composite_ipc_rejects_malformed_identity_before_catalog_mutation() -> TestResult {
@@ -2189,9 +2169,7 @@ mod tests {
         let Some(entry) = inventory.lexical.first().cloned() else {
             return Err("the lexical listing carries the quarantined generation".into());
         };
-        if inventory.lexical.len() != 1
-            || !inventory.semantic.is_empty()
-        {
+        if inventory.lexical.len() != 1 || !inventory.semantic.is_empty() {
             return Err(format!("the listing is exactly the adapters' own: {inventory:?}").into());
         }
         if entry.path != listed.path.display().to_string()

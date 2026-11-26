@@ -175,8 +175,6 @@ fn wire_view() -> crate::index::ViewRef {
     }
 }
 
-
-
 #[test]
 fn rank_reason_codes_are_closed_categorized_and_canonical() -> TestResult {
     use crate::{

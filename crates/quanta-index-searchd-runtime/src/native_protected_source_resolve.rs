@@ -3,11 +3,9 @@
 
 use super::*;
 use quanta_index_core::index::{
-    MAX_NATIVE_PROTECTED_VIEW_MARKER_BYTES_V1, MemoryLifetime,
-    NativeProtectedSourceRoutesV1, native_immutable_object_ref_v1,
-    native_protected_view_marker_bytes_v1,
-    ports::ImmutableObjectPort,
-    with_native_protected_source_routes_v1,
+    MAX_NATIVE_PROTECTED_VIEW_MARKER_BYTES_V1, MemoryLifetime, NativeProtectedSourceRoutesV1,
+    native_immutable_object_ref_v1, native_protected_view_marker_bytes_v1,
+    ports::ImmutableObjectPort, with_native_protected_source_routes_v1,
 };
 
 impl NativeDispatcher {
@@ -126,5 +124,4 @@ impl NativeDispatcher {
             },
         ))
     }
-
 }

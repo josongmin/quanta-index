@@ -113,7 +113,7 @@ jobs:
           command: |
             set -euo pipefail
             unset BASH_ENV ENV
-            ./scripts/cargow fmt --all -- --check
+            ./scripts/run-rustfmt-owned.sh -- --check
             ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run:
           name: Rust dependency and MSRV checks

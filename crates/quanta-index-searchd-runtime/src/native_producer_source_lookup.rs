@@ -75,7 +75,10 @@ impl ProducerOwnerWindow {
         row: impl Fn(OwnerKey, ObjectRef) -> T,
         budget: &mut WorkBudget,
     ) -> Result<(Vec<T>, bool), IndexError> {
-        let page_limit = self.limit.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        let page_limit = self
+            .limit
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
         let max_rows = usize::try_from(self.limit).map_err(|_error| IndexError::ResourceLimited)?;
         let prefix = producer_owner_prefix(self.producer);
         let after_key = self.after.map(|stable_id| {
@@ -84,7 +87,9 @@ impl ProducerOwnerWindow {
                 stable_id,
             })
         });
-        let after_key = after_key.as_ref().map_or(prefix.as_slice(), |key| key.as_slice());
+        let after_key = after_key
+            .as_ref()
+            .map_or(prefix.as_slice(), |key| key.as_slice());
         let page = maps.scan(root, Some(after_key), page_limit, budget)?;
         if page.entries.len() > max_rows + 1 || (page.entries.is_empty() && page.has_more) {
             return Err(IndexError::BackendViolation(
@@ -92,9 +97,16 @@ impl ProducerOwnerWindow {
             ));
         }
         let mut rows = Vec::new();
-        rows.try_reserve_exact(max_rows).map_err(|_error| IndexError::ResourceLimited)?;
+        rows.try_reserve_exact(max_rows)
+            .map_err(|_error| IndexError::ResourceLimited)?;
         let has_more = append_producer_rows(
-            &page, after_key, &prefix, self.producer, max_rows, &mut rows, row,
+            &page,
+            after_key,
+            &prefix,
+            self.producer,
+            max_rows,
+            &mut rows,
+            row,
         )?;
         Ok((rows, has_more))
     }
@@ -171,8 +183,12 @@ impl NativeDispatcher {
             // This port rejects a historical Exact view. A producer-wide epoch is
             // current authority, not an attribute of arbitrary retained history.
             let source_epoch = self.catalog.source_epoch(view, producer, budget)?;
-            let (rows, has_more) = ProducerOwnerWindow { producer, after, limit }
-                .scan(self.objects.as_ref(), source.owners, source_row, budget)?;
+            let (rows, has_more) = ProducerOwnerWindow {
+                producer,
+                after,
+                limit,
+            }
+            .scan(self.objects.as_ref(), source.owners, source_row, budget)?;
             ticket.validate()?;
             if self.catalog.source_epoch(view, producer, budget)? != source_epoch {
                 return Err(IndexError::Conflict);
@@ -329,7 +345,9 @@ mod tests {
         );
         let mut rows = Vec::new();
         if !matches!(
-            append_producer_rows(&unordered, &prefix, &prefix, producer, 2, &mut rows, source_row),
+            append_producer_rows(
+                &unordered, &prefix, &prefix, producer, 2, &mut rows, source_row
+            ),
             Err(IndexError::BackendViolation(_))
         ) {
             return Err(IndexError::BackendViolation(
@@ -346,7 +364,9 @@ mod tests {
             None,
         );
         if !matches!(
-            append_producer_rows(&malformed, &prefix, &prefix, producer, 2, &mut rows, source_row),
+            append_producer_rows(
+                &malformed, &prefix, &prefix, producer, 2, &mut rows, source_row
+            ),
             Err(IndexError::CorruptObject(_))
         ) {
             return Err(IndexError::BackendViolation(

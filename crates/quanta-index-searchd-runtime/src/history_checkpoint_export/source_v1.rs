@@ -326,8 +326,9 @@ pub fn run_source_v1(
                 budget,
                 |selection, budget| {
                     if command.source_only_native {
-                        let selected = selection.native_command_v1()
-                            .ok_or_else(|| anyhow!("Source-only Native export requires selected Native root"))?;
+                        let selected = selection.native_command_v1().ok_or_else(|| {
+                            anyhow!("Source-only Native export requires selected Native root")
+                        })?;
                         ensure!(
                             selected.config_path == command.config_path
                                 && selected.config_digest == Some(command.config_digest),

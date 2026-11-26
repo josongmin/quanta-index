@@ -17,9 +17,9 @@ use quanta_index_contract::{
     index::Digest,
     native_cutover_evidence_v1::{
         NativeCutoverControlBeginV1, NativeCutoverControlTerminalV1,
-        NativeCutoverEvidenceBeforeSelectionV1, NativeCutoverEvidenceLegacyRepoMapV1,
-        NativeCutoverEvidenceLegacyPublicationV1,
-        NativeCutoverInstalledHistoryV1, NativeCutoverRecoveryModeV1,
+        NativeCutoverEvidenceBeforeSelectionV1, NativeCutoverEvidenceLegacyPublicationV1,
+        NativeCutoverEvidenceLegacyRepoMapV1, NativeCutoverInstalledHistoryV1,
+        NativeCutoverRecoveryModeV1,
     },
 };
 use quanta_index_core::index::{MemoryLease, MemoryLifetime, WorkBudget, WorkUsage};
@@ -325,7 +325,10 @@ impl<'a> LegacyPublishedRecoveryWitnessV1<&'a RepoId, &'a RevisionId> {
             repo_id: &lexical.repo_id,
             revision_id: &lexical.revision_id,
             durable_sequence: publication.receipt.durable_sequence,
-            activation: legacy_recovery_activation_digest_v1(&publication.activation.active, budget)?,
+            activation: legacy_recovery_activation_digest_v1(
+                &publication.activation.active,
+                budget,
+            )?,
         })
     }
 }
@@ -480,10 +483,16 @@ pub(crate) fn with_locked_export_selection_v1<T>(
         .map_err(|error| anyhow!("cannot acquire deployment lock: {error}"))?;
     let (bytes, version, _file) = read_active_control(&directory, path, budget)?;
     let selected = codec::decode(&bytes, budget)?;
-    ensure!(selected.fingerprint_v1() == expected, "active selection fingerprint changed");
+    ensure!(
+        selected.fingerprint_v1() == expected,
+        "active selection fingerprint changed"
+    );
     let result = read(&selected, budget)?;
     let (after_bytes, after_version, _after_file) = read_active_control(&directory, path, budget)?;
-    ensure!(after_version == version && after_bytes == bytes, "active selection changed during History export");
+    ensure!(
+        after_version == version && after_bytes == bytes,
+        "active selection changed during History export"
+    );
     Ok(result)
 }
 
@@ -721,34 +730,38 @@ impl LockedDeploymentSelectionV1 {
             "recovery physical witness differs from its mode"
         );
         if self.phase == PublicationPhase::ReconciliationPending {
-            let observed = self.with_observed_witness_v1(budget, |wire, digest, _memory, _budget| {
-                let same_legacy = match (wire.legacy.as_ref(), legacy.as_ref()) {
-                    (Some(retained), Some(actual)) => {
-                        &retained.repo_id == actual.repo_id
-                            && &retained.revision_id == actual.revision_id
-                            && retained.durable_sequence == actual.durable_sequence
-                            && retained.activation == actual.activation
-                    }
-                    (None, None) => true,
-                    (None, Some(_)) => wire.repomap.is_none() && binding.mode == NativeCutoverRecoveryModeV1::RestoreForward,
-                    _ => false,
-                };
-                // The fresh Original may supply new FD6 bytes and a new nonce.
-                ensure!(
-                    wire.binding.mode == binding.mode
-                        && wire.binding.config_sha256 == binding.config_sha256
-                        && wire.binding.helper_sha256 == binding.helper_sha256
-                        && wire.root_device == root.device
-                        && wire.root_inode == root.inode
-                        && wire.history.as_ref() == history
-                        && wire.repomap.as_ref().is_none_or(|retained| {
-                            same_durable_repomap_v1(retained, repomap)
-                        })
-                        && same_legacy,
-                    "recovery witness differs from the verified outcome"
-                );
-                Ok(digest)
-            })?;
+            let observed =
+                self.with_observed_witness_v1(budget, |wire, digest, _memory, _budget| {
+                    let same_legacy = match (wire.legacy.as_ref(), legacy.as_ref()) {
+                        (Some(retained), Some(actual)) => {
+                            &retained.repo_id == actual.repo_id
+                                && &retained.revision_id == actual.revision_id
+                                && retained.durable_sequence == actual.durable_sequence
+                                && retained.activation == actual.activation
+                        }
+                        (None, None) => true,
+                        (None, Some(_)) => {
+                            wire.repomap.is_none()
+                                && binding.mode == NativeCutoverRecoveryModeV1::RestoreForward
+                        }
+                        _ => false,
+                    };
+                    // The fresh Original may supply new FD6 bytes and a new nonce.
+                    ensure!(
+                        wire.binding.mode == binding.mode
+                            && wire.binding.config_sha256 == binding.config_sha256
+                            && wire.binding.helper_sha256 == binding.helper_sha256
+                            && wire.root_device == root.device
+                            && wire.root_inode == root.inode
+                            && wire.history.as_ref() == history
+                            && wire.repomap.as_ref().is_none_or(|retained| {
+                                same_durable_repomap_v1(retained, repomap)
+                            })
+                            && same_legacy,
+                        "recovery witness differs from the verified outcome"
+                    );
+                    Ok(digest)
+                })?;
             let digest = observed.ok_or_else(|| anyhow!("selected recovery witness is absent"))?;
             self.recovery_witness = Some(RecoveryWitnessV1::Selected(digest));
             return Ok(());
@@ -1022,8 +1035,9 @@ impl LockedDeploymentSelectionV1 {
                     fingerprint(&active_payload) == request.expected_candidate_sha256_v1,
                     "current selection is neither the original nor exact candidate"
                 );
-                let expected = recovery_publication
-                    .ok_or_else(|| anyhow!("retained intent has no original selection file version"))?;
+                let expected = recovery_publication.ok_or_else(|| {
+                    anyhow!("retained intent has no original selection file version")
+                })?;
                 require_recovery_publication(&active_file, expected, budget)?;
                 // Preserve ReconciliationPending through candidate validation.
                 let current = codec::decode_document(&original_wire, original_payload, budget)?;
@@ -1149,7 +1163,8 @@ impl LockedDeploymentSelectionV1 {
             "current selection changed"
         );
         if self.observed.is_some() {
-            let expected = self.recovery_publication
+            let expected = self
+                .recovery_publication
                 .ok_or_else(|| anyhow!("reconciliation has no publication binding"))?;
             require_recovery_publication(&file, expected, budget)?;
         }
@@ -1323,7 +1338,12 @@ impl LockedDeploymentSelectionV1 {
             if let Some(publication) = self.recovery_publication {
                 require_recovery_publication(file, publication, budget)?;
             }
-            self.require_prepared_witness_v1(OsStr::new(name), OsStr::new(temp.as_str()), file, budget)?;
+            self.require_prepared_witness_v1(
+                OsStr::new(name),
+                OsStr::new(temp.as_str()),
+                file,
+                budget,
+            )?;
             candidate_binary.require_current(self.candidate.binary_v1(), budget)?;
             charge(budget, 2, 0, 0, 0)?;
             require_named_control_file(&self.directory, Path::new(temp.as_str()), file)?;
@@ -1385,14 +1405,19 @@ impl LockedDeploymentSelectionV1 {
         let result = match (&self.recovery_witness, &self.witness_binding) {
             (Some(RecoveryWitnessV1::Selected(expected_digest)), _) => self
                 .with_selected_recovery_witness_v1(budget, |_, digest, budget| {
-                    ensure!(digest == *expected_digest, "selected recovery witness changed");
+                    ensure!(
+                        digest == *expected_digest,
+                        "selected recovery witness changed"
+                    );
                     self.sync_observed_recovery_v1(budget, checkpoint, hook)
                 })
                 .and_then(|observed| {
                     observed.ok_or_else(|| anyhow!("selected recovery witness is absent"))
                 }),
             (None, None) => self.sync_observed_recovery_v1(budget, checkpoint, hook),
-            _ => Err(anyhow!("verified recovery outcome is missing its publication witness")),
+            _ => Err(anyhow!(
+                "verified recovery outcome is missing its publication witness"
+            )),
         };
         if result.is_ok() {
             self.phase = PublicationPhase::Durable;
@@ -1610,15 +1635,28 @@ fn recovery_publication_on_file(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn write_recovery_publication(file: &File, publication: Digest, budget: &mut WorkBudget) -> Result<()> {
+fn write_recovery_publication(
+    file: &File,
+    publication: Digest,
+    budget: &mut WorkBudget,
+) -> Result<()> {
     let digest = recovery_publication_on_file(file, publication, budget)?;
     charge(budget, 0, 1, 32, 1)?;
-    rustix::fs::fsetxattr(file, PUBLICATION_ATTRIBUTE, &digest.0, rustix::fs::XattrFlags::CREATE)
-        .context("record recovery publication on selection file")
+    rustix::fs::fsetxattr(
+        file,
+        PUBLICATION_ATTRIBUTE,
+        &digest.0,
+        rustix::fs::XattrFlags::CREATE,
+    )
+    .context("record recovery publication on selection file")
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn require_recovery_publication(file: &File, publication: Digest, budget: &mut WorkBudget) -> Result<()> {
+fn require_recovery_publication(
+    file: &File,
+    publication: Digest,
+    budget: &mut WorkBudget,
+) -> Result<()> {
     let expected = recovery_publication_on_file(file, publication, budget)?;
     charge(budget, 1, 0, 32, 0)?;
     let mut bytes = [0_u8; 32];
@@ -1633,12 +1671,16 @@ fn require_recovery_publication(file: &File, publication: Digest, budget: &mut W
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn write_recovery_publication(_: &File, _: Digest, _: &mut WorkBudget) -> Result<()> {
-    Err(anyhow!("recovery selection publication requires file extended attributes"))
+    Err(anyhow!(
+        "recovery selection publication requires file extended attributes"
+    ))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn require_recovery_publication(_: &File, _: Digest, _: &mut WorkBudget) -> Result<()> {
-    Err(anyhow!("recovery selection reconciliation requires file extended attributes"))
+    Err(anyhow!(
+        "recovery selection reconciliation requires file extended attributes"
+    ))
 }
 
 fn read_control_file(file: &mut File, budget: &mut WorkBudget) -> Result<Vec<u8>> {

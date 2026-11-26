@@ -361,7 +361,9 @@ fn map_error(error: &NativeUdsError, socket: &Path) -> CliError {
             CliError::transport(detail)
         }
         NativeUdsError::Protocol(_) => CliError::protocol(detail),
-        NativeUdsError::Refused(_) | NativeUdsError::QueryRejected { .. } => CliError::remote(detail),
+        NativeUdsError::Refused(_) | NativeUdsError::QueryRejected { .. } => {
+            CliError::remote(detail)
+        }
         NativeUdsError::Unknown(_) => CliError {
             exit_code: EXIT_TRANSPORT,
             message: detail,

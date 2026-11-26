@@ -164,7 +164,11 @@ fn require_original_history_writer_fence_v1(
     budget: &mut WorkBudget,
 ) -> Result<()> {
     const NAME: &str = ".history-source-writer.lock";
-    charge(budget, 4, u64::try_from(writer_root.as_os_str().as_encoded_bytes().len())?)?;
+    charge(
+        budget,
+        4,
+        u64::try_from(writer_root.as_os_str().as_encoded_bytes().len())?,
+    )?;
     ensure!(
         writer_root.is_absolute()
             && !writer_root.components().any(|component| {
@@ -212,7 +216,11 @@ fn require_original_history_writer_fence_v1(
     // A fresh file description must be excluded by the inherited EX lock.
     match flock(&probe, FlockOperation::NonBlockingLockShared) {
         Err(rustix::io::Errno::WOULDBLOCK) => {}
-        Ok(()) => return Err(anyhow!("inherited History fence did not exclude another reader")),
+        Ok(()) => {
+            return Err(anyhow!(
+                "inherited History fence did not exclude another reader"
+            ));
+        }
         Err(error) => return Err(error.into()),
     }
     flock(held, FlockOperation::NonBlockingLockExclusive)?;

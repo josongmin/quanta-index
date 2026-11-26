@@ -2,8 +2,9 @@
 //! The registered History port owns sealed rows, replay and lineage validation.
 
 use quanta_index_core::index::{
-    AttemptContext, GroupActivation, HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryTransition, IndexError, InputDomain, InstanceSpec,
-    HistorySourceCutV1, MemberBinding, ObjectRef, WorkBudget,
+    AttemptContext, GroupActivation, HistoryAppendV1, HistoryGenerationAdvanceV1,
+    HistorySourceCutV1, HistoryTransition, IndexError, InputDomain, InstanceSpec, MemberBinding,
+    ObjectRef, WorkBudget,
 };
 
 use crate::{member_staging::ProfileIndex, registry::AdapterRegistry};
@@ -55,12 +56,16 @@ pub(crate) fn validate_append_profile(
     })?;
     require_history_spec(spec)?;
     if target.get(&append.instance) != Some(&spec) {
-        return Err(IndexError::InvalidInput("History append changed its instance spec".into()));
+        return Err(IndexError::InvalidInput(
+            "History append changed its instance spec".into(),
+        ));
     }
     for instance in prior.union(target) {
         budget.checkpoint()?;
         if prior.get(&instance) != target.get(&instance) {
-            return Err(IndexError::InvalidInput("History append changed the selected profile".into()));
+            return Err(IndexError::InvalidInput(
+                "History append changed the selected profile".into(),
+            ));
         }
     }
     budget.checkpoint()
@@ -79,15 +84,23 @@ pub(super) fn validate_generation_profile(
     let successor = target.get(&advance.instance).copied().ok_or_else(|| {
         IndexError::InvalidInput("History generation requires a target instance".into())
     })?;
-    if *successor != (InstanceSpec { instance: advance.instance, ..anchor.clone() })
+    if *successor
+        != (InstanceSpec {
+            instance: advance.instance,
+            ..anchor.clone()
+        })
         || (advance.instance != advance.prior_instance && prior.get(&advance.instance).is_some())
     {
-        return Err(IndexError::InvalidInput("History generation changed the prior instance recipe".into()));
+        return Err(IndexError::InvalidInput(
+            "History generation changed the prior instance recipe".into(),
+        ));
     }
     for instance in prior.union(target) {
         budget.checkpoint()?;
         if instance != advance.instance && prior.get(&instance) != target.get(&instance) {
-            return Err(IndexError::InvalidInput("History generation changed an unrelated profile instance".into()));
+            return Err(IndexError::InvalidInput(
+                "History generation changed an unrelated profile instance".into(),
+            ));
         }
     }
     budget.checkpoint()
@@ -104,7 +117,8 @@ pub(super) fn prepare_generation_member(
 ) -> Result<ObjectRef, IndexError> {
     validate_prior_member(Some(prior_spec), prior_spec, Some(prior), None)?;
     validate_append_prior_cut(prior, &advance.expected)?;
-    let binding = registry.advance_history_generation(spec, prior, advance, next_view_sequence, context)?;
+    let binding =
+        registry.advance_history_generation(spec, prior, advance, next_view_sequence, context)?;
     super::stage_required_member(&binding, context)
 }
 
@@ -121,7 +135,9 @@ pub(super) fn prepare_required_member(
     context.budget.checkpoint()?;
     if let Some(append) = append {
         if transition.is_some() || append.instance != spec.instance || prior_spec != Some(spec) {
-            return Err(IndexError::InvalidInput("History append requires an unchanged prior instance".into()));
+            return Err(IndexError::InvalidInput(
+                "History append requires an unchanged prior instance".into(),
+            ));
         }
         require_history_spec(spec)?;
         let (_, prior_binding) = prior.ok_or_else(|| {
@@ -129,9 +145,8 @@ pub(super) fn prepare_required_member(
         })?;
         validate_prior_member(prior_spec, spec, Some(&prior_binding), None)?;
         validate_append_prior_cut(&prior_binding, &append.expected)?;
-        let binding = registry.append_history(
-            spec, &prior_binding, append, next_view_sequence, context,
-        )?;
+        let binding =
+            registry.append_history(spec, &prior_binding, append, next_view_sequence, context)?;
         return super::stage_required_member(&binding, context);
     }
     validate_prior_member(
@@ -260,9 +275,9 @@ mod tests {
     use quanta_index_contract::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
     use quanta_index_core::index::{
         AuxiliaryGenerationKeyV1, Digest, GroupActivation, HistoryAppendV1, HistorySourceCutV1,
-        HistoryTransition,
-        IndexError, IndexInstanceId, IndexKind, InputBinding, InputDomain, InstanceSpec, MapRoot,
-        MemberBinding, ObjectRef, PublicationGroupId, SchemaId, StorageFormatId,
+        HistoryTransition, IndexError, IndexInstanceId, IndexKind, InputBinding, InputDomain,
+        InstanceSpec, MapRoot, MemberBinding, ObjectRef, PublicationGroupId, SchemaId,
+        StorageFormatId,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;

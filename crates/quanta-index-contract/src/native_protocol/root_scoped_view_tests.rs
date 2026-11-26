@@ -110,8 +110,6 @@ fn protected_source_resolution_wire_carries_only_repository_pair()
     Ok(())
 }
 
-
-
 #[test]
 fn candidate_installation_wire_has_no_workspace_selector() -> Result<(), Box<dyn std::error::Error>>
 {

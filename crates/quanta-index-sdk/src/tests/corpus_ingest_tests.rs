@@ -1331,7 +1331,6 @@ impl IngestTransport for MultipartCorpusTransport {
             | SearchPlaneIngestIpcRequest::PublishDirtyBatch(_)
             | SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(_)
             | SearchPlaneIngestIpcRequest::PublishStructuralBatch(_)
-
             | SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)
             | SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_) => {
                 return Err(crate::SdkError::Protocol(

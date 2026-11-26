@@ -15,8 +15,7 @@ pub use edit_page::{MapEditPage, read_map_edit_budgeted};
 pub use edit_write::{
     MapEditFields, map_edit_sql_memory_bound, max_supported_wide_edit_batch_rows,
     write_map_edit_batch, write_map_edit_fields_batch, write_map_edit_fields_batch_wide,
-    write_ordinal_map_edit_batch,
-    write_posting_edit_fields_batch,
+    write_ordinal_map_edit_batch, write_posting_edit_fields_batch,
 };
 pub mod physical;
 pub mod retention;

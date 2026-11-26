@@ -4,9 +4,9 @@ use crate::index::{
     CatalogView, CoverageBinding, Digest, IndexInstanceId, IndexKind, IndexProfile, IngressRef,
     MapRoot, ObjectRef, OperationKey, OperationReply, OperationStatus, OwnerKey, OwnerMutation,
     OwnerMutationSet, ProducerId, ProjectionBinding, ProjectionCertificate, ProjectionId,
-    ProjectionOwnerContribution, SchemaId, SourceCut, SourceInput, SourceRecord,
-    SourceTextAdmission, StableOwnerId, StorageFormatId, StreamId, SubmitOutcome, UpdateRequest, RetiredProjectionPolicyRefV1,
-    ViewRef, ViewSelection, WorkClaim, WorkIntent, WorkStatus, WorkspaceKey,
+    ProjectionOwnerContribution, RetiredProjectionPolicyRefV1, SchemaId, SourceCut, SourceInput,
+    SourceRecord, SourceTextAdmission, StableOwnerId, StorageFormatId, StreamId, SubmitOutcome,
+    UpdateRequest, ViewRef, ViewSelection, WorkClaim, WorkIntent, WorkStatus, WorkspaceKey,
 };
 use crate::{FiniteScore, RepoId, RevisionId, SemanticQueryRequest, TextQueryRequest};
 
@@ -51,21 +51,20 @@ mod headless;
 mod stub;
 mod stub_certificate;
 mod stub_schema;
+#[cfg(test)]
+use graph::ranking::NativeRepoMapQuery;
 pub use graph::{
     GraphEdge, GraphNode, GraphOwnerOutput, GraphProjectionRow, MAX_NATIVE_GRAPH_EDGES,
     MAX_NATIVE_GRAPH_ITEMS, MAX_NATIVE_GRAPH_OUTPUT_BYTES, MAX_NATIVE_REPOMAP_ENDPOINT_OWNERS_V2,
-    MAX_REPOMAP_RANK_PATH_BYTES,
-    MAX_REPOMAP_RANK_PROJECTION_LEAF_BYTES,
+    MAX_REPOMAP_RANK_PATH_BYTES, MAX_REPOMAP_RANK_PROJECTION_LEAF_BYTES,
     MAX_REPOMAP_RANK_SEARCH_TEXT_BYTES, MAX_REPOMAP_RANK_SUBJECT_BYTES,
     NATIVE_REPOMAP_RANK_POLICY_DESCRIPTOR, NativeGraphDirection, NativeGraphQuery,
     NativeGraphResult, NativeGraphRow, NativeRepoMapEndpointOwnerV2,
     NativeRepoMapEndpointOwnersResultV2, NativeRepoMapFileFactsV1,
-    NativeRepoMapFileOwnerProjectionV1, NativeRepoMapOwnerError,
-    NativeRepoMapOwnerProjection, NativeRepoMapPriorAffectedV1, NativeRepoMapPriorFileResultV1,
-    NativeRepoMapPriorFileV1, NativeRepoMapPriorNodeDegreeV1, native_repomap_rank_policy,
+    NativeRepoMapFileOwnerProjectionV1, NativeRepoMapOwnerError, NativeRepoMapOwnerProjection,
+    NativeRepoMapPriorAffectedV1, NativeRepoMapPriorFileResultV1, NativeRepoMapPriorFileV1,
+    NativeRepoMapPriorNodeDegreeV1, native_repomap_rank_policy,
 };
-#[cfg(test)]
-use graph::ranking::NativeRepoMapQuery;
 pub use headless::{
     NativeOverlayCorpusStamp, NativeOverlayDocument, NativeOverlayEffortContext, NativeOverlayMask,
     NativeOverlayReply, NativeOverlayRequest, NativeOverlayRevision, NativeOverlaySaveIntent,
@@ -75,8 +74,7 @@ pub use headless::{
     NativeOverlayTextSource,
 };
 pub use legacy_repomap::{
-    NATIVE_LEGACY_REPOMAP_FORMAT_V1, NATIVE_LEGACY_REPOMAP_KIND_V1,
-    NATIVE_LEGACY_REPOMAP_SCHEMA_V1,
+    NATIVE_LEGACY_REPOMAP_FORMAT_V1, NATIVE_LEGACY_REPOMAP_KIND_V1, NATIVE_LEGACY_REPOMAP_SCHEMA_V1,
 };
 pub use stub::{
     NativeStubBinding, NativeStubByteEdit, NativeStubCoordinateUnit, NativeStubEdit,

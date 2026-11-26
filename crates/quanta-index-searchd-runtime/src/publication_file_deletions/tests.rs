@@ -2,8 +2,8 @@ use std::error::Error;
 use std::fs::{self, File};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-use quanta_index_core::{CoreError, INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, RequestBudgetV1};
 use quanta_index_core::publication_capacity::InodeKey;
+use quanta_index_core::{CoreError, INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, RequestBudgetV1};
 use quanta_index_searchd::app::runtime::StateRootLease;
 
 use super::PublicationFileDeletions;
@@ -150,12 +150,15 @@ fn sidecar_post_unlink_ticket_refuses_generic_same_path_until_owned_retry() -> T
     deletions.delete_file_and_sync(&second_blocker)?;
 
     let first_delete = deletions.delete_sidecar_owned_file_and_sync(&target, inode, 3);
-    assert!(matches!(
-        &first_delete,
-        Err(CoreError::Typed { code, message })
-            if *code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
-                && message == "publication file capacity: tracked inode ceiling exceeded"
-    ), "unexpected first Sidecar delete outcome: {first_delete:?}");
+    assert!(
+        matches!(
+            &first_delete,
+            Err(CoreError::Typed { code, message })
+                if *code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
+                    && message == "publication file capacity: tracked inode ceiling exceeded"
+        ),
+        "unexpected first Sidecar delete outcome: {first_delete:?}"
+    );
     assert!(!target.exists());
     assert_eq!(authority.snapshot()?, baseline);
     assert!(matches!(

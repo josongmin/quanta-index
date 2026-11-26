@@ -597,7 +597,10 @@ fn private_parent_swap_between_claim_and_temp_declaration_cannot_adopt_replaceme
         .declared_temp
         .as_ref()
         .ok_or("temp anchor missing")?;
-    require_eq!(declared.parent.metadata()?.ino(), fs::metadata(&displaced)?.ino())?;
+    require_eq!(
+        declared.parent.metadata()?.ino(),
+        fs::metadata(&displaced)?.ino()
+    )?;
     require!(!temporary.exists() && !target.exists())?;
     require!(matches!(
         mutation.before_replace(&target),
@@ -697,13 +700,17 @@ fn private_parent_swap_after_replace_check_cannot_settle_detached_inode() -> Tes
     require!(authority.retained_inode(born.inode, 4)?.is_none())?;
     drop(mutation);
     drop(parent);
-    require_eq!(authority.snapshot()?.uncertain_pending, baseline.uncertain_pending + 1)?;
+    require_eq!(
+        authority.snapshot()?.uncertain_pending,
+        baseline.uncertain_pending + 1
+    )?;
     require!(!common.is_quiescent()?)?;
     Ok(())
 }
 
 #[test]
-fn private_parent_reserved_output_creates_missing_nested_parents_with_unstarted_ticket() -> TestResult {
+fn private_parent_reserved_output_creates_missing_nested_parents_with_unstarted_ticket()
+-> TestResult {
     let (_dir, root, _lease, authority, common) = fixture()?;
     let target = root.join("private-cold/deep/object");
     let baseline = authority.snapshot()?;
@@ -777,7 +784,8 @@ fn private_parent_device_policy_distinguishes_same_and_foreign_device() -> TestR
 }
 
 #[test]
-fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_without_leak() -> TestResult {
+fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_without_leak()
+-> TestResult {
     let (dir, root, _lease, authority, common) = fixture()?;
     let baseline = authority.snapshot()?;
     let first = common.reserve_publication_allowance(4, 1)?;
@@ -795,14 +803,16 @@ fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_w
     ))?;
     require!(!missing.parent().ok_or("missing parent")?.exists())?;
     let mut wrong = Some(first.reserve_output(4)?);
-    require!(common
-        .begin_create_with_reserved_output_in_private_parent(
-            &missing,
-            4,
-            Arc::clone(&second),
-            &mut wrong,
-        )
-        .is_err())?;
+    require!(
+        common
+            .begin_create_with_reserved_output_in_private_parent(
+                &missing,
+                4,
+                Arc::clone(&second),
+                &mut wrong,
+            )
+            .is_err()
+    )?;
     require!(wrong.is_some())?;
     require!(!missing.parent().ok_or("missing parent")?.exists())?;
     drop(wrong);
@@ -811,14 +821,16 @@ fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_w
     fs::create_dir(&outside)?;
     symlink(&outside, root.join("private-link"))?;
     let mut link_ticket = Some(first.reserve_output(4)?);
-    require!(common
-        .begin_create_with_reserved_output_in_private_parent(
-            &root.join("private-link/object"),
-            4,
-            Arc::clone(&first),
-            &mut link_ticket,
-        )
-        .is_err())?;
+    require!(
+        common
+            .begin_create_with_reserved_output_in_private_parent(
+                &root.join("private-link/object"),
+                4,
+                Arc::clone(&first),
+                &mut link_ticket,
+            )
+            .is_err()
+    )?;
     require!(link_ticket.is_some())?;
     require!(!outside.join("object").exists())?;
     drop(link_ticket);
@@ -827,14 +839,16 @@ fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_w
     fs::create_dir(&open_parent)?;
     fs::set_permissions(&open_parent, fs::Permissions::from_mode(0o777))?;
     let mut open_ticket = Some(first.reserve_output(4)?);
-    require!(common
-        .begin_create_with_reserved_output_in_private_parent(
-            &open_parent.join("object"),
-            4,
-            Arc::clone(&first),
-            &mut open_ticket,
-        )
-        .is_err())?;
+    require!(
+        common
+            .begin_create_with_reserved_output_in_private_parent(
+                &open_parent.join("object"),
+                4,
+                Arc::clone(&first),
+                &mut open_ticket,
+            )
+            .is_err()
+    )?;
     require!(open_ticket.is_some())?;
     drop(open_ticket);
 
@@ -844,14 +858,16 @@ fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_w
     let busy_target = busy_parent.join("object");
     let blocker = common.begin_create(&busy_target)?;
     let mut busy_ticket = Some(first.reserve_output(4)?);
-    require!(common
-        .begin_create_with_reserved_output_in_private_parent(
-            &busy_target,
-            4,
-            Arc::clone(&first),
-            &mut busy_ticket,
-        )
-        .is_err())?;
+    require!(
+        common
+            .begin_create_with_reserved_output_in_private_parent(
+                &busy_target,
+                4,
+                Arc::clone(&first),
+                &mut busy_ticket,
+            )
+            .is_err()
+    )?;
     require!(busy_ticket.is_some())?;
     drop(blocker);
     drop(busy_ticket);

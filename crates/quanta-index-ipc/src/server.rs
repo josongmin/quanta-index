@@ -1940,7 +1940,9 @@ where
         let repo_scope = RequestEnvelopeT::repo_scope(&request_payload);
         let queue_span = event_scope.enter(DiagnosticStageV1::QueueWait);
         let queue_wait = client_deadline.map_or(policy.queue_wait(), |deadline| {
-            policy.queue_wait().min(deadline.saturating_duration_since(Instant::now()))
+            policy
+                .queue_wait()
+                .min(deadline.saturating_duration_since(Instant::now()))
         });
         let permit = match slots.acquire(queue_wait, repo_scope.as_deref()) {
             Ok(permit) => {
@@ -2038,7 +2040,9 @@ where
         if let Some(deadline) = client_deadline {
             if deadline <= Instant::now() {
                 event_scope.finish(RequestEventStageV1::Aborted);
-                return ConnectionCloseReason::RequestDecodeFailed(IpcError::ClientIoDeadlineElapsed);
+                return ConnectionCloseReason::RequestDecodeFailed(
+                    IpcError::ClientIoDeadlineElapsed,
+                );
             }
             budget = budget.capped_at(deadline);
         }
@@ -2445,9 +2449,14 @@ fn read_exact_transport(reader: &mut impl Read, bytes: &mut [u8]) -> Result<(), 
     })
 }
 
-fn receive_request_deadline_v1(reader: &mut IngressDeadlineReader<'_>) -> Result<Instant, IpcError> {
+fn receive_request_deadline_v1(
+    reader: &mut IngressDeadlineReader<'_>,
+) -> Result<Instant, IpcError> {
     let anchor = Instant::now();
-    reader.stream.write_all(&REQUEST_DEADLINE_ACK_V1).map_err(IpcError::Io)?;
+    reader
+        .stream
+        .write_all(&REQUEST_DEADLINE_ACK_V1)
+        .map_err(IpcError::Io)?;
     let mut remaining = [0; 8];
     read_exact_transport(reader, &mut remaining)?;
     let deadline = anchor
@@ -2736,7 +2745,10 @@ fn require_observed_peer_pid_v1(
 }
 
 impl ClientResponseDecode for PeerAdmittedRawClientResponse<'_> {
-    type Output = (AdmittedClientResponseBody, crate::KernelConnectedPeerProcessV1);
+    type Output = (
+        AdmittedClientResponseBody,
+        crate::KernelConnectedPeerProcessV1,
+    );
 
     fn connected(&self, stream: &UnixStream) -> Result<(), IpcError> {
         let peer = KernelPeerCredentials
@@ -2780,7 +2792,13 @@ pub fn send_request_body_with_budget_admitted_peer_v1<RequestEnvelopeT: serde::S
     request: &RequestEnvelopeT,
     budget: &RequestBudgetV1,
     memory: &MemoryScope,
-) -> Result<(AdmittedClientResponseBody, crate::KernelConnectedPeerProcessV1), IpcError> {
+) -> Result<
+    (
+        AdmittedClientResponseBody,
+        crate::KernelConnectedPeerProcessV1,
+    ),
+    IpcError,
+> {
     check_stream_budget(budget).map_err(IpcError::Io)?;
     let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
     send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
@@ -2835,7 +2853,8 @@ impl ClientResponseDecode for BoundPeerAdmittedRawClientResponse<'_> {
     type Output = AdmittedClientResponseBody;
 
     fn connected(&self, stream: &UnixStream) -> Result<(), IpcError> {
-        self.expected.validate_connected_stream_v1(stream)
+        self.expected
+            .validate_connected_stream_v1(stream)
             .map_err(IpcError::PeerBindingRefused)
     }
 
@@ -2918,9 +2937,20 @@ fn send_admitted_bound_peer_request<RequestEnvelopeT: serde::Serialize>(
     io_policy.admitted_multiframe = admitted_multiframe;
     io_policy.propagate_deadline = propagate_deadline;
     send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
-        socket, request, None, io_policy, None, Some(budget), Some(memory),
+        socket,
+        request,
+        None,
+        io_policy,
+        None,
+        Some(budget),
+        Some(memory),
         &BoundPeerAdmittedRawClientResponse {
-            raw: AdmittedRawClientResponse { budget, memory, work: None }, expected,
+            raw: AdmittedRawClientResponse {
+                budget,
+                memory,
+                work: None,
+            },
+            expected,
         },
     )
 }
@@ -3638,14 +3668,22 @@ fn wait_for_connect(socket: &OwnedFd, deadline: Instant) -> std::io::Result<()> 
     }
 }
 
-fn send_request_deadline_v1(stream: &mut DeadlineStream, policy: ClientIoPolicy) -> Result<(), IpcError> {
+fn send_request_deadline_v1(
+    stream: &mut DeadlineStream,
+    policy: ClientIoPolicy,
+) -> Result<(), IpcError> {
     let write_error = |error| classify_client_io_error(error, IpcIoOperation::Write, policy);
-    stream.write_all(&REQUEST_DEADLINE_PREFACE_V1).map_err(write_error)?;
+    stream
+        .write_all(&REQUEST_DEADLINE_PREFACE_V1)
+        .map_err(write_error)?;
     let mut ack = [0; 4];
-    stream.read_exact(&mut ack)
+    stream
+        .read_exact(&mut ack)
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Read, policy))?;
     if ack != REQUEST_DEADLINE_ACK_V1 {
-        return Err(IpcError::Decode("invalid request deadline acknowledgement".into()));
+        return Err(IpcError::Decode(
+            "invalid request deadline acknowledgement".into(),
+        ));
     }
     let remaining = stream.remaining().map_err(write_error)?;
     let nanos = u64::try_from(remaining.as_nanos()).unwrap_or(u64::MAX);

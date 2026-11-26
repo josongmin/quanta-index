@@ -76,7 +76,13 @@ fn finish_and_seal_v1(
     }
     let required_seals_v1 = required_seals_v1();
     // SAFETY: F_ADD_SEALS applies only to the private MFD_ALLOW_SEALING fd.
-    if unsafe { libc::fcntl(descriptor_v1.as_raw_fd(), libc::F_ADD_SEALS, required_seals_v1) } != 0
+    if unsafe {
+        libc::fcntl(
+            descriptor_v1.as_raw_fd(),
+            libc::F_ADD_SEALS,
+            required_seals_v1,
+        )
+    } != 0
     {
         return Err(descriptor_error_v1("fcntl_add_seals_v1"));
     }
@@ -241,7 +247,11 @@ fn write_all_descriptor_v1(
     while !bytes_v1.is_empty() {
         // SAFETY: bytes points to initialized memory for the requested length.
         let written_v1 = unsafe {
-            libc::write(descriptor_v1.as_raw_fd(), bytes_v1.as_ptr().cast(), bytes_v1.len())
+            libc::write(
+                descriptor_v1.as_raw_fd(),
+                bytes_v1.as_ptr().cast(),
+                bytes_v1.len(),
+            )
         };
         if written_v1 < 0 {
             if super::errno_v1() == libc::EINTR {

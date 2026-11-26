@@ -1,9 +1,10 @@
 use quanta_index_core::index::{
-    AttemptContext, CatalogView, Digest, IndexError, MapRoot, ObjectChildren, ObjectRef, OperationKey,
-    OrdinalMapEdit, OwnerKey, OwnerMutationCursor, OwnerMutationSet, ProducerCompleteness,
-    ProjectionBinding, ProjectionCertificate, ProjectionId, ProjectionOwnerContribution,
-    ProjectionTransition, RegisteredObject, WorkBudget, decode_projection_binding,
-    decode_projection_certificate, decode_projection_owner, owner_map_key,
+    AttemptContext, CatalogView, Digest, IndexError, MapRoot, ObjectChildren, ObjectRef,
+    OperationKey, OrdinalMapEdit, OwnerKey, OwnerMutationCursor, OwnerMutationSet,
+    ProducerCompleteness, ProjectionBinding, ProjectionCertificate, ProjectionId,
+    ProjectionOwnerContribution, ProjectionTransition, RegisteredObject, WorkBudget,
+    decode_projection_binding, decode_projection_certificate, decode_projection_owner,
+    owner_map_key,
     ports::{ImmutableObjectPort, MapEditCursor, PersistentMapPort},
 };
 

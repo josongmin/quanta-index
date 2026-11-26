@@ -117,7 +117,9 @@ pub fn read_map_edit_budgeted(
     let next = crate::optional_map_value(row.get_ref(2).map_err(|error| sql(&error))?)?;
     let actual = OrdinalMapEdit::allocation_bytes(key.len(), expected, next)?;
     budget.charge(WorkUsage {
-        bytes: actual.checked_sub(minimum).ok_or(IndexError::ResourceLimited)?,
+        bytes: actual
+            .checked_sub(minimum)
+            .ok_or(IndexError::ResourceLimited)?,
         ..WorkUsage::default()
     })?;
     OrdinalMapEdit::copy_key(root, key, expected, next, budget)

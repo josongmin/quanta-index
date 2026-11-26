@@ -243,7 +243,6 @@ impl QuarantinedGenerationEntryV1 {
     }
 }
 
-
 impl QuarantineInventoryV1 {
     fn validate_wire<E: de::Error>(&self) -> Result<(), E> {
         for entry in &self.lexical {

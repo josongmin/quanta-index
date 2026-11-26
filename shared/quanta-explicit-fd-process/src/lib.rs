@@ -36,14 +36,14 @@ pub use child::ExplicitFdChildV1;
 pub use error::ExplicitFdProcessErrorV1;
 pub use git_bootstrap_authority_v1::GitProcessBootstrapAuthorityV1;
 pub use inherited::{
-    try_duplicate_optional_inherited_regular_file_v1,
     try_duplicate_inherited_read_only_regular_file_v1, try_duplicate_inherited_read_pipe_v1,
     try_duplicate_inherited_regular_file_v1, try_duplicate_inherited_unix_datagram_v1,
+    try_duplicate_optional_inherited_regular_file_v1,
 };
 pub use mutation::PathMutationGuardV1;
-pub use pin::{PinnedExecutableV1, PinnedReadOnlyFileV1, PinnedWorkingDirectoryV1};
 #[cfg(target_os = "linux")]
 pub use pin::ObservedExecutableImageV1;
+pub use pin::{PinnedExecutableV1, PinnedReadOnlyFileV1, PinnedWorkingDirectoryV1};
 pub use pipe::try_create_cloexec_pipe_v1;
 pub use request::ExplicitFdSpawnRequestV1;
 pub use request::{

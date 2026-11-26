@@ -5,8 +5,7 @@ use quanta_index_contract::{
     RepoId, RevisionId,
     index::{
         MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1, MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1,
-        NativeProtectedRepoMapHeadV1, NativeProtectedSourceRoutesV1,
-        RetiredProjectionPolicyRefV1,
+        NativeProtectedRepoMapHeadV1, NativeProtectedSourceRoutesV1, RetiredProjectionPolicyRefV1,
     },
 };
 use quanta_index_core::index::{
@@ -687,7 +686,9 @@ impl SqliteCatalog {
         policy: RetiredProjectionPolicyRefV1,
         budget: &mut WorkBudget,
     ) -> Result<NativeBootManifest, IndexError> {
-        policy.validate_v1().map_err(|reason| IndexError::InvalidInput(reason.into()))?;
+        policy
+            .validate_v1()
+            .map_err(|reason| IndexError::InvalidInput(reason.into()))?;
         self.select_native_boot_manifest_impl(key, budget, true, None, Some(policy), None)
     }
 
@@ -700,7 +701,9 @@ impl SqliteCatalog {
         policy: RetiredProjectionPolicyRefV1,
         budget: &mut WorkBudget,
     ) -> Result<NativeBootManifest, IndexError> {
-        policy.validate_v1().map_err(|reason| IndexError::InvalidInput(reason.into()))?;
+        policy
+            .validate_v1()
+            .map_err(|reason| IndexError::InvalidInput(reason.into()))?;
         self.select_native_boot_manifest_impl(key, budget, true, None, Some(policy), Some(ingress))
     }
 
@@ -735,7 +738,9 @@ impl SqliteCatalog {
         policy: RetiredProjectionPolicyRefV1,
         budget: &mut WorkBudget,
     ) -> Result<NativeBootManifest, IndexError> {
-        policy.validate_v1().map_err(|reason| IndexError::InvalidInput(reason.into()))?;
+        policy
+            .validate_v1()
+            .map_err(|reason| IndexError::InvalidInput(reason.into()))?;
         self.select_native_boot_manifest_impl(
             key,
             budget,
@@ -786,8 +791,13 @@ impl SqliteCatalog {
         let protected = protected_routes
             .map(|(object, routes, ingress)| {
                 let markers = validate_route_ingress(
-                    &tx, key, ingress, object, routes,
-                    retired_projection_policy.map(|policy| policy.object), budget,
+                    &tx,
+                    key,
+                    ingress,
+                    object,
+                    routes,
+                    retired_projection_policy.map(|policy| policy.object),
+                    budget,
                 )?;
                 let mut route = validate_protected_routes(
                     &tx,
@@ -821,10 +831,13 @@ impl SqliteCatalog {
                 return Err(IndexError::Conflict);
             }
             require_open_protected_route_ingress(&tx, ingress, budget)?;
-            let count: i64 = tx.query_row(
-                "SELECT count(*) FROM native_ingress_object_v1 WHERE operation=?1",
-                params![operation_key(ingress.operation)?], |row| row.get(0),
-            ).map_err(|error| sql(&error))?;
+            let count: i64 = tx
+                .query_row(
+                    "SELECT count(*) FROM native_ingress_object_v1 WHERE operation=?1",
+                    params![operation_key(ingress.operation)?],
+                    |row| row.get(0),
+                )
+                .map_err(|error| sql(&error))?;
             if count != 1 || !confirmed_ingress_membership(&tx, ingress.operation, policy.object)? {
                 return Err(IndexError::Conflict);
             }

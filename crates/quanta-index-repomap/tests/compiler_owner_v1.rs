@@ -864,17 +864,22 @@ fn native_file_owners_preserve_global_ranks_and_cross_file_edges()
     let mut permuted = original.clone();
     permuted.nodes.reverse();
     permuted.edges.reverse();
-    let mut selected_permuted = compiler.compile_native_selected_file_owners_v1(&permuted, &only_a)?;
+    let mut selected_permuted =
+        compiler.compile_native_selected_file_owners_v1(&permuted, &only_a)?;
     assert_eq!(selected_permuted.len(), 1);
-    assert_eq!(bind(selected_permuted.remove(0))?, (a_output.clone(), a_commitments));
+    assert_eq!(
+        bind(selected_permuted.remove(0))?,
+        (a_output.clone(), a_commitments)
+    );
 
     // An omitted owner's outgoing edge still has to pass complete-graph validation.
-    let invalid_omitted_owner = original.clone().with_edge(RepoMapEdge::DependsOn(
-        RepoMapDependsOnEdge {
-            dependent: b_symbol.clone(),
-            dependency: RepoMapNodeRef::Symbol(SymbolId::new("src/b.rs::absent")),
-        },
-    ));
+    let invalid_omitted_owner =
+        original
+            .clone()
+            .with_edge(RepoMapEdge::DependsOn(RepoMapDependsOnEdge {
+                dependent: b_symbol.clone(),
+                dependency: RepoMapNodeRef::Symbol(SymbolId::new("src/b.rs::absent")),
+            }));
     assert!(matches!(
         compiler.compile_native_selected_file_owners_v1(&invalid_omitted_owner, &only_a),
         Err(quanta_index_repomap::materializer::NativeRepoMapOwnerError::Compile(refusal))

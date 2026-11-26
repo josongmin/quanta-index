@@ -1229,7 +1229,8 @@ fn long_socket_path_preserves_the_bound_inode_and_both_client_deadlines() -> Tes
     let deadline = Instant::now() + Duration::from_secs(1);
     let ordinary = connect_before_deadline(&path, deadline).map_err(|error| error.to_string())?;
     let budget = RequestBudgetV1::for_duration(Duration::from_secs(1));
-    let budgeted = connect_stream_before_budget(&path, &budget).map_err(|error| error.to_string())?;
+    let budgeted =
+        connect_stream_before_budget(&path, &budget).map_err(|error| error.to_string())?;
     if !first.still_owns(&path).map_err(|error| error.to_string())? {
         return Err("second bind or client dial replaced the socket".into());
     }
@@ -1732,7 +1733,9 @@ impl IpcDispatcher<u64, u64> for DeadlineConsistencyDispatcher {
         u64::from(
             context.deadline == budget.deadline()
                 && context.deadline > Instant::now()
-                && self.0.is_none_or(|client_deadline| budget.deadline() <= client_deadline),
+                && self
+                    .0
+                    .is_none_or(|client_deadline| budget.deadline() <= client_deadline),
         )
     }
 }
@@ -1793,7 +1796,9 @@ fn dispatch_context_uses_the_admitted_budget_deadline() -> TestRes {
     let responses = [
         send_request::<_, TestResponseEnvelope>(&socket_path, &request, ClientIoPolicy::default()),
         super::send_request_with_commit_deadline_v1(
-            &socket_path, &request, &RequestBudgetV1::until(deadline),
+            &socket_path,
+            &request,
+            &RequestBudgetV1::until(deadline),
         ),
     ];
     for response in responses {
@@ -1804,8 +1809,12 @@ fn dispatch_context_uses_the_admitted_budget_deadline() -> TestRes {
     }
     let io_error = |error: std::io::Error| error.to_string();
     let mut client = UnixStream::connect(&socket_path).map_err(io_error)?;
-    client.set_read_timeout(Some(Duration::from_secs(3))).map_err(io_error)?;
-    client.write_all(&super::REQUEST_DEADLINE_PREFACE_V1).map_err(io_error)?;
+    client
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .map_err(io_error)?;
+    client
+        .write_all(&super::REQUEST_DEADLINE_PREFACE_V1)
+        .map_err(io_error)?;
     let mut ack = [0; 4];
     client.read_exact(&mut ack).map_err(io_error)?;
     if ack != super::REQUEST_DEADLINE_ACK_V1 {

@@ -1,8 +1,8 @@
 //! Cold inventory: an immutable map of upper term fences to occurrence blocks.
 //! Only the original ordered SQL edit stream supplies directory entries.
 use super::super::entry_edits::Edits;
-use crate::native::text_inventory_descriptor::{LEAF, PACKED, corrupt, decode};
 pub(in crate::native::text) use crate::native::text_inventory_descriptor::descriptor;
+use crate::native::text_inventory_descriptor::{LEAF, PACKED, corrupt, decode};
 use crate::native::text_memory::{PreparedKey, PreparedRows};
 use crate::native::text_occurrence::{
     OccurrenceReader,

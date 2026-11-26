@@ -455,11 +455,13 @@ const READY_PENDING_QUERY: &str = "SELECT work,length(payload),ready_since_ms FR
 const READY_EXPIRED_QUERY: &str = "SELECT work,length(payload),lease_until_ms FROM native_work_v1
     WHERE workspace=?1 AND epoch=?2 AND owner_mode=1 AND status=1 AND lease_until_ms<=?3
     ORDER BY lease_until_ms,work LIMIT ?4";
-const READY_PENDING_AFTER_QUERY: &str = "SELECT work,length(payload),ready_since_ms FROM native_work_v1
+const READY_PENDING_AFTER_QUERY: &str =
+    "SELECT work,length(payload),ready_since_ms FROM native_work_v1
     WHERE workspace=?1 AND epoch=?2 AND owner_mode=0 AND status=0
       AND (ready_since_ms>?3 OR (ready_since_ms=?3 AND work>?4))
     ORDER BY ready_since_ms,work LIMIT ?5";
-const READY_EXPIRED_AFTER_QUERY: &str = "SELECT work,length(payload),lease_until_ms FROM native_work_v1
+const READY_EXPIRED_AFTER_QUERY: &str =
+    "SELECT work,length(payload),lease_until_ms FROM native_work_v1
     WHERE workspace=?1 AND epoch=?2 AND owner_mode=1 AND status=1 AND lease_until_ms<=?3
       AND (lease_until_ms>?4 OR (lease_until_ms=?4 AND work>?5))
     ORDER BY lease_until_ms,work LIMIT ?6";
@@ -1649,10 +1651,18 @@ impl Serialize for OperationRow {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct as _;
 
-        let has_replay = self.projection_replay.is_some()
-            || self.retirement_policy_sha256_v2.is_some();
-        let mut row =
-            serializer.serialize_struct("OperationRow", if self.retirement_policy_sha256_v2.is_some() { 7 } else if has_replay { 6 } else { 5 })?;
+        let has_replay =
+            self.projection_replay.is_some() || self.retirement_policy_sha256_v2.is_some();
+        let mut row = serializer.serialize_struct(
+            "OperationRow",
+            if self.retirement_policy_sha256_v2.is_some() {
+                7
+            } else if has_replay {
+                6
+            } else {
+                5
+            },
+        )?;
         row.serialize_field("immutable", &self.immutable)?;
         row.serialize_field("events", &self.events)?;
         row.serialize_field("fence", &self.fence)?;
@@ -1662,7 +1672,10 @@ impl Serialize for OperationRow {
             row.serialize_field("projection_replay", &self.projection_replay)?;
         }
         if self.retirement_policy_sha256_v2.is_some() {
-            row.serialize_field("retirement_policy_sha256_v2", &self.retirement_policy_sha256_v2)?;
+            row.serialize_field(
+                "retirement_policy_sha256_v2",
+                &self.retirement_policy_sha256_v2,
+            )?;
         }
         row.end()
     }
@@ -1792,7 +1805,11 @@ impl<'de> Deserialize<'de> for OperationRow {
                             read_field(&mut map, &mut projection_replay, "projection_replay")?;
                         }
                         Field::RetirementPolicySha256V2 => {
-                            read_field(&mut map, &mut retirement_policy_sha256_v2, "retirement_policy_sha256_v2")?;
+                            read_field(
+                                &mut map,
+                                &mut retirement_policy_sha256_v2,
+                                "retirement_policy_sha256_v2",
+                            )?;
                         }
                     }
                 }
@@ -2405,7 +2422,11 @@ fn ready_candidates_after_v2(
     budget: &mut WorkBudget,
 ) -> Result<Vec<(u64, Vec<u8>)>, IndexError> {
     budget.checkpoint()?;
-    let query = if claimed { READY_EXPIRED_AFTER_QUERY } else { READY_PENDING_AFTER_QUERY };
+    let query = if claimed {
+        READY_EXPIRED_AFTER_QUERY
+    } else {
+        READY_PENDING_AFTER_QUERY
+    };
     let after_due = match after {
         Some((due, _)) => int(*due)?,
         None => -1,
@@ -2413,16 +2434,30 @@ fn ready_candidates_after_v2(
     let after_work = after.map_or(&[][..], |(_, work)| work.as_slice());
     let mut statement = connection.prepare(query).map_err(|error| sql(&error))?;
     let mut rows = if claimed {
-        statement.query(params![workspace_key(workspace)?, int(epoch)?, int(now)?,
-            after_due, after_work, i64::from(RETIRED_READY_PAGE_V2)])
+        statement
+            .query(params![
+                workspace_key(workspace)?,
+                int(epoch)?,
+                int(now)?,
+                after_due,
+                after_work,
+                i64::from(RETIRED_READY_PAGE_V2)
+            ])
             .map_err(|error| sql(&error))?
     } else {
-        statement.query(params![workspace_key(workspace)?, int(epoch)?,
-            after_due, after_work, i64::from(RETIRED_READY_PAGE_V2)])
+        statement
+            .query(params![
+                workspace_key(workspace)?,
+                int(epoch)?,
+                after_due,
+                after_work,
+                i64::from(RETIRED_READY_PAGE_V2)
+            ])
             .map_err(|error| sql(&error))?
     };
     let mut result = Vec::new();
-    result.try_reserve_exact(RETIRED_READY_PAGE_V2 as usize)
+    result
+        .try_reserve_exact(RETIRED_READY_PAGE_V2 as usize)
         .map_err(|_| IndexError::ResourceLimited)?;
     while let Some(row) = rows.next().map_err(|error| sql(&error))? {
         let key = bounded_work_blob(row, 0, 32, true).map_err(|error| sql(&error))?;
@@ -2434,7 +2469,9 @@ fn ready_candidates_after_v2(
         }
         budget.charge(WorkUsage {
             reads: 1,
-            bytes: payload_bytes.checked_add(64).ok_or(IndexError::ResourceLimited)?,
+            bytes: payload_bytes
+                .checked_add(64)
+                .ok_or(IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
         result.push((uint(due)?, key));
@@ -2455,16 +2492,32 @@ struct ReadyLaneV2 {
 
 impl ReadyLaneV2 {
     fn new(claimed: bool) -> Self {
-        Self { claimed, rows: Vec::new(), position: 0, after: None, exhausted: false }
+        Self {
+            claimed,
+            rows: Vec::new(),
+            position: 0,
+            after: None,
+            exhausted: false,
+        }
     }
 
     fn head(
-        &mut self, connection: &Connection, workspace: WorkspaceKey, epoch: u64,
-        now: u64, budget: &mut WorkBudget,
+        &mut self,
+        connection: &Connection,
+        workspace: WorkspaceKey,
+        epoch: u64,
+        now: u64,
+        budget: &mut WorkBudget,
     ) -> Result<Option<(u64, Vec<u8>)>, IndexError> {
         if self.position == self.rows.len() && !self.exhausted {
             let page = ready_candidates_after_v2(
-                connection, workspace, epoch, now, self.after.as_ref(), self.claimed, budget,
+                connection,
+                workspace,
+                epoch,
+                now,
+                self.after.as_ref(),
+                self.claimed,
+                budget,
             )?;
             self.exhausted = page.len() < RETIRED_READY_PAGE_V2 as usize;
             self.after = page.last().cloned();
@@ -2794,7 +2847,8 @@ fn claim_events(
     projection_replay: Option<ProjectionReplayStamp>,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    let native_dsl_projection = key.producer == NATIVE_DSL_PRODUCER_V1 && projection_replay.is_some();
+    let native_dsl_projection =
+        key.producer == NATIVE_DSL_PRODUCER_V1 && projection_replay.is_some();
     let mut unique = std::collections::BTreeSet::new();
     for event in events {
         budget.checkpoint()?;
@@ -3804,7 +3858,10 @@ impl SqliteCatalog {
         key: OperationKey,
         budget: &mut WorkBudget,
     ) -> Result<Option<Digest>, IndexError> {
-        budget.charge(WorkUsage { reads: 1, ..WorkUsage::default() })?;
+        budget.charge(WorkUsage {
+            reads: 1,
+            ..WorkUsage::default()
+        })?;
         let guard = self.lock_native_budget(budget)?;
         let row = read_operation_with_budget(&guard, key, Some(budget))?
             .ok_or(IndexError::SnapshotUnavailable)?;
@@ -4382,24 +4439,31 @@ impl WorkClaimPort for SqliteCatalog {
             return Err(IndexError::ResourceLimited);
         }
         let page_bytes = std::mem::size_of::<(u64, Vec<u8>)>()
-            .checked_add(32).ok_or(IndexError::ResourceLimited)?
+            .checked_add(32)
+            .ok_or(IndexError::ResourceLimited)?
             .checked_mul(6 * RETIRED_READY_PAGE_V2 as usize)
             .ok_or(IndexError::ResourceLimited)?;
         let result_bytes = std::mem::size_of::<WorkIntent>()
             .checked_mul(usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?)
             .ok_or(IndexError::ResourceLimited)?;
-        let memory_bytes = page_bytes.checked_add(
-            result_bytes.checked_mul(2).ok_or(IndexError::ResourceLimited)?,
-        )
+        let memory_bytes = page_bytes
+            .checked_add(
+                result_bytes
+                    .checked_mul(2)
+                    .ok_or(IndexError::ResourceLimited)?,
+            )
             .and_then(|bytes| bytes.checked_add(8192))
             .ok_or(IndexError::ResourceLimited)?;
-        let _memory = budget.reserve_memory(
-            u64::try_from(memory_bytes).map_err(|_| IndexError::ResourceLimited)?,
-            MemoryLifetime::Temporary,
-        )?.ok_or(IndexError::ResourceLimited)?;
+        let _memory = budget
+            .reserve_memory(
+                u64::try_from(memory_bytes).map_err(|_| IndexError::ResourceLimited)?,
+                MemoryLifetime::Temporary,
+            )?
+            .ok_or(IndexError::ResourceLimited)?;
         budget.checkpoint()?;
         let mut guard = self.lock_native_budget(budget)?;
-        let tx = guard.transaction_with_behavior(TransactionBehavior::Deferred)
+        let tx = guard
+            .transaction_with_behavior(TransactionBehavior::Deferred)
             .map_err(|error| sql(&error))?;
         let current = current_view(&tx, workspace)?.ok_or(IndexError::SnapshotUnavailable)?;
         if current.identity.epoch != epoch {
@@ -4409,9 +4473,12 @@ impl WorkClaimPort for SqliteCatalog {
         let mut pending = ReadyLaneV2::new(false);
         let mut expired = ReadyLaneV2::new(true);
         let mut result = Vec::new();
-        result.try_reserve_exact(usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?)
+        result
+            .try_reserve_exact(usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?)
             .map_err(|_| IndexError::ResourceLimited)?;
-        if result.capacity() > 2 * usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)? {
+        if result.capacity()
+            > 2 * usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?
+        {
             return Err(IndexError::ResourceLimited);
         }
         let mut scanned = 0u32;
@@ -4421,23 +4488,39 @@ impl WorkClaimPort for SqliteCatalog {
             let second = expired.head(&tx, workspace, epoch, now, budget)?;
             let (due, key) = match (first, second) {
                 (None, None) => break,
-                (Some(left), None) => { pending.advance(); left }
-                (None, Some(right)) => { expired.advance(); right }
-                (Some(left), Some(right)) if left <= right => { pending.advance(); left }
-                (Some(_), Some(right)) => { expired.advance(); right }
+                (Some(left), None) => {
+                    pending.advance();
+                    left
+                }
+                (None, Some(right)) => {
+                    expired.advance();
+                    right
+                }
+                (Some(left), Some(right)) if left <= right => {
+                    pending.advance();
+                    left
+                }
+                (Some(_), Some(right)) => {
+                    expired.advance();
+                    right
+                }
             };
             scanned = scanned.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             if scanned > RETIRED_READY_SCAN_MAX_V2 {
                 return Err(IndexError::ResourceLimited);
             }
-            let (payload, checksum): (Vec<u8>, Vec<u8>) = tx.query_row(
-                "SELECT payload,row_digest FROM native_work_v1 WHERE work=?1",
-                params![&key],
-                |row| Ok((
-                    bounded_work_blob(row, 0, owned_work::MAX_OWNED_WORK_ROW_BYTES, false)?,
-                    bounded_work_blob(row, 1, 32, true)?,
-                )),
-            ).map_err(|error| sql(&error))?;
+            let (payload, checksum): (Vec<u8>, Vec<u8>) = tx
+                .query_row(
+                    "SELECT payload,row_digest FROM native_work_v1 WHERE work=?1",
+                    params![&key],
+                    |row| {
+                        Ok((
+                            bounded_work_blob(row, 0, owned_work::MAX_OWNED_WORK_ROW_BYTES, false)?,
+                            bounded_work_blob(row, 1, 32, true)?,
+                        ))
+                    },
+                )
+                .map_err(|error| sql(&error))?;
             check_digest(b"qidx.native.work.v2", &payload, &checksum)?;
             let decoded: WorkRow = decode(&payload)?;
             if work_key(&decoded.intent)? != key {
@@ -6558,12 +6641,24 @@ mod tests {
             ]);
             let decoded: NativeBootManifest = serde_json::from_value(positional.clone())?;
             check_eq!(decoded.protected_source_routes, routes);
-            check_eq!(decoded.retired_projection_policy, retired.retired_projection_policy);
-            let mut trailing = positional.as_array().ok_or("positional BOOT array")?.clone();
+            check_eq!(
+                decoded.retired_projection_policy,
+                retired.retired_projection_policy
+            );
+            let mut trailing = positional
+                .as_array()
+                .ok_or("positional BOOT array")?
+                .clone();
             trailing.push(serde_json::json!(0));
-            check!(serde_json::from_value::<NativeBootManifest>(serde_json::Value::Array(trailing)).is_err());
+            check!(
+                serde_json::from_value::<NativeBootManifest>(serde_json::Value::Array(trailing))
+                    .is_err()
+            );
         }
-        check_eq!(retired.all_protected_roots().last(), Some(ObjectRef(Digest([252; 32]))));
+        check_eq!(
+            retired.all_protected_roots().last(),
+            Some(ObjectRef(Digest([252; 32])))
+        );
         let invalid = NativeBootManifest {
             retired_projection_policy: None,
             ..retired
@@ -8963,15 +9058,19 @@ mod tests {
 
     #[test]
     fn filtered_ready_work_fills_limit_after_retired_front_row() -> TestResult {
-        use quanta_index_core::index::{MemoryLease, MemoryLeaseOwner, MemoryScope, MemoryScopePort};
+        use quanta_index_core::index::{
+            MemoryLease, MemoryLeaseOwner, MemoryScope, MemoryScopePort,
+        };
         struct TestMemory;
         impl MemoryLeaseOwner for TestMemory {
             fn release(&self, _bytes: u64) {}
         }
         impl MemoryScopePort for TestMemory {
-            fn reserve(&self, bytes: u64, _lifetime: MemoryLifetime)
-                -> Result<MemoryLease, IndexError>
-            {
+            fn reserve(
+                &self,
+                bytes: u64,
+                _lifetime: MemoryLifetime,
+            ) -> Result<MemoryLease, IndexError> {
                 Ok(MemoryLease::new(bytes, Arc::new(TestMemory)))
             }
         }
@@ -9007,7 +9106,11 @@ mod tests {
         let second = *ordered.get(1).ok_or("second ready work missing")?;
         check_eq!(
             catalog.ready_work_filtered_v2(
-                workspace(), 7, 1, &|intent| *intent == second, &mut budget,
+                workspace(),
+                7,
+                1,
+                &|intent| *intent == second,
+                &mut budget,
             )?,
             vec![second]
         );
@@ -13108,13 +13211,21 @@ mod tests {
             policy_sha256: policy,
         })?;
         let AdmissionOutcome::New(attempt) = catalog.admit(operation, ingress, &[], &mut budget)?
-        else { return Err("expected new classified operation".into()); };
+        else {
+            return Err("expected new classified operation".into());
+        };
         let next = view(1, genesis.profile, None);
-        check!(matches!(publish(&catalog, attempt, &genesis, next)?, OperationStatus::Published(_)));
+        check!(matches!(
+            publish(&catalog, attempt, &genesis, next)?,
+            OperationStatus::Published(_)
+        ));
         let page = catalog.release_terminal_custody(operation.key, 256, &mut admission_budget())?;
         check!(!page.has_more);
         check_eq!(terminal_custody_counts(&catalog, operation.key)?, (0, 0, 0));
-        check_eq!(catalog.retirement_policy_sha256_v2(operation.key, &mut admission_budget())?, Some(policy));
+        check_eq!(
+            catalog.retirement_policy_sha256_v2(operation.key, &mut admission_budget())?,
+            Some(policy)
+        );
         Ok(())
     }
 

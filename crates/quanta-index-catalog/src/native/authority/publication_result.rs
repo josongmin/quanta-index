@@ -2,8 +2,8 @@
 
 use quanta_index_contract::native_protocol::{NATIVE_DSL_PRODUCER_V1, native_dsl_sequence_v1};
 use quanta_index_core::index::{
-    CatalogView, IndexError, MemoryLease, MemoryLifetime, OperationKey, OperationStatus, WorkBudget,
-    WorkUsage,
+    CatalogView, IndexError, MemoryLease, MemoryLifetime, OperationKey, OperationStatus,
+    WorkBudget, WorkUsage,
 };
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 

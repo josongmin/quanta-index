@@ -750,8 +750,8 @@ fn request_events_bind_plane_and_limit_before_sdk_publication() {
 fn quarantine_inventory_and_discard_carry_the_target_verbatim() {
     use quanta_index_contract::{
         QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1,
-        QuarantineTargetV1, QuarantinedGenerationEntryV1,
-        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneTrackKind,
+        QuarantineTargetV1, QuarantinedGenerationEntryV1, SearchPlaneControlIpcRequest,
+        SearchPlaneControlIpcResponse, SearchPlaneTrackKind,
     };
     let inventory = QuarantineInventoryV1 {
         lexical: vec![QuarantinedGenerationEntryV1 {

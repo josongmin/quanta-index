@@ -600,7 +600,7 @@ fn source_path_bucket_preserves_repository_owners_and_rejects_scope_changes() ->
             source_repo_id: repository
                 .map(quanta_index_contract::RepoId::new)
                 .transpose()?,
-                language: None,
+            language: None,
         };
         Ok(objects
             .put(&serde_json::to_vec(&record)?, &[body], &mut budget())?
@@ -656,8 +656,7 @@ fn source_path_bucket_preserves_repository_owners_and_rejects_scope_changes() ->
         let marker = objects
             .lookup(cut.paths, b"path\0src/main.rs", &mut budget())?
             .ok_or("repository path absent")?;
-        let SourcePathOwners::Repositories(root) =
-            SourcePathOwners::decode(marker, &budget())?
+        let SourcePathOwners::Repositories(root) = SourcePathOwners::decode(marker, &budget())?
         else {
             return Err("repository bucket absent".into());
         };
@@ -864,8 +863,8 @@ fn source_path_cycle_crosses_mutation_cursor_pages() -> TestResult {
     while let Some(reference) = path_nodes.pop() {
         let node = objects.get(reference, &mut budget())?;
         // Both one-level and nested packing cross the same mutation-page boundary.
-        contains_packed_node |= node.payload.starts_with(b"QIMAP005")
-            || node.payload.starts_with(b"QIMAP006");
+        contains_packed_node |=
+            node.payload.starts_with(b"QIMAP005") || node.payload.starts_with(b"QIMAP006");
         // Path owner values have no object children, so these edges are nodes.
         path_nodes.extend(node.registration.children.iter().copied());
     }
@@ -3458,8 +3457,14 @@ fn empty_source_advance_rebinds_real_filemap_and_preserves_pinned_paths() -> Tes
         serde_json::from_slice(&objects.get(old_file.artifact, &mut budget())?.payload)?;
     let new_root: serde_json::Value =
         serde_json::from_slice(&objects.get(new_file.artifact, &mut budget())?.payload)?;
-    assert_eq!(old_root.get("source"), Some(&serde_json::to_value(old_cut)?));
-    assert_eq!(new_root.get("source"), Some(&serde_json::to_value(new_cut)?));
+    assert_eq!(
+        old_root.get("source"),
+        Some(&serde_json::to_value(old_cut)?)
+    );
+    assert_eq!(
+        new_root.get("source"),
+        Some(&serde_json::to_value(new_cut)?)
+    );
 
     let old_paths = query_paths(
         &FilePathQuery {
@@ -7153,7 +7158,10 @@ impl PersistentMapPort for UpdateCostSpy {
                         ));
                     }
                     state.next_literal_blocks = Some(
-                        *roots.as_slice().get(index).ok_or(IndexError::ResourceLimited)?,
+                        *roots
+                            .as_slice()
+                            .get(index)
+                            .ok_or(IndexError::ResourceLimited)?,
                     );
                 }
             }
@@ -7993,9 +8001,7 @@ fn literal_unrelated_corpus() -> Vec<u8> {
     body
 }
 
-fn literal_directory_patch_case(
-    unrelated_len: usize,
-) -> TestResult<(u64, UpdateCostObservation)> {
+fn literal_directory_patch_case(unrelated_len: usize) -> TestResult<(u64, UpdateCostObservation)> {
     let directory = tempfile::tempdir()?;
     let observer = Arc::new(quanta_index_storage::ObjectIoObservation::default());
     let (engine, objects, catalog, spy) = observed_literal_cost_kernel(directory.path(), observer)?;
@@ -8062,7 +8068,8 @@ fn literal_directory_patch_case(
     let new_view = published(block_on(engine.submit(update, &mut work))?)?;
     let observed = spy.disarm()?;
     let new_member = member(&engine, &objects, new_view)?;
-    let _ = assert_literal_postings_exact(&objects, &new_member, unrelated_body, b"fixed-hotp-new-v1")?;
+    let _ =
+        assert_literal_postings_exact(&objects, &new_member, unrelated_body, b"fixed-hotp-new-v1")?;
     assert_eq!(
         hits(&engine, old_view, &objects, &old_member, b"hotp-old")?,
         vec![hot_owner]
@@ -8243,12 +8250,16 @@ fn literal_patch_uses_empty_directory_for_two_byte_sources() -> TestResult {
         ))?)?;
         let member = member(&engine, &objects, next_view)?;
         let root = objects.get(member.artifact, &mut budget())?;
-        assert_eq!(root.payload.get(41), Some(&u8::from(expected_postings != 0)));
+        assert_eq!(
+            root.payload.get(41),
+            Some(&u8::from(expected_postings != 0))
+        );
         if expected_postings == 0 {
             assert_eq!(root.registration.children.len(), 1);
             assert!(hits(&engine, next_view, &objects, &member, b"abc")?.is_empty());
         } else {
-            let rows = literal_directory_rows(&objects, literal_block_directory(&objects, &member)?)?;
+            let rows =
+                literal_directory_rows(&objects, literal_block_directory(&objects, &member)?)?;
             assert_eq!(rows.len(), 1);
             let block = objects.get(rows[0].1, &mut budget())?;
             let keys = literal_block_keys(&block.payload)?;
@@ -8257,7 +8268,10 @@ fn literal_patch_uses_empty_directory_for_two_byte_sources() -> TestResult {
             expected[..3].copy_from_slice(b"abc");
             expected[3..].copy_from_slice(&literal_owner_bytes(owner));
             assert_eq!(keys[0], expected);
-            assert_eq!(hits(&engine, next_view, &objects, &member, b"abc")?, vec![owner]);
+            assert_eq!(
+                hits(&engine, next_view, &objects, &member, b"abc")?,
+                vec![owner]
+            );
         }
         prior_ref = Some(next_ref);
         prior_view = next_view;
@@ -8283,9 +8297,21 @@ fn literal_patch_inserts_and_removes_first_and_last_postings() -> TestResult {
             2,
             1,
             vec![
-                OwnerMutation { owner: owner(1), expected: None, next: Some(base) },
-                OwnerMutation { owner: owner(2), expected: None, next: Some(first) },
-                OwnerMutation { owner: owner(3), expected: None, next: Some(last) },
+                OwnerMutation {
+                    owner: owner(1),
+                    expected: None,
+                    next: Some(base),
+                },
+                OwnerMutation {
+                    owner: owner(2),
+                    expected: None,
+                    next: Some(first),
+                },
+                OwnerMutation {
+                    owner: owner(3),
+                    expected: None,
+                    next: Some(last),
+                },
             ],
         )?,
         &mut budget(),
@@ -8295,8 +8321,18 @@ fn literal_patch_inserts_and_removes_first_and_last_postings() -> TestResult {
     let mut prior_last = last;
 
     for (sequence, id, body, expected_grams) in [
-        (3, 2, b"abc".as_slice(), [Some((b"abc".as_slice(), 2)), None]),
-        (4, 3, b"xyz".as_slice(), [Some((b"abc".as_slice(), 2)), Some((b"xyz".as_slice(), 3))]),
+        (
+            3,
+            2,
+            b"abc".as_slice(),
+            [Some((b"abc".as_slice(), 2)), None],
+        ),
+        (
+            4,
+            3,
+            b"xyz".as_slice(),
+            [Some((b"abc".as_slice(), 2)), Some((b"xyz".as_slice(), 3))],
+        ),
         (5, 2, b"ab".as_slice(), [None, Some((b"xyz".as_slice(), 3))]),
         (6, 3, b"xy".as_slice(), [None, None]),
     ] {
@@ -8319,14 +8355,19 @@ fn literal_patch_inserts_and_removes_first_and_last_postings() -> TestResult {
             )?,
             &mut budget(),
         ))?)?;
-        if id == 2 { prior_first = current_ref; } else { prior_last = current_ref; }
+        if id == 2 {
+            prior_first = current_ref;
+        } else {
+            prior_last = current_ref;
+        }
         let member = member(&engine, &objects, next_view)?;
         let mut actual = Vec::new();
-        for (_, reference) in literal_directory_rows(
-            &objects,
-            literal_block_directory(&objects, &member)?,
-        )? {
-            actual.extend(literal_block_keys(&objects.get(reference, &mut budget())?.payload)?);
+        for (_, reference) in
+            literal_directory_rows(&objects, literal_block_directory(&objects, &member)?)?
+        {
+            actual.extend(literal_block_keys(
+                &objects.get(reference, &mut budget())?.payload,
+            )?);
         }
         let mut expected = Vec::new();
         for (gram, id) in [(b"mmm".as_slice(), 1)]
@@ -8342,11 +8383,18 @@ fn literal_patch_inserts_and_removes_first_and_last_postings() -> TestResult {
         assert_eq!(actual, expected);
         for (gram, id) in [(b"abc".as_slice(), 2), (b"xyz".as_slice(), 3)] {
             let observed = hits(&engine, next_view, &objects, &member, gram)?;
-            assert_eq!(observed, if expected_grams.into_iter().flatten().any(|(text, _)| text == gram) {
-                vec![owner(id)]
-            } else {
-                Vec::new()
-            });
+            assert_eq!(
+                observed,
+                if expected_grams
+                    .into_iter()
+                    .flatten()
+                    .any(|(text, _)| text == gram)
+                {
+                    vec![owner(id)]
+                } else {
+                    Vec::new()
+                }
+            );
         }
         view = next_view;
     }

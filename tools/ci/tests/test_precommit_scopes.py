@@ -323,7 +323,7 @@ def test_ci_precommit_skips_only_hooks_owned_by_dedicated_full_jobs() -> None:
         "ruff": ("prompt-manager", "python -m ruff check ."),
         "ruff-format": ("prompt-manager", "python -m ruff format --check ."),
         "prompt-manager-lint": ("prompt-manager", "tools/prompt-manager/pm.py lint"),
-        "cargo-fmt-check": ("rust-fmt", "./scripts/cargow fmt"),
+        "cargo-fmt-check": ("rust-fmt", "./scripts/run-rustfmt-owned.sh"),
         "cargo-check": (
             "rust-msrv",
             "RUSTUP_TOOLCHAIN=1.92.0 ./scripts/cargow --lane msrv-lane test --workspace",

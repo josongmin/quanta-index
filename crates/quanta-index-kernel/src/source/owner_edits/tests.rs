@@ -97,10 +97,13 @@ fn grouped_owner_transition_refuses_unbound_or_unreserved_writes_before_sql() ->
     let old_path = "src/old.rs";
     let new_path = "src/new.rs";
 
-    let unbound =
-        fixture
-            .paths
-            .append_owner_transition(mutation, Some(old_path), Some(new_path), None, &mut work);
+    let unbound = fixture.paths.append_owner_transition(
+        mutation,
+        Some(old_path),
+        Some(new_path),
+        None,
+        &mut work,
+    );
     if !matches!(unbound, Err(IndexError::BackendViolation(_))) {
         return Err("grouped owner write accepted without spool transaction".into());
     }
@@ -124,10 +127,13 @@ fn grouped_owner_transition_refuses_unbound_or_unreserved_writes_before_sql() ->
     drop(db);
 
     fixture.paths.begin_owner_spool(&work)?;
-    let unreserved =
-        fixture
-            .paths
-            .append_owner_transition(mutation, Some(old_path), Some(new_path), None, &mut work);
+    let unreserved = fixture.paths.append_owner_transition(
+        mutation,
+        Some(old_path),
+        Some(new_path),
+        None,
+        &mut work,
+    );
     if !matches!(unreserved, Err(IndexError::Storage(_))) {
         return Err("grouped owner write accepted a page cap beyond reservation".into());
     }

@@ -3,13 +3,9 @@ use quanta_index_contract::{
     ContinuationTokenV2, ExplainCandidateV1, GenerationPin, GoTestTraceFileQueryRequestV1,
     HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryRequest,
     HybridSeedQueryRequest, LexicalCandidate, ManifestGeneration, ProcessRequestEventPlaneV1,
-    QueryConstraintSetV1, RepoId,
-    RevisionId, RuntimeMetadataQueryRequest, SemanticQueryRequest, StructuralQueryRequest,
-    SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
-    ipc::{
-        QuarantineTargetV1, QuarantinedGenerationEntryV1,
-        SearchPlaneTrackKind,
-    },
+    QueryConstraintSetV1, RepoId, RevisionId, RuntimeMetadataQueryRequest, SemanticQueryRequest,
+    StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
+    ipc::{QuarantineTargetV1, QuarantinedGenerationEntryV1, SearchPlaneTrackKind},
 };
 use quanta_index_sdk::ConnectOptions;
 use std::collections::VecDeque;
@@ -679,8 +675,7 @@ fn parse_quarantine_discard(
         }
         _ => {
             return Err(CliError::usage(
-                "quarantine discard needs --track and --path (a generation directory)"
-                    .to_string(),
+                "quarantine discard needs --track and --path (a generation directory)".to_string(),
             ));
         }
     };

@@ -20,10 +20,9 @@ use crate::binding::{
 };
 use crate::{
     ClientProfile, ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace,
-    ObservabilityNamespace, QuarantineNamespace, QueryTransport,
-    RuntimeNamespace, SdkError, SearchCorpusNamespace, SearchNamespace, SemanticNamespace,
-    StructuralNamespace, SymbolNamespace, UdsControlTransport, UdsIngestTransport,
-    UdsQueryTransport,
+    ObservabilityNamespace, QuarantineNamespace, QueryTransport, RuntimeNamespace, SdkError,
+    SearchCorpusNamespace, SearchNamespace, SemanticNamespace, StructuralNamespace,
+    SymbolNamespace, UdsControlTransport, UdsIngestTransport, UdsQueryTransport,
 };
 use crate::{ControlTransport, IngestTransport};
 
@@ -136,7 +135,6 @@ impl ClientQueryRpcKindV1 {
             | SearchPlaneQueryIpcRequest::History(_)
             | SearchPlaneQueryIpcRequest::RuntimeMetadata(_)
             | SearchPlaneQueryIpcRequest::Structural(_)
-
             | SearchPlaneQueryIpcRequest::Explain(_)
             | SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => Err(SdkError::Protocol(
                 "lexical client observation reached a non-lexical RPC".to_string(),
@@ -542,7 +540,6 @@ impl QuantaIndexClientPayloadV1 {
             | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Ok(payload),
@@ -610,7 +607,6 @@ impl QuantaIndexClientPayloadV1 {
             | SearchPlaneQueryIpcRequest::History(_)
             | SearchPlaneQueryIpcRequest::RuntimeMetadata(_)
             | SearchPlaneQueryIpcRequest::Structural(_)
-
             | SearchPlaneQueryIpcRequest::Explain(_)
             | SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => Ok(()),
         }
@@ -649,8 +645,6 @@ impl QuantaIndexClientPayloadV1 {
             payload @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-
-
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -1080,7 +1074,6 @@ impl<'a> ReaderClient<'a> {
     ) -> Result<quanta_index_contract::SearchPlaneStructuralQueryResponse, SdkError> {
         self.client.structural().query_request(request)
     }
-
 }
 
 #[derive(Clone, Copy)]
@@ -1190,7 +1183,6 @@ impl<'a> ProducerClient<'a> {
     ) -> Result<crate::BatchReceipt, SdkError> {
         self.client.structural().publish(batch)
     }
-
 }
 
 #[derive(Clone, Copy)]
@@ -1228,7 +1220,6 @@ impl<'a> ControlClient<'a> {
     ) -> Result<quanta_index_contract::GenerationStatusReport, SdkError> {
         self.client.generations().status(repo_id, revision_id)
     }
-
 
     /// The daemon's metrics snapshot (QI-BB-015).
     pub fn metrics_snapshot(&self) -> Result<quanta_index_contract::MetricsSnapshotV1, SdkError> {

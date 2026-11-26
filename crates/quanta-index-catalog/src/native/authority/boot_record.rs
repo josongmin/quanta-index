@@ -94,19 +94,18 @@ impl<'de> serde::de::DeserializeSeed<'de> for BootFieldSeed {
 
 impl serde::Serialize for NativeBootManifest {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.validate_format_v2().map_err(serde::ser::Error::custom)?;
+        self.validate_format_v2()
+            .map_err(serde::ser::Error::custom)?;
         let mut state = serializer.serialize_struct(
             "NativeBootManifest",
             2 + usize::from(
                 self.protected_source_routes.is_some()
                     || self.format_version == Self::FORMAT_VERSION_V2,
-            )
-                + 2 * usize::from(self.format_version == Self::FORMAT_VERSION_V2),
+            ) + 2 * usize::from(self.format_version == Self::FORMAT_VERSION_V2),
         )?;
         state.serialize_field("operation", &self.operation)?;
         state.serialize_field("publication", &self.publication)?;
-        if self.protected_source_routes.is_some()
-            || self.format_version == Self::FORMAT_VERSION_V2
+        if self.protected_source_routes.is_some() || self.format_version == Self::FORMAT_VERSION_V2
         {
             state.serialize_field("protected_source_routes", &self.protected_source_routes)?;
         }
@@ -121,8 +120,11 @@ impl serde::Serialize for NativeBootManifest {
 impl<'de> serde::Deserialize<'de> for NativeBootManifest {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         const FIELDS: &[&str] = &[
-            "operation", "publication", "protected_source_routes",
-            "format_version", "retired_projection_policy",
+            "operation",
+            "publication",
+            "protected_source_routes",
+            "format_version",
+            "retired_projection_policy",
         ];
         struct Record;
 
@@ -137,8 +139,13 @@ impl<'de> serde::Deserialize<'de> for NativeBootManifest {
                 self,
                 mut map: A,
             ) -> Result<Self::Value, A::Error> {
-                let (mut operation, mut publication, mut protected_source_routes, mut format_version, mut retired_projection_policy) =
-                    (None, None, None, None, None);
+                let (
+                    mut operation,
+                    mut publication,
+                    mut protected_source_routes,
+                    mut format_version,
+                    mut retired_projection_policy,
+                ) = (None, None, None, None, None);
                 while let Some(key) = map.next_key_seed(BootFieldSeed(FIELDS))? {
                     match key {
                         "operation" => {
@@ -197,19 +204,21 @@ impl<'de> serde::Deserialize<'de> for NativeBootManifest {
             ) -> Result<Self::Value, A::Error> {
                 let expected = &"struct NativeBootManifest with 2, 3 or 5 elements";
                 let operation = seq
-                        .next_element()?
-                        .ok_or_else(|| A::Error::invalid_length(0, expected))?;
+                    .next_element()?
+                    .ok_or_else(|| A::Error::invalid_length(0, expected))?;
                 let publication = seq
-                        .next_element()?
-                        .ok_or_else(|| A::Error::invalid_length(1, expected))?;
+                    .next_element()?
+                    .ok_or_else(|| A::Error::invalid_length(1, expected))?;
                 let protected_source_routes = seq.next_element()?.unwrap_or_default();
                 let format_version = seq.next_element::<u32>()?;
                 if format_version == Some(NativeBootManifest::FORMAT_VERSION_V1) {
                     return Err(A::Error::custom("V1 BOOT manifest has V2 fields"));
                 }
                 let retired_projection_policy = if format_version.is_some() {
-                    Some(seq.next_element::<Option<RetiredProjectionPolicyRefV1>>()?
-                        .ok_or_else(|| A::Error::invalid_length(4, expected))?)
+                    Some(
+                        seq.next_element::<Option<RetiredProjectionPolicyRefV1>>()?
+                            .ok_or_else(|| A::Error::invalid_length(4, expected))?,
+                    )
                 } else {
                     None
                 };
@@ -344,11 +353,19 @@ impl NativeBootManifest {
     /// custody row. The route object's direct immutable children cover all
     /// additional heads after physical closure verification.
     pub fn all_protected_roots(&self) -> impl Iterator<Item = ObjectRef> + '_ {
-        self.protected_roots().into_iter().flatten().chain(
-            self.protected_source_routes
-                .iter()
-                .map(|route| route.object),
-        ).chain(self.retired_projection_policy.iter().map(|policy| policy.object))
+        self.protected_roots()
+            .into_iter()
+            .flatten()
+            .chain(
+                self.protected_source_routes
+                    .iter()
+                    .map(|route| route.object),
+            )
+            .chain(
+                self.retired_projection_policy
+                    .iter()
+                    .map(|policy| policy.object),
+            )
     }
 
     /// Canonical source-root identity, distinct from a mutation/event capture.
@@ -489,7 +506,9 @@ pub(super) fn protected_roots(
         let mut roots = [None; 7];
         roots[..5].copy_from_slice(&selected.protected_roots());
         roots[5] = selected.protected_source_routes.map(|route| route.object);
-        roots[6] = selected.retired_projection_policy.map(|policy| policy.object);
+        roots[6] = selected
+            .retired_projection_policy
+            .map(|policy| policy.object);
         roots
     }))
 }

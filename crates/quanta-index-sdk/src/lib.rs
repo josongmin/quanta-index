@@ -60,8 +60,7 @@ pub use native_query::{NativeQueryError, NativeQueryReader, NativeQuerySession};
 pub use observability::ObservabilityNamespace;
 pub use quanta_index_contract::{
     IngestObservationStatus, IngestStageDurations, IngestStageReport, RepoMapModuleId,
-    RepoMapNodeRef,
-    SearchCorpusIngestObservation, SearchCorpusPublishOutcome,
+    RepoMapNodeRef, SearchCorpusIngestObservation, SearchCorpusPublishOutcome,
 };
 /// The canonical batch digest (QI-BB-032): the SDK builders stamp it on
 /// every batch they send; producers that assemble wire batches themselves

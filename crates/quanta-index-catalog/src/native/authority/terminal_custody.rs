@@ -130,8 +130,17 @@ fn next_fixed_chunk(
     let [one, two, three, four, five, six, seven] = blobs
         .each_ref()
         .map(|slot| slot.as_ref().map(<[u8; 32]>::as_slice));
-    let operation_bound: &[&dyn rusqlite::ToSql] =
-        params![operation.id, one, two, three, four, five, six, seven, sql_limit];
+    let operation_bound: &[&dyn rusqlite::ToSql] = params![
+        operation.id,
+        one,
+        two,
+        three,
+        four,
+        five,
+        six,
+        seven,
+        sql_limit
+    ];
     let attempt_bound: &[&dyn rusqlite::ToSql] = params![operation.id, sql_limit];
     let (query, bound, object_slot, digest_slot): (&str, &[&dyn rusqlite::ToSql], usize, usize) =
         match kind {

@@ -665,10 +665,7 @@ mod tests {
 
         let direct = one_root()?;
         assert_eq!(direct.len(), 62 + ROOT_ROW_BYTES);
-        assert_eq!(
-            &direct[..40],
-            b"QTXROOT30123456789abcdef0123456789abcdef"
-        );
+        assert_eq!(&direct[..40], b"QTXROOT30123456789abcdef0123456789abcdef");
         assert_eq!(&direct[40..44], &[0; 4]);
         assert_eq!(&direct[44..52], &[0, 0, 0, 0, 0, 0, 0, 1]);
         assert_eq!(&direct[52..60], &[0; 8]);

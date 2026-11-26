@@ -17,10 +17,9 @@ mod prior_file;
 mod producer;
 mod ranking;
 pub use prior_file::{
-    NativeRepoMapEndpointOwnerV2, NativeRepoMapEndpointOwnersResultV2,
-    NativeRepoMapPriorAffectedV1, NativeRepoMapPriorFileResultV1, NativeRepoMapPriorFileV1,
-    MAX_NATIVE_REPOMAP_ENDPOINT_OWNERS_V2,
-    NativeRepoMapPriorNodeDegreeV1,
+    MAX_NATIVE_REPOMAP_ENDPOINT_OWNERS_V2, NativeRepoMapEndpointOwnerV2,
+    NativeRepoMapEndpointOwnersResultV2, NativeRepoMapPriorAffectedV1,
+    NativeRepoMapPriorFileResultV1, NativeRepoMapPriorFileV1, NativeRepoMapPriorNodeDegreeV1,
 };
 pub use producer::{
     NativeRepoMapFileOwnerProjectionV1, NativeRepoMapOwnerError, NativeRepoMapOwnerProjection,

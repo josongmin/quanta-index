@@ -4,37 +4,19 @@ pub use quanta_index_contract_base::index_refs::*;
 mod history;
 mod immutable_object_wire;
 mod legacy_repomap_import;
+mod protected_native_snapshot;
 mod protected_source_routes;
 mod retired_projection_policy_v1;
-mod protected_native_snapshot;
 pub use protected_native_snapshot::*;
-mod source_restore;
 mod native_source_restore;
-pub use native_source_restore::{NativeImportedNativeSourceCompactV1, NativeImportedNativeSourceHeadV1, NativeSourceOriginCompactV1, NativeSourceOriginV1, NativeSourceSnapshotExportFrameV1, imported_native_source_manifest_digest_v1, imported_native_source_completed_digest_v1, native_source_target_manifest_digest_v1};
-pub use source_restore::{
-    LegacySourceManifestDigestV1, LegacySourceOriginV1, LexicalSourceHeadsCommitmentV1,
-    NativeImportedSourceHeadV1, MAX_SOURCE_SNAPSHOT_CHUNK_BYTES_V1,
-    SourceSnapshotExportFrameV1, imported_legacy_source_completed_digest_v1,
-    imported_legacy_source_manifest_digest_v1,
-};
-pub use legacy_repomap_import::{
-    LegacyRepoMapImportPageV1, LegacyRepoMapImportV1,
-    MAX_LEGACY_REPOMAP_IMPORT_PAGE_BYTES_V1, MAX_LEGACY_REPOMAP_IMPORT_PAGES_V1,
-    MAX_LEGACY_REPOMAP_IMPORT_PAYLOAD_BYTES_V1,
-};
-pub use protected_source_routes::{
-    MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1, MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1, MAX_NATIVE_PROTECTED_SOURCE_ROUTE_BYTES_V1,
-    MAX_NATIVE_PROTECTED_VIEW_MARKER_BYTES_V1, NativeProtectedRepoMapHeadV1, NativeProtectedSourceHeadV1,
-    NativeProtectedSourceRoutesV1, NativeProtectedNativeOriginV1, native_protected_view_marker_bytes_v1,
-    native_protected_view_marker_ref_v1, native_protected_source_route_seal_key_v1,
-};
-pub use retired_projection_policy_v1::{
-    MAX_RETIRED_PROJECTION_IDENTITIES_V1, MAX_RETIRED_PROJECTION_POLICY_BYTES_V1,
-    RetiredProjectionIdentityV1, RetiredProjectionPolicyErrorV1, RetiredProjectionPolicyHeaderV1,
-    RetiredProjectionPolicyRefV1, RetiredProjectionPolicyViewV1,
-    decode_retired_projection_policy_v1, encode_retired_projection_policy_v1,
-    preflight_retired_projection_policy_v1,
-    retired_repomap_route_identity_v1,
+mod source_restore;
+pub use history::{
+    AuxiliaryGenerationKeyV1, HistoryAppendV1, HistoryGenerationAdvanceV1,
+    HistoryGenerationInputV1, HistoryReplayFenceV1, HistoryReplayPublicationV1,
+    HistorySnapshotCheckpointV1, HistorySnapshotExportFrameV1, HistorySnapshotPageV1,
+    HistorySnapshotRowV1, HistorySourceCutV1, HistorySourceInputV1, HistoryTransition,
+    MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1, MAX_HISTORY_SNAPSHOT_ROWS_PER_PAGE_V1,
+    MAX_HISTORY_SOURCE_INPUT_BYTES_V1, NativeHistoryRestoreInputV1, SourceHistoryTransitionV1,
 };
 pub(crate) use immutable_object_wire::MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN;
 pub use immutable_object_wire::{
@@ -43,13 +25,34 @@ pub use immutable_object_wire::{
     native_immutable_object_header_v1, native_immutable_object_ref_v1,
     native_immutable_object_ref_with_work_v1,
 };
-pub use history::{
-    AuxiliaryGenerationKeyV1, HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryGenerationInputV1, HistoryReplayFenceV1, HistoryReplayPublicationV1,
-    NativeHistoryRestoreInputV1,
-    HistorySnapshotCheckpointV1, HistorySnapshotExportFrameV1, HistorySnapshotPageV1, HistorySnapshotRowV1,
-    HistorySourceCutV1, HistorySourceInputV1, HistoryTransition, SourceHistoryTransitionV1,
-    MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1, MAX_HISTORY_SNAPSHOT_ROWS_PER_PAGE_V1,
-    MAX_HISTORY_SOURCE_INPUT_BYTES_V1,
+pub use legacy_repomap_import::{
+    LegacyRepoMapImportPageV1, LegacyRepoMapImportV1, MAX_LEGACY_REPOMAP_IMPORT_PAGE_BYTES_V1,
+    MAX_LEGACY_REPOMAP_IMPORT_PAGES_V1, MAX_LEGACY_REPOMAP_IMPORT_PAYLOAD_BYTES_V1,
+};
+pub use native_source_restore::{
+    NativeImportedNativeSourceCompactV1, NativeImportedNativeSourceHeadV1,
+    NativeSourceOriginCompactV1, NativeSourceOriginV1, NativeSourceSnapshotExportFrameV1,
+    imported_native_source_completed_digest_v1, imported_native_source_manifest_digest_v1,
+    native_source_target_manifest_digest_v1,
+};
+pub use protected_source_routes::{
+    MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1, MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1,
+    MAX_NATIVE_PROTECTED_SOURCE_ROUTE_BYTES_V1, MAX_NATIVE_PROTECTED_VIEW_MARKER_BYTES_V1,
+    NativeProtectedNativeOriginV1, NativeProtectedRepoMapHeadV1, NativeProtectedSourceHeadV1,
+    NativeProtectedSourceRoutesV1, native_protected_source_route_seal_key_v1,
+    native_protected_view_marker_bytes_v1, native_protected_view_marker_ref_v1,
+};
+pub use retired_projection_policy_v1::{
+    MAX_RETIRED_PROJECTION_IDENTITIES_V1, MAX_RETIRED_PROJECTION_POLICY_BYTES_V1,
+    RetiredProjectionIdentityV1, RetiredProjectionPolicyErrorV1, RetiredProjectionPolicyHeaderV1,
+    RetiredProjectionPolicyRefV1, RetiredProjectionPolicyViewV1,
+    decode_retired_projection_policy_v1, encode_retired_projection_policy_v1,
+    preflight_retired_projection_policy_v1, retired_repomap_route_identity_v1,
+};
+pub use source_restore::{
+    LegacySourceManifestDigestV1, LegacySourceOriginV1, LexicalSourceHeadsCommitmentV1,
+    MAX_SOURCE_SNAPSHOT_CHUNK_BYTES_V1, NativeImportedSourceHeadV1, SourceSnapshotExportFrameV1,
+    imported_legacy_source_completed_digest_v1, imported_legacy_source_manifest_digest_v1,
 };
 
 /// Source path byte limit, leaving five bytes for the canonical path map key
@@ -1292,7 +1295,9 @@ impl UpdateKind {
     #[must_use]
     pub fn source_transition_v1(&self) -> Option<&SourceTransition> {
         match self {
-            Self::SourceAdvance(transition) | Self::SourceResync { transition, .. } => Some(transition),
+            Self::SourceAdvance(transition) | Self::SourceResync { transition, .. } => {
+                Some(transition)
+            }
             Self::SourceHistoryAdvance(transition)
             | Self::SourceHistoryResync { transition, .. } => Some(&transition.source),
             _ => None,
@@ -1312,7 +1317,8 @@ impl UpdateKind {
     pub const fn source_mode(&self) -> SourceOperationMode {
         match self {
             Self::SourceAdvance(_) | Self::SourceHistoryAdvance(_) => SourceOperationMode::Advance,
-            Self::SourceResync { prior_epoch, .. } | Self::SourceHistoryResync { prior_epoch, .. } => SourceOperationMode::Resync {
+            Self::SourceResync { prior_epoch, .. }
+            | Self::SourceHistoryResync { prior_epoch, .. } => SourceOperationMode::Resync {
                 prior_epoch: *prior_epoch,
             },
             Self::ProjectionAdvance(_)

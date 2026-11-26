@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 mod dsl;
-pub(super) use dsl::{NativeDslCommitValidator, NativeDslCorpusCache};
 pub(crate) use dsl::ScopedNativeDslPage;
+pub(super) use dsl::{NativeDslCommitValidator, NativeDslCorpusCache};
 mod history;
 pub(crate) use history::ScopedNativeHistoryPage;
 mod hybrid;
@@ -426,7 +426,8 @@ fn search(
         work.reserve_memory(bytes, lifetime)
     })?;
     let limit = planned.result_limit()?;
-    let path_projection = planned.plan.filters.surface == quanta_index_lexical::symbol::ResultSurface::Path;
+    let path_projection =
+        planned.plan.filters.surface == quanta_index_lexical::symbol::ResultSurface::Path;
     execute_text(
         dispatcher,
         ticket,

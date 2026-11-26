@@ -12,9 +12,8 @@ use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
 // The Legacy identity and RepoMap path plus two receipts contribute up to
 // nineteen bounded text fields. Account for the History terminal and framing.
-pub(super) const MAX_WITNESS_BYTES: usize = MAX_NATIVE_CUTOVER_CONTROL_BYTES_V1
-    + 19 * MAX_NATIVE_CUTOVER_EVIDENCE_TEXT_BYTES_V1
-    + 1024;
+pub(super) const MAX_WITNESS_BYTES: usize =
+    MAX_NATIVE_CUTOVER_CONTROL_BYTES_V1 + 19 * MAX_NATIVE_CUTOVER_EVIDENCE_TEXT_BYTES_V1 + 1024;
 const ATTRIBUTE_BYTES: usize = 33;
 const WITNESS_DOMAIN: &[u8] = b"quanta.native-cutover.selection-witness.v1\0";
 
@@ -124,8 +123,9 @@ fn with_checked_sidecar<T>(
         )
         .map_err(|error| {
             if error == rustix::io::Errno::NOENT {
-                anyhow::Error::from(error)
-                    .context(format!("selected recovery witness sidecar is absent: {error}"))
+                anyhow::Error::from(error).context(format!(
+                    "selected recovery witness sidecar is absent: {error}"
+                ))
             } else {
                 error.into()
             }
@@ -157,7 +157,13 @@ fn with_checked_sidecar<T>(
     );
     let outcome = read(&bytes, budget)?;
     let mut check = [0_u8; 4096];
-    charge(budget, 5 + u64::try_from(bytes.len().div_ceil(check.len()))?, 0, read_limit, 0)?;
+    charge(
+        budget,
+        5 + u64::try_from(bytes.len().div_ceil(check.len()))?,
+        0,
+        read_limit,
+        0,
+    )?;
     let _start = file.seek(SeekFrom::Start(0))?;
     for chunk in bytes.chunks(check.len()) {
         let buffer = &mut check[..chunk.len()];

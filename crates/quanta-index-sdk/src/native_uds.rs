@@ -34,10 +34,9 @@ use quanta_index_contract::{
         NativeOverlayTextQuery, NativeOverlayTextResult, NativeOverlayTextSource, NativePathPage,
         NativeProducerSourcePage, NativeProjectionOwnerLookup, NativeProjectionRead,
         NativeReadSessionRequest, NativeRepositoryPathCursor, NativeRepositoryPathPage,
-        NativeRootScopedViewV1,
-        NativeSemanticResult, NativeSourceOwnerKeys, NativeSourceOwnerLookup, NativeStubReply,
-        NativeStubRequest, NativeTextPathResultV1, NativeTextPreviewResult, NativeTextResult,
-        SourceStageReplayContextV1,
+        NativeRootScopedViewV1, NativeSemanticResult, NativeSourceOwnerKeys,
+        NativeSourceOwnerLookup, NativeStubReply, NativeStubRequest, NativeTextPathResultV1,
+        NativeTextPreviewResult, NativeTextResult, SourceStageReplayContextV1,
     },
 };
 use quanta_index_ipc::{
@@ -1288,17 +1287,15 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             ));
         }
         let body = match (route, self.bound_peer_v1.as_ref()) {
-            (
-                AdmittedWireRoute::DslCommit
-                | AdmittedWireRoute::GraphQuery,
-                peer,
-            ) => quanta_index_ipc::send_request_body_with_budget_admitted_deadline_v1(
-                self.socket.as_ref(),
-                envelope,
-                budget,
-                memory,
-                peer,
-            ),
+            (AdmittedWireRoute::DslCommit | AdmittedWireRoute::GraphQuery, peer) => {
+                quanta_index_ipc::send_request_body_with_budget_admitted_deadline_v1(
+                    self.socket.as_ref(),
+                    envelope,
+                    budget,
+                    memory,
+                    peer,
+                )
+            }
             (AdmittedWireRoute::StageProjectionOutput, Some(peer)) => {
                 quanta_index_ipc::send_request_body_with_budget_admitted_multiframe_bound_peer_v1(
                     self.socket.as_ref(),
@@ -5433,7 +5430,9 @@ mod tests {
         let reply = match (reply, peer_result) {
             (Ok(reply), Ok(())) => reply,
             (reply, peer) => {
-                return Err(format!("fragmented stage failed: SDK={reply:?}, peer={peer:?}").into());
+                return Err(
+                    format!("fragmented stage failed: SDK={reply:?}, peer={peer:?}").into(),
+                );
             }
         };
         assert_eq!(reply.response(), &NativeIndexResponse::Staged(staged));
@@ -5617,24 +5616,14 @@ mod tests {
         let budget = RequestBudgetV1::for_duration(Duration::from_secs(10));
         let client = NativeUdsClient::new(socket);
         let mutations = [mutation];
-        let first = client.stage_mutation_page_borrowed_admitted(
-            ingress,
-            base,
-            &mutations,
-            &budget,
-            &memory,
-        );
+        let first = client
+            .stage_mutation_page_borrowed_admitted(ingress, base, &mutations, &budget, &memory);
         let first_unknown =
             matches!(&first, Err(NativeUdsError::Unknown(key)) if *key == operation);
         let first_refunded = active.load(AtomicOrdering::SeqCst) == 0;
         drop(first);
-        let retry = client.stage_mutation_page_borrowed_admitted(
-            ingress,
-            base,
-            &mutations,
-            &budget,
-            &memory,
-        );
+        let retry = client
+            .stage_mutation_page_borrowed_admitted(ingress, base, &mutations, &budget, &memory);
         match peer.join() {
             Ok(result) => result?,
             Err(payload) => std::panic::resume_unwind(payload),

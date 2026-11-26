@@ -59,8 +59,13 @@ impl NativeStateCommandV1 {
         }) {
             bail!("protected Source route reference must be nonzero");
         }
-        if let Some(policy) = self.identity.and_then(|identity| identity.retired_projection_policy) {
-            policy.validate_v1().map_err(|reason| anyhow::anyhow!(reason))?;
+        if let Some(policy) = self
+            .identity
+            .and_then(|identity| identity.retired_projection_policy)
+        {
+            policy
+                .validate_v1()
+                .map_err(|reason| anyhow::anyhow!(reason))?;
         }
         match self.mode {
             NativeCommandModeV1::Select | NativeCommandModeV1::SelectCandidate { .. } => {
@@ -373,7 +378,9 @@ fn parse_retired_policy(
         sha256: parse_digest(&sha256, "--retired-policy-sha256")?,
         identity_count: count.parse()?,
     };
-    reference.validate_v1().map_err(|reason| anyhow::anyhow!(reason))?;
+    reference
+        .validate_v1()
+        .map_err(|reason| anyhow::anyhow!(reason))?;
     Ok(Some(reference))
 }
 
