@@ -149,6 +149,7 @@ fn search(
         query,
         top_k,
         &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        &mut budget()?,
     )
 }
 
@@ -157,6 +158,7 @@ fn search_with_constraints(
     query: &str,
     top_k: u32,
     constraints: &quanta_index_contract::QueryConstraintSetV1,
+    budget: &mut WorkBudget,
 ) -> Result<crate::native::text_query::NativeTextRanking, IndexError> {
     let parsed = parse_native_content_query(query)
         .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
@@ -172,7 +174,7 @@ fn search_with_constraints(
             ticket: &fixture.ticket,
             objects: &fixture.objects,
             maps: &fixture.maps,
-            budget: &mut budget()?,
+            budget,
         },
     )
 }
@@ -191,7 +193,13 @@ fn file_contains_skips_body_of_ineligible_exact_path_owner() -> Result<(), Index
         .map_err(|error| IndexError::InvalidInput(error.into()))?;
     let constraints =
         quanta_index_contract::QueryConstraintSetV1::from_exact_repo_relative_path(selected);
-    let result = search_with_constraints(&fixture, "file.contains('oo_ba')", 1, &constraints)?;
+    let result = search_with_constraints(
+        &fixture,
+        "file.contains('oo_ba')",
+        1,
+        &constraints,
+        &mut budget()?,
+    )?;
     assert_eq!(result.matched, 1);
     assert_eq!(result.hits[0].owner, fixture.owner);
     assert_eq!(fixture.objects.body_reads.load(Ordering::Relaxed), 0);
@@ -219,7 +227,20 @@ fn regex_skips_bodies_of_ineligible_paths() -> Result<(), IndexError> {
             &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         ),
     ] {
-        let result = search_with_constraints(&fixture, query, 1, constraints)?;
+        // This case can compile a content regex and a path regex. Fund both
+        // admissions so the assertion measures source filtering.
+        let mut work = WorkBudget::new(
+            WorkLimits {
+                reads: 100,
+                writes: 100,
+                bytes: 40_000_000,
+                mutations: 100,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        let result = search_with_constraints(&fixture, query, 1, constraints, &mut work)?;
         if result.matched != 1
             || result
                 .hits
