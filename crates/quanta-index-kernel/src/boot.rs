@@ -568,7 +568,7 @@ mod tests {
             )
             .is_err(),
         )?;
-        require(
+        require(matches!(
             verify_native_boot_retained_source_inputs_v20(
                 &operation,
                 &publication,
@@ -577,6 +577,19 @@ mod tests {
                 &registry,
                 gate,
                 &mut budget()?,
+            ),
+            Err(IndexError::ResourceLimited)
+        ))?;
+        let (mut admitted_budget, _) = scoped(1_000_000, false)?;
+        require(
+            verify_native_boot_retained_source_inputs_v20(
+                &operation,
+                &publication,
+                &stored_request,
+                &stored_profile,
+                &registry,
+                gate,
+                &mut admitted_budget,
             )? == Some(instance.instance),
         )?;
         for wrong in [Digest([13; 32]), Digest([0; 32])] {
@@ -590,6 +603,7 @@ mod tests {
                 })?,
                 Vec::new(),
             )?;
+            let (mut admitted_budget, _) = scoped(1_000_000, false)?;
             require(
                 verify_native_boot_retained_source_inputs_v20(
                     &operation,
@@ -598,7 +612,7 @@ mod tests {
                     &invalid,
                     &registry,
                     gate,
-                    &mut budget()?,
+                    &mut admitted_budget,
                 )
                 .is_err(),
             )?;
