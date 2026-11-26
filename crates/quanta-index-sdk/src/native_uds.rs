@@ -33,7 +33,8 @@ use quanta_index_contract::{
         NativeOverlaySaveReceipt, NativeOverlaySemanticResult, NativeOverlaySession,
         NativeOverlayTextQuery, NativeOverlayTextResult, NativeOverlayTextSource, NativePathPage,
         NativeProducerSourcePage, NativeProjectionOwnerLookup, NativeProjectionRead,
-        NativeRepositoryPathCursor, NativeRepositoryPathPage, NativeRootScopedViewV1,
+        NativeReadSessionRequest, NativeRepositoryPathCursor, NativeRepositoryPathPage,
+        NativeRootScopedViewV1,
         NativeSemanticResult, NativeSourceOwnerKeys, NativeSourceOwnerLookup, NativeStubReply,
         NativeStubRequest, NativeTextPathResultV1, NativeTextPreviewResult, NativeTextResult,
         SourceStageReplayContextV1,
@@ -686,6 +687,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
     /// memory scope. The returned owner retains both raw and decoded charges.
     /// Error replies remain canonical `NativeIndexResponse::Error` values so
     /// their bounded message stays charged until this owner is dropped.
+    /// History search pages use [Self::search_history_in_read_session].
     pub fn request_publication_admitted(
         &self,
         payload: NativeIndexRequest,
@@ -803,6 +805,14 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         budget: &RequestBudgetV1,
         memory: &MemoryScope,
     ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        if matches!(
+            payload,
+            NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchHistory { .. })
+        ) {
+            return Err(NativeUdsError::Protocol(
+                "History search requires search_history_in_read_session".into(),
+            ));
+        }
         if !matches!(
             payload,
             NativeIndexRequest::CreateWorkspace { .. }
