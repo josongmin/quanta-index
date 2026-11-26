@@ -1263,6 +1263,7 @@ mod projection_retention {
     -> Result<(), Box<dyn std::error::Error>> {
         use quanta_index_contract::{ChunkId, SymbolId};
 
+        use super::super::affected::node_key;
         use super::super::prior_file::scan_prior_endpoint_supports_v1;
 
         let remote = super::RepoMapNodeRef::Symbol(SymbolId::new("src/a.rs::A"));

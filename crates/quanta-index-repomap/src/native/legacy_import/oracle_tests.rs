@@ -19,6 +19,7 @@ use quanta_index_contract::{
         native_immutable_object_ref_v1,
     },
     native_protocol::native_repomap_rank_policy,
+    repomap::compiler::encode_compiled_payload,
 };
 use quanta_index_core::index::{
     AttemptContext, IndexError, MapBatchRequest, MapBatchWrite, MapEdit, MapPage, MapValue,
@@ -31,9 +32,7 @@ use quanta_index_core::index::{
 use sha2::{Digest as _, Sha256};
 
 use super::*;
-use crate::materializer::{
-    CompiledPayloadEntry, encode_compiled_payload, visit_compiled_payload_with_span,
-};
+use crate::materializer::{CompiledPayloadEntry, visit_compiled_payload_with_span};
 use crate::native::legacy_import::{
     NativeLegacyRepoMapReadV1, with_verified_native_legacy_repomap_member_v1,
 };
