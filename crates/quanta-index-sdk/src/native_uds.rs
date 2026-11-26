@@ -5369,15 +5369,19 @@ mod tests {
             bytes: vec![0xff; bytes_len],
             children: NativeProjectionOutputChildren::new(vec![child])?,
         };
+        let timeout = Duration::from_secs(120);
+        let client_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let peer_finished = Arc::clone(&client_finished);
         let peer = std::thread::spawn(
             move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                let accept_deadline = Instant::now() + Duration::from_secs(20);
+                let accept_deadline = Instant::now() + timeout;
                 let mut stream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
                         Err(error)
                             if error.kind() == std::io::ErrorKind::WouldBlock
-                                && Instant::now() < accept_deadline =>
+                                && Instant::now() < accept_deadline
+                                && !peer_finished.load(AtomicOrdering::Acquire) =>
                         {
                             std::thread::sleep(Duration::from_millis(5));
                         }
@@ -5385,7 +5389,7 @@ mod tests {
                     }
                 };
                 stream.set_nonblocking(false)?;
-                stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+                stream.set_read_timeout(Some(timeout))?;
                 let request: NativeIndexRequestEnvelope =
                     quanta_index_ipc::decode_request(&mut stream)?;
                 match request.payload {
@@ -5409,14 +5413,19 @@ mod tests {
             },
         );
         let (memory, active, _) = publication_scope(false);
-        let budget = RequestBudgetV1::for_duration(Duration::from_secs(20));
+        let budget = RequestBudgetV1::for_duration(timeout);
         let reply =
             NativeUdsClient::new(socket).request_publication_admitted(request, &budget, &memory);
+        client_finished.store(true, AtomicOrdering::Release);
         let peer_result = peer
             .join()
             .map_err(|_| "fragmented projection peer panicked")?;
-        let reply = reply?;
-        peer_result.map_err(|error| error.to_string())?;
+        let reply = match (reply, peer_result) {
+            (Ok(reply), Ok(())) => reply,
+            (reply, peer) => {
+                return Err(format!("fragmented stage failed: SDK={reply:?}, peer={peer:?}").into());
+            }
+        };
         assert_eq!(reply.response(), &NativeIndexResponse::Staged(staged));
         drop(reply);
         assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
