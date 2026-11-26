@@ -1,6 +1,7 @@
 //! One canonical incremental IR shared by native SDKs and the application core.
 //! Live leases and reclaim authority are intentionally absent from this DTO surface.
 pub use quanta_index_contract_base::index_refs::*;
+mod frame_body_replay;
 mod history;
 mod immutable_object_wire;
 mod legacy_repomap_import;
