@@ -18,11 +18,10 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
-        # A patch's context lines include a leading space by format.
-        exclude: ^vendor/.*\.patch$
+        # Vendored source and fork patches are updated explicitly.
+        exclude: ^vendor/
       - id: end-of-file-fixer
-        # Preserve generated upstream JSON byte-for-byte.
-        exclude: ^vendor/(.*/node-types\.json|unicode-normalization-0\.1\.25/\.cargo_vcs_info\.json)$
+        exclude: ^vendor/
       - id: check-yaml
       - id: check-json
       - id: check-toml
