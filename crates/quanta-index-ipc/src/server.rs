@@ -1950,6 +1950,24 @@ where
                 permit
             }
             Err(refusal) => {
+                if client_deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+                    if let Some(span) = queue_span {
+                        let _diagnostic_result =
+                            span.finish(DiagnosticTerminalV1::Error { code: 1 });
+                    }
+                    event_scope.finish(RequestEventStageV1::Aborted);
+                    return ConnectionCloseReason::RequestDecodeFailed(
+                        IpcError::ClientIoDeadlineElapsed,
+                    );
+                }
+                if !peer_watch::peer_can_receive(&stream) {
+                    if let Some(span) = queue_span {
+                        let _diagnostic_result =
+                            span.finish(DiagnosticTerminalV1::Cancelled { code: 1 });
+                    }
+                    event_scope.finish(RequestEventStageV1::PeerCancelled);
+                    return ConnectionCloseReason::PeerClosed;
+                }
                 if let Some(span) = queue_span {
                     let _diagnostic_result = span.finish(DiagnosticTerminalV1::Error { code: 2 });
                 }
