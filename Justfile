@@ -1067,15 +1067,30 @@ rust-fuzz-smoke seconds="60":
     env QUANTA_INDEX_BUILD_LANE=fuzz-lq-norm-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz run lq_parse_pipeline -- -max_total_time={{seconds}}'
     env QUANTA_INDEX_BUILD_LANE=fuzz-lq-norm-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz run regex_necessary_gram -- -max_total_time={{seconds}}'
 
-# Checks changed production Rust lines against fresh full-workspace LCOV.
+# Checks committed production Rust lines against fresh full-workspace LCOV.
 rust-coverage-changed base minimum_percent="90":
     #!/usr/bin/env bash
     set -euo pipefail
+    candidate=$(git rev-parse --verify 'HEAD^{commit}')
+    require_candidate_source() {
+        local head status hidden
+        head=$(git rev-parse --verify 'HEAD^{commit}')
+        status=$(git --no-optional-locks -c core.fsmonitor=false status \
+            --porcelain=v1 --untracked-files=all --ignore-submodules=none)
+        hidden=$(git ls-files -v | LC_ALL=C sed -n '/^[Sa-z] /p')
+        if [[ "$head" != "$candidate" || -n "$status" || -n "$hidden" ]]; then
+            printf 'coverage requires unchanged committed source at %s\n' "$candidate" >&2
+            exit 2
+        fi
+    }
+    require_candidate_source
     report=$(mktemp "${TMPDIR:-/tmp}/quanta-index-coverage.XXXXXXXX")
     trap 'rm -f -- "$report"' EXIT
     {{quote(cargo)}} --lane coverage-lane llvm-cov nextest --workspace --all-features --locked --lcov --output-path "$report"
+    require_candidate_source
     uv run --frozen --extra dev python tools/ci/lint/check-changed-line-coverage.py \
         --lcov "$report" --base {{quote(base)}} --minimum-percent {{quote(minimum_percent)}}
+    require_candidate_source
 
 rust-policy:
     @just rust-workspace-lints

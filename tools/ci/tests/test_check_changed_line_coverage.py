@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -281,3 +284,89 @@ def test_new_test_scope_is_excluded_but_new_guard_on_existing_code_is_not():
     assert module._eligible_changed_rust_lines(source, {1}, path, {1}) == {1}
     assert module._eligible_changed_rust_lines(source, {1, 2}, path, {1, 2}) == set()
     assert module._eligible_changed_rust_lines(source, {2}, path, {2}) == set()
+
+
+
+@pytest.mark.parametrize(
+    "mutation", [None, "before-build", "hidden-edit", "during-build", "head-moved"]
+)
+def test_coverage_recipe_binds_lcov_to_committed_source(tmp_path, mutation):
+    just = shutil.which("just")
+    if just is None:
+        pytest.skip("Just is needed to exercise the changed coverage recipe")
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=checkout, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Coverage fixture")
+    git("config", "user.email", "coverage@example.invalid")
+    source = checkout / "crates/demo/src/lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text("pub fn demo() -> u32 { 1 }\n")
+    checker = checkout / "tools/ci/lint" / SCRIPT_PATH.name
+    checker.parent.mkdir(parents=True)
+    shutil.copyfile(SCRIPT_PATH, checker)
+    git("add", ".")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    source.write_text("pub fn demo() -> u32 { 2 }\n")
+    git("commit", "-qam", "candidate")
+
+    if mutation in ("before-build", "hidden-edit"):
+        source.write_text("pub fn demo() -> u32 { 3 }\n")
+    if mutation == "hidden-edit":
+        git("update-index", "--assume-unchanged", str(source.relative_to(checkout)))
+        assert git("status", "--porcelain") == ""
+    build_marker = tmp_path / "built"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # Replay an LLVM-shaped artifact with one hit on the same filename and
+    # line for both candidate bodies. Only the recipe knows which bytes ran.
+    cargo = bin_dir / "coverage-producer"
+    cargo.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        'printf "%s\\n" built > "$BUILD_MARKER"\n'
+        'for report do :; done\n'
+        'printf "SF:%s/crates/demo/src/lib.rs\\nDA:1,1\\nend_of_record\\n" "$PWD" > "$report"\n'
+        'if [ "$MUTATION" = during-build ] || [ "$MUTATION" = head-moved ]; then\n'
+        '    printf "%s\\n" "pub fn demo() -> u32 { 3 }" > crates/demo/src/lib.rs\n'
+        "fi\n"
+        'if [ "$MUTATION" = head-moved ]; then git commit -qam "another candidate"; fi\n'
+    )
+    uv = bin_dir / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "shift 5\n"
+        f'exec {shlex.quote(sys.executable)} "$@"\n'
+    )
+    for tool in (cargo, uv):
+        tool.chmod(0o755)
+    result = subprocess.run(
+        [
+            just, "--justfile", str(REPO_ROOT / "Justfile"),
+            "--working-directory", str(checkout),
+            "--set", "cargo", str(cargo), "rust-coverage-changed", base,
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "BUILD_MARKER": str(build_marker),
+            "MUTATION": mutation or "",
+        },
+        check=False, capture_output=True, text=True,
+    )
+    if mutation is None:
+        assert result.returncode == 0, result.stderr
+        assert "1/1 (100.00%)" in result.stdout
+    else:
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "coverage requires unchanged committed source" in result.stderr
+    assert build_marker.is_file() == (mutation not in ("before-build", "hidden-edit"))
