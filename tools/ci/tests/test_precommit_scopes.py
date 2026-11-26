@@ -1,5 +1,6 @@
 """Keep local changed-file lint selection aligned with each linter's inputs."""
 
+import json
 import os
 import re
 import subprocess
@@ -309,6 +310,42 @@ def test_semgrep_keeps_code_scope_but_expands_policy_changes(tmp_path: Path) -> 
         assert scan_targets(*code_paths, str(ROOT / policy_path)) == full_targets
     for unrelated in (".pre-commit-config.yaml", "pyproject.toml"):
         assert scan_targets(*code_paths, unrelated) == [*code_paths, unrelated]
+
+
+def test_rustfmt_owned_checks_standalone_crates_and_excludes_vendor(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    launcher = scripts / "run-rustfmt-owned.sh"
+    launcher.write_bytes((ROOT / "scripts" / launcher.name).read_bytes())
+    metadata = {
+        "workspace_root": str(tmp_path),
+        "workspace_members": ["owned", "vendor"],
+        "packages": [
+            {"id": name, "name": name, "manifest_path": str(tmp_path / path / "Cargo.toml")}
+            for name, path in (("owned", "crates/owned"), ("vendor", "vendor/fork"))
+        ],
+    }
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    cargo = scripts / "cargow"
+    cargo.write_text(
+        '#!/bin/sh\nif [ "$3" = metadata ]; then cat metadata.json; else printf "%s\\n" "$*"; fi\n',
+        encoding="utf-8",
+    )
+    cargo.chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(launcher), "--", "--check"],
+        cwd=tmp_path,
+        env={**os.environ, "QUANTA_INDEX_RUSTFMT_CARGO": str(cargo)},
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    assert result.stdout.splitlines() == [
+        "--lane fmt-lane fmt -p owned -- --check",
+        "--lane fmt-lane fmt --manifest-path shared/quanta-explicit-fd-process/Cargo.toml -- --check",
+        "--lane fmt-lane fmt --manifest-path crates/quanta-index-sqlite-fd-ledger/Cargo.toml -- --check",
+    ]
 
 
 def test_ci_precommit_skips_only_hooks_owned_by_dedicated_full_jobs() -> None:

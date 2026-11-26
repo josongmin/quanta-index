@@ -33,5 +33,6 @@ while IFS= read -r package; do
 done <<< "$packages"
 
 "$cargo" --lane fmt-lane fmt "${selectors[@]}" "$@"
-# This authored path dependency has its own workspace.
+# These authored packages have their own workspaces.
 "$cargo" --lane fmt-lane fmt --manifest-path shared/quanta-explicit-fd-process/Cargo.toml "$@"
+"$cargo" --lane fmt-lane fmt --manifest-path crates/quanta-index-sqlite-fd-ledger/Cargo.toml "$@"
