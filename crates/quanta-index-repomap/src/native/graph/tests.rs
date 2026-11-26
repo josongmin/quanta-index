@@ -1124,23 +1124,24 @@ mod projection_retention {
             producer: before.producer,
             ..super::owner(1)
         };
-        let contribution = |stamp, has_output| -> Result<ObjectRef, Box<dyn std::error::Error>> {
-            let contribution = ProjectionOwnerContribution {
-                projection: before.projection,
-                producer: before.producer,
-                owner,
-                source_owner: None,
-                source: None,
-                dependency_stamp: Digest([stamp; 32]),
-                output: has_output.then_some(output_ref),
+        let contribution =
+            |stamp, has_output: bool| -> Result<ObjectRef, Box<dyn std::error::Error>> {
+                let contribution = ProjectionOwnerContribution {
+                    projection: before.projection,
+                    producer: before.producer,
+                    owner,
+                    source_owner: None,
+                    source: None,
+                    dependency_stamp: Digest([stamp; 32]),
+                    output: has_output.then_some(output_ref),
+                };
+                Ok(objects
+                    .store(
+                        &serde_json::to_vec(&contribution)?,
+                        &contribution.object_children(),
+                    )?
+                    .reference)
             };
-            Ok(objects
-                .store(
-                    &serde_json::to_vec(&contribution)?,
-                    &contribution.object_children(),
-                )?
-                .reference)
-        };
         let (previous, next) = (contribution(1, true)?, contribution(2, !legacy)?);
         let old_record = OwnerGraphRecord {
             owner,
