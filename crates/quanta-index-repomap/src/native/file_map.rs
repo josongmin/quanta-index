@@ -1409,8 +1409,7 @@ pub(super) fn selected_source_cut(
     Ok(root.source)
 }
 
-/// Reads a pinned historical file/path inventory. Prefix inclusion uses one
-/// exact lookup, then the map's exclusive lower bound; no predecessor walk.
+/// Reads the unscoped paths of a pinned historical file inventory.
 pub fn query_paths(
     query: &FilePathQuery<'_>,
     context: &mut FileMapReadContext<'_>,
@@ -1476,21 +1475,23 @@ pub fn query_paths(
     if let Some(after) = query.after {
         cursor.extend_from_slice(PATH_PREFIX);
         cursor.extend_from_slice(after.as_bytes());
-        let value = context
+        let marker = context
             .maps
             .lookup(source.paths, &cursor, context.budget)?
             .ok_or_else(|| IndexError::InvalidInput("file path cursor is absent".into()))?;
-        let _validated_cursor = read_path_entry(value, after, source.owners, context)?;
+        let owner = unscoped_path_owner(marker, context)?
+            .ok_or_else(|| IndexError::InvalidInput("file path cursor is absent".into()))?;
+        let _validated_cursor = read_path_entry(owner, after, source.owners, context)?;
     } else {
         if !query.prefix.is_empty()
             && validate_path(query.prefix).is_ok()
-            && let Some(value) =
-                context
-                    .maps
-                    .lookup(source.paths, &prefix_key, context.budget)?
+            && let Some(marker) = context
+                .maps
+                .lookup(source.paths, &prefix_key, context.budget)?
+            && let Some(owner) = unscoped_path_owner(marker, context)?
         {
             result.entries.push(read_path_entry(
-                value,
+                owner,
                 query.prefix,
                 source.owners,
                 context,
@@ -1503,10 +1504,9 @@ pub fn query_paths(
         let remaining = limit.saturating_sub(result.entries.len());
         let scan_limit = u32::try_from(remaining.max(1))
             .map_err(|_conversion_error| IndexError::ResourceLimited)?;
-        let page =
-            context
-                .maps
-                .scan(source.paths, Some(&cursor), scan_limit, context.budget)?;
+        let page = context
+            .maps
+            .scan(source.paths, Some(&cursor), scan_limit, context.budget)?;
         if page.entries.is_empty() {
             if page.has_more {
                 return Err(IndexError::BackendViolation(
@@ -1515,10 +1515,13 @@ pub fn query_paths(
             }
             return Ok(result);
         }
-        for (key, reference) in &page.entries {
+        for (key, marker) in &page.entries {
             if !key.starts_with(&prefix_key) {
                 return Ok(result);
             }
+            let Some(owner) = unscoped_path_owner(*marker, context)? else {
+                continue;
+            };
             if result.entries.len() == limit {
                 result.has_more = true;
                 return Ok(result);
@@ -1530,30 +1533,20 @@ pub fn query_paths(
                 .map_err(|_conversion_error| {
                     IndexError::CorruptObject("file path key is not UTF-8".into())
                 })?;
-            result.entries.push(read_path_entry(
-                *reference,
-                path,
-                source.owners,
-                context,
-            )?);
+            result
+                .entries
+                .push(read_path_entry(owner, path, source.owners, context)?);
+        }
+        if !page.has_more {
+            return Ok(result);
         }
         let last = page.entries.last().ok_or_else(|| {
             IndexError::BackendViolation("file map scan omitted continuation".into())
         })?;
-        if result.entries.len() == limit {
-            // A later key may be outside this prefix. One bounded lookahead
-            // prevents declaring a false continuation at the range boundary.
-            let probe = context
-                .maps
-                .scan(source.paths, Some(&last.0), 1, context.budget)?;
-            result.has_more = probe
-                .entries
-                .first()
-                .is_some_and(|(key, _)| key.starts_with(&prefix_key));
-            return Ok(result);
-        }
-        if !page.has_more {
-            return Ok(result);
+        if last.0.as_slice() <= cursor.as_slice() {
+            return Err(IndexError::BackendViolation(
+                "file map scan did not advance its continuation".into(),
+            ));
         }
         context.budget.charge(WorkUsage {
             bytes: u64::try_from(last.0.len())
@@ -1570,19 +1563,31 @@ pub fn query_paths(
     }
 }
 
+fn unscoped_path_owner(
+    marker: quanta_index_core::index::MapValue,
+    context: &mut FileMapReadContext<'_>,
+) -> Result<Option<OwnerKey>, IndexError> {
+    match SourcePathOwners::decode(marker, context.budget)? {
+        SourcePathOwners::LegacyOwner(owner) => Ok(Some(owner)),
+        SourcePathOwners::Repositories(root) => {
+            let key = SourcePathRepositoryKey::new(None)?;
+            SourcePathOwners::repository_owner(root, key.as_slice()?, context.maps, context.budget)
+        }
+    }
+}
+
 fn read_path_entry(
-    value: quanta_index_core::index::MapValue,
+    owner: OwnerKey,
     expected_path: &str,
     owners: MapRoot,
     context: &mut FileMapReadContext<'_>,
 ) -> Result<FilePathEntry, IndexError> {
-    let owner = quanta_index_core::index::owner_from_path_map_value(value, context.budget)?;
     let source_ref = context
         .maps
         .lookup_object(owners, &owner_map_key(owner), context.budget)?
         .ok_or_else(|| IndexError::CorruptObject("file path owner lacks source".into()))?;
     let source = read_source(source_ref, context.objects, context.budget)?;
-    if source.path != expected_path {
+    if source.path != expected_path || source.source_repo_id.is_some() {
         return Err(IndexError::CorruptObject(
             "file path key/value mismatch".into(),
         ));
@@ -3326,6 +3331,85 @@ mod tests {
             vec!["ab", "abc"]
         );
         check!(!ab.has_more);
+        Ok(())
+    }
+
+    #[test]
+    fn scalar_path_pages_keep_unscoped_entries_in_repository_buckets()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (objects, mut maps, ticket, member) = fixture()?;
+        let owners = ticket.view.source.owners.0.ok_or("missing owners root")?;
+        let paths = ticket.view.source.paths.0.ok_or("missing paths root")?;
+        let repository = RepoId::new("repo-a")?;
+        let repository_key = SourcePathRepositoryKey::new(Some(&repository))?;
+        let legacy_key = SourcePathRepositoryKey::new(None)?;
+        for (path, id, bucket) in [("a", 5, 60), ("ab", 2, 61), ("abd", 6, 62)] {
+            let bytes = objects.add(vec![id], vec![])?;
+            let record = SourceRecord {
+                path: path.into(),
+                bytes,
+                byte_len: 1,
+                text: quanta_index_core::index::SourceTextAdmission::Excluded,
+                source_repo_id: Some(repository.clone()),
+                language: None,
+            };
+            let source = objects.add(encode(&record)?, vec![bytes])?;
+            maps.add(owners, owner_map_key(owner(id)).to_vec(), source);
+            let bucket = reference(bucket);
+            maps.add_value(
+                bucket,
+                repository_key.as_slice()?.to_vec(),
+                quanta_index_core::index::path_owner_map_value(owner(id))?,
+            );
+            maps.add_value(
+                paths,
+                path_key(path)?,
+                SourcePathOwners::Repositories(bucket).encode()?,
+            );
+        }
+        maps.add_value(
+            reference(60),
+            legacy_key.as_slice()?.to_vec(),
+            quanta_index_core::index::path_owner_map_value(owner(1))?,
+        );
+        let mut work = budget()?;
+        let mut context = FileMapReadContext {
+            ticket: &ticket,
+            objects: &objects,
+            maps: &maps,
+            budget: &mut work,
+        };
+        let mut page = |after| {
+            query_paths(
+                &FilePathQuery {
+                    member: &member,
+                    prefix: "a",
+                    after,
+                    limit: 1,
+                },
+                &mut context,
+            )
+        };
+        let first = page(None)?;
+        check_eq!(
+            first
+                .entries
+                .iter()
+                .map(|entry| entry.owner)
+                .collect::<Vec<_>>(),
+            vec![owner(1)]
+        );
+        check!(first.has_more);
+        let last = page(Some("a"))?;
+        check_eq!(
+            last.entries
+                .iter()
+                .map(|entry| entry.owner)
+                .collect::<Vec<_>>(),
+            vec![owner(3)]
+        );
+        check!(!last.has_more);
+        check!(matches!(page(Some("ab")), Err(IndexError::InvalidInput(_))));
         Ok(())
     }
 
