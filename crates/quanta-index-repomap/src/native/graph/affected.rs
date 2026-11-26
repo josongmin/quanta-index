@@ -11,8 +11,8 @@ use quanta_index_core::index::{
 };
 
 use super::contribution::{
-    GraphElement, GraphSupport, OwnerGraphRecord, load_output, load_owner, load_projection,
-    load_support, validate_source_owned_facts,
+    GraphElement, GraphSupport, OwnerGraphRecord, load_legacy_nonrank_output, load_output,
+    load_owner, load_projection, load_support, validate_source_owned_facts,
 };
 use super::{GraphRoot, MAX_AFFECTED_GRAPH_ITEMS, encode_funded};
 
@@ -109,7 +109,11 @@ pub(super) fn apply(
         let refresh_supports = prior_output != next_output
             || root.projection.producer_policy != projection.producer_policy;
         if refresh_supports && let Some(output) = prior_output {
-            let prior = load_output(output, context.objects, context.budget)?;
+            let prior = if root.facts_epoch == 0 {
+                load_legacy_nonrank_output(output, context.objects, context.budget)?
+            } else {
+                load_output(output, context.objects, context.budget)?
+            };
             for node in prior.output.nodes {
                 let rank_projection = match prior
                     .output
@@ -174,7 +178,11 @@ pub(super) fn apply(
         }
         let next_record = if let Some((reference, contribution)) = next {
             if refresh_supports && let Some(output) = contribution.output {
-                let graph = load_output(output, context.objects, context.budget)?;
+                let graph = if root.facts_epoch == 0 {
+                    load_legacy_nonrank_output(output, context.objects, context.budget)?
+                } else {
+                    load_output(output, context.objects, context.budget)?
+                };
                 if source_owned_rank {
                     validate_source_owned_facts(
                         &graph,

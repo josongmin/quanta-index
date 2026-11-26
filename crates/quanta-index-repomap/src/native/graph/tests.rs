@@ -143,9 +143,13 @@ mod projection_retention {
     use sha2::{Digest as _, Sha256};
 
     use super::super::{
-        GraphRoot, NativeGraph,
-        contribution::{GraphElement, GraphSupport, OwnerGraphRecord, load_owner, load_support},
+        GraphRoot, LegacyGraphRoot, NativeGraph,
+        contribution::{
+            GraphElement, GraphSupport, OwnerGraphRecord, load_legacy_nonrank_output, load_output,
+            load_owner, load_support,
+        },
     };
+    use super::node_key;
     use super::Digest;
 
     fn reference(byte: u8) -> ObjectRef {
@@ -745,9 +749,200 @@ mod projection_retention {
         Ok(())
     }
 
+    #[test]
+    fn legacy_nonrank_output_uses_fixed_prior_wire() -> Result<(), Box<dyn std::error::Error>> {
+        // Exact three-field wire emitted by the v20 writer before typed facts.
+        const BASE_OUTPUT: &[u8] = b"{\"nodes\":[],\"edges\":[],\"projection\":[]}";
+        let objects = Objects::default();
+        let reference = objects.store(BASE_OUTPUT, &[])?.reference;
+        let old = load_legacy_nonrank_output(reference, &objects, &mut budget()?)?;
+        check_equal(&old.output.nodes.len(), &0, "legacy nodes")?;
+        check_equal(&old.output.facts, &None, "legacy facts")?;
+        if !matches!(
+            load_output(reference, &objects, &mut budget()?),
+            Err(IndexError::CorruptObject(_))
+        ) {
+            return Err("strict output reader accepted old wire".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_nonrank_root_queries_and_patches_in_prior_wire()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let objects = Objects::default();
+        let instance = instance();
+        let old_projection = projection(
+            SourceCut {
+                owners: MapRoot(None),
+                paths: MapRoot(None),
+                frontiers: MapRoot(None),
+            },
+            reference(21),
+        );
+        let old_root = LegacyGraphRoot {
+            input: InputBinding {
+                root: old_projection.owners,
+                schema: instance.schema,
+                policy: instance.policy,
+                context: old_projection.materialization_context(),
+            },
+            projection: old_projection,
+            owners: MapRoot(None),
+            nodes: MapRoot(None),
+            edges: MapRoot(None),
+            incoming: MapRoot(None),
+        };
+        let old_bytes = serde_json::to_vec(&old_root)?;
+        // Independently assembled from the v20 six-field JSON schema and the
+        // fixed fixture IDs above, including its SHA-256 projection context.
+        const BASE_ROOT_SHA256: [u8; 32] = [
+            0xc1, 0x7e, 0x86, 0xce, 0x7a, 0x2b, 0x55, 0x0f, 0x1a, 0x42, 0x75, 0x6d, 0x4e,
+            0x43, 0xb5, 0xcf, 0x20, 0x5c, 0x06, 0xb3, 0x4f, 0x5f, 0x36, 0x76, 0x78, 0xce,
+            0x5f, 0x70, 0x30, 0x9b, 0x11, 0x57,
+        ];
+        let old_digest: [u8; 32] = Sha256::digest(&old_bytes).into();
+        check_equal(&old_digest, &BASE_ROOT_SHA256, "v20 root wire digest")?;
+        if old_bytes
+            .windows(b"facts_epoch".len())
+            .any(|part| part == b"facts_epoch")
+        {
+            return Err("old root wire contains typed facts epoch".into());
+        }
+        let old_children = [reference(20), reference(21)];
+        let old_artifact = objects.store(&old_bytes, &old_children)?.reference;
+        let prior = MemberBinding {
+            instance: instance.instance,
+            format: instance.format,
+            artifact: old_artifact,
+            input: old_root.input,
+            logical_commitment: Digest(Sha256::digest(&old_bytes).into()),
+        };
+        let rank_policy = quanta_index_contract::native_protocol::native_repomap_rank_policy();
+        let rank_projection = ProjectionBinding {
+            producer_policy: rank_policy,
+            ..old_projection
+        };
+        let rank_root = LegacyGraphRoot {
+            input: InputBinding {
+                root: rank_projection.owners,
+                schema: rank_projection.schema,
+                policy: rank_policy,
+                context: rank_projection.materialization_context(),
+            },
+            projection: rank_projection,
+            ..old_root
+        };
+        let rank_bytes = serde_json::to_vec(&rank_root)?;
+        let rank_artifact = objects.store(&rank_bytes, &old_children)?.reference;
+        let rank_binding = MemberBinding {
+            artifact: rank_artifact,
+            input: rank_root.input,
+            logical_commitment: Digest(Sha256::digest(&rank_bytes).into()),
+            ..prior.clone()
+        };
+        if !matches!(
+            super::super::read_root_for_query(&rank_binding, &objects, &mut budget()?),
+            Err(IndexError::RebuildRequired)
+        ) {
+            return Err("legacy rank root did not require rebuild".into());
+        }
+        if !matches!(
+            super::super::read_root_for_query(
+                &MemberBinding {
+                    logical_commitment: prior.logical_commitment,
+                    ..rank_binding
+                },
+                &objects,
+                &mut budget()?,
+            ),
+            Err(IndexError::CorruptObject(_))
+        ) {
+            return Err("corrupt legacy rank root hid behind rebuild requirement".into());
+        }
+        let queried = super::super::read_root_for_query(&prior, &objects, &mut budget()?)?;
+        check_equal(&queried.facts_epoch, &0, "legacy query epoch")?;
+        let page = super::super::query::query_graph(
+            &prior,
+            &quanta_index_contract::native_protocol::NativeGraphQuery {
+                source: super::file("src/a.rs"),
+                direction: quanta_index_contract::native_protocol::NativeGraphDirection::Outgoing,
+                max_supporters: 1,
+                max_edges: 1,
+            },
+            &EmptyMaps,
+            &objects,
+            &mut budget()?,
+        )?;
+        check_equal(&page.source, &None, "legacy empty query source")?;
+        check_equal(&page.edges.len(), &0, "legacy empty query edges")?;
+        let selected = ProjectionBinding {
+            certificate: reference(22),
+            ..old_projection
+        };
+        let affected = OwnerMutationSet {
+            root: MapRoot(None),
+            count: 0,
+            digest: OwnerMutationDigest::default().finish(),
+        };
+        let mut work = budget()?;
+        let mut context = AttemptContext {
+            attempt: attempt(),
+            objects: &objects,
+            maps: &EmptyMaps,
+            custody: &Custody,
+            scratch: &NoScratch,
+            budget: &mut work,
+        };
+        let writes_before_rank_transition = objects.writes();
+        if !matches!(
+            NativeGraph.prepare_projection_delta(
+                &instance,
+                Some(&prior),
+                &rank_projection,
+                Some(affected),
+                &mut context,
+            ),
+            Err(IndexError::RebuildRequired)
+        ) {
+            return Err("legacy nonrank root accepted a rank-policy delta".into());
+        }
+        check_equal(
+            &objects.writes(),
+            &writes_before_rank_transition,
+            "rank-policy rejection writes",
+        )?;
+        let candidate = NativeGraph.prepare_projection_delta(
+            &instance,
+            Some(&prior),
+            &selected,
+            Some(affected),
+            &mut context,
+        )?;
+        let binding = NativeGraph.verify_and_seal(candidate, &mut context)?;
+        let posted = objects.get(binding.artifact, context.budget)?;
+        if posted
+            .payload
+            .windows(b"facts_epoch".len())
+            .any(|part| part == b"facts_epoch")
+        {
+            return Err("legacy delta upgraded root without typed facts".into());
+        }
+        let patched = super::super::read_root_for_query(&binding, &objects, context.budget)?;
+        check_equal(&patched.facts_epoch, &0, "patched legacy epoch")?;
+        check_equal(&patched.projection, &selected, "patched projection")?;
+        check_equal(
+            &posted.registration.children,
+            &[reference(20), reference(22)].to_vec(),
+            "patched root children",
+        )?;
+        Ok(())
+    }
+
     struct OwnerRefreshMaps {
         key: Vec<u8>,
         selected: [(MapRoot, ObjectRef); 3],
+        support: Option<(MapRoot, Vec<u8>, ObjectRef)>,
         mutations: MapRoot,
         mutation: MapValue,
         updated_owners: Mutex<Option<ObjectRef>>,
@@ -760,6 +955,12 @@ mod projection_retention {
             key: &[u8],
             _: &mut WorkBudget,
         ) -> Result<Option<MapValue>, IndexError> {
+            if let Some((support_root, support_key, support)) = &self.support
+                && root == *support_root
+                && key == support_key
+            {
+                return Ok(Some((*support).into()));
+            }
             self.selected
                 .iter()
                 .find(|(base, _)| *base == root && key == self.key.as_slice())
@@ -776,16 +977,31 @@ mod projection_retention {
             limit: u32,
             _: &mut WorkBudget,
         ) -> Result<MapPage, IndexError> {
-            if root != self.mutations || after.is_some() || limit != 1 {
-                return Err(IndexError::BackendViolation(
-                    "unexpected graph support scan".into(),
+            if root == self.mutations && after.is_none() && limit == 1 {
+                return Ok(MapPage::new(
+                    vec![(self.key.clone(), self.mutation)],
+                    false,
+                    Vec::new(),
+                    None,
                 ));
             }
-            Ok(MapPage::new(
-                vec![(self.key.clone(), self.mutation)],
-                false,
-                Vec::new(),
-                None,
+            if let Some((support_root, support_key, support)) = &self.support
+                && root == *support_root
+            {
+                let entries = if after.is_some_and(|cursor| cursor < support_key.as_slice()) {
+                    vec![(support_key.clone(), (*support).into())]
+                } else {
+                    Vec::new()
+                };
+                return Ok(MapPage::new(entries, false, Vec::new(), None));
+            }
+            if self.support.is_some()
+                && (root == MapRoot(Some(reference(98))) || root == MapRoot(None))
+            {
+                return Ok(MapPage::new(Vec::new(), false, Vec::new(), None));
+            }
+            Err(IndexError::BackendViolation(
+                "unexpected graph support scan".into(),
             ))
         }
 
@@ -802,6 +1018,21 @@ mod projection_retention {
                     "expected one graph owner edit".into(),
                 ));
             };
+            if let Some((support_root, support_key, support)) = &self.support
+                && root == *support_root
+            {
+                if edit.key != *support_key
+                    || edit.expected != Some((*support).into())
+                    || edit.next.is_some()
+                {
+                    return Err(IndexError::BackendViolation(
+                        "unexpected graph support removal".into(),
+                    ));
+                }
+                return Ok(MapWrite {
+                    root: MapRoot(Some(reference(98))),
+                });
+            }
             if root != owner_root
                 || edit.key != self.key
                 || edit.expected != Some(owner_record.into())
@@ -847,6 +1078,15 @@ mod projection_retention {
     #[test]
     fn identical_graph_output_refreshes_only_owner_metadata()
     -> Result<(), Box<dyn std::error::Error>> {
+        refreshes_only_owner_metadata(false)
+    }
+
+    #[test]
+    fn legacy_graph_output_deletion_reads_prior_wire() -> Result<(), Box<dyn std::error::Error>> {
+        refreshes_only_owner_metadata(true)
+    }
+
+    fn refreshes_only_owner_metadata(legacy: bool) -> Result<(), Box<dyn std::error::Error>> {
         let objects = Objects::default();
         let output = super::GraphOwnerOutput {
             nodes: vec![super::GraphNode {
@@ -857,7 +1097,19 @@ mod projection_retention {
             projection: Vec::new(),
             facts: None,
         };
-        let output = objects.store(&serde_json::to_vec(&output)?, &[])?.reference;
+        let output_bytes = if legacy {
+            // The one-owner deletion below must traverse the old output decoder.
+            let current = serde_json::to_vec(&output)?;
+            let mut old = current
+                .strip_suffix(b",\"facts\":null}")
+                .ok_or("current output lost its trailing facts field")?
+                .to_vec();
+            old.push(b'}');
+            old
+        } else {
+            serde_json::to_vec(&output)?
+        };
+        let output_ref = objects.store(&output_bytes, &[])?.reference;
         let source = SourceCut {
             owners: MapRoot(None),
             paths: MapRoot(None),
@@ -872,7 +1124,7 @@ mod projection_retention {
             producer: before.producer,
             ..super::owner(1)
         };
-        let contribution = |stamp| -> Result<ObjectRef, Box<dyn std::error::Error>> {
+        let contribution = |stamp, has_output| -> Result<ObjectRef, Box<dyn std::error::Error>> {
             let contribution = ProjectionOwnerContribution {
                 projection: before.projection,
                 producer: before.producer,
@@ -880,7 +1132,7 @@ mod projection_retention {
                 source_owner: None,
                 source: None,
                 dependency_stamp: Digest([stamp; 32]),
-                output: Some(output),
+                output: has_output.then_some(output_ref),
             };
             Ok(objects
                 .store(
@@ -889,19 +1141,41 @@ mod projection_retention {
                 )?
                 .reference)
         };
-        let (previous, next) = (contribution(1)?, contribution(2)?);
+        let (previous, next) = (contribution(1, true)?, contribution(2, !legacy)?);
         let old_record = OwnerGraphRecord {
             owner,
             projection: previous,
-            output: Some(output),
+            output: Some(output_ref),
         };
-        let mut children = [previous, output];
+        let mut children = [previous, output_ref];
         children.sort_unstable();
         let old_record = objects
             .store(&serde_json::to_vec(&old_record)?, &children)?
             .reference;
+        let support = if legacy {
+            let node = output.nodes[0].clone();
+            let support = GraphSupport {
+                owner,
+                element: GraphElement::Node(node.clone()),
+                projection: None,
+            };
+            let support_ref = objects
+                .store(&serde_json::to_vec(&support)?, &[])?
+                .reference;
+            Some((
+                MapRoot(Some(reference(32))),
+                node_key(&node.identity, owner)?,
+                support_ref,
+            ))
+        } else {
+            None
+        };
         let mut root = GraphRoot {
-            facts_epoch: super::super::TYPED_FACTS_ROOT_EPOCH,
+            facts_epoch: if legacy {
+                0
+            } else {
+                super::super::TYPED_FACTS_ROOT_EPOCH
+            },
             input: InputBinding {
                 root: before.owners,
                 schema: before.schema,
@@ -911,8 +1185,8 @@ mod projection_retention {
             projection: before,
             owners: MapRoot(Some(reference(31))),
             nodes: MapRoot(Some(reference(32))),
-            edges: MapRoot(Some(reference(33))),
-            incoming: MapRoot(Some(reference(34))),
+            edges: if legacy { MapRoot(None) } else { MapRoot(Some(reference(33))) },
+            incoming: if legacy { MapRoot(None) } else { MapRoot(Some(reference(34))) },
         };
         let mutation = OwnerMutation {
             owner,
@@ -926,6 +1200,7 @@ mod projection_retention {
                 (after.owners, next),
                 (root.owners, old_record),
             ],
+            support,
             mutations: MapRoot(Some(reference(35))),
             mutation: owner_mutation_value(&mutation)?,
             updated_owners: Mutex::new(None),
@@ -947,7 +1222,11 @@ mod projection_retention {
             budget: &mut work,
         };
         let before_writes = objects.writes();
-        let supports = (root.nodes, root.edges, root.incoming);
+        let supports = if legacy {
+            (MapRoot(Some(reference(98))), root.edges, root.incoming)
+        } else {
+            (root.nodes, root.edges, root.incoming)
+        };
         super::super::affected::apply(&mut root, &after, Some(affected), &mut context)?;
         check_equal(
             &(root.nodes, root.edges, root.incoming),
@@ -968,8 +1247,8 @@ mod projection_retention {
         check_equal(&updated.projection, &next, "refreshed graph contribution")?;
         check_equal(
             &updated.output,
-            &Some(output),
-            "reused immutable graph output",
+            &(!legacy).then_some(output_ref),
+            "selected immutable graph output",
         )?;
         Ok(())
     }
