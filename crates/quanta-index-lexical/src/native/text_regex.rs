@@ -121,10 +121,18 @@ pub(super) fn compile_one(
 }
 
 impl NativeRegexProgram {
-    pub(super) fn content_executor(&self, index: usize) -> Result<(&RegexExecutor, u64), IndexError> {
-        self.content.get(index).map(|regex| (&regex.executor, regex.estimated_states)).ok_or_else(|| {
-            IndexError::BackendViolation("native preview regex is missing from prepared program".into())
-        })
+    pub(super) fn content_executor(
+        &self,
+        index: usize,
+    ) -> Result<(&RegexExecutor, u64), IndexError> {
+        self.content
+            .get(index)
+            .map(|regex| (&regex.executor, regex.estimated_states))
+            .ok_or_else(|| {
+                IndexError::BackendViolation(
+                    "native preview regex is missing from prepared program".into(),
+                )
+            })
     }
 
     pub(super) fn compile(

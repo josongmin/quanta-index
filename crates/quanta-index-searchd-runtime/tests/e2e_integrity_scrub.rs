@@ -26,8 +26,7 @@ use std::time::{Duration, Instant};
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, MetricsSnapshotV1,
     QuarantineDiscardOutcomeDtoV1, QuarantineTargetV1, QuarantinedGenerationEntryV1, RepoId,
-    RepoRelativePath, RevisionId,
-    SearchCorpusActiveHeadV1, SearchPlaneErrorCodeV2,
+    RepoRelativePath, RevisionId, SearchCorpusActiveHeadV1, SearchPlaneErrorCodeV2,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind, TextQueryResponse,
     lex::LanguageCode,
 };
@@ -1395,9 +1394,7 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
         require_boot_count(&snapshot, name, count)?;
     }
     let after_reopen = client.quarantine().inventory()?;
-    if !after_reopen.lexical.is_empty()
-        || !after_reopen.semantic.is_empty()
-    {
+    if !after_reopen.lexical.is_empty() || !after_reopen.semantic.is_empty() {
         return Err(format!("discarded entries reappeared after reboot: {after_reopen:?}").into());
     }
     drop(client);

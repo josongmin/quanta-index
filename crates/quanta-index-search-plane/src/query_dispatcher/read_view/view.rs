@@ -39,10 +39,9 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     AuxiliaryGenerationKeyV1, CoreError, DomainReadEvidenceV2, HistoryTextSearcher,
-    LexicalSearcher, QueryRouteV1, ReadDomainV1, ReadIdentityV2,
-    ReadResourceGroupV2, ReadViewRefusedError, RequestBudgetV1,
-    RequiredDomainsV1, SemanticProfileV1, SemanticSearcher, StructuralError,
-    declare_required_domains_v1,
+    LexicalSearcher, QueryRouteV1, ReadDomainV1, ReadIdentityV2, ReadResourceGroupV2,
+    ReadViewRefusedError, RequestBudgetV1, RequiredDomainsV1, SemanticProfileV1, SemanticSearcher,
+    StructuralError, declare_required_domains_v1,
 };
 
 use crate::Ledger;
@@ -238,7 +237,7 @@ impl QueryReadViewV2 {
         history_text: Option<Arc<dyn HistoryTextSearcher>>,
         lexical: Option<Arc<dyn LexicalSearcher>>,
         semantic: Option<Arc<dyn SemanticSearcher>>,
-        ) -> Result<Self, CoreError> {
+    ) -> Result<Self, CoreError> {
         let pin = request.pin.clone();
         let mut aux_epochs = BTreeMap::new();
         if let Some(read) = &parts.history {

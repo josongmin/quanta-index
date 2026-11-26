@@ -102,7 +102,6 @@ impl StubQueryTransport {
             | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
             | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_) => {}

@@ -16,8 +16,8 @@ use serde::{
     de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor},
 };
 
-use positions::{MAX_POSITIONS_PER_TERM, Occurrence, Positions};
 use super::text_memory::{PreparedRows, check_term_key};
+use positions::{MAX_POSITIONS_PER_TERM, Occurrence, Positions};
 
 /// Execution-local bounded block DATA window.
 ///

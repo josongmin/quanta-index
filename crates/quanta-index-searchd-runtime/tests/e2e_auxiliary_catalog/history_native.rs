@@ -1102,7 +1102,10 @@ fn native_history_full_delta_query_old_view_and_reopen() -> TestResult {
         &mut work,
     )?;
     assert!(removed_tag.page().commits.is_empty());
-    assert_eq!((removed_tag.page().matched, removed_tag.page().remaining), (0, 0));
+    assert_eq!(
+        (removed_tag.page().matched, removed_tag.page().remaining),
+        (0, 0)
+    );
     assert!(removed_tag.page().next_cursor.is_none());
     drop(removed_tag);
     assert_eq!(live.load(Ordering::SeqCst), before_empty_read);

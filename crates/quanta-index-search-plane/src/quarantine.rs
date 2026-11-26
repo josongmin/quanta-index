@@ -28,15 +28,14 @@ use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
     QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
-    QuarantinedGenerationEntryV1, RepoId, RevisionId,
-    SearchPlaneTrackKind,
+    QuarantinedGenerationEntryV1, RepoId, RevisionId, SearchPlaneTrackKind,
 };
 use quanta_index_core::domains::generation::GenerationStorageKeyV1;
 use quanta_index_core::{
     CoreError, DiagnosticContextV1, GenerationQuarantineReasonV1, InventoriedSealedGenerationV1,
     QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, QuarantinedGenerationV1,
-    SealedGenerationInventoryV1,
-    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
+    SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+    SealedGenerationScanPort,
 };
 
 use crate::{
@@ -229,10 +228,7 @@ impl QuarantineService {
                 .collect();
             entries.extend(track_entries(track, &orphan_entries)?);
         }
-        Ok(QuarantineInventoryV1 {
-            lexical,
-            semantic,
-        })
+        Ok(QuarantineInventoryV1 { lexical, semantic })
     }
 
     /// Discard one entry exactly as a listing reported it.
@@ -679,16 +675,14 @@ pub(crate) mod tests {
 
     use quanta_index_contract::{
         GenerationSnapshot, ManifestGeneration, QuarantineDiscardOutcomeDtoV1, QuarantineTargetV1,
-        QuarantinedGenerationEntryV1, RepoId, RevisionId,
-        SearchPlaneTrackKind,
+        QuarantinedGenerationEntryV1, RepoId, RevisionId, SearchPlaneTrackKind,
     };
     use quanta_index_core::{
         CoreError, GenerationQuarantineReasonV1, GenerationStorageKeyV1,
         InventoriedSealedGenerationV1, QUARANTINE_TARGET_NOT_QUARANTINED_CODE,
         QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, QuarantinedGenerationV1,
-        RequestBudgetV1, SealedGenerationBytesV1,
-        SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
-        SealedGenerationScanPort,
+        RequestBudgetV1, SealedGenerationBytesV1, SealedGenerationInventoryV1,
+        SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
     };
 
     use super::{
@@ -1076,12 +1070,7 @@ pub(crate) mod tests {
             .generation_dir(Path::new("/root/lexical"), generation);
         let entry = quarantined(SearchPlaneTrackKind::Lexical, path.to_str().ok_or("path")?);
         let ledger = Arc::new(RwLock::new(Ledger::new()));
-        let doubles = service(
-            vec![entry],
-            Vec::new(),
-            Vec::new(),
-            Arc::clone(&ledger),
-        );
+        let doubles = service(vec![entry], Vec::new(), Vec::new(), Arc::clone(&ledger));
         let listed = doubles.service.inventory()?.lexical.remove(0);
         let ack = doubles
             .service
@@ -1334,12 +1323,7 @@ pub(crate) mod tests {
                 ManifestGeneration::new(5),
                 "digest-5",
             );
-        let doubles = service(
-            Vec::new(),
-            vec![orphaned, retained],
-            Vec::new(),
-            ledger,
-        );
+        let doubles = service(Vec::new(), vec![orphaned, retained], Vec::new(), ledger);
         let inventory = doubles.service.inventory()?;
         let [orphan] = inventory.lexical.as_slice() else {
             return Err(format!("expected exactly the orphan listed: {inventory:?}").into());

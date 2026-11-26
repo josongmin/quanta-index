@@ -90,7 +90,9 @@ pub(crate) enum NativeReply {
     Stub(crate::native_stub_transport::ScopedStubReply),
     SourceOwners(ScopedNativeSourceOwnerLookup),
     ProjectionOwners(ScopedNativeProjectionOwnerLookup),
-    ProducerProjectionOwnersV1(crate::native_projection_owner_lookup::ScopedProducerProjectionOwnersV1),
+    ProducerProjectionOwnersV1(
+        crate::native_projection_owner_lookup::ScopedProducerProjectionOwnersV1,
+    ),
     ProducerSourceOwners(ScopedNativeProducerSourcePage),
     ProjectionSourceDiff(crate::native_projection_source_diff::ScopedNativeProjectionSourceDiff),
     StagedSources(quanta_index_core::index::StagedObjectReferences),
@@ -209,12 +211,9 @@ impl Serialize for NativeReply {
                     serializer,
                 )
             }
-            Self::ReadSessionHistoryCut { value, .. } => serializer.serialize_newtype_variant(
-                "NativeIndexResponse",
-                40,
-                "HistoryCut",
-                value,
-            ),
+            Self::ReadSessionHistoryCut { value, .. } => {
+                serializer.serialize_newtype_variant("NativeIndexResponse", 40, "HistoryCut", value)
+            }
             Self::TextPage(result) => serializer.serialize_newtype_variant(
                 "NativeIndexResponse",
                 35,
@@ -267,7 +266,10 @@ impl Serialize for NativeReply {
                 NativeIndexResponse::serialize_projection_owners_ref(result, serializer)
             }
             Self::ProducerProjectionOwnersV1(result) => serializer.serialize_newtype_variant(
-                "NativeIndexResponse", 72, "ProducerProjectionOwnersV1", &**result,
+                "NativeIndexResponse",
+                72,
+                "ProducerProjectionOwnersV1",
+                &**result,
             ),
             Self::ProjectionSourceDiff(result) => {
                 NativeIndexResponse::serialize_projection_source_diff_ref(result, serializer)

@@ -255,7 +255,11 @@ impl PathMutationBackendV1 {
                 .expect("descriptor path cannot contain NUL");
         // SAFETY: queue is live and descriptor path is NUL-terminated.
         let watch_v1 = unsafe {
-            libc::inotify_add_watch(self.queue_v1.as_raw_fd(), descriptor_path_v1.as_ptr(), mask_v1)
+            libc::inotify_add_watch(
+                self.queue_v1.as_raw_fd(),
+                descriptor_path_v1.as_ptr(),
+                mask_v1,
+            )
         };
         if watch_v1 < 0 {
             return Err(io::Error::last_os_error());
@@ -268,7 +272,11 @@ impl PathMutationBackendV1 {
         let mut buffer_v1 = [0u8; 4096];
         // SAFETY: read writes at most buffer length bytes to initialized storage.
         let read_v1 = unsafe {
-            libc::read(self.queue_v1.as_raw_fd(), buffer_v1.as_mut_ptr().cast(), buffer_v1.len())
+            libc::read(
+                self.queue_v1.as_raw_fd(),
+                buffer_v1.as_mut_ptr().cast(),
+                buffer_v1.len(),
+            )
         };
         if read_v1 > 0 {
             return Ok(true);
@@ -308,7 +316,10 @@ mod darwin_tests_v1 {
         let retained_v1 = fs::File::open(&path_v1).expect("retain dependency");
         let guard_v1 =
             PathMutationGuardV1::try_new_v1([retained_v1.as_fd()]).expect("watch dependency");
-        assert_eq!(fs::read(&path_v1).expect("read dependency"), b"immutable dependency");
+        assert_eq!(
+            fs::read(&path_v1).expect("read dependency"),
+            b"immutable dependency"
+        );
         assert!(!guard_v1
             .mutation_observed_v1()
             .expect("read mutation status"));

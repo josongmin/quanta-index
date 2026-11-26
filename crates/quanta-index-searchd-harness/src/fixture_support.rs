@@ -87,8 +87,7 @@ pub fn stamped_ingest_request(
     Ok(match payload {
         request @ (SearchPlaneIngestIpcRequest::StageSourcePublication(_)
         | SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_)
-        | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_)
-        ) => request,
+        | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_)) => request,
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
             // A producer event is immutable. Transport stamping must not repair
             // a stale/tampered source commitment or create new source authority.

@@ -707,7 +707,6 @@ fn verify_publish_dispatch_lexical_roundtrip(socket: &Path) -> TestResult {
                 | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::Structural(_)
-
                 | SearchPlaneQueryIpcResponse::Explain(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
                 | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)

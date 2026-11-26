@@ -1924,7 +1924,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn guarded_query_cursor_preserves_opaque_text_across_reader_scratch_boundary() {
         use quanta_index_contract::{

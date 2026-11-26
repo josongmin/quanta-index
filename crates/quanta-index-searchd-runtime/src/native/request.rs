@@ -7,8 +7,7 @@ use quanta_index_contract::{
     index::{Digest, IndexInstanceId, ViewSelection},
     native_protocol::{
         NativeCandidateInstallationV1, NativeIndexRequest, NativeIndexResponse,
-        NativeProjectionRead,
-        NativeRootScopedViewV1,
+        NativeProjectionRead, NativeRootScopedViewV1,
     },
 };
 use quanta_index_core::index::{
@@ -215,9 +214,7 @@ impl NativeDispatcher {
                 ingress,
                 routes,
                 retired_policy,
-            } => self.seal_source_routes_v1(
-                primary, ingress, routes, Some(retired_policy), budget,
-            ),
+            } => self.seal_source_routes_v1(primary, ingress, routes, Some(retired_policy), budget),
             NativeIndexRequest::SealCandidateWithRetiredPolicyOnlyV1 {
                 primary,
                 ingress,
@@ -502,8 +499,11 @@ impl NativeDispatcher {
                 }
                 let ready = match &self.retirement_approval {
                     Some(retirement) => self.kernel.ready_work_filtered_v2(
-                        workspace, epoch, limit,
-                        &|intent| retirement.check_work_intent(intent).is_ok(), budget,
+                        workspace,
+                        epoch,
+                        limit,
+                        &|intent| retirement.check_work_intent(intent).is_ok(),
+                        budget,
                     )?,
                     None => self.kernel.ready_work(workspace, epoch, limit, budget)?,
                 };

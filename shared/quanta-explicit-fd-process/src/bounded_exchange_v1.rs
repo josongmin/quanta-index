@@ -437,10 +437,12 @@ impl<C: BoundedExchangeChildV1> BoundedExchangeSessionV1<C> {
             }
             if self.eof_v1 && self.stderr_eof_v1 && input_complete_v1 {
                 if let Some(exit_status_v1) = self.status_v1 {
-                    return Ok(ExchangeCompletionOutcomeV1::Exit(BoundedExchangeOutcomeV1 {
-                        stdout_bytes_v1: received_v1,
-                        exit_status_v1,
-                    }));
+                    return Ok(ExchangeCompletionOutcomeV1::Exit(
+                        BoundedExchangeOutcomeV1 {
+                            stdout_bytes_v1: received_v1,
+                            exit_status_v1,
+                        },
+                    ));
                 }
             }
             // Poll only live pipe ends in a fixed stack prefix. Return copied

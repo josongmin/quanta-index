@@ -27,12 +27,12 @@ use serde::ser::SerializeStruct as _;
 use super::{boot, with_native_recovery_control_v1};
 use crate::deployment_selection;
 
+#[path = "history_checkpoint_export/native_source_v1.rs"]
+mod native_source_v1;
 #[path = "history_checkpoint_export/native_v1.rs"]
 mod native_v1;
 #[path = "history_checkpoint_export/source_v1.rs"]
 mod source_v1;
-#[path = "history_checkpoint_export/native_source_v1.rs"]
-mod native_source_v1;
 
 pub use source_v1::run_source_v1;
 

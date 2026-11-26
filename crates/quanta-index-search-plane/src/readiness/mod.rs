@@ -52,12 +52,11 @@ pub use crate::search_corpus_retention::{
 };
 
 pub use activation_catalog::{
-    ActivationCatalog, ActiveGenerationRecord, ActivationReadFailureV1,
+    ActivationCatalog, ActivationReadFailureV1, ActiveGenerationRecord,
     ReadOnlyActivationObservationV1, inspect_existing_activation_repository_v1,
     visit_existing_active_search_corpus_heads_v1,
 };
 mod recovery_read_io;
-pub use search_corpus_history::inspect_existing_sealed_search_corpus_v1;
 pub use aux_epoch::{AuxEpochRefusedError, AuxRead};
 pub use auxiliary_store::{AuxiliaryAuthorityStore, restore_auxiliary_rows_into};
 #[cfg(test)]
@@ -69,12 +68,14 @@ pub use ledger::Ledger;
 pub use retention_receipt::SearchCorpusHistoryRetentionReceiptV1;
 pub use runtime_state::{
     ChangedDocState, DirtyDocState, DocFacetState, RuntimeMetadataState,
-    enforce_runtime_catalog_epoch_v1, runtime_catalog_chunk_ids_v1, validate_runtime_catalog_keys_v1,
+    enforce_runtime_catalog_epoch_v1, runtime_catalog_chunk_ids_v1,
+    validate_runtime_catalog_keys_v1,
 };
 pub use search_corpus_generation::{
     PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1,
 };
 pub use search_corpus_history::SealedSearchCorpusAuthorityStateV1;
+pub use search_corpus_history::inspect_existing_sealed_search_corpus_v1;
 pub use structural_state::StructuralAuthorityState;
 pub use track_state::TrackLedger;
 

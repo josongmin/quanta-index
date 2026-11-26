@@ -16,8 +16,8 @@ use quanta_index_core::index::{
 use quanta_index_storage::FileObjectReader;
 use sha2::{Digest as _, Sha256};
 
-use super::{boot, write_frame};
 use super::boot::retired_policy_profile_v1::old_repomap_identity_v1;
+use super::{boot, write_frame};
 use crate::deployment_selection::DeploymentSelectionDocumentV1;
 
 struct TranscriptWriter<'a, W> {
@@ -103,7 +103,10 @@ fn export_head_files_v1(
             let stored = reader.get(*reference, budget)?;
             let record =
                 SourceRecordOwner::decode_json(&stored.payload, budget, MemoryLifetime::Temporary)?;
-            let source_repo = record.source_repo_id.as_ref().ok_or(IndexError::DigestConflict)?;
+            let source_repo = record
+                .source_repo_id
+                .as_ref()
+                .ok_or(IndexError::DigestConflict)?;
             if stored.registration.children.as_slice() != [record.bytes] {
                 return Err(IndexError::DigestConflict);
             }
@@ -119,14 +122,16 @@ fn export_head_files_v1(
                     // Reserve for the identity copies and JSON escaping before
                     // constructing the SourceFileRevision and its census row.
                     let language = record.language.as_ref().map(|code| code.as_str());
-                    let identity_bytes = source_repo.as_str().len()
+                    let identity_bytes = source_repo
+                        .as_str()
+                        .len()
                         .checked_add(record.path.len())
                         .and_then(|length| length.checked_add(language.map_or(0, str::len)))
                         .and_then(|length| length.checked_mul(8))
                         .and_then(|length| length.checked_add(4096))
                         .ok_or(IndexError::ResourceLimited)?;
-                    let identity_limit = u64::try_from(identity_bytes)
-                        .map_err(|_| IndexError::ResourceLimited)?;
+                    let identity_limit =
+                        u64::try_from(identity_bytes).map_err(|_| IndexError::ResourceLimited)?;
                     let _identity_memory = budget
                         .reserve_memory(identity_limit, MemoryLifetime::Temporary)?
                         .ok_or(IndexError::ResourceLimited)?;
@@ -159,7 +164,11 @@ fn export_head_files_v1(
                     digest.update([u8::from(text_admitted)]);
                     digest.update(source_bytes.to_le_bytes());
                     if let Some(language) = language {
-                        digest.update(u32::try_from(language.len()).map_err(|_| IndexError::ResourceLimited)?.to_le_bytes());
+                        digest.update(
+                            u32::try_from(language.len())
+                                .map_err(|_| IndexError::ResourceLimited)?
+                                .to_le_bytes(),
+                        );
                         digest.update(language.as_bytes());
                     } else {
                         digest.update(u32::MAX.to_le_bytes());
@@ -177,13 +186,14 @@ fn export_head_files_v1(
                     for (ordinal, chunk) in
                         bytes.chunks(MAX_SOURCE_SNAPSHOT_CHUNK_BYTES_V1).enumerate()
                     {
-                        let chunk_bytes = u64::try_from(chunk.len())
-                            .map_err(|_| IndexError::ResourceLimited)?;
+                        let chunk_bytes =
+                            u64::try_from(chunk.len()).map_err(|_| IndexError::ResourceLimited)?;
                         let _chunk_memory = budget
                             .reserve_memory(chunk_bytes, MemoryLifetime::Temporary)?
                             .ok_or(IndexError::ResourceLimited)?;
                         let mut owned_chunk = Vec::new();
-                        owned_chunk.try_reserve_exact(chunk.len())
+                        owned_chunk
+                            .try_reserve_exact(chunk.len())
                             .map_err(|_| IndexError::ResourceLimited)?;
                         if owned_chunk.capacity() > chunk.len() {
                             return Err(IndexError::ResourceLimited);
@@ -327,8 +337,9 @@ pub(super) fn export_v1(
                     identities.push(old_repomap_identity_v1(head, reader, budget)?);
                 }
                 identities.sort_unstable_by_key(|identity| identity.projection.0);
-                if identities.windows(2).any(|pair| pair[0].projection == pair[1].projection
-                    && pair[0].instance != pair[1].instance) {
+                if identities.windows(2).any(|pair| {
+                    pair[0].projection == pair[1].projection && pair[0].instance != pair[1].instance
+                }) {
                     return Err(IndexError::DigestConflict.into());
                 }
                 identities.dedup();
@@ -346,11 +357,17 @@ pub(super) fn export_v1(
                 }
                 for identity in identities {
                     budget.checkpoint()?;
-                    frame(&mut transcript, &Frame::RetiredProjectionIdentity {
-                        projection: identity.projection,
-                        instance: identity.instance,
-                    }, budget)?;
-                    retired_count = retired_count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                    frame(
+                        &mut transcript,
+                        &Frame::RetiredProjectionIdentity {
+                            projection: identity.projection,
+                            instance: identity.instance,
+                        },
+                        budget,
+                    )?;
+                    retired_count = retired_count
+                        .checked_add(1)
+                        .ok_or(IndexError::ResourceLimited)?;
                 }
                 Ok(())
             })?;

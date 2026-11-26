@@ -108,7 +108,6 @@ fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Text response, got {other:?}").into());

@@ -7,14 +7,13 @@ use anyhow::{Result, anyhow, ensure};
 use quanta_index_contract::{
     native_cutover_evidence_v1::{
         NativeCutoverEvidenceFreshSdkV1, NativeCutoverEvidenceHostFactsV1,
-        NativeCutoverEvidenceHostRecoveryReceiptV1,
-        NativeCutoverEvidenceOrdinalV1, NativeCutoverEvidenceSdkBindingV1,
-        NativeCutoverEvidenceSourcePublicationBindingV1,
-        NativeCutoverEvidenceSourceFactV1, NativeCutoverEvidenceV1,
+        NativeCutoverEvidenceHostRecoveryReceiptV1, NativeCutoverEvidenceOrdinalV1,
+        NativeCutoverEvidenceSdkBindingV1, NativeCutoverEvidenceSourceFactV1,
+        NativeCutoverEvidenceSourcePublicationBindingV1, NativeCutoverEvidenceV1,
     },
     native_cutover_source_join_v1::{
-        NativeCutoverJoinedSourceFactsV1, NativeCutoverSourceJoinErrorV1,
-        NativeCutoverSourceEventMatchV1, NativeCutoverSourceEventMatchesV1,
+        NativeCutoverJoinedSourceFactsV1, NativeCutoverSourceEventMatchV1,
+        NativeCutoverSourceEventMatchesV1, NativeCutoverSourceJoinErrorV1,
         join_native_cutover_source_facts_v1,
     },
 };
@@ -70,14 +69,26 @@ impl std::fmt::Display for RetainedHostRefusalV1 {
             Self::IncompleteDelivery => "Host delivery lacks terminal cursor custody",
             Self::InvalidDeliveryIdentity => "Host delivery identity or prepared authority differs",
             Self::InvalidOrdinal => "Host ordinal disposition or terminal custody differs",
-            Self::PendingRecoveryOrdinal => "Host recovery receipt covers an ordinal without a terminal decision",
-            Self::ReconciliationRequired => "Host reconciliation ordinal needs an exact recovery receipt",
+            Self::PendingRecoveryOrdinal => {
+                "Host recovery receipt covers an ordinal without a terminal decision"
+            }
+            Self::ReconciliationRequired => {
+                "Host reconciliation ordinal needs an exact recovery receipt"
+            }
             Self::SourceOnlyOrUnmatched => "Host event has no completed Source request association",
             Self::ConflictingSourceEcho => "retained Host echo conflicts with completed Source",
-            Self::DuplicateEmittedEvent => "Host emitted event ID occurs in multiple retained ordinals",
-            Self::MissingRecoveryReceipt => "Host recovery ordinal has no exact checkpoint-owner receipt",
-            Self::InvalidRecoveryReceipt => "Host recovery receipt, tail, checkpoint, or Source identity differs",
-            Self::DuplicateRecoveryReceipt => "Host recovery request identity occurs in multiple retained receipts",
+            Self::DuplicateEmittedEvent => {
+                "Host emitted event ID occurs in multiple retained ordinals"
+            }
+            Self::MissingRecoveryReceipt => {
+                "Host recovery ordinal has no exact checkpoint-owner receipt"
+            }
+            Self::InvalidRecoveryReceipt => {
+                "Host recovery receipt, tail, checkpoint, or Source identity differs"
+            }
+            Self::DuplicateRecoveryReceipt => {
+                "Host recovery request identity occurs in multiple retained receipts"
+            }
         })
     }
 }
@@ -212,9 +223,10 @@ fn charge_host_v1(budget: &mut WorkBudget, bytes: usize) -> Result<()> {
 }
 
 fn canonical_host_digest_v1(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| {
-        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
-    })
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 struct RetainedHostRecoveryReceiptV1<'a> {
@@ -330,17 +342,33 @@ fn require_recovery_receipt_v1(
         receipt.applied_index_publication_identity.as_str(),
         receipt.applied_index_publication_digest.as_str(),
     ];
-    let text_bytes = text.iter().try_fold(0usize, |sum, value| sum.checked_add(value.len()))
+    let text_bytes = text
+        .iter()
+        .try_fold(0usize, |sum, value| sum.checked_add(value.len()))
         .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
-    let tail_bytes = receipt.tail_event_ids.len()
+    let tail_bytes = receipt
+        .tail_event_ids
+        .len()
         .checked_mul(std::mem::size_of::<u128>())
         .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
-    charge_host_v1(budget, text_bytes.checked_add(tail_bytes)
-        .and_then(|sum| sum.checked_add(workspace_root.len()))
-        .and_then(|sum| sum.checked_add(host_workspace_root.len()))
-        .and_then(|sum| sum.checked_add(receipt.observation_cut_digest.as_ref().map_or(0, String::len)))
-        .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?)?;
-    receipt.validate_request_identity_v1()
+    charge_host_v1(
+        budget,
+        text_bytes
+            .checked_add(tail_bytes)
+            .and_then(|sum| sum.checked_add(workspace_root.len()))
+            .and_then(|sum| sum.checked_add(host_workspace_root.len()))
+            .and_then(|sum| {
+                sum.checked_add(
+                    receipt
+                        .observation_cut_digest
+                        .as_ref()
+                        .map_or(0, String::len),
+                )
+            })
+            .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?,
+    )?;
+    receipt
+        .validate_request_identity_v1()
         .map_err(|_| RetainedHostRefusalV1::InvalidRecoveryReceipt)?;
     if text.iter().any(|value| value.trim().is_empty())
         || receipt.canonical_workspace_root != workspace_root
@@ -350,13 +378,16 @@ fn require_recovery_receipt_v1(
         || !canonical_host_digest_v1(&receipt.tail_custody_digest)
         || !canonical_host_digest_v1(&receipt.checkpoint_payload_digest)
         || !canonical_host_digest_v1(&receipt.applied_source_view_digest)
-        || receipt.observation_cut_digest.as_deref()
+        || receipt
+            .observation_cut_digest
+            .as_deref()
             .is_some_and(|digest| !canonical_host_digest_v1(digest))
         || receipt.checkpoint_generation == 0
         || receipt.published_snapshot_id == 0
         || receipt.published_snapshot_id != receipt.applied_published_snapshot_id
         || receipt.published_snapshot_id != fresh.committed_source_snapshot_id
-        || receipt.published_snapshot_id < receipt.snapshot_before.max(receipt.required_snapshot_floor)
+        || receipt.published_snapshot_id
+            < receipt.snapshot_before.max(receipt.required_snapshot_floor)
         || receipt.applied_source_view_digest.as_bytes()
             != fresh.committed_source_snapshot_digest.0.as_slice()
         || receipt.tail_event_ids.is_empty()
@@ -376,9 +407,14 @@ fn completed_source_for_event_v1<'a>(
     event_id: u128,
     budget: &mut WorkBudget,
 ) -> Result<&'a NativeCutoverEvidenceSourcePublicationBindingV1> {
-    let binding = matched_events.source_for_event_v1(event_id, &mut |units| {
-        budget.charge(WorkUsage { reads: 1, bytes: units, ..WorkUsage::default() })
-    })?
+    let binding = matched_events
+        .source_for_event_v1(event_id, &mut |units| {
+            budget.charge(WorkUsage {
+                reads: 1,
+                bytes: units,
+                ..WorkUsage::default()
+            })
+        })?
         .ok_or(RetainedHostRefusalV1::SourceOnlyOrUnmatched)?;
     // The S Original lender already checked every completed step against the
     // current manifest/pointer ancestry under one retained Source/Output loan.
@@ -392,8 +428,10 @@ fn host_ordinal_needs_recovery_v1(ordinal: &NativeCutoverEvidenceOrdinalV1) -> b
 }
 
 fn ordinary_host_event_id_v1(ordinal: &NativeCutoverEvidenceOrdinalV1) -> Option<u128> {
-    if ordinal.filtered_no_semantic_work || ordinal.reconciliation_event_id.is_some()
-        || host_ordinal_needs_recovery_v1(ordinal) {
+    if ordinal.filtered_no_semantic_work
+        || ordinal.reconciliation_event_id.is_some()
+        || host_ordinal_needs_recovery_v1(ordinal)
+    {
         return None;
     }
     ordinal.emitted_event_id
@@ -409,26 +447,38 @@ fn prepare_host_event_matches_v1<'a>(
     host: &'a NativeCutoverEvidenceHostFactsV1,
     budget: &mut WorkBudget,
 ) -> Result<RetainedHostSourceMatchesV1<'a>> {
-    let ordinals = host.deliveries.iter().flat_map(|delivery| &delivery.ordinals);
+    let ordinals = host
+        .deliveries
+        .iter()
+        .flat_map(|delivery| &delivery.ordinals);
     let mut count = 0_usize;
     for ordinal in ordinals.clone() {
         charge_host_v1(budget, std::mem::size_of_val(ordinal))?;
         if ordinary_host_event_id_v1(ordinal).is_some() {
-            count = count.checked_add(1)
+            count = count
+                .checked_add(1)
                 .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
         }
     }
     if count == 0 {
-        return Ok(RetainedHostSourceMatchesV1 { slots: Vec::new(), _lease: None });
+        return Ok(RetainedHostSourceMatchesV1 {
+            slots: Vec::new(),
+            _lease: None,
+        });
     }
-    let bytes = count.checked_mul(std::mem::size_of::<NativeCutoverSourceEventMatchV1<'_>>())
+    let bytes = count
+        .checked_mul(std::mem::size_of::<NativeCutoverSourceEventMatchV1<'_>>())
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
-    let lease = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?
+    let lease = budget
+        .reserve_memory(bytes, MemoryLifetime::Temporary)?
         .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
     let mut slots = Vec::new();
     slots.try_reserve_exact(count)?;
-    ensure!(slots.capacity() <= count, "Host event match scratch exceeded its memory grant");
+    ensure!(
+        slots.capacity() <= count,
+        "Host event match scratch exceeded its memory grant"
+    );
     for ordinal in ordinals {
         charge_host_v1(budget, std::mem::size_of_val(ordinal))?;
         if let Some(event_id) = ordinary_host_event_id_v1(ordinal) {
@@ -439,7 +489,10 @@ fn prepare_host_event_matches_v1<'a>(
         charge_host_v1(budget, 2 * std::mem::size_of::<u128>())?;
         Ok(left.event_id_v1().cmp(&right.event_id_v1()))
     })?;
-    Ok(RetainedHostSourceMatchesV1 { slots, _lease: Some(lease) })
+    Ok(RetainedHostSourceMatchesV1 {
+        slots,
+        _lease: Some(lease),
+    })
 }
 
 /// Pure ordinal shape. `source` is supplied only after the authenticated
@@ -449,10 +502,18 @@ fn require_settled_host_ordinal_v1(
     source: Option<&NativeCutoverEvidenceSourcePublicationBindingV1>,
     budget: &mut WorkBudget,
 ) -> Result<Option<u128>> {
-    charge_host_v1(budget, std::mem::size_of::<NativeCutoverEvidenceOrdinalV1>()
-        .saturating_add(ordinal.terminal.as_ref().map_or(0, String::len))
-        .saturating_add(ordinal.source_transition_digest.as_ref().map_or(0, String::len))
-        .saturating_add(ordinal.target_source_digest.as_ref().map_or(0, String::len)))?;
+    charge_host_v1(
+        budget,
+        std::mem::size_of::<NativeCutoverEvidenceOrdinalV1>()
+            .saturating_add(ordinal.terminal.as_ref().map_or(0, String::len))
+            .saturating_add(
+                ordinal
+                    .source_transition_digest
+                    .as_ref()
+                    .map_or(0, String::len),
+            )
+            .saturating_add(ordinal.target_source_digest.as_ref().map_or(0, String::len)),
+    )?;
     if ordinal.reconciliation_event_id.is_some() {
         return Err(RetainedHostRefusalV1::ReconciliationRequired.into());
     }
@@ -471,17 +532,24 @@ fn require_settled_host_ordinal_v1(
         }
         return Ok(None);
     }
-    let event_id = ordinal.emitted_event_id
+    let event_id = ordinal
+        .emitted_event_id
         .ok_or(RetainedHostRefusalV1::InvalidOrdinal)?;
-    if !matches!(ordinal.terminal.as_deref(), Some("Applied" | "AlreadyPublished")) {
+    if !matches!(
+        ordinal.terminal.as_deref(),
+        Some("Applied" | "AlreadyPublished")
+    ) {
         return Err(RetainedHostRefusalV1::InvalidOrdinal.into());
     }
     if ordinal.terminal.as_deref() == Some("Applied") && !ordinal.admitted {
         return Err(RetainedHostRefusalV1::InvalidOrdinal.into());
     }
     let source = source.ok_or(RetainedHostRefusalV1::SourceOnlyOrUnmatched)?;
-    let echo = (&ordinal.source_transition_digest, &ordinal.target_source_digest,
-        ordinal.target_snapshot_id);
+    let echo = (
+        &ordinal.source_transition_digest,
+        &ordinal.target_source_digest,
+        ordinal.target_snapshot_id,
+    );
     match echo {
         (None, None, None) => {}
         (Some(transition), Some(target), Some(snapshot))
@@ -501,9 +569,13 @@ fn sift_host_heap_v1<T>(
     compare: &mut impl FnMut(&T, &T) -> Result<Ordering>,
 ) -> Result<()> {
     loop {
-        let left = root.checked_mul(2).and_then(|value| value.checked_add(1))
+        let left = root
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(1))
             .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
-        if left >= end { return Ok(()) }
+        if left >= end {
+            return Ok(());
+        }
         let right = left + 1;
         let mut largest = root;
         if compare(&items[largest], &items[left])? == Ordering::Less {
@@ -512,7 +584,9 @@ fn sift_host_heap_v1<T>(
         if right < end && compare(&items[largest], &items[right])? == Ordering::Less {
             largest = right;
         }
-        if largest == root { return Ok(()) }
+        if largest == root {
+            return Ok(());
+        }
         items.swap(root, largest);
         root = largest;
     }
@@ -569,11 +643,12 @@ fn require_settled_retained_host_inventory_v1<'a>(
     let mut occupied_units = 0_u64;
     for delivery in &host.deliveries {
         charge_host_v1(budget, 1)?;
-        ordinal_count = ordinal_count.checked_add(delivery.ordinals.len())
+        ordinal_count = ordinal_count
+            .checked_add(delivery.ordinals.len())
             .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
-        occupied_units = occupied_units.checked_add(
-            u64::try_from(delivery.ordinals.len().max(1))?
-        ).ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
+        occupied_units = occupied_units
+            .checked_add(u64::try_from(delivery.ordinals.len().max(1))?)
+            .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
     }
     if occupied_units != host.active_units || occupied_units > host.capacity {
         return Err(RetainedHostRefusalV1::PendingApplyOrOccupancy.into());
@@ -589,9 +664,14 @@ fn require_settled_retained_host_inventory_v1<'a>(
         })
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
-    let scratch_lease = if reserved_bytes == 0 { None } else {
-        Some(budget.reserve_memory(reserved_bytes, MemoryLifetime::Temporary)?
-            .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?)
+    let scratch_lease = if reserved_bytes == 0 {
+        None
+    } else {
+        Some(
+            budget
+                .reserve_memory(reserved_bytes, MemoryLifetime::Temporary)?
+                .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?,
+        )
     };
     let mut emitted_ids = Vec::<u128>::new();
     emitted_ids.try_reserve_exact(ordinal_count)?;
@@ -616,11 +696,21 @@ fn require_settled_retained_host_inventory_v1<'a>(
         )
     })?;
     for delivery in &host.deliveries {
-        charge_host_v1(budget, delivery.delivery_id.len()
-            .saturating_add(delivery.record_digest.len())
-            .saturating_add(delivery.cursor.len())
-            .saturating_add(delivery.cursor_receipt_digest.as_ref().map_or(0, String::len))
-            .saturating_add(delivery.ordinals.len()))?;
+        charge_host_v1(
+            budget,
+            delivery
+                .delivery_id
+                .len()
+                .saturating_add(delivery.record_digest.len())
+                .saturating_add(delivery.cursor.len())
+                .saturating_add(
+                    delivery
+                        .cursor_receipt_digest
+                        .as_ref()
+                        .map_or(0, String::len),
+                )
+                .saturating_add(delivery.ordinals.len()),
+        )?;
         if usize::try_from(delivery.input_count).ok() != Some(delivery.ordinals.len())
             || delivery.workspace_authority != host.workspace_authority
         {
@@ -631,7 +721,9 @@ fn require_settled_retained_host_inventory_v1<'a>(
             || !canonical_host_digest_v1(&delivery.delivery_id)
             || !canonical_host_digest_v1(&delivery.payload_digest)
             || !canonical_host_digest_v1(&delivery.config_seal)
-            || delivery.cursor_receipt_digest.as_deref()
+            || delivery
+                .cursor_receipt_digest
+                .as_deref()
                 .is_some_and(|digest| !canonical_host_digest_v1(digest))
             || delivery.backend.is_empty()
             || delivery.workspace_authority.is_empty()
@@ -646,18 +738,24 @@ fn require_settled_retained_host_inventory_v1<'a>(
         }
         let mut authorized = false;
         for authority in &host.prepared_authorities {
-            charge_host_v1(budget, authority.backend.len()
-                .saturating_add(authority.workspace_authority.len())
-                .saturating_add(authority.configured_root.len())
-                .saturating_add(authority.watch_root.len())
-                .saturating_add(authority.mapping_schema.len())
-                .saturating_add(authority.config_seal.len()))?;
+            charge_host_v1(
+                budget,
+                authority
+                    .backend
+                    .len()
+                    .saturating_add(authority.workspace_authority.len())
+                    .saturating_add(authority.configured_root.len())
+                    .saturating_add(authority.watch_root.len())
+                    .saturating_add(authority.mapping_schema.len())
+                    .saturating_add(authority.config_seal.len()),
+            )?;
             if authority.backend == delivery.backend
                 && authority.workspace_authority == delivery.workspace_authority
                 && authority.configured_root == delivery.configured_root
                 && authority.watch_root == delivery.watch_root
                 && authority.mapping_schema == delivery.mapping_schema
-                && authority.config_seal == delivery.config_seal {
+                && authority.config_seal == delivery.config_seal
+            {
                 authorized = true;
             }
         }
@@ -667,13 +765,22 @@ fn require_settled_retained_host_inventory_v1<'a>(
         let mut recovered_in_delivery = false;
         let mut no_cursor_recovery_digest = None;
         for (index, ordinal) in delivery.ordinals.iter().enumerate() {
-            charge_host_v1(budget, std::mem::size_of::<NativeCutoverEvidenceOrdinalV1>()
-                .saturating_add(ordinal.recovery_request_digest.as_ref().map_or(0, String::len)))?;
+            charge_host_v1(
+                budget,
+                std::mem::size_of::<NativeCutoverEvidenceOrdinalV1>().saturating_add(
+                    ordinal
+                        .recovery_request_digest
+                        .as_ref()
+                        .map_or(0, String::len),
+                ),
+            )?;
             if ordinal.source_ordinal != u64::try_from(index)? {
                 return Err(RetainedHostRefusalV1::InvalidOrdinal.into());
             }
             if delivery.cursor_receipt_digest.is_none() && !ordinal.filtered_no_semantic_work {
-                let digest = ordinal.recovery_request_digest.as_deref()
+                let digest = ordinal
+                    .recovery_request_digest
+                    .as_deref()
                     .ok_or(RetainedHostRefusalV1::MissingRecoveryReceipt)?;
                 if no_cursor_recovery_digest.is_some_and(|prior| prior != digest) {
                     return Err(RetainedHostRefusalV1::InvalidRecoveryReceipt.into());
@@ -686,7 +793,9 @@ fn require_settled_retained_host_inventory_v1<'a>(
                     (None, Some(event_id)) if !ordinal.filtered_no_semantic_work => event_id,
                     _ => return Err(RetainedHostRefusalV1::InvalidOrdinal.into()),
                 };
-                let request_digest = ordinal.recovery_request_digest.as_deref()
+                let request_digest = ordinal
+                    .recovery_request_digest
+                    .as_deref()
                     .ok_or(RetainedHostRefusalV1::MissingRecoveryReceipt)?;
                 let row =
                     recovery_receipt_for_digest_v1(&mut recovery_receipts, request_digest, budget)?;
@@ -702,14 +811,21 @@ fn require_settled_retained_host_inventory_v1<'a>(
                     ordinal.target_source_digest.as_deref(),
                     ordinal.target_snapshot_id,
                 );
-                charge_host_v1(budget,
-                    ordinal.source_transition_digest.as_ref().map_or(0, String::len)
+                charge_host_v1(
+                    budget,
+                    ordinal
+                        .source_transition_digest
+                        .as_ref()
+                        .map_or(0, String::len)
                         .checked_add(ordinal.target_source_digest.as_ref().map_or(0, String::len))
-                        .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?)?;
+                        .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?,
+                )?;
                 match ordinal.terminal.as_deref() {
                     Some("RecoverySubsumed") if echo == (None, None, None) => {}
-                    Some("Applied") if ordinal.admitted && ordinal.reconciliation_event_id.is_none()
-                        && echo == (None, None, None) => {}
+                    Some("Applied")
+                        if ordinal.admitted
+                            && ordinal.reconciliation_event_id.is_none()
+                            && echo == (None, None, None) => {}
                     Some("AlreadyPublished") if ordinal.reconciliation_event_id.is_none() => {
                         match echo {
                             (None, None, None) => {}
@@ -732,7 +848,8 @@ fn require_settled_retained_host_inventory_v1<'a>(
                 return Err(RetainedHostRefusalV1::IncompleteDelivery.into());
             }
             let source = ordinary_host_event_id_v1(ordinal)
-                .map(|event_id| source_for_event(event_id, budget)).transpose()?;
+                .map(|event_id| source_for_event(event_id, budget))
+                .transpose()?;
             if let Some(event_id) = require_settled_host_ordinal_v1(ordinal, source, budget)? {
                 emitted_ids.push(event_id);
             }
@@ -761,7 +878,9 @@ fn require_settled_retained_host_v1<'a>(
     matched_events: &NativeCutoverSourceEventMatchesV1<'a, '_>,
     budget: &mut WorkBudget,
 ) -> Result<()> {
-    require_settled_retained_host_inventory_v1(&evidence.host_facts, budget,
+    require_settled_retained_host_inventory_v1(
+        &evidence.host_facts,
+        budget,
         |event_id, budget| completed_source_for_event_v1(matched_events, event_id, budget),
         |receipt, budget| {
             require_recovery_receipt_v1(
@@ -771,7 +890,8 @@ fn require_settled_retained_host_v1<'a>(
                 joined.fresh_sdk,
                 budget,
             )
-        })
+        },
+    )
 }
 
 pub(super) fn join_source_and_host_v1<'a>(
@@ -841,6 +961,7 @@ pub(super) fn join_source_and_host_v1<'a>(
 mod tests {
     use super::super::{Error, UnixDatagram, send_outcome, wire};
     use super::*;
+    use crate::native_resources::{NativeResourceClass, NativeResourceLedger, NativeResourcePlan};
     use quanta_index_contract::index::Digest;
     use quanta_index_contract::native_cutover_evidence_v1::{
         NativeCutoverDigest64V1, NativeCutoverEvidenceDeliveryV1,
@@ -848,7 +969,6 @@ mod tests {
     };
     use quanta_index_core::index::WorkLimits;
     use quanta_index_core::index::effort::{ReservationGuard, ResourceNeed};
-    use crate::native_resources::{NativeResourceClass, NativeResourceLedger, NativeResourcePlan};
     use std::time::{Duration, Instant};
 
     fn budget() -> WorkBudget {
@@ -879,7 +999,8 @@ mod tests {
             required_snapshot_floor: 40,
             failure_revision: None,
             tail_event_ids: vec![19, 29],
-            tail_custody_digest: "099ca89d689b16ffd177a87f24bddfcba84436c9123b076a9653aa3ab5492305".into(),
+            tail_custody_digest: "099ca89d689b16ffd177a87f24bddfcba84436c9123b076a9653aa3ab5492305"
+                .into(),
             observation_cut_digest: Some("a".repeat(64)),
             checkpoint_generation: 2,
             checkpoint_payload_digest: "b".repeat(64),
@@ -936,15 +1057,24 @@ mod tests {
         assert!(verify(&foreign).is_err());
         let mut foreign_fresh = fresh.clone();
         foreign_fresh.committed_source_snapshot_id = 42;
-        assert!(require_recovery_receipt_v1(
-            &receipt, "/workspace", "/workspace", &foreign_fresh, &mut budget(),
-        ).is_err());
-        assert!(require_recovery_receipt_v1(
-            &receipt, "/foreign", "/workspace", &fresh, &mut budget(),
-        ).is_err());
-        assert!(require_recovery_receipt_v1(
-            &receipt, "/workspace", "/foreign", &fresh, &mut budget(),
-        ).is_err());
+        assert!(
+            require_recovery_receipt_v1(
+                &receipt,
+                "/workspace",
+                "/workspace",
+                &foreign_fresh,
+                &mut budget(),
+            )
+            .is_err()
+        );
+        assert!(
+            require_recovery_receipt_v1(&receipt, "/foreign", "/workspace", &fresh, &mut budget(),)
+                .is_err()
+        );
+        assert!(
+            require_recovery_receipt_v1(&receipt, "/workspace", "/foreign", &fresh, &mut budget(),)
+                .is_err()
+        );
     }
 
     #[test]
@@ -990,7 +1120,8 @@ mod tests {
     }
 
     #[test]
-    fn change_event_sdk_ack_binds_source_target_even_when_committed_head_has_advanced() -> Result<()> {
+    fn change_event_sdk_ack_binds_source_target_even_when_committed_head_has_advanced() -> Result<()>
+    {
         let (_, fresh) = recovery_receipt_shape_fixture_v1();
         let binding = NativeCutoverEvidenceSdkBindingV1 {
             source_intent_digest: "3".repeat(64),
@@ -1056,11 +1187,17 @@ mod tests {
             target_snapshot_id: None,
             recovery_request_digest: None,
         };
-        assert_eq!(require_settled_host_ordinal_v1(&emitted, Some(&source), &mut budget())
-            .expect("shape with matching Source"), Some(19));
-        assert_eq!(require_settled_host_ordinal_v1(&emitted, None, &mut budget())
-            .unwrap_err().downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::SourceOnlyOrUnmatched));
+        assert_eq!(
+            require_settled_host_ordinal_v1(&emitted, Some(&source), &mut budget())
+                .expect("shape with matching Source"),
+            Some(19)
+        );
+        assert_eq!(
+            require_settled_host_ordinal_v1(&emitted, None, &mut budget())
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::SourceOnlyOrUnmatched)
+        );
 
         let filtered = NativeCutoverEvidenceOrdinalV1 {
             source_ordinal: 1,
@@ -1074,31 +1211,43 @@ mod tests {
             target_snapshot_id: None,
             recovery_request_digest: None,
         };
-        assert_eq!(require_settled_host_ordinal_v1(&filtered, None, &mut budget())
-            .expect("terminal filtered ordinal"), None);
+        assert_eq!(
+            require_settled_host_ordinal_v1(&filtered, None, &mut budget())
+                .expect("terminal filtered ordinal"),
+            None
+        );
         let mut reconciliation = filtered.clone();
         reconciliation.filtered_no_semantic_work = false;
         reconciliation.reconciliation_event_id = Some(29);
         reconciliation.terminal = Some("RecoverySubsumed".into());
-        assert_eq!(require_settled_host_ordinal_v1(&reconciliation, None, &mut budget())
-            .unwrap_err().downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::ReconciliationRequired));
+        assert_eq!(
+            require_settled_host_ordinal_v1(&reconciliation, None, &mut budget())
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::ReconciliationRequired)
+        );
         let mut wrong_echo = emitted;
         wrong_echo.terminal = Some("AlreadyPublished".into());
         wrong_echo.source_transition_digest = Some("d".repeat(64));
         wrong_echo.target_source_digest = Some("c".repeat(64));
         wrong_echo.target_snapshot_id = Some(41);
-        assert_eq!(require_settled_host_ordinal_v1(&wrong_echo, Some(&source), &mut budget())
-            .unwrap_err().downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::ConflictingSourceEcho));
+        assert_eq!(
+            require_settled_host_ordinal_v1(&wrong_echo, Some(&source), &mut budget())
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::ConflictingSourceEcho)
+        );
     }
 
     #[test]
     fn retained_host_duplicate_emitted_ids_and_work_refusal() {
         let mut ids = [19, 17, 19];
-        assert_eq!(reject_duplicate_host_event_ids_v1(&mut ids, &mut budget())
-            .unwrap_err().downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::DuplicateEmittedEvent));
+        assert_eq!(
+            reject_duplicate_host_event_ids_v1(&mut ids, &mut budget())
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::DuplicateEmittedEvent)
+        );
         let mut unique = [23, 17, 19];
         reject_duplicate_host_event_ids_v1(&mut unique, &mut budget())
             .expect("distinct emitted event IDs");
@@ -1211,10 +1360,11 @@ mod tests {
             core: need,
             enrichment: need,
         })?;
-        let guard = ReservationGuard::try_acquire(
-            ledger.scheduler(NativeResourceClass::Core), need,
-        ).ok_or_else(|| anyhow!("Core fixture reservation unavailable"))?;
-        let scope = guard.memory_scope()
+        let guard =
+            ReservationGuard::try_acquire(ledger.scheduler(NativeResourceClass::Core), need)
+                .ok_or_else(|| anyhow!("Core fixture reservation unavailable"))?;
+        let scope = guard
+            .memory_scope()
             .ok_or_else(|| anyhow!("Core fixture memory scope unavailable"))?;
         let mut charged = WorkBudget::new(limits, Instant::now() + Duration::from_secs(10));
         charged.bind_memory_scope(Some(scope));
@@ -1279,24 +1429,33 @@ mod tests {
         ]);
         with_host_inventory_budget_v1(&host, |budget| {
             let matches = prepare_host_event_matches_v1(&host, budget)?;
-            let ids: Vec<_> = matches.slots.iter()
-                .map(NativeCutoverSourceEventMatchV1::event_id_v1).collect();
+            let ids: Vec<_> = matches
+                .slots
+                .iter()
+                .map(NativeCutoverSourceEventMatchV1::event_id_v1)
+                .collect();
             assert_eq!(ids, [7, 42]);
             assert!(matches._lease.is_some());
             Ok(())
-        }).expect("ordinary probes fit the granted scratch and refund it");
-        with_host_inventory_limits_v1(&host, WorkLimits {
-            reads: host.deliveries[0].ordinals.len() as u64 + 1,
-            writes: 0,
-            bytes: 32 * 1024,
-            mutations: 0,
-        }, |budget| {
-            let result = prepare_host_event_matches_v1(&host, budget);
-            assert!(matches!(result, Err(ref error)
+        })
+        .expect("ordinary probes fit the granted scratch and refund it");
+        with_host_inventory_limits_v1(
+            &host,
+            WorkLimits {
+                reads: host.deliveries[0].ordinals.len() as u64 + 1,
+                writes: 0,
+                bytes: 32 * 1024,
+                mutations: 0,
+            },
+            |budget| {
+                let result = prepare_host_event_matches_v1(&host, budget);
+                assert!(matches!(result, Err(ref error)
                 if error.downcast_ref::<quanta_index_core::index::IndexError>()
                     == Some(&quanta_index_core::index::IndexError::ResourceLimited)));
-            Ok(())
-        }).expect("failure during slot collection refunds the grant");
+                Ok(())
+            },
+        )
+        .expect("failure during slot collection refunds the grant");
     }
 
     fn retained_recovery_host_fixture_v1() -> (
@@ -1577,25 +1736,37 @@ mod tests {
 
         let mut missing_reference = host.clone();
         missing_reference.deliveries[0].ordinals[1].recovery_request_digest = None;
-        assert_eq!(check_recovery_host_fixture_v1(&missing_reference, &fresh)
-            .unwrap_err().downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::MissingRecoveryReceipt));
+        assert_eq!(
+            check_recovery_host_fixture_v1(&missing_reference, &fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::MissingRecoveryReceipt)
+        );
         let mut conflicting_reference = host.clone();
         conflicting_reference.deliveries[0].ordinals[1].recovery_request_digest =
             Some("f".repeat(64));
-        assert_eq!(check_recovery_host_fixture_v1(&conflicting_reference, &fresh)
-            .unwrap_err().downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::InvalidRecoveryReceipt));
+        assert_eq!(
+            check_recovery_host_fixture_v1(&conflicting_reference, &fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::InvalidRecoveryReceipt)
+        );
         let mut partial_echo = host.clone();
         partial_echo.deliveries[0].ordinals[1].target_source_digest = None;
-        assert_eq!(check_recovery_host_fixture_v1(&partial_echo, &fresh)
-            .unwrap_err().downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::ConflictingSourceEcho));
+        assert_eq!(
+            check_recovery_host_fixture_v1(&partial_echo, &fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::ConflictingSourceEcho)
+        );
         let mut stale_fresh = fresh.clone();
         stale_fresh.committed_source_snapshot_id += 1;
-        assert_eq!(check_recovery_host_fixture_v1(&host, &stale_fresh)
-            .unwrap_err().downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::InvalidRecoveryReceipt));
+        assert_eq!(
+            check_recovery_host_fixture_v1(&host, &stale_fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::InvalidRecoveryReceipt)
+        );
     }
 
     #[test]
@@ -1603,9 +1774,12 @@ mod tests {
         let (host, fresh) = retained_recovery_host_fixture_v1();
         let mut missing = host.clone();
         missing.recovery_receipts.clear();
-        assert_eq!(check_recovery_host_fixture_v1(&missing, &fresh)
-            .unwrap_err().downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::MissingRecoveryReceipt));
+        assert_eq!(
+            check_recovery_host_fixture_v1(&missing, &fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::MissingRecoveryReceipt)
+        );
         let mut pending = host.clone();
         pending.deliveries[0].ordinals[0].terminal = None;
         let cause = check_recovery_host_fixture_v1(&pending, &fresh).unwrap_err();
@@ -1646,22 +1820,31 @@ mod tests {
         ));
         let mut pending_missing = pending.clone();
         pending_missing.recovery_receipts.clear();
-        assert_eq!(check_recovery_host_fixture_v1(&pending_missing, &fresh)
-            .unwrap_err().downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::MissingRecoveryReceipt));
+        assert_eq!(
+            check_recovery_host_fixture_v1(&pending_missing, &fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::MissingRecoveryReceipt)
+        );
         let mut stale_fresh = fresh.clone();
         stale_fresh.committed_source_snapshot_id += 1;
-        assert_eq!(check_recovery_host_fixture_v1(&pending, &stale_fresh)
-            .unwrap_err().downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::InvalidRecoveryReceipt));
+        assert_eq!(
+            check_recovery_host_fixture_v1(&pending, &stale_fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::InvalidRecoveryReceipt)
+        );
         let mut reconciliation_applied = host;
         let ordinal = &mut reconciliation_applied.deliveries[0].ordinals[0];
         ordinal.emitted_event_id = None;
         ordinal.reconciliation_event_id = Some(19);
         ordinal.terminal = Some("Applied".into());
-        assert_eq!(check_recovery_host_fixture_v1(&reconciliation_applied, &fresh)
-            .unwrap_err().downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::InvalidOrdinal));
+        assert_eq!(
+            check_recovery_host_fixture_v1(&reconciliation_applied, &fresh)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::InvalidOrdinal)
+        );
     }
 
     #[test]
@@ -1690,38 +1873,59 @@ mod tests {
 
         let mut wrong_occupancy = valid.clone();
         wrong_occupancy.active_units = 0;
-        assert_eq!(check_filtered_host_fixture_v1(&wrong_occupancy).unwrap_err()
-            .downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::PendingApplyOrOccupancy));
+        assert_eq!(
+            check_filtered_host_fixture_v1(&wrong_occupancy)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::PendingApplyOrOccupancy)
+        );
         let mut wrong_capacity = valid.clone();
         wrong_capacity.capacity = 0;
-        assert_eq!(check_filtered_host_fixture_v1(&wrong_capacity).unwrap_err()
-            .downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::PendingApplyOrOccupancy));
+        assert_eq!(
+            check_filtered_host_fixture_v1(&wrong_capacity)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::PendingApplyOrOccupancy)
+        );
         let mut wrong_count = valid.clone();
         wrong_count.deliveries[0].input_count = 2;
-        assert_eq!(check_filtered_host_fixture_v1(&wrong_count).unwrap_err()
-            .downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::IncompleteDelivery));
+        assert_eq!(
+            check_filtered_host_fixture_v1(&wrong_count)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::IncompleteDelivery)
+        );
         let mut wrong_ordinal = valid.clone();
         wrong_ordinal.deliveries[0].ordinals[0].source_ordinal = 1;
-        assert_eq!(check_filtered_host_fixture_v1(&wrong_ordinal).unwrap_err()
-            .downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::InvalidOrdinal));
+        assert_eq!(
+            check_filtered_host_fixture_v1(&wrong_ordinal)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::InvalidOrdinal)
+        );
         let mut missing_receipt = valid.clone();
         missing_receipt.deliveries[0].cursor_receipt_digest = None;
-        assert_eq!(check_filtered_host_fixture_v1(&missing_receipt).unwrap_err()
-            .downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::IncompleteDelivery));
+        assert_eq!(
+            check_filtered_host_fixture_v1(&missing_receipt)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::IncompleteDelivery)
+        );
         let mut malformed_receipt = valid.clone();
         malformed_receipt.deliveries[0].cursor_receipt_digest = Some(String::new());
-        assert_eq!(check_filtered_host_fixture_v1(&malformed_receipt).unwrap_err()
-            .downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::InvalidDeliveryIdentity));
+        assert_eq!(
+            check_filtered_host_fixture_v1(&malformed_receipt)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::InvalidDeliveryIdentity)
+        );
         let mut foreign_authority = valid;
         foreign_authority.prepared_authorities[0].config_seal = "f".repeat(64);
-        assert_eq!(check_filtered_host_fixture_v1(&foreign_authority).unwrap_err()
-            .downcast_ref::<RetainedHostRefusalV1>(),
-            Some(&RetainedHostRefusalV1::InvalidDeliveryIdentity));
+        assert_eq!(
+            check_filtered_host_fixture_v1(&foreign_authority)
+                .unwrap_err()
+                .downcast_ref::<RetainedHostRefusalV1>(),
+            Some(&RetainedHostRefusalV1::InvalidDeliveryIdentity)
+        );
     }
 }

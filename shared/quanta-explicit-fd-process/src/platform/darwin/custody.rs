@@ -388,7 +388,13 @@ fn cleanup_custody_v1(
         }
     }
     // SAFETY: unlinkat is rooted at the owned private directory.
-    unsafe { libc::unlinkat(directory_v1.as_raw_fd(), CUSTODY_FILE_NAME_V1.as_ptr().cast(), 0) };
+    unsafe {
+        libc::unlinkat(
+            directory_v1.as_raw_fd(),
+            CUSTODY_FILE_NAME_V1.as_ptr().cast(),
+            0,
+        )
+    };
     // SAFETY: directory path is the unique mkdtemp result owned by custody.
     unsafe { libc::rmdir(directory_path_v1.as_ptr()) };
 }

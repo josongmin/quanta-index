@@ -10,21 +10,22 @@ use std::{
 };
 
 use quanta_index_contract::RepoId;
-use quanta_index_contract::native_protocol::{SourceStageReplayContextV1, SourceStageReplayReceiptV1};
-use sha2::{Digest as _, Sha256};
+use quanta_index_contract::native_protocol::{
+    SourceStageReplayContextV1, SourceStageReplayReceiptV1,
+};
 use quanta_index_core::DiagnosticStageV1;
 use quanta_index_core::index::{
     AdmissionOutcome, AttemptContext, AttemptRef, BootstrapRef, CatalogReadAttempt,
     CatalogReadSettlementPort, CatalogView, CoverageBinding, CoverageStatus, Digest,
-    GroupActivation, HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryTransition, ImmutableOperation, IndexError, IndexInstanceId,
-    IndexProfile, IngressRef, InputBinding, InputDomain, MapRoot, MapValue, MemberBinding,
-    NativeReadReleaseObservation, NativeReadSettlement, NativeReadSettlementScope,
-    OWNED_WORK_PRODUCER, ObjectBatchInput, ObjectInstallScope, ObjectRef, OperationKey,
-    OperationStatus, OrdinalMapEdit, OwnedReadyOutcome, OwnedWorkAssignment, OwnedWorkBegin,
-    OwnedWorkGrant, OwnedWorkPolicy, OwnedWorkReport, OwnerCoverage, OwnerInputBinding, OwnerKey,
-    OwnerMemberBinding, OwnerMutation, OwnerMutationCursor, OwnerMutationSet, PlanContext,
-    PreparedPublication,
-    ProducerId, ProjectionBinding, ProjectionCertificate, ProjectionId, ProjectionOwnerContribution,
+    GroupActivation, HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryTransition,
+    ImmutableOperation, IndexError, IndexInstanceId, IndexProfile, IngressRef, InputBinding,
+    InputDomain, MapRoot, MapValue, MemberBinding, NativeReadReleaseObservation,
+    NativeReadSettlement, NativeReadSettlementScope, OWNED_WORK_PRODUCER, ObjectBatchInput,
+    ObjectInstallScope, ObjectRef, OperationKey, OperationStatus, OrdinalMapEdit,
+    OwnedReadyOutcome, OwnedWorkAssignment, OwnedWorkBegin, OwnedWorkGrant, OwnedWorkPolicy,
+    OwnedWorkReport, OwnerCoverage, OwnerInputBinding, OwnerKey, OwnerMemberBinding, OwnerMutation,
+    OwnerMutationCursor, OwnerMutationSet, PlanContext, PreparedPublication, ProducerId,
+    ProjectionBinding, ProjectionCertificate, ProjectionId, ProjectionOwnerContribution,
     ProjectionTransition, Refusal, RegisteredObject, SourceCut, SourceInput, SourceOperationMode,
     SourceRecord, SourceTextAdmission, StagedObjectReferences, SubmitOutcome, UpdateKind,
     UpdateRequest, ViewRef, ViewSelection, WorkAction, WorkBudget, WorkClaim, WorkIntent,
@@ -38,9 +39,9 @@ use quanta_index_core::index::{
     validate_read_ticket_lease,
 };
 use quanta_index_core::index::{
-    MAX_NATIVE_STAGE_SOURCES_INPUTS, MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES,
-    WorkBudgetDenial,
+    MAX_NATIVE_STAGE_SOURCES_INPUTS, MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES, WorkBudgetDenial,
 };
+use sha2::{Digest as _, Sha256};
 
 use crate::{
     binding_metadata::{self, coverage_children, owner_coverage_children, owner_member_children},
@@ -62,10 +63,7 @@ use crate::{
 // vary by repository/revision, while this producer remains stable.
 const RETIRED_REPOMAP_PRODUCER: ProducerId = ProducerId(*b"semantica-r5-v1!");
 
-fn reject_retired_repomap_identity(
-    policy: Digest,
-    producer: ProducerId,
-) -> Result<(), IndexError> {
+fn reject_retired_repomap_identity(policy: Digest, producer: ProducerId) -> Result<(), IndexError> {
     if policy == quanta_index_contract::native_protocol::native_repomap_rank_policy()
         || producer == RETIRED_REPOMAP_PRODUCER
     {
@@ -1103,7 +1101,15 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 .try_reserve_exact(path.len())
                 .map_err(|_error| IndexError::ResourceLimited)?;
             owned_path.push_str(path);
-            source_record_payload(owned_path, predicted.reference, bytes.len(), text, None, None, budget)?
+            source_record_payload(
+                owned_path,
+                predicted.reference,
+                bytes.len(),
+                text,
+                None,
+                None,
+                budget,
+            )?
         };
         let content = self.stage_object(ingress, bytes, &[], budget)?;
         if content != predicted.reference {
@@ -1160,7 +1166,12 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 .and_then(|bytes| bytes.checked_add(input.bytes.len()))
                 .and_then(|bytes| bytes.checked_add(repo_bytes))
                 .and_then(|bytes| {
-                    bytes.checked_add(input.language.as_ref().map_or(0, |code| code.as_str().len()))
+                    bytes.checked_add(
+                        input
+                            .language
+                            .as_ref()
+                            .map_or(0, |code| code.as_str().len()),
+                    )
                 })
                 .and_then(|bytes| bytes.checked_add(256))
                 .ok_or(IndexError::ResourceLimited)?;
@@ -1202,7 +1213,12 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             sum.checked_add(input.path.capacity())
                 .and_then(|bytes| bytes.checked_add(input.bytes.capacity()))
                 .and_then(|bytes| {
-                    bytes.checked_add(input.language.as_ref().map_or(0, |code| code.as_str().len()))
+                    bytes.checked_add(
+                        input
+                            .language
+                            .as_ref()
+                            .map_or(0, |code| code.as_str().len()),
+                    )
                 })
                 .ok_or(IndexError::ResourceLimited)
         })?;
@@ -1244,13 +1260,24 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             .try_reserve_exact(count)
             .map_err(|_error| IndexError::ResourceLimited)?;
         let mut wire_bytes = 0_u64;
-        for SourceInput { path, bytes, text, language } in input_custody.0.drain(..) {
+        for SourceInput {
+            path,
+            bytes,
+            text,
+            language,
+        } in input_custody.0.drain(..)
+        {
             budget.checkpoint()?;
             let body = self.services.objects.identify(&bytes, &[], budget)?;
-            let record_payload =
-                source_record_payload(
-                    path, body.reference, bytes.len(), text, repository, language, budget,
-                )?;
+            let record_payload = source_record_payload(
+                path,
+                body.reference,
+                bytes.len(),
+                text,
+                repository,
+                language,
+                budget,
+            )?;
             let record =
                 self.services
                     .objects
@@ -1548,8 +1575,14 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         budget: &mut WorkBudget,
     ) -> Result<SourceStageReplayReceiptV1, IndexError> {
         let owners = self.seal_mutations(ingress, root, count, budget)?;
-        let receipt = SourceStageReplayReceiptV1 { ingress, owners, context };
-        self.services.catalog.persist_source_stage_replay_receipt_v1(receipt, budget)?;
+        let receipt = SourceStageReplayReceiptV1 {
+            ingress,
+            owners,
+            context,
+        };
+        self.services
+            .catalog
+            .persist_source_stage_replay_receipt_v1(receipt, budget)?;
         Ok(receipt)
     }
 
@@ -1559,7 +1592,9 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         correlation: Digest,
         budget: &mut WorkBudget,
     ) -> Result<Option<SourceStageReplayReceiptV1>, IndexError> {
-        self.services.catalog.read_source_stage_replay_receipt_v1(operation, correlation, budget)
+        self.services
+            .catalog
+            .read_source_stage_replay_receipt_v1(operation, correlation, budget)
     }
 
     /// Pin one immutable view and decode its profile once for all stages of
@@ -2070,7 +2105,8 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         let ticket = self.pin_view(selection, budget)?;
         let result = (|| {
             ticket.validate()?;
-            let binding = self.projection_at_view(ticket.view(), projection_id, budget)?
+            let binding = self
+                .projection_at_view(ticket.view(), projection_id, budget)?
                 .map(|(_, binding)| binding);
             ticket.validate()?;
             budget.checkpoint()?;
@@ -2098,15 +2134,23 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         projection_id: ProjectionId,
         budget: &mut WorkBudget,
     ) -> Result<Option<(ObjectRef, ProjectionBinding)>, IndexError> {
-        self.services.maps.lookup_object(
-            view.projections,
-            &projection::projection_key(projection_id),
-            budget,
-        )?.map(|reference| {
-            projection::read_binding_from(
-                reference, projection_id, self.services.objects.as_ref(), budget,
-            ).map(|binding| (reference, binding))
-        }).transpose()
+        self.services
+            .maps
+            .lookup_object(
+                view.projections,
+                &projection::projection_key(projection_id),
+                budget,
+            )?
+            .map(|reference| {
+                projection::read_binding_from(
+                    reference,
+                    projection_id,
+                    self.services.objects.as_ref(),
+                    budget,
+                )
+                .map(|binding| (reference, binding))
+            })
+            .transpose()
     }
 
     /// Bounded, explicit recovery of sessions whose process lock is gone.
@@ -2235,9 +2279,9 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         allow: &dyn Fn(&WorkIntent) -> bool,
         budget: &mut WorkBudget,
     ) -> Result<Vec<WorkIntent>, IndexError> {
-        self.services.catalog.ready_work_filtered_v2(
-            workspace, epoch, limit, allow, budget,
-        )
+        self.services
+            .catalog
+            .ready_work_filtered_v2(workspace, epoch, limit, allow, budget)
     }
 
     pub fn claim_work(
@@ -2450,19 +2494,19 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             // Physical writes and later edits share this cumulative budget.
             let encoded_upper_bound = charge_request_metadata(&request, budget)?;
             if let Some(transition) = request.kind.source_transition_v1() {
-                    crate::frontier::validate_event_shape(request.operation, &transition.events)?;
-                    let digest = transition.owner_digest().map_err(|error| {
-                        IndexError::InvalidInput(format!("source owner digest encoding: {error}"))
-                    })?;
-                    if transition
-                        .events
-                        .iter()
-                        .any(|event| event.payload != digest)
-                    {
-                        return Err(IndexError::InvalidInput(
-                            "source event payload does not bind owner manifest".into(),
-                        ));
-                    }
+                crate::frontier::validate_event_shape(request.operation, &transition.events)?;
+                let digest = transition.owner_digest().map_err(|error| {
+                    IndexError::InvalidInput(format!("source owner digest encoding: {error}"))
+                })?;
+                if transition
+                    .events
+                    .iter()
+                    .any(|event| event.payload != digest)
+                {
+                    return Err(IndexError::InvalidInput(
+                        "source event payload does not bind owner manifest".into(),
+                    ));
+                }
             } else if let UpdateKind::ProjectionAdvance(transition) = &request.kind {
                 projection::validate_events(request.operation, transition)?;
             }
@@ -2562,7 +2606,9 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                     budget,
                 )
             } else {
-                self.services.catalog.admit(operation, ingress, events, budget)
+                self.services
+                    .catalog
+                    .admit(operation, ingress, events, budget)
             };
             diagnostic::finish(admit_span, result)?
         };
@@ -2845,7 +2891,8 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             | UpdateKind::SourceHistoryAdvance(_)
             | UpdateKind::SourceResync { .. }
             | UpdateKind::SourceHistoryResync { .. } => {
-                let transition = source.ok_or_else(|| IndexError::BackendViolation("source dispatch".into()))?;
+                let transition =
+                    source.ok_or_else(|| IndexError::BackendViolation("source dispatch".into()))?;
                 let delta = source::apply_source(
                     base.identity,
                     base.source,
@@ -2886,9 +2933,17 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             ),
             UpdateKind::HistoryAppend(append) => {
                 if append.profile != base.profile {
-                    return Err(IndexError::InvalidInput("History append must preserve the published profile".into()));
+                    return Err(IndexError::InvalidInput(
+                        "History append must preserve the published profile".into(),
+                    ));
                 }
-                (base.source, append.profile, None, PreparedEvents::copy(&[], context.budget)?, None)
+                (
+                    base.source,
+                    append.profile,
+                    None,
+                    PreparedEvents::copy(&[], context.budget)?,
+                    None,
+                )
             }
             UpdateKind::Materialize { .. } => {
                 return Err(IndexError::BackendViolation("materialize dispatch".into()));
@@ -2903,7 +2958,11 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         } else {
             self.load_profile(base.profile, &mut context)?
         };
-        let sequence = base.identity.sequence.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        let sequence = base
+            .identity
+            .sequence
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
         let build_stage =
             diagnostic::WorkStage::begin(context.budget, DiagnosticStageV1::BuildPrepare);
         let build_read_before = reads.read_snapshot();
@@ -3082,16 +3141,25 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         }
         if let Some(append) = history_append {
             if history_transition.is_some() || base.profile != append.profile {
-                return Err(IndexError::InvalidInput("History append requires one unchanged profile".into()));
+                return Err(IndexError::InvalidInput(
+                    "History append requires one unchanged profile".into(),
+                ));
             }
             history::validate_append_profile(&prior, &target, append, context.budget)?;
         }
         let generation_anchor = if let Some(advance) = history_generation {
             history::validate_generation_profile(&prior, &target, advance, context.budget)?;
-            let prior_spec = prior.get(&advance.prior_instance).copied().ok_or(IndexError::Conflict)?;
+            let prior_spec = prior
+                .get(&advance.prior_instance)
+                .copied()
+                .ok_or(IndexError::Conflict)?;
             let anchor_key = member_key(advance.prior_instance);
-            let anchor_ref = context.maps.lookup_object(base.members, &anchor_key, context.budget)?
-                .ok_or_else(|| IndexError::CorruptObject("History generation prior member is absent".into()))?;
+            let anchor_ref = context
+                .maps
+                .lookup_object(base.members, &anchor_key, context.budget)?
+                .ok_or_else(|| {
+                    IndexError::CorruptObject("History generation prior member is absent".into())
+                })?;
             let member = load_member(anchor_ref, advance.prior_instance, context)?;
             Some((advance, prior_spec, member))
         } else {
@@ -3154,23 +3222,30 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                     if spec.activation == GroupActivation::CoreRequired
                         && spec.input_domain == InputDomain::History =>
                 {
-                    if let Some((advance, prior_spec, anchor)) = generation_anchor.as_ref()
+                    if let Some((advance, prior_spec, anchor)) = generation_anchor
+                        .as_ref()
                         .filter(|(advance, _, _)| advance.instance == instance)
                     {
                         Some(history::prepare_generation_member(
-                            &self.registry, spec, prior_spec, anchor, advance, next_view_sequence, context,
+                            &self.registry,
+                            spec,
+                            prior_spec,
+                            anchor,
+                            advance,
+                            next_view_sequence,
+                            context,
                         )?)
                     } else {
-                    Some(history::prepare_required_member(
-                        &self.registry,
-                        prior.get(&instance).copied(),
-                        spec,
-                        old_ref.zip(old_binding),
-                        history_transition.filter(|transition| transition.instance == instance),
-                        history_append.filter(|append| append.instance == instance),
-                        next_view_sequence,
-                        context,
-                    )?)
+                        Some(history::prepare_required_member(
+                            &self.registry,
+                            prior.get(&instance).copied(),
+                            spec,
+                            old_ref.zip(old_binding),
+                            history_transition.filter(|transition| transition.instance == instance),
+                            history_append.filter(|append| append.instance == instance),
+                            next_view_sequence,
+                            context,
+                        )?)
                     }
                 }
                 Some(spec)
@@ -5415,16 +5490,23 @@ fn charge_request_metadata(
             let events = u64::try_from(transition.source.events.len())
                 .map_err(|_| IndexError::ResourceLimited)?;
             let names = &transition.history.expected.generation;
-            let escaped = names.repo_id.as_str().len()
+            let escaped = names
+                .repo_id
+                .as_str()
+                .len()
                 .checked_add(names.revision_id.as_str().len())
                 .and_then(|value| u64::try_from(value).ok())
                 .and_then(|value| value.checked_mul(6))
                 .ok_or(IndexError::ResourceLimited)?;
-            let bytes = events.checked_mul(EVENT_BYTES)
+            let bytes = events
+                .checked_mul(EVENT_BYTES)
                 .and_then(|value| value.checked_add(FIXED_REQUEST_BYTES))
                 .and_then(|value| value.checked_add(escaped))
                 .ok_or(IndexError::ResourceLimited)?;
-            (events.checked_add(3).ok_or(IndexError::ResourceLimited)?, bytes)
+            (
+                events.checked_add(3).ok_or(IndexError::ResourceLimited)?,
+                bytes,
+            )
         }
         UpdateKind::ProjectionAdvance(transition) => {
             let events = u64::try_from(transition.events.len())
@@ -5460,11 +5542,17 @@ fn charge_request_metadata(
         }
         UpdateKind::HistoryAppend(append) => {
             let mut bytes = FIXED_REQUEST_BYTES;
-            for identity in [append.expected.generation.repo_id.as_str(), append.expected.generation.revision_id.as_str()] {
-                let escaped = u64::try_from(identity.len()).ok()
+            for identity in [
+                append.expected.generation.repo_id.as_str(),
+                append.expected.generation.revision_id.as_str(),
+            ] {
+                let escaped = u64::try_from(identity.len())
+                    .ok()
                     .and_then(|length| length.checked_mul(6))
                     .ok_or(IndexError::ResourceLimited)?;
-                bytes = bytes.checked_add(escaped).ok_or(IndexError::ResourceLimited)?;
+                bytes = bytes
+                    .checked_add(escaped)
+                    .ok_or(IndexError::ResourceLimited)?;
             }
             (2, bytes)
         }

@@ -43,9 +43,7 @@ pub(crate) fn children(request: &UpdateRequest) -> ObjectChildren {
         UpdateKind::HistoryAdvance(transition) => {
             [Some(transition.input), Some(transition.profile), None, None]
         }
-        UpdateKind::HistoryAppend(append) => {
-            [Some(append.input), Some(append.profile), None, None]
-        }
+        UpdateKind::HistoryAppend(append) => [Some(append.input), Some(append.profile), None, None],
         UpdateKind::Materialize { claim } => match claim.intent.scope {
             WorkScope::Owner { expected, .. } => [expected.source, expected.projection, None, None],
             WorkScope::ProjectionDomain { .. } => [None; 4],
@@ -326,8 +324,7 @@ pub(crate) mod tests {
             .find(|sample| matches!(&sample.kind, UpdateKind::SourceHistoryResync { .. }))
             .ok_or(IndexError::Conflict)?;
         require(
-            children(&combined_resync).as_slice()
-                == [reference(3), reference(4), reference(5)],
+            children(&combined_resync).as_slice() == [reference(3), reference(4), reference(5)],
         )?;
         require(
             children(&request(projection(

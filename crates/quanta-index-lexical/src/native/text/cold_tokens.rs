@@ -1942,7 +1942,8 @@ mod tests {
                         BlockPush::Added => Ok(()),
                         BlockPush::Full { term: _, positions } => {
                             let payload = crate::native::text_memory::encode(
-                                positions.as_occurrence(), budget,
+                                positions.as_occurrence(),
+                                budget,
                             )?;
                             actual.record(payload.as_slice().len())
                         }

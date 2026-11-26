@@ -275,7 +275,9 @@ impl RepoMapGraphCompiler {
         }
         for node in nodes {
             let path = node_owner_path(
-                file_nodes.get(&node.identity).ok_or(NativeRepoMapOwnerError::OwnerPartition)?,
+                file_nodes
+                    .get(&node.identity)
+                    .ok_or(NativeRepoMapOwnerError::OwnerPartition)?,
             );
             owners
                 .get_mut(path)
@@ -288,7 +290,9 @@ impl RepoMapGraphCompiler {
             // Whole-graph validation already certified the target. An edge
             // is owned by its source file even when the target is unselected.
             let path = node_owner_path(
-                file_nodes.get(&edge.source).ok_or(NativeRepoMapOwnerError::OwnerPartition)?,
+                file_nodes
+                    .get(&edge.source)
+                    .ok_or(NativeRepoMapOwnerError::OwnerPartition)?,
             );
             owners
                 .get_mut(path)
@@ -299,7 +303,9 @@ impl RepoMapGraphCompiler {
         }
         for row in rank_rows {
             let path = node_owner_path(
-                file_nodes.get(&row.subject).ok_or(NativeRepoMapOwnerError::OwnerPartition)?,
+                file_nodes
+                    .get(&row.subject)
+                    .ok_or(NativeRepoMapOwnerError::OwnerPartition)?,
             );
             if path != &row.owner_path {
                 return Err(NativeRepoMapOwnerError::OwnerPartition);
@@ -363,7 +369,8 @@ impl RepoMapGraphCompiler {
         if bundle.nodes.len().saturating_add(bundle.edges.len()) > MAX_NATIVE_GRAPH_ITEMS {
             return Err(NativeRepoMapOwnerError::GraphLimit);
         }
-        let (nodes, edges, rank_rows, commitments) = self.compile_native_parts_v1(bundle, None, None)?;
+        let (nodes, edges, rank_rows, commitments) =
+            self.compile_native_parts_v1(bundle, None, None)?;
         let output = GraphOwnerOutput {
             nodes,
             edges,
@@ -438,7 +445,10 @@ impl RepoMapGraphCompiler {
             Vec::new()
         };
         for edge in graph.edges {
-            if selected_sources.as_ref().is_some_and(|index| !index.contains_key(&edge.source)) {
+            if selected_sources
+                .as_ref()
+                .is_some_and(|index| !index.contains_key(&edge.source))
+            {
                 continue;
             }
             edges.push(GraphEdge {

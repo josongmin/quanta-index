@@ -83,7 +83,6 @@ impl<O> AdmittedAuxiliaryBatchReceiptV1<O> {
             | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
             | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-
             | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_) => {
@@ -134,7 +133,6 @@ impl<O> AdmittedAuxiliaryRemoteErrorV1<O> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-
             | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => {
                 unreachable!("validated auxiliary remote-error wrapper has an error")
@@ -1133,7 +1131,6 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -1159,7 +1156,6 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -1189,7 +1185,6 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo description receipt",
@@ -1217,7 +1212,6 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -1471,7 +1465,6 @@ fn dispatch_history_query_request_v1(
         | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(

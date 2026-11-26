@@ -21,13 +21,12 @@
 
 use crate::error::ResponseBindingAxis;
 use quanta_index_contract::{
-    BatchPublishReceipt, BorrowedAuxiliaryIngestIpcRequestV1,
-    ClusterMembershipBatchReadRequestV1,
+    BatchPublishReceipt, BorrowedAuxiliaryIngestIpcRequestV1, ClusterMembershipBatchReadRequestV1,
     CurrentGenerationRequest, FileOwnerProjectionErrorV1, FileOwnerProjectionRow, GenerationPin,
     GenerationSelector, HistoryQueryRequest, HybridCandidatePolicyErrorV1, HybridQueryRequest,
-    HybridSeedQueryRequest, LexicalCandidate, ManifestGeneration, RepoId,
-    RevisionId, RuntimeMetadataQueryRequest,
-    SearchCorpusActiveHeadV1, SearchCorpusGenerationReservationRequestV1,
+    HybridSeedQueryRequest, LexicalCandidate, ManifestGeneration, RepoId, RevisionId,
+    RuntimeMetadataQueryRequest, SearchCorpusActiveHeadV1,
+    SearchCorpusGenerationReservationRequestV1,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponse, SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
@@ -1638,7 +1637,6 @@ impl IngestCallBinding {
                 )),
                 SearchPlaneIngestIpcRequest::StageSourcePublication(_)
                 | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_)
-
                 | SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
                 | SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)
                 | SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)
@@ -1686,8 +1684,7 @@ impl IngestCallBinding {
             | SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_)
             | SearchPlaneIngestIpcRequest::PublishDirtyBatch(_)
             | SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(_)
-            | SearchPlaneIngestIpcRequest::PublishStructuralBatch(_)
-            => None,
+            | SearchPlaneIngestIpcRequest::PublishStructuralBatch(_) => None,
         })
     }
 

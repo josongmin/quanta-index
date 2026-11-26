@@ -141,7 +141,6 @@ fn hybrid_seed_dispatch_includes_dense_only_entity_in_the_seed_set() -> TestResu
         | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)

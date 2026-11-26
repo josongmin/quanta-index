@@ -16,8 +16,8 @@ mod mutations;
 pub mod object_install;
 mod owned_work;
 mod owner_coverage;
-mod protected_source_routes;
 pub mod ports;
+mod protected_source_routes;
 mod query;
 mod read_attempt;
 mod read_settlement;
@@ -25,9 +25,9 @@ mod reclaim;
 mod records;
 mod registration;
 mod repository_key;
-mod source_paths;
 mod scratch;
 mod searchable;
+mod source_paths;
 mod staging_payload;
 mod work;
 pub use budget::scoped_memory::ScopedMemoryBudget;
@@ -60,18 +60,17 @@ pub use owned_work::{
     OwnedWorkGrant, OwnedWorkPolicy, OwnedWorkReport, OwnedWorkTerminal,
 };
 pub use owner_coverage::{pending_owner_coverage_value, read_owner_coverage};
-pub use protected_source_routes::{
-    NativeProtectedSnapshotPageV1,
-    decode_native_protected_source_routes_v1, validate_inline_native_protected_snapshot_v1,
-    with_native_protected_snapshot_stream_v1, with_native_protected_snapshot_v1,
-    with_native_protected_source_routes_v1,
-};
 pub use ports::{
     AttemptContext, ObjectReadFile, ObjectReadIoPort, ObjectWriteIoPort,
     ObjectWriteSyncDirectories, ObjectWriteTicket,
 };
-pub use quanta_index_contract::index::*;
+pub use protected_source_routes::{
+    NativeProtectedSnapshotPageV1, decode_native_protected_source_routes_v1,
+    validate_inline_native_protected_snapshot_v1, with_native_protected_snapshot_stream_v1,
+    with_native_protected_snapshot_v1, with_native_protected_source_routes_v1,
+};
 pub use quanta_index_contract::RepoId;
+pub use quanta_index_contract::index::*;
 pub use query::{
     FiniteScore, FiniteScoreError, IndexQueryPort, NativeTextHitSource, QueryCoverage,
     QueryOutcome, QueryReadContext,
@@ -98,12 +97,13 @@ pub use records::{
 pub use registration::{
     RegisteredObject, RegisteredObjectBatch, RegisteredObjectData, RegisteredObjectIter,
 };
-pub use source_paths::{
-    validate_source_path_repository_key, visit_repository_path_owners, visit_repository_path_sources,
-};
 pub use scratch::{
     ScratchAllocation, ScratchIoBinding, ScratchIoScope, ScratchNamespaceLease, ScratchRequest,
     ScratchSpacePort,
+};
+pub use source_paths::{
+    validate_source_path_repository_key, visit_repository_path_owners,
+    visit_repository_path_sources,
 };
 pub use work::{
     MAX_WORK_ACTION_BYTES, ObjectChildren, WorkAction, WorkActionDigest, WorkActionSet,

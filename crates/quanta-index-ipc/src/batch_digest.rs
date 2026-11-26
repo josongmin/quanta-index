@@ -249,7 +249,9 @@ pub fn history_snapshot_checkpoint_replay_with_progress_v1<E>(
     ] {
         writer.hash_header(part).map_err(map)?;
     }
-    Ok(quanta_index_contract::index::Digest(writer.hasher.finalize().into()))
+    Ok(quanta_index_contract::index::Digest(
+        writer.hasher.finalize().into(),
+    ))
 }
 
 fn hash_history_scope<'a, E>(
@@ -262,9 +264,11 @@ fn hash_history_scope<'a, E>(
                 "History replay scope length overflow".into(),
             ))
         })?;
-        writer.hash_header(&length.to_le_bytes())
+        writer
+            .hash_header(&length.to_le_bytes())
             .map_err(CanonicalBatchDigestProgressError::Progress)?;
-        writer.hash_header(value.as_bytes())
+        writer
+            .hash_header(value.as_bytes())
             .map_err(CanonicalBatchDigestProgressError::Progress)?;
     }
     Ok(())

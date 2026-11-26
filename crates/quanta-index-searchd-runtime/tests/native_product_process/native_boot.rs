@@ -3080,8 +3080,14 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
         let foreign_path = foreign_config.to_str().ok_or("config is not UTF-8")?;
         let native_config_path = candidate.config.to_str().ok_or("config is not UTF-8")?;
         for (operation, extra) in [
-            ("export-native-history-checkpoint", vec!["--inventory-repo-id", "repo-e2e"]),
-            ("export-native-source-snapshot", vec!["--source-only-native"]),
+            (
+                "export-native-history-checkpoint",
+                vec!["--inventory-repo-id", "repo-e2e"],
+            ),
+            (
+                "export-native-source-snapshot",
+                vec!["--source-only-native"],
+            ),
         ] {
             let mut args = vec![
                 operation,
@@ -3096,8 +3102,15 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
             ];
             args.extend(extra);
             let refused = run_private_pipe_one_shot(&args)?;
-            require_equal(&refused.status.code(), &Some(70), "foreign Native config exit")?;
-            require(refused.stdout.is_empty(), "foreign Native config emitted frames")?;
+            require_equal(
+                &refused.status.code(),
+                &Some(70),
+                "foreign Native config exit",
+            )?;
+            require(
+                refused.stdout.is_empty(),
+                "foreign Native config emitted frames",
+            )?;
             require(
                 String::from_utf8_lossy(&refused.stderr)
                     .contains("config differs from the held selection"),
@@ -3116,14 +3129,25 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
             "--config-digest",
             &config_digest,
         ])?;
-        require_equal(&route_less.status.code(), &Some(70), "route-less Native export exit")?;
-        require(route_less.stdout.is_empty(), "route-less Native export emitted frames")?;
+        require_equal(
+            &route_less.status.code(),
+            &Some(70),
+            "route-less Native export exit",
+        )?;
+        require(
+            route_less.stdout.is_empty(),
+            "route-less Native export emitted frames",
+        )?;
         require(
             String::from_utf8_lossy(&route_less.stderr)
                 .contains("requires protected Source routes"),
             "route-less Native export did not refuse before transcript",
         )?;
-        require_equal(&fs::read(&selection)?, &selected_native, "Native export selection")?;
+        require_equal(
+            &fs::read(&selection)?,
+            &selected_native,
+            "Native export selection",
+        )?;
         require_equal(
             &root_files(&candidate.root)?,
             &native_quiescent_files,

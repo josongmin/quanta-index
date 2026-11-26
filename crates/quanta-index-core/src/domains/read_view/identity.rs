@@ -333,7 +333,9 @@ mod tests {
             .remove(&ReadDomainV1::SemanticTrack)
             .expect("semantic evidence");
         assert!(!identity.evidence_is_exact());
-        let _previous = identity.evidence.insert(ReadDomainV1::SemanticTrack, semantic);
+        let _previous = identity
+            .evidence
+            .insert(ReadDomainV1::SemanticTrack, semantic);
         identity.domains = RequiredDomainsV1::of(ReadDomainV1::LexicalTrack);
         assert!(!identity.evidence_is_exact());
     }

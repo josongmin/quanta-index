@@ -99,8 +99,16 @@ fn prepare_actions_v1(
 ) -> Result<SpawnFileActionsV1, ExplicitFdProcessErrorV1> {
     let mut actions_v1 = SpawnFileActionsV1::try_new_v1()?;
     actions_v1.add_open_v1(libc::STDIN_FILENO, stdio_v1.stdin_path_v1(), libc::O_RDONLY)?;
-    actions_v1.add_open_v1(libc::STDOUT_FILENO, stdio_v1.stdout_path_v1(), libc::O_WRONLY)?;
-    actions_v1.add_open_v1(libc::STDERR_FILENO, stdio_v1.stderr_path_v1(), libc::O_WRONLY)?;
+    actions_v1.add_open_v1(
+        libc::STDOUT_FILENO,
+        stdio_v1.stdout_path_v1(),
+        libc::O_WRONLY,
+    )?;
+    actions_v1.add_open_v1(
+        libc::STDERR_FILENO,
+        stdio_v1.stderr_path_v1(),
+        libc::O_WRONLY,
+    )?;
     for (source_v1, mapping_v1) in sources_v1.extras_v1.iter().zip(&request_v1.mappings_v1) {
         actions_v1.add_dup_v1(source_v1.as_raw_fd(), mapping_v1.child_fd_v1)?;
     }

@@ -182,7 +182,10 @@ impl Fixture {
 fn saved_repomap_policy_is_bound_to_the_separate_root_and_exact_control() -> TestResult {
     let mode = DeploymentRecoveryModeV1::RollbackLegacy;
     let fixture = Fixture::new(mode)?;
-    let parent = fixture.selection.parent().ok_or("missing deployment directory")?;
+    let parent = fixture
+        .selection
+        .parent()
+        .ok_or("missing deployment directory")?;
     let legacy_root = parent.join("legacy");
     let repomap_root = parent.join("legacy-repomap");
     fs::create_dir(&repomap_root)?;
@@ -192,7 +195,10 @@ fn saved_repomap_policy_is_bound_to_the_separate_root_and_exact_control() -> Tes
     let _prior = environment.insert("LANG", "ko_KR.UTF-8".into());
     let bytes = String::from_utf8(fixture.after.clone())?
         .replace(&quoted(&legacy_root)?, &quoted(&repomap_root)?)
-        .replace(r#"{"LANG":"ko_KR.UTF-8"}"#, &serde_json::to_string(&environment)?)
+        .replace(
+            r#"{"LANG":"ko_KR.UTF-8"}"#,
+            &serde_json::to_string(&environment)?,
+        )
         .into_bytes();
     fs::write(&saved, &bytes)?;
     fs::set_permissions(&saved, fs::Permissions::from_mode(0o600))?;
@@ -204,24 +210,41 @@ fn saved_repomap_policy_is_bound_to_the_separate_root_and_exact_control() -> Tes
         |locked, budget| {
             (|| -> Result<()> {
                 let selected = locked.read_legacy_repomap_selection_v1(
-                    &saved, expected, &repomap_root, budget,
+                    &saved,
+                    expected,
+                    &repomap_root,
+                    budget,
                 )?;
                 ensure!(selected.state_root_v1() == repomap_root);
-                ensure!(selected.legacy_physical_policy_v1(budget)?
-                    == quanta_index_searchd::app::config::TEST_STATE_ROOT_PHYSICAL_POLICY);
+                ensure!(
+                    selected.legacy_physical_policy_v1(budget)?
+                        == quanta_index_searchd::app::config::TEST_STATE_ROOT_PHYSICAL_POLICY
+                );
                 drop(selected);
                 ensure!(
-                    locked.read_legacy_repomap_selection_v1(&saved, expected, &legacy_root, budget).is_err()
+                    locked
+                        .read_legacy_repomap_selection_v1(&saved, expected, &legacy_root, budget)
+                        .is_err()
                 );
                 ensure!(
-                    locked.read_legacy_repomap_selection_v1(&saved, Digest([1; 32]), &repomap_root, budget).is_err()
+                    locked
+                        .read_legacy_repomap_selection_v1(
+                            &saved,
+                            Digest([1; 32]),
+                            &repomap_root,
+                            budget
+                        )
+                        .is_err()
                 );
                 Ok(())
-            })().map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?;
+            })()
+            .map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?;
             locked.publish_with_custody_v1(budget, &mut |budget| {
                 let replacement = String::from_utf8(bytes.clone())?.replace("ko_KR.UTF-8", "C");
                 fs::write(&saved, replacement)?;
-                LockedDeploymentSelectionV1::require_legacy_repomap_selection_v1(&saved, expected, budget)
+                LockedDeploymentSelectionV1::require_legacy_repomap_selection_v1(
+                    &saved, expected, budget,
+                )
             })
         },
     );
@@ -230,7 +253,10 @@ fn saved_repomap_policy_is_bound_to_the_separate_root_and_exact_control() -> Tes
             if error.to_string() == "saved RepoMap selection changed during publication"),
         "changed saved RepoMap selection was not refused",
     )?;
-    require(fs::read(&fixture.selection)? == fixture.before, "refusal changed selection")
+    require(
+        fs::read(&fixture.selection)? == fixture.before,
+        "refusal changed selection",
+    )
 }
 
 #[test]
@@ -419,7 +445,9 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
             |locked, work| {
                 locked
                     .bind_recovery_witness_v1(&begin, config, installed_helper)
-                    .and_then(|()| locked.prepare_recovery_witness_v1(None, root, None, disposition, work))
+                    .and_then(|()| {
+                        locked.prepare_recovery_witness_v1(None, root, None, disposition, work)
+                    })
                     .map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?;
                 locked.publish_inner(work, &mut |stage| {
                     ensure!(
@@ -520,8 +548,10 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
     let saved = directory.join("saved-witness");
     let disappeared = stage(expected_config, &repomap, false, Some((&sidecar, &saved)));
     require(
-        matches!(disappeared, Err(DeploymentSelectionErrorV1::PersistenceUncertain(_)))
-            && saved.is_file()
+        matches!(
+            disappeared,
+            Err(DeploymentSelectionErrorV1::PersistenceUncertain(_))
+        ) && saved.is_file()
             && !sidecar.exists()
             && fs::metadata(&fixture.selection)?.ino() == selected_inode
             && fs::read(&fixture.selection)? == fixture.after,
@@ -538,7 +568,9 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
         "a missing selected witness sidecar must retain the OS cause and refuse before root verification",
     )?;
     let mut corrupted = fs::read(&saved)?;
-    *corrupted.last_mut().ok_or("empty recovery witness sidecar")? ^= 1;
+    *corrupted
+        .last_mut()
+        .ok_or("empty recovery witness sidecar")? ^= 1;
     fs::write(&sidecar, corrupted)?;
     fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o600))?;
     require(
@@ -553,7 +585,13 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
     };
     replayed_activation.mutation.replayed = true;
     require(
-        stage(expected_config, &disposition(replayed_activation), false, None)?.resolution_v1()
+        stage(
+            expected_config,
+            &disposition(replayed_activation),
+            false,
+            None,
+        )?
+        .resolution_v1()
             == DeploymentSelectionResolutionV1::Reconciled,
         "a replay flag must not change the durable RepoMap disposition",
     )?;
@@ -1373,7 +1411,10 @@ fn schema3_retired_policy_ref_is_exact_and_schema2_remains_readable() -> TestRes
         .native_command_v1()
         .and_then(|command| command.identity)
         .ok_or("schema-2 BOOT identity missing")?;
-    require(old_identity.retired_projection_policy.is_none(), "schema-2 policy absent")?;
+    require(
+        old_identity.retired_projection_policy.is_none(),
+        "schema-2 policy absent",
+    )?;
 
     let mut wire: serde_json::Value = serde_json::from_slice(&fixture.after)?;
     wire["schema_version"] = serde_json::json!(3);
@@ -1387,17 +1428,32 @@ fn schema3_retired_policy_ref_is_exact_and_schema2_remains_readable() -> TestRes
         .and_then(|command| command.identity)
         .and_then(|identity| identity.retired_projection_policy)
         .ok_or("schema-3 BOOT policy missing")?;
-    require(reference.object.0 == Digest([0x44; 32]), "schema-3 object ref")?;
-    require(reference.sha256 == Digest([0x55; 32]) && reference.identity_count == 2, "schema-3 digest/count")?;
+    require(
+        reference.object.0 == Digest([0x44; 32]),
+        "schema-3 object ref",
+    )?;
+    require(
+        reference.sha256 == Digest([0x55; 32]) && reference.identity_count == 2,
+        "schema-3 digest/count",
+    )?;
 
     let removed_digest = wire["native_boot_receipt"]
         .as_object_mut()
         .ok_or("receipt object")?
         .remove("retired_policy_sha256_hex");
-    require(removed_digest.is_some(), "schema-3 fixture digest missing before removal")?;
-    require(codec::decode(&codec::canonical_payload(&wire)?, &mut work).is_err(), "missing schema-3 digest accepted")?;
+    require(
+        removed_digest.is_some(),
+        "schema-3 fixture digest missing before removal",
+    )?;
+    require(
+        codec::decode(&codec::canonical_payload(&wire)?, &mut work).is_err(),
+        "missing schema-3 digest accepted",
+    )?;
     wire["schema_version"] = serde_json::json!(2);
-    require(codec::decode(&codec::canonical_payload(&wire)?, &mut work).is_err(), "schema-2 accepted schema-3 fields")?;
+    require(
+        codec::decode(&codec::canonical_payload(&wire)?, &mut work).is_err(),
+        "schema-2 accepted schema-3 fields",
+    )?;
     Ok(())
 }
 
@@ -1509,13 +1565,19 @@ fn independently_selected_candidate_cannot_complete_a_retained_intent() -> TestR
         let (mut work, _execution) = budget()?;
         let mut entered = false;
         let result = with_locked_deployment_selection_reconciliation_v1(
-            &fixture.request(mode), &retained, &mut work, |locked, work| {
+            &fixture.request(mode),
+            &retained,
+            &mut work,
+            |locked, work| {
                 entered = true;
                 locked.publish_v1(work)
             },
         );
         require(
-            matches!(result, Err(DeploymentSelectionErrorV1::PersistenceUncertain(_))) && !entered,
+            matches!(
+                result,
+                Err(DeploymentSelectionErrorV1::PersistenceUncertain(_))
+            ) && !entered,
             "independently selected candidate completed a retained intent",
         )?;
         require(
@@ -1797,7 +1859,10 @@ fn retained_terminal_cannot_repeat_rollback_after_a_forward_cycle() -> TestResul
             },
         );
         require(
-            matches!(repeated, Err(DeploymentSelectionErrorV1::PersistenceUncertain(_))) && !entered,
+            matches!(
+                repeated,
+                Err(DeploymentSelectionErrorV1::PersistenceUncertain(_))
+            ) && !entered,
             "retained intent without terminal repeated rollback after forward",
         )?;
         require(

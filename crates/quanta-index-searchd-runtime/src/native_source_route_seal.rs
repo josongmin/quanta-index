@@ -7,9 +7,8 @@ use quanta_index_contract::index::{
     decode_retired_projection_policy_v1, preflight_retired_projection_policy_v1,
 };
 use quanta_index_core::index::{
-    IndexInstanceId, IngressRef, MemoryLifetime, ViewSelection,
-    ports::ImmutableObjectPort, with_native_protected_snapshot_stream_v1,
-    with_native_protected_source_routes_v1,
+    IndexInstanceId, IngressRef, MemoryLifetime, ViewSelection, ports::ImmutableObjectPort,
+    with_native_protected_snapshot_stream_v1, with_native_protected_source_routes_v1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -23,9 +22,14 @@ impl NativeDispatcher {
     ) -> Result<NativeIndexResponse, IndexError> {
         self.authenticate_retired_policy_v1(primary, retired_policy, budget)?;
         let before = self.current_root_identity_for_view(budget)?;
-        let selected = self.catalog.select_native_boot_manifest_with_retired_policy_ingress_if_current(
-            primary, ingress, retired_policy, budget,
-        )?;
+        let selected = self
+            .catalog
+            .select_native_boot_manifest_with_retired_policy_ingress_if_current(
+                primary,
+                ingress,
+                retired_policy,
+                budget,
+            )?;
         let nonce = self.catalog.observe_native_root_nonce_v1(budget)?;
         if self.current_root_identity_for_view(budget)? != before || nonce == [0; 32] {
             return Err(IndexError::DigestConflict);
@@ -47,34 +51,42 @@ impl NativeDispatcher {
         policy: RetiredProjectionPolicyRefV1,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
-        policy.validate_v1().map_err(|_| IndexError::DigestConflict)?;
+        policy
+            .validate_v1()
+            .map_err(|_| IndexError::DigestConflict)?;
         let stored = self.objects.get(policy.object, budget)?;
         if !stored.registration.children.is_empty() {
             return Err(IndexError::DigestConflict);
         }
         let count = preflight_retired_projection_policy_v1(&stored.payload)
             .map_err(|_| IndexError::DigestConflict)?;
-        let bytes = count.checked_mul(std::mem::size_of::<IndexInstanceId>())
+        let bytes = count
+            .checked_mul(std::mem::size_of::<IndexInstanceId>())
             .and_then(|n| u64::try_from(n).ok())
             .ok_or(IndexError::ResourceLimited)?;
         let _scratch_lease = budget
             .reserve_memory(bytes.max(1), MemoryLifetime::Temporary)?
             .ok_or(IndexError::ResourceLimited)?;
         let mut scratch = vec![IndexInstanceId([0; 16]); count];
-        let view = decode_retired_projection_policy_v1(
-            &stored.payload, &mut scratch, &mut || budget.checkpoint(),
-        ).map_err(|error| match error {
+        let view = decode_retired_projection_policy_v1(&stored.payload, &mut scratch, &mut || {
+            budget.checkpoint()
+        })
+        .map_err(|error| match error {
             RetiredProjectionPolicyErrorV1::Admission(error) => error,
             _ => IndexError::DigestConflict,
         })?;
         let candidate_nonce = self.catalog.observe_native_root_nonce_v1(budget)?;
         let candidate_profile = self.with_read_view(
-            ViewSelection::Latest { workspace: primary.workspace, epoch: primary.epoch },
+            ViewSelection::Latest {
+                workspace: primary.workspace,
+                epoch: primary.epoch,
+            },
             budget,
             |current, _| Ok(current.profile),
         )?;
         if view.len_v1() != policy.identity_count as usize
-            || quanta_index_core::index::Digest(Sha256::digest(&stored.payload).into()) != policy.sha256
+            || quanta_index_core::index::Digest(Sha256::digest(&stored.payload).into())
+                != policy.sha256
             || view.header_v1().candidate_root_nonce.0 != candidate_nonce
             || view.header_v1().candidate_profile_ref != candidate_profile
         {
@@ -85,7 +97,10 @@ impl NativeDispatcher {
             return Err(IndexError::DigestConflict);
         }
         crate::native_product::reject_candidate_profile_overlap_v1(
-            &view, &scratch, &profile_object.payload, budget,
+            &view,
+            &scratch,
+            &profile_object.payload,
+            budget,
         )
     }
 
@@ -151,9 +166,10 @@ impl NativeDispatcher {
                     primary, routes, decoded, ingress, policy, budget,
                 )?
             } else {
-                self.catalog.select_native_boot_manifest_with_protected_routes_if_current(
-                    primary, routes, decoded, ingress, budget,
-                )?
+                self.catalog
+                    .select_native_boot_manifest_with_protected_routes_if_current(
+                        primary, routes, decoded, ingress, budget,
+                    )?
             };
             let nonce = self.catalog.observe_native_root_nonce_v1(budget)?;
             if self.current_root_identity_for_view(budget)? != before || nonce == [0; 32] {

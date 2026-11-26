@@ -131,7 +131,6 @@ fn lexical_dispatch_fail_closed_when_generation_is_not_ready() -> TestResult {
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-
         | SearchPlaneQueryIpcResponse::Explain(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
@@ -247,7 +246,6 @@ fn sourcegraph_text_syntax_dispatch_returns_text_payload() -> TestResult {
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
@@ -413,7 +411,6 @@ fn lexical_dispatch_stabilizes_tied_text_results() -> TestResult {
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
@@ -580,7 +577,6 @@ fn lexical_dispatch_returns_typed_when_filter_is_fork_only() -> TestResult {
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Text response, got {other:?}").into());
@@ -696,7 +692,6 @@ fn lexical_dispatch_passes_through_when_no_unavailable_filters() -> TestResult {
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
@@ -775,7 +770,6 @@ fn symbol_dispatch_returns_symbol_candidates_with_kind_truth() -> TestResult {
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Symbol response, got {other:?}").into());

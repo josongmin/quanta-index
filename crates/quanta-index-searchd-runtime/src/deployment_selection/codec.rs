@@ -128,13 +128,19 @@ pub(super) fn decode_document(
     budget: &mut WorkBudget,
 ) -> Result<DeploymentSelectionDocumentV1> {
     let schema = wire.get("schema_version").and_then(Value::as_u64);
-    ensure!(matches!(schema, Some(2 | 3)), "unsupported selection format");
+    ensure!(
+        matches!(schema, Some(2 | 3)),
+        "unsupported selection format"
+    );
     let native = match text(wire, "mode")? {
         "native" => true,
         "legacy" => false,
         _ => return Err(anyhow!("unsupported selection mode")),
     };
-    ensure!(schema != Some(3) || native, "retirement selection requires Native mode");
+    ensure!(
+        schema != Some(3) || native,
+        "retirement selection requires Native mode"
+    );
     exact_fields(wire, COMMON, if native { NATIVE } else { &[] })?;
     let binary = canonical_path(text(wire, "binary")?, false, budget)?;
     let state_root = canonical_path(text(wire, "state_root")?, true, budget)?;
@@ -170,29 +176,33 @@ pub(super) fn decode_document(
             .get("native_boot_receipt")
             .ok_or_else(|| anyhow!("Native receipt missing"))?;
         const RECEIPT_FIELDS: &[&str] = &[
-                "root_nonce_hex",
-                "manifest_operation",
-                "manifest_object_hex",
-                "source_cut_digest_hex",
-                "install_catalog_digest_hex",
+            "root_nonce_hex",
+            "manifest_operation",
+            "manifest_object_hex",
+            "source_cut_digest_hex",
+            "install_catalog_digest_hex",
         ];
         let route = receipt.get("protected_source_routes_hex").is_some();
         let extra: &[&str] = match (schema, route) {
             (Some(2), false) => &[],
             (Some(2), true) => &["protected_source_routes_hex"],
             (Some(3), false) => &[
-                "retired_policy_object_hex", "retired_policy_sha256_hex",
+                "retired_policy_object_hex",
+                "retired_policy_sha256_hex",
                 "retired_policy_identity_count",
             ],
             (Some(3), true) => &[
-                "protected_source_routes_hex", "retired_policy_object_hex",
-                "retired_policy_sha256_hex", "retired_policy_identity_count",
+                "protected_source_routes_hex",
+                "retired_policy_object_hex",
+                "retired_policy_sha256_hex",
+                "retired_policy_identity_count",
             ],
             _ => return Err(anyhow!("unsupported selection format")),
         };
         exact_fields(receipt, RECEIPT_FIELDS, extra)?;
         let retired_projection_policy = if schema == Some(3) {
-            let count = receipt.get("retired_policy_identity_count")
+            let count = receipt
+                .get("retired_policy_identity_count")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| anyhow!("retired policy identity count missing"))?;
             let reference = RetiredProjectionPolicyRefV1 {
@@ -224,8 +234,13 @@ pub(super) fn decode_document(
                 manifest_operation: operation,
                 manifest_object: ObjectRef(hex(text(receipt, "manifest_object_hex")?)?),
                 source_cut_digest: source,
-                protected_source_routes: receipt.get("protected_source_routes_hex")
-                    .map(|_| text(receipt, "protected_source_routes_hex").and_then(hex).map(ObjectRef))
+                protected_source_routes: receipt
+                    .get("protected_source_routes_hex")
+                    .map(|_| {
+                        text(receipt, "protected_source_routes_hex")
+                            .and_then(hex)
+                            .map(ObjectRef)
+                    })
                     .transpose()?,
                 retired_projection_policy,
             }),

@@ -125,12 +125,10 @@ fn every_dto_round_trips_and_rides_the_control_envelope() -> TestRes {
         return Err("an empty inventory round-trips as empty".into());
     }
 
-    for (target, outcome) in [
-        (
-            QuarantineTargetV1::Generation(lexical_entry()),
-            QuarantineDiscardOutcomeDtoV1::Discarded { bytes: u64::MAX },
-        ),
-    ] {
+    for (target, outcome) in [(
+        QuarantineTargetV1::Generation(lexical_entry()),
+        QuarantineDiscardOutcomeDtoV1::Discarded { bytes: u64::MAX },
+    )] {
         let request = QuarantineDiscardRequest {
             target: target.clone(),
         };

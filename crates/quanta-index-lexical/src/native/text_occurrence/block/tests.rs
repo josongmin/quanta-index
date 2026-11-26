@@ -4,7 +4,7 @@
 //! round-tripping the reader, so both sides cannot agree on the same bad wire.
 
 use super::*;
-use crate::native::{text_occurrence::positions::PreparedPositions, text_memory::PreparedKey};
+use crate::native::{text_memory::PreparedKey, text_occurrence::positions::PreparedPositions};
 use quanta_index_core::index::{
     Digest, IndexError, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope,
     MemoryScopePort, ObjectRef, RegisteredObject, StoredObject, WorkBudget, WorkLimits,

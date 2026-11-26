@@ -19,6 +19,7 @@ use quanta_index_core::{
 use quanta_index_searchd::cli::NativeRecoveryCommandV1;
 use std::{fmt::Write as _, os::unix::net::UnixDatagram, path::Path};
 
+use crate::native_product::{FundedInstalledHistoryV1, RestoreForwardHistoryV1};
 use crate::{
     deployment_selection::{
         DeploymentRecoveryModeV1, DeploymentSelectionBeforeDocumentV1,
@@ -28,7 +29,6 @@ use crate::{
     },
     native_product::{RestoreForwardSourceRefusalV1, with_native_recovery_control_v1},
 };
-use crate::native_product::{FundedInstalledHistoryV1, RestoreForwardHistoryV1};
 
 /// Process entry. `0` requires an Applied or Reconciled terminal from this helper;
 /// `2` refuses before rename, `3` reports possible publication. The resident
@@ -64,7 +64,11 @@ pub fn run(command: &NativeRecoveryCommandV1, request: RequestBudgetV1) -> Resul
     let history_fd7 = match history_fd7 {
         Ok(history) => history,
         Err(error) => {
-            return send_outcome(&socket, &begin, Err(Error::RefusedBeforeRename(error.into())));
+            return send_outcome(
+                &socket,
+                &begin,
+                Err(Error::RefusedBeforeRename(error.into())),
+            );
         }
     };
     run_after_begin(command, request, &socket, &begin, bootstrap, history_fd7)
@@ -334,9 +338,8 @@ fn send_outcome_with_history(
     result: std::result::Result<DeploymentSelectionPublishedV1, Error>,
     installed_history: Option<FundedInstalledHistoryV1>,
 ) -> Result<u8> {
-    let (history, _memory) = installed_history.map_or((None, None), |proof| {
-        (Some(proof.value), proof._memory)
-    });
+    let (history, _memory) =
+        installed_history.map_or((None, None), |proof| (Some(proof.value), proof._memory));
     let (terminal, status) = terminal_v1(begin, &result, history);
     control::send_terminal_v1(socket, &terminal)?;
     Ok(status)
@@ -416,10 +419,16 @@ fn decode_retained_terminal_v1(
             ..
         }
         | Terminal::AppliedHistory {
-            operation_id, before_sha256, after_sha256, ..
+            operation_id,
+            before_sha256,
+            after_sha256,
+            ..
         }
         | Terminal::ReconciledHistory {
-            operation_id, before_sha256, after_sha256, ..
+            operation_id,
+            before_sha256,
+            after_sha256,
+            ..
         } => {
             ensure!(
                 *before_sha256 == begin.current_selection_sha256
@@ -447,9 +456,11 @@ fn decode_retained_terminal_v1(
         operation == &begin.operation_id,
         "retained terminal belongs to another operation"
     );
-    ensure!(terminal.installed_history_v1().is_none()
-        || begin.mode == wire::NativeCutoverRecoveryModeV1::RestoreForward,
-        "retained History witness requires restore-forward");
+    ensure!(
+        terminal.installed_history_v1().is_none()
+            || begin.mode == wire::NativeCutoverRecoveryModeV1::RestoreForward,
+        "retained History witness requires restore-forward"
+    );
     // The first response's nonce is historical. This attempt's Begin nonce
     // authenticates its new terminal; neither nonce is a publication permit.
     budget.checkpoint()?;
@@ -477,20 +488,24 @@ fn terminal_v1(
                     before_sha256: published.before_sha256_v1(),
                     after_sha256: published.after_sha256_v1(),
                 },
-                (DeploymentSelectionResolutionV1::Published, Some(history)) => Terminal::AppliedHistory {
-                    operation_id: begin.operation_id.clone(),
-                    nonce: begin.nonce,
-                    before_sha256: published.before_sha256_v1(),
-                    after_sha256: published.after_sha256_v1(),
-                    history,
-                },
-                (DeploymentSelectionResolutionV1::Reconciled, Some(history)) => Terminal::ReconciledHistory {
-                    operation_id: begin.operation_id.clone(),
-                    nonce: begin.nonce,
-                    before_sha256: published.before_sha256_v1(),
-                    after_sha256: published.after_sha256_v1(),
-                    history,
-                },
+                (DeploymentSelectionResolutionV1::Published, Some(history)) => {
+                    Terminal::AppliedHistory {
+                        operation_id: begin.operation_id.clone(),
+                        nonce: begin.nonce,
+                        before_sha256: published.before_sha256_v1(),
+                        after_sha256: published.after_sha256_v1(),
+                        history,
+                    }
+                }
+                (DeploymentSelectionResolutionV1::Reconciled, Some(history)) => {
+                    Terminal::ReconciledHistory {
+                        operation_id: begin.operation_id.clone(),
+                        nonce: begin.nonce,
+                        before_sha256: published.before_sha256_v1(),
+                        after_sha256: published.after_sha256_v1(),
+                        history,
+                    }
+                }
             },
             0,
         ),

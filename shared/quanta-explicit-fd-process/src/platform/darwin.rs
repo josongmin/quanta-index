@@ -130,7 +130,11 @@ pub(crate) fn set_descriptor_cloexec_v1(
     }
     // SAFETY: F_SETFD updates only descriptor flags and never assumes ownership.
     let result_v1 = unsafe {
-        libc::fcntl(descriptor_v1.as_raw_fd(), libc::F_SETFD, flags_v1 | libc::FD_CLOEXEC)
+        libc::fcntl(
+            descriptor_v1.as_raw_fd(),
+            libc::F_SETFD,
+            flags_v1 | libc::FD_CLOEXEC,
+        )
     };
     if result_v1 < 0 {
         return Err(descriptor_error_v1("fcntl_setfd_cloexec_v1"));
@@ -198,8 +202,10 @@ pub(crate) fn descriptor_identity_v1(
 pub(crate) fn descriptor_is_pipe_v1(
     descriptor_v1: BorrowedFd<'_>,
 ) -> Result<bool, ExplicitFdProcessErrorV1> {
-    Ok(descriptor_identity_v1(descriptor_v1)?.mode_v1 & u32::from(libc::S_IFMT)
-        == u32::from(libc::S_IFIFO))
+    Ok(
+        descriptor_identity_v1(descriptor_v1)?.mode_v1 & u32::from(libc::S_IFMT)
+            == u32::from(libc::S_IFIFO),
+    )
 }
 
 pub(crate) fn duplicate_inherited_read_pipe_v1(
@@ -276,7 +282,12 @@ pub(crate) fn observe_pid_exit_without_reap_v1(
         // SAFETY: waitid initializes siginfo on success while WNOWAIT keeps the
         // launcher-owned leader waitable, preserving its process-group ID.
         let result_v1 = unsafe {
-            libc::waitid(libc::P_PID, pid_v1 as libc::id_t, info_v1.as_mut_ptr(), options_v1)
+            libc::waitid(
+                libc::P_PID,
+                pid_v1 as libc::id_t,
+                info_v1.as_mut_ptr(),
+                options_v1,
+            )
         };
         if result_v1 == 0 {
             // SAFETY: successful waitid initialized the zeroed siginfo value.

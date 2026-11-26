@@ -358,7 +358,6 @@ fn dispatch(
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => Outcome::InvalidResult,
         },

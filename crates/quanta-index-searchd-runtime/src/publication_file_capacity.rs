@@ -16,6 +16,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
+use crate::owned_fd_close::close_owned_file;
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::publication_capacity::{
     InodeKey, OutputTicket, PendingId, PublicationAllowance, PublicationCapacity, ResizeTicket,
@@ -26,7 +27,6 @@ use quanta_index_core::{
     index::ObjectWriteSyncDirectories,
 };
 use quanta_index_searchd::app::runtime::{StateRootDirectoryV1, StateRootLease};
-use crate::owned_fd_close::close_owned_file;
 use rustix::fs::{
     AtFlags, FileType, Mode, OFlags, RenameFlags, linkat, mkdirat, openat, renameat_with, statat,
     unlinkat,
@@ -565,8 +565,7 @@ fn pending_path_matches(root: &StateRootDirectoryV1, relative: &Path, born: Inod
             return FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile
                 && stat.st_uid == rustix::process::getuid().as_raw()
                 && stat.st_mode & 0o022 == 0
-                && checked_device_id(stat.st_dev)
-                    .is_ok_and(|device| device == born.device)
+                && checked_device_id(stat.st_dev).is_ok_and(|device| device == born.device)
                 && stat.st_ino == born.inode;
         }
         let Ok(next) = openat(

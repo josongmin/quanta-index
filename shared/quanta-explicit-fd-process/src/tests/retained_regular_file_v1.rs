@@ -34,7 +34,10 @@ fn retained_file_mapping_keeps_flock_after_parent_file_drop_v1() {
         .expect("open read-write retained file");
     assert_cloexec_v1(&owner_v1);
     // SAFETY: flock locks the live file description retained by this test.
-    assert_eq!(unsafe { libc::flock(owner_v1.as_raw_fd(), libc::LOCK_EX) }, 0);
+    assert_eq!(
+        unsafe { libc::flock(owner_v1.as_raw_fd(), libc::LOCK_EX) },
+        0
+    );
 
     let (child_socket_v1, parent_socket_v1) = UnixDatagram::pair().expect("control socket pair");
     set_cloexec_v1(child_socket_v1.as_raw_fd());
@@ -53,7 +56,10 @@ fn retained_file_mapping_keeps_flock_after_parent_file_drop_v1() {
     assert_cloexec_v1(&owner_v1);
 
     let mut ready_v1 = [0_u8; 1];
-    assert_eq!(parent_socket_v1.recv(&mut ready_v1).expect("child ready"), 1);
+    assert_eq!(
+        parent_socket_v1.recv(&mut ready_v1).expect("child ready"),
+        1
+    );
     assert_eq!(ready_v1, [b'R']);
     drop(owner_v1);
 
@@ -180,8 +186,8 @@ fn inherited_regular_file_requires_explicit_unsealed_rw_mapping_v1() {
 fn optional_inherited_regular_file_distinguishes_absent_from_malformed_v1() {
     let import_v1 = super::super::try_duplicate_optional_inherited_regular_file_v1;
     assert!(import_v1(i32::MAX).expect("absent descriptor").is_none());
-    let (socket_v1, _peer_v1) = std::os::unix::net::UnixDatagram::pair()
-        .expect("create malformed inherited descriptor");
+    let (socket_v1, _peer_v1) =
+        std::os::unix::net::UnixDatagram::pair().expect("create malformed inherited descriptor");
     clear_cloexec_v1(socket_v1.as_raw_fd());
     assert_eq!(
         import_v1(socket_v1.as_raw_fd()).expect_err("present non-file descriptor"),

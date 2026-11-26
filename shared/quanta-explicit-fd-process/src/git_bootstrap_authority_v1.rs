@@ -301,9 +301,11 @@ mod tests {
         let relative_v1 = executable_fixture_v1(&root_v1.path().join("tools"), b"relative", true);
         let cwd_v1 = executable_fixture_v1(root_v1.path(), b"cwd", true);
         for (path_v1, expected_v1) in [("tools:", relative_v1), (":tools", cwd_v1)] {
-            let selected_v1 =
-                select_git_v1(&[(OsString::from("PATH"), OsString::from(path_v1))], root_v1.path())
-                    .unwrap();
+            let selected_v1 = select_git_v1(
+                &[(OsString::from("PATH"), OsString::from(path_v1))],
+                root_v1.path(),
+            )
+            .unwrap();
             assert_eq!(selected_v1.selected_path_v1, expected_v1);
         }
     }
@@ -311,7 +313,10 @@ mod tests {
     #[test]
     fn bootstrap_missing_and_non_executable_git_remain_distinct_typed_failures_v1() {
         let root_v1 = tempfile::tempdir().unwrap();
-        let path_v1 = [(OsString::from("PATH"), root_v1.path().as_os_str().to_owned())];
+        let path_v1 = [(
+            OsString::from("PATH"),
+            root_v1.path().as_os_str().to_owned(),
+        )];
         assert!(matches!(
             select_git_v1(&path_v1, root_v1.path()),
             Err(Error::DescriptorOperation {

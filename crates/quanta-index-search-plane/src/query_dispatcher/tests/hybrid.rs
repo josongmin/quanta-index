@@ -746,7 +746,6 @@ fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
         | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
@@ -943,7 +942,6 @@ fn hybrid_dispatch_emits_closed_obs_metrics() -> TestResult {
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Hybrid response, got {other:?}").into());

@@ -1,7 +1,5 @@
 //! Recovery-only directory DATA checks. The caller retains the actual root lease.
-pub use quanta_index_core::index::existing_file::{
-    ExistingFileReadFailureV1 as RecoveryReadFailureV1,
-};
+pub use quanta_index_core::index::existing_file::ExistingFileReadFailureV1 as RecoveryReadFailureV1;
 pub(super) use quanta_index_core::index::existing_file::read_existing_file_v1 as read_existing;
 use quanta_index_core::index::{IndexError, WorkBudget, WorkUsage};
 use std::{fs, os::unix::fs::MetadataExt as _, path::Path};

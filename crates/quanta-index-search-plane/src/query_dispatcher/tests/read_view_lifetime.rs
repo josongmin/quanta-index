@@ -6,9 +6,7 @@
 
 use std::sync::Arc;
 
-use quanta_index_contract::{
-    GenerationPin, ManifestGeneration, RepoId, RevisionId,
-};
+use quanta_index_contract::{GenerationPin, ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{ReadDomainV1, ReadResourceGroupV2, RequiredDomainsV1};
 
 use crate::query_dispatcher::read_view::{ReadViewRequestV1, assemble_for_test};
@@ -31,10 +29,9 @@ fn every_declared_domain_has_exactly_one_evidence_entry() {
         manifest_digest: None,
         results: Vec::new(),
     });
-    let domains = RequiredDomainsV1::of(ReadDomainV1::LexicalTrack)
-        .with(ReadDomainV1::RepoMetadata(
-            quanta_index_core::RepoMetadataAuthorityV1::FileOwnership,
-        ));
+    let domains = RequiredDomainsV1::of(ReadDomainV1::LexicalTrack).with(
+        ReadDomainV1::RepoMetadata(quanta_index_core::RepoMetadataAuthorityV1::FileOwnership),
+    );
     let view_pin = pin();
     let request = ReadViewRequestV1::new("hybrid seed", &view_pin, domains);
     let view =

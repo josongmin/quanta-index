@@ -23,9 +23,9 @@ use quanta_index_contract::{
     EngineTouched, ExplainCandidateV1, GenerationPin, HybridCandidateV1, HybridLaneContributionV1,
     HybridLaneV1, HybridQueryResponse, HybridSeedQueryResponse, LexicalCandidate,
     ManifestGeneration, PlannerStage, PlannerTraceEntry, QueryResultWindowV2, RepoId,
-    RepoRelativePath, RevisionId, SearchExplanation,
-    SearchPlaneErrorCodeV2, SearchPlaneExplainQueryResponse, SearchPlaneIpcError,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneErrorCodeV2,
+    SearchPlaneExplainQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_ipc::{IpcDispatcher, RequestBudgetV1, UdsServer};
@@ -639,7 +639,6 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             other @ (SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(_)
             | SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
-
             | SearchPlaneControlIpcRequest::SearchCorpusActiveHead(_)
             | SearchPlaneControlIpcRequest::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcRequest::ProcessReadiness(_)) => control_error_response(

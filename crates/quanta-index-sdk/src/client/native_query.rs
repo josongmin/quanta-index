@@ -6,11 +6,10 @@ use quanta_index_contract::{
     native_protocol::{
         NativeDslKindV1, NativeDslPageV1, NativeDslQueryV1, NativeDslScopeV1, NativeGraphQuery,
         NativeGraphResult, NativeHybridFileResult, NativeIndexRequest, NativeIndexResponse,
-        NativeProjectionRead, NativeReadSessionProfile,
-        NativeReadSessionSettlement, NativeReadSessionState, NativeReadSessionStatus,
-        NativeSemanticResult, NativeTextCursor,
-        NativeTextPage, NativeTextResult, NativeTextPathCursorV1, NativeTextPathPageV1,
-        NativeTextPathResultV1,
+        NativeProjectionRead, NativeReadSessionProfile, NativeReadSessionSettlement,
+        NativeReadSessionState, NativeReadSessionStatus, NativeSemanticResult, NativeTextCursor,
+        NativeTextPage, NativeTextPathCursorV1, NativeTextPathPageV1, NativeTextPathResultV1,
+        NativeTextResult,
     },
 };
 use quanta_index_ipc::{ClientIoPolicy, MemoryScope, RequestBudgetV1};
@@ -98,7 +97,9 @@ impl<'a> NativeQueryReader<'a> {
         match reply.response() {
             NativeIndexResponse::Projection(observed) => Ok(*observed),
             NativeIndexResponse::Error(error) => Err(NativeUdsError::Refused(error.clone()).into()),
-            _ => Err(NativeUdsError::Protocol("missing Native DSL projection response".into()).into()),
+            _ => Err(
+                NativeUdsError::Protocol("missing Native DSL projection response".into()).into(),
+            ),
         }
     }
 
@@ -117,12 +118,17 @@ impl<'a> NativeQueryReader<'a> {
     ) -> Result<Self, NativeQueryError> {
         let same = match self.selection {
             ViewSelection::Exact(expected) => view == expected,
-            ViewSelection::Latest { workspace, epoch } => view.workspace == workspace && view.epoch == epoch,
+            ViewSelection::Latest { workspace, epoch } => {
+                view.workspace == workspace && view.epoch == epoch
+            }
         };
         if !same {
             return Err(NativeQueryError::ProfileBindingMismatch);
         }
-        Ok(Self { selection: ViewSelection::Exact(view), ..self })
+        Ok(Self {
+            selection: ViewSelection::Exact(view),
+            ..self
+        })
     }
 
     pub fn graph(
@@ -321,7 +327,10 @@ impl NativeQuerySession<'_> {
         &self,
         instance: &InstanceSpec,
         budget: &RequestBudgetV1,
-    ) -> Result<quanta_index_contract::native_protocol::NativeReadSessionHistoryCutV1, NativeQueryError> {
+    ) -> Result<
+        quanta_index_contract::native_protocol::NativeReadSessionHistoryCutV1,
+        NativeQueryError,
+    > {
         Ok(self.reader.client.read_history_cut_in_read_session(
             &self.status,
             self.instance(instance)?,
@@ -400,7 +409,8 @@ impl NativeQueryReader<'_> {
         budget: &RequestBudgetV1,
         memory: &MemoryScope,
     ) -> Result<AdmittedNativePublicationReply, NativeQueryError> {
-        self.exact_reader_in_scope_v1(view)?.open_admitted(open_key, budget, memory)
+        self.exact_reader_in_scope_v1(view)?
+            .open_admitted(open_key, budget, memory)
     }
 
     pub fn dsl_admitted_v1(

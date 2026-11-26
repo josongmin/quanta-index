@@ -7,10 +7,10 @@
     clippy::panic_in_result_fn,
     reason = "integration assertions are independent behavior oracles inside Result-returning test functions"
 )]
-#[path = "native_projection/sealed_retry.rs"]
-mod sealed_retry;
 #[path = "native_projection/retired_policy.rs"]
 mod retired_policy;
+#[path = "native_projection/sealed_retry.rs"]
+mod sealed_retry;
 use futures::executor::block_on;
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::index::{

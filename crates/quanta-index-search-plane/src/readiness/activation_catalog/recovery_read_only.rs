@@ -12,7 +12,10 @@ use quanta_index_core::index::{
     IndexError, MemoryLease, MemoryLifetime, ObjectReadIoPort, WorkBudget,
 };
 use quanta_index_core::{ExistingTreeEntryKindV1, ExistingTreeMetadataIoPortV1};
-use std::{ffi::{OsStr, OsString}, path::Path};
+use std::{
+    ffi::{OsStr, OsString},
+    path::Path,
+};
 
 /// Observed DATA with the same Original's retained allocation. Neither this
 /// value nor a root lease substitutes for sealed-content/receipt verification.
@@ -209,7 +212,9 @@ pub fn visit_existing_active_search_corpus_heads_v1(
                     MemoryLifetime::Temporary,
                 )?
                 .ok_or(IndexError::ResourceLimited)?;
-            names.try_reserve(1).map_err(|_| IndexError::ResourceLimited)?;
+            names
+                .try_reserve(1)
+                .map_err(|_| IndexError::ResourceLimited)?;
             names.push((name.to_owned(), allocation));
             Ok(())
         },

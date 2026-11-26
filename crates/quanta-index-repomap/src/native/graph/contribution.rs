@@ -308,7 +308,8 @@ pub(super) fn load_source_record(
             "graph file Source record reference or bound differs".into(),
         ));
     }
-    let record = SourceRecordOwner::decode_json(&stored.payload, budget, MemoryLifetime::Temporary)?;
+    let record =
+        SourceRecordOwner::decode_json(&stored.payload, budget, MemoryLifetime::Temporary)?;
     if record.path.is_empty()
         || record.path.len() > MAX_SOURCE_PATH_BYTES
         || record.path.starts_with('/')

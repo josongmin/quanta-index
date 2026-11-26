@@ -1,13 +1,12 @@
 //! Match a carried Native route and its actual Catalog ledger against the held
 //! previous root. Candidate-owned objects cannot establish their own provenance.
 
-use super::*;
 use super::super::retired_policy_profile_v1::old_repomap_identity_v1;
+use super::*;
 use quanta_index_contract::index::{
-    Digest, NativeImportedNativeSourceHeadV1, RetiredProjectionPolicyViewV1,
-    NativeSourceOriginV1, RetiredProjectionIdentityV1, RetiredProjectionPolicyErrorV1,
-    SourceCut, SourceTextAdmission, decode_retired_projection_policy_v1,
-    preflight_retired_projection_policy_v1,
+    Digest, NativeImportedNativeSourceHeadV1, NativeSourceOriginV1, RetiredProjectionIdentityV1,
+    RetiredProjectionPolicyErrorV1, RetiredProjectionPolicyViewV1, SourceCut, SourceTextAdmission,
+    decode_retired_projection_policy_v1, preflight_retired_projection_policy_v1,
 };
 use quanta_index_contract::{RepoRelativePath, RevisionId, SourceFileKey, SourceFileRevision};
 use quanta_index_core::index::{
@@ -20,7 +19,10 @@ struct CensusJsonCountV1(usize);
 
 impl std::io::Write for CensusJsonCountV1 {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0 = self.0.checked_add(bytes.len()).ok_or(std::io::ErrorKind::OutOfMemory)?;
+        self.0 = self
+            .0
+            .checked_add(bytes.len())
+            .ok_or(std::io::ErrorKind::OutOfMemory)?;
         Ok(bytes.len())
     }
 
@@ -154,7 +156,8 @@ fn verify_source_files_v1(
                         .ok_or(IndexError::ResourceLimited)?;
                     let _memory = budget
                         .reserve_memory(
-                            u64::try_from(identity_bytes).map_err(|_| IndexError::ResourceLimited)?,
+                            u64::try_from(identity_bytes)
+                                .map_err(|_| IndexError::ResourceLimited)?,
                             MemoryLifetime::Temporary,
                         )?
                         .ok_or(IndexError::ResourceLimited)?;
@@ -231,14 +234,21 @@ fn reject_retired_candidate_publications_v1(
         return Ok(());
     }
     let root = candidate.lease.state_root_identity_v1();
-    let workspace = expected.snapshot.selected.as_ref()
-        .ok_or(IndexError::SnapshotUnavailable)?.operation.key.workspace;
+    let workspace = expected
+        .snapshot
+        .selected
+        .as_ref()
+        .ok_or(IndexError::SnapshotUnavailable)?
+        .operation
+        .key
+        .workspace;
     let mut visit = |snapshot: &quanta_index_catalog::NativeBootCatalogSnapshot,
                      _catalog: &quanta_index_catalog::NativeBootPublicationReader<'_>,
                      _head: &quanta_index_core::index::CatalogView,
                      operation: &quanta_index_core::index::ImmutableOperation,
                      publication: &quanta_index_core::index::CatalogView,
-                     budget: &mut WorkBudget| -> Result<(), IndexError> {
+                     budget: &mut WorkBudget|
+     -> Result<(), IndexError> {
         if snapshot.root_nonce != expected.snapshot.root_nonce
             || snapshot.selected != expected.snapshot.selected
             || snapshot.namespace != expected.snapshot.namespace
@@ -249,7 +259,9 @@ fn reject_retired_candidate_publications_v1(
         // bytes this scan cannot prove that an old ID was never published.
         let stored_request = reader.get(operation.request, budget)?;
         quanta_index_kernel::with_decoded_update_request_v1(
-            &stored_request.payload, budget, |request, budget| -> Result<(), IndexError> {
+            &stored_request.payload,
+            budget,
+            |request, budget| -> Result<(), IndexError> {
                 if request.operation != operation.key
                     || request.kind.source_mode() != operation.source_mode
                     || request.expected_view.workspace != operation.key.workspace
@@ -257,9 +269,13 @@ fn reject_retired_candidate_publications_v1(
                 {
                     return Err(IndexError::DigestConflict);
                 }
-                if let quanta_index_core::index::UpdateKind::ProjectionAdvance(transition) = &request.kind {
+                if let quanta_index_core::index::UpdateKind::ProjectionAdvance(transition) =
+                    &request.kind
+                {
                     if super::super::retired_policy_profile_v1::retired_projection_present_v1(
-                        policy, transition.projection, budget,
+                        policy,
+                        transition.projection,
+                        budget,
                     )? {
                         return Err(IndexError::DigestConflict);
                     }
@@ -272,20 +288,53 @@ fn reject_retired_candidate_publications_v1(
             return Err(IndexError::DigestConflict);
         }
         super::super::retired_policy_profile_v1::reject_candidate_profile_overlap_v1(
-            policy, sorted_instances, &profile.payload, budget,
+            policy,
+            sorted_instances,
+            &profile.payload,
+            budget,
         )?;
-        reject_retired_map_keys_v1(reader, publication.projections, policy, sorted_instances, true, budget)?;
-        reject_retired_map_keys_v1(reader, publication.members, policy, sorted_instances, false, budget)?;
-        reject_retired_map_keys_v1(reader, publication.coverage, policy, sorted_instances, false, budget)?;
+        reject_retired_map_keys_v1(
+            reader,
+            publication.projections,
+            policy,
+            sorted_instances,
+            true,
+            budget,
+        )?;
+        reject_retired_map_keys_v1(
+            reader,
+            publication.members,
+            policy,
+            sorted_instances,
+            false,
+            budget,
+        )?;
+        reject_retired_map_keys_v1(
+            reader,
+            publication.coverage,
+            policy,
+            sorted_instances,
+            false,
+            budget,
+        )?;
         Ok(())
     };
     let observed = if let Some(routes) = routes {
         quanta_index_catalog::verify_native_source_root_publications_with_routes_v1(
-            root, candidate.io.as_ref(), workspace, routes, budget, &mut visit,
+            root,
+            candidate.io.as_ref(),
+            workspace,
+            routes,
+            budget,
+            &mut visit,
         )?
     } else {
         quanta_index_catalog::verify_native_source_root_publications_v1(
-            root, candidate.io.as_ref(), workspace, budget, &mut visit,
+            root,
+            candidate.io.as_ref(),
+            workspace,
+            budget,
+            &mut visit,
         )?
     };
     if observed.snapshot.root_nonce != expected.snapshot.root_nonce
@@ -331,8 +380,11 @@ fn reject_retired_map_keys_v1(
                         return Err(IndexError::DigestConflict);
                     }
                 }
-            } else if key.len() == 23 && key.starts_with(b"member\0")
-                && sorted_instances.binary_search_by(|instance| instance.0.as_slice().cmp(&key[7..])).is_ok()
+            } else if key.len() == 23
+                && key.starts_with(b"member\0")
+                && sorted_instances
+                    .binary_search_by(|instance| instance.0.as_slice().cmp(&key[7..]))
+                    .is_ok()
             {
                 return Err(IndexError::DigestConflict);
             }
@@ -341,7 +393,10 @@ fn reject_retired_map_keys_v1(
             return Ok(());
         }
         let next = page.cursor().last().ok_or(IndexError::ResourceLimited)?;
-        if after.as_ref().map(|entry| entry.key()).transpose()?
+        if after
+            .as_ref()
+            .map(|entry| entry.key())
+            .transpose()?
             .is_some_and(|prior| next.key().is_ok_and(|key| key <= prior))
         {
             return Err(IndexError::DigestConflict);
@@ -456,18 +511,33 @@ pub(super) fn verify_preserved_native_v1(
                 let scratch_bytes = policy_count
                     .checked_mul(std::mem::size_of::<quanta_index_core::index::IndexInstanceId>())
                     .ok_or(IndexError::ResourceLimited)?;
-                let derived_bytes = old_routes.repomap_heads.len()
+                let derived_bytes = old_routes
+                    .repomap_heads
+                    .len()
                     .checked_mul(std::mem::size_of::<RetiredProjectionIdentityV1>())
-                    .and_then(|size| size.checked_add(old_routes.repomap_heads.len().checked_mul(16)?))
+                    .and_then(|size| {
+                        size.checked_add(old_routes.repomap_heads.len().checked_mul(16)?)
+                    })
                     .ok_or(IndexError::ResourceLimited)?;
-                let _policy_memory = budget.reserve_memory(
-                    u64::try_from(scratch_bytes.checked_add(derived_bytes).ok_or(IndexError::ResourceLimited)?)?.max(1),
-                    MemoryLifetime::Temporary,
-                )?.ok_or(IndexError::ResourceLimited)?;
-                let mut scratch = vec![quanta_index_core::index::IndexInstanceId([0; 16]); policy_count];
+                let _policy_memory = budget
+                    .reserve_memory(
+                        u64::try_from(
+                            scratch_bytes
+                                .checked_add(derived_bytes)
+                                .ok_or(IndexError::ResourceLimited)?,
+                        )?
+                        .max(1),
+                        MemoryLifetime::Temporary,
+                    )?
+                    .ok_or(IndexError::ResourceLimited)?;
+                let mut scratch =
+                    vec![quanta_index_core::index::IndexInstanceId([0; 16]); policy_count];
                 let policy_view = decode_retired_projection_policy_v1(
-                    &policy_object.payload, &mut scratch, &mut || budget.checkpoint(),
-                ).map_err(|error| match error {
+                    &policy_object.payload,
+                    &mut scratch,
+                    &mut || budget.checkpoint(),
+                )
+                .map_err(|error| match error {
                     RetiredProjectionPolicyErrorV1::Admission(error) => error,
                     _ => IndexError::DigestConflict,
                 })?;
@@ -496,8 +566,9 @@ pub(super) fn verify_preserved_native_v1(
                 }
                 budget.checkpoint()?;
                 derived.sort_unstable_by_key(|identity| identity.projection.0);
-                if derived.windows(2).any(|pair| pair[0].projection == pair[1].projection
-                    && pair[0].instance != pair[1].instance) {
+                if derived.windows(2).any(|pair| {
+                    pair[0].projection == pair[1].projection && pair[0].instance != pair[1].instance
+                }) {
                     return Err(IndexError::DigestConflict.into());
                 }
                 derived.dedup();
@@ -511,7 +582,8 @@ pub(super) fn verify_preserved_native_v1(
                 instances.extend(derived.iter().map(|identity| identity.instance));
                 instances.sort_unstable_by_key(|instance| instance.0);
                 if instances.windows(2).any(|pair| pair[0] == pair[1])
-                    || derived.len() != policy_count {
+                    || derived.len() != policy_count
+                {
                     return Err(IndexError::DigestConflict.into());
                 }
                 for (index, expected) in derived.iter().enumerate() {
@@ -539,7 +611,13 @@ pub(super) fn verify_preserved_native_v1(
                 let Some(route) = route else {
                     if old_routes.heads.is_empty() {
                         reject_retired_candidate_publications_v1(
-                            candidate, &reader, &candidate_current, None, &policy_view, &scratch, budget,
+                            candidate,
+                            &reader,
+                            &candidate_current,
+                            None,
+                            &policy_view,
+                            &scratch,
+                            budget,
                         )?;
                         return Ok(());
                     }
@@ -580,7 +658,9 @@ pub(super) fn verify_preserved_native_v1(
                                     old_source_head: old.clone(),
                                     file_count: imported.origin.file_count,
                                     file_census_sha256: imported.origin.file_census_sha256,
-                                    accepted_transcript_sha256: imported.origin.accepted_transcript_sha256,
+                                    accepted_transcript_sha256: imported
+                                        .origin
+                                        .accepted_transcript_sha256,
                                 },
                                 candidate_root_nonce: imported.candidate_root_nonce,
                                 source_operation: new.source_operation,
@@ -614,8 +694,13 @@ pub(super) fn verify_preserved_native_v1(
                             }
                         }
                         reject_retired_candidate_publications_v1(
-                            candidate, &reader, &candidate_current,
-                            Some(new_routes), &policy_view, &scratch, budget,
+                            candidate,
+                            &reader,
+                            &candidate_current,
+                            Some(new_routes),
+                            &policy_view,
+                            &scratch,
+                            budget,
                         )?;
                         Ok(())
                     },

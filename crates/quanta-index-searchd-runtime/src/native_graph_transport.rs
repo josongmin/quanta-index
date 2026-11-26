@@ -29,7 +29,10 @@ pub(crate) struct GraphAnchor {
 }
 
 impl GraphAnchor {
-    pub(crate) fn capture(source: &RepoMapNodeRef, budget: &WorkBudget) -> Result<Self, IndexError> {
+    pub(crate) fn capture(
+        source: &RepoMapNodeRef,
+        budget: &WorkBudget,
+    ) -> Result<Self, IndexError> {
         let text = match source {
             RepoMapNodeRef::File(id) => id.as_str(),
             RepoMapNodeRef::Module(id) => id.as_str(),

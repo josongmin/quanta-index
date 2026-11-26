@@ -78,9 +78,7 @@ impl QueryRouteV1 {
             | Self::HybridSeed
             | Self::Structural
             | Self::Explain => true,
-            Self::History | Self::RuntimeMetadata | Self::ClusterMembershipRead => {
-                false
-            }
+            Self::History | Self::RuntimeMetadata | Self::ClusterMembershipRead => false,
         }
     }
 

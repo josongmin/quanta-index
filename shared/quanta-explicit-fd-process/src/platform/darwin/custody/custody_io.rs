@@ -63,7 +63,11 @@ fn write_all_v1(
     while !bytes_v1.is_empty() {
         // SAFETY: bytes is a live initialized slice.
         let written_v1 = unsafe {
-            libc::write(destination_v1.as_raw_fd(), bytes_v1.as_ptr().cast(), bytes_v1.len())
+            libc::write(
+                destination_v1.as_raw_fd(),
+                bytes_v1.as_ptr().cast(),
+                bytes_v1.len(),
+            )
         };
         if written_v1 < 0 {
             if super::super::errno_v1() == libc::EINTR {

@@ -17,8 +17,7 @@ use quanta_index_contract::{
 use quanta_index_core::domains::structural::StructuralProducerPort;
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridFetchFloorPolicy, HybridQueryPort, LexicalIndexOpenPort,
-    QueryRouteV1, RequestBudgetV1, SemanticIndexOpenPort,
-    SemanticQueryPort,
+    QueryRouteV1, RequestBudgetV1, SemanticIndexOpenPort, SemanticQueryPort,
 };
 use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
 

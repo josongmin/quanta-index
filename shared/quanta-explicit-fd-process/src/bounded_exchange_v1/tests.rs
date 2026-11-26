@@ -87,14 +87,24 @@ fn same_poll_owner_preserves_input_parts_exact_output_and_closed_pipe_roles() {
 #[test]
 fn distinct_output_stderr_exit_and_wall_failures_never_return_a_frame() {
     for (script, input, wall, expected) in [
-        ("cat", &b"x"[..], Duration::from_secs(2), BoundedExchangeErrorV1::OutputLimit),
+        (
+            "cat",
+            &b"x"[..],
+            Duration::from_secs(2),
+            BoundedExchangeErrorV1::OutputLimit,
+        ),
         (
             "dd if=/dev/zero bs=4097 count=1 1>&2 2>/dev/null",
             &b""[..],
             Duration::from_secs(2),
             BoundedExchangeErrorV1::StderrLimit,
         ),
-        ("exit 17", &b""[..], Duration::from_secs(2), BoundedExchangeErrorV1::ChildFailed),
+        (
+            "exit 17",
+            &b""[..],
+            Duration::from_secs(2),
+            BoundedExchangeErrorV1::ChildFailed,
+        ),
         (
             "while :; do :; done",
             &b""[..],
@@ -161,7 +171,10 @@ impl BoundedExchangeOutputV1<(u8, &'static str)> for CollectorV1 {
             return Err(cause);
         }
         let length = self.bytes.len().checked_add(chunk.len()).unwrap();
-        assert!(length <= self.cap, "poll owner must cap bytes before append");
+        assert!(
+            length <= self.cap,
+            "poll owner must cap bytes before append"
+        );
         self.bytes.try_reserve_exact(chunk.len()).unwrap();
         self.bytes.extend_from_slice(chunk);
         Ok(())
@@ -190,7 +203,11 @@ fn same_poll_collector_uses_actual_output_and_preserves_owner_refusal() {
     assert_eq!(result.stdout_bytes_v1, 4);
     assert_eq!(result.exit_status_v1.code(), Some(1));
     assert_eq!(output.bytes, b"tiny");
-    assert_eq!(output.bytes.capacity(), 4, "no full installed-cap allocation");
+    assert_eq!(
+        output.bytes.capacity(),
+        4,
+        "no full installed-cap allocation"
+    );
     for cause in [(1, "original-control"), (2, "native-allocation")] {
         let mut output = CollectorV1 {
             bytes: Vec::new(),
@@ -260,13 +277,22 @@ fn no_relative_wall_cap_preserves_original_checkpoint_and_reaps_child() {
     );
     assert_eq!(
         result,
-        Err(BoundedExchangeErrorV1::Checkpoint((37, "original-absolute-deadline")))
+        Err(BoundedExchangeErrorV1::Checkpoint((
+            37,
+            "original-absolute-deadline"
+        )))
     );
     assert_eq!(calls.get(), 2);
     let mut status = 0;
     // SAFETY: this launcher-owned child has just been synchronously reaped.
-    assert_eq!(unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) }, -1);
-    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+    assert_eq!(
+        unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) },
+        -1
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
 }
 
 #[test]
@@ -294,12 +320,21 @@ fn typed_original_checkpoint_cause_precedes_wall_and_reaps_actual_child() {
             },
             4096,
         );
-        assert_eq!(result, Err(BoundedExchangeErrorV1::Checkpoint((37, "original-root"))));
+        assert_eq!(
+            result,
+            Err(BoundedExchangeErrorV1::Checkpoint((37, "original-root")))
+        );
         assert_eq!(calls.get(), refuse_at);
         let mut status = 0;
         // SAFETY: this launcher-owned child has just been synchronously reaped.
-        assert_eq!(unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) }, -1);
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
     }
 }
 
@@ -339,7 +374,10 @@ fn same_poll_session_retains_child_and_pipes_across_exact_frames() {
             length: 0,
             refusal: None,
         };
-        assert_eq!(session.exchange_frame_v1(&[frame], &mut output, 4, || Ok(()), None), Ok(4));
+        assert_eq!(
+            session.exchange_frame_v1(&[frame], &mut output, 4, || Ok(()), None),
+            Ok(4)
+        );
         assert_eq!(&output.bytes, &frame[..4]);
         assert!(session
             .child_v1
@@ -348,13 +386,22 @@ fn same_poll_session_retains_child_and_pipes_across_exact_frames() {
             .try_wait_v1()
             .unwrap()
             .is_none());
-        assert!(session.stdin_v1.is_some(), "frame must retain the request pipe");
+        assert!(
+            session.stdin_v1.is_some(),
+            "frame must retain the request pipe"
+        );
     }
     drop(session);
     let mut status = 0;
     // SAFETY: this launcher-owned child has just been synchronously reaped.
-    assert_eq!(unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) }, -1);
-    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+    assert_eq!(
+        unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) },
+        -1
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
 }
 
 #[test]
@@ -394,8 +441,14 @@ fn session_refusal_poison_reaps_before_return_and_keeps_typed_cause() {
         assert!(session.child_v1.is_none());
         let mut status = 0;
         // SAFETY: failure must reap even though the session remains in scope.
-        assert_eq!(unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) }, -1);
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
         assert_eq!(
             session.exchange_frame_v1(&[], &mut output, 4, || Ok(()), None),
             Err(BoundedExchangeErrorV1::ChildFailed)
@@ -477,16 +530,32 @@ fn same_session_sends_fixed_credit_only_after_owner_grant_and_retains_first_refu
         if refuse {
             assert_eq!(
                 result,
-                Err(BoundedExchangeErrorV1::OutputAdmission((37, "original-native-work")))
+                Err(BoundedExchangeErrorV1::OutputAdmission((
+                    37,
+                    "original-native-work"
+                )))
             );
             assert_eq!(output.granted, 0);
-            assert!(!output.result, "child producer must still wait for its first grant");
+            assert!(
+                !output.result,
+                "child producer must still wait for its first grant"
+            );
             let mut status = 0;
             // SAFETY: refusal must kill/reap before returning this original cause.
-            assert_eq!(unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) }, -1);
-            assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+            assert_eq!(
+                unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) },
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
+            );
         } else {
-            assert_eq!(result, Ok(8), "credit bytes released before the result span");
+            assert_eq!(
+                result,
+                Ok(8),
+                "credit bytes released before the result span"
+            );
             assert_eq!(output.granted, 1);
             assert!(output.result);
             assert!(session.child_v1.is_some());
@@ -508,8 +577,11 @@ fn pinned_test_v1() -> PinnedExecutableV1 {
         }
         digest.update(&buffer[..read]);
     }
-    PinnedExecutableV1::try_pin_v1(File::open(path).unwrap(), &format!("{:x}", digest.finalize()))
-        .unwrap()
+    PinnedExecutableV1::try_pin_v1(
+        File::open(path).unwrap(),
+        &format!("{:x}", digest.finalize()),
+    )
+    .unwrap()
 }
 
 #[cfg(target_os = "linux")]

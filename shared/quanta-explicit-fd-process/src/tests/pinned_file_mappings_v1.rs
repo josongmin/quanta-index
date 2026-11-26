@@ -23,8 +23,9 @@ fn pinned_read_only_mappings_have_independent_cursors_for_every_spawn_v1() {
     std::fs::write(source_v1.path(), b"pinned-authority\n").expect("write authority bytes");
     let mut file_v1 = File::open(source_v1.path()).expect("open authority source");
     file_v1.seek(SeekFrom::Start(5)).expect("set caller cursor");
-    let authority_v1 = PinnedReadOnlyFileV1::try_pin_v1(&file_v1, &sha256_path_v1(source_v1.path()))
-        .expect("pin bytes independently of caller cursor");
+    let authority_v1 =
+        PinnedReadOnlyFileV1::try_pin_v1(&file_v1, &sha256_path_v1(source_v1.path()))
+            .expect("pin bytes independently of caller cursor");
     let executable_v1 = pin_current_test_executable_v1();
     for _ in 0..2 {
         assert_pinned_file_mapping_v1(&executable_v1, &authority_v1);

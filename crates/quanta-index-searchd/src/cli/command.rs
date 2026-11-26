@@ -716,9 +716,11 @@ mod tests {
         ensure!(!export.source_only_native);
         let mut native = args.to_vec();
         native.push("--source-only-native");
-        ensure!(parse(&native)?
-            .source_export_command()
-            .is_some_and(|export| export.source_only_native));
+        ensure!(
+            parse(&native)?
+                .source_export_command()
+                .is_some_and(|export| export.source_only_native)
+        );
         native.push("--source-only-native");
         ensure!(parse(&native).is_err());
         ensure!(parsed.into_config().is_err());
@@ -1288,7 +1290,7 @@ mod tests {
                 protected_source_routes: Some(quanta_index_contract::index::ObjectRef(
                     quanta_index_contract::index::Digest([0x33; 32])
                 )),
-                    retired_projection_policy: None,
+                retired_projection_policy: None,
             }));
         Ok(())
     }

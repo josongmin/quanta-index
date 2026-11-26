@@ -17,7 +17,9 @@ pub fn try_duplicate_inherited_read_pipe_v1(
     if raw_fd_v1 < 3 {
         return Err(ExplicitFdProcessErrorV1::InvalidInheritedDescriptor);
     }
-    Ok(File::from(platform::duplicate_inherited_read_pipe_v1(raw_fd_v1)?))
+    Ok(File::from(platform::duplicate_inherited_read_pipe_v1(
+        raw_fd_v1,
+    )?))
 }
 
 /// Safely duplicate an explicit child control socket into owned CLOEXEC custody.
@@ -169,7 +171,11 @@ pub(crate) fn validate_connected_unix_datagram_v1(
     // SAFETY: getpeername writes at most peer_len_v1 bytes into peer_v1 and
     // initializes peer_len_v1 on success.
     let peer_result_v1 = unsafe {
-        libc::getpeername(descriptor_v1.as_raw_fd(), peer_v1.as_mut_ptr().cast(), &mut peer_len_v1)
+        libc::getpeername(
+            descriptor_v1.as_raw_fd(),
+            peer_v1.as_mut_ptr().cast(),
+            &mut peer_len_v1,
+        )
     };
     if peer_result_v1 != 0
         || peer_len_v1 < std::mem::size_of::<libc::sa_family_t>() as libc::socklen_t

@@ -6,27 +6,25 @@ use quanta_index_contract::{
     RepoMapNode, RepoMapNodeRef,
     index::{MemberBinding, OwnerKey},
     native_protocol::{
-        MAX_NATIVE_GRAPH_ITEMS, NativeRepoMapPriorFileV1, NativeRepoMapPriorNodeDegreeV1,
-        MAX_NATIVE_REPOMAP_ENDPOINT_OWNERS_V2, native_repomap_rank_policy,
+        MAX_NATIVE_GRAPH_ITEMS, MAX_NATIVE_REPOMAP_ENDPOINT_OWNERS_V2, NativeRepoMapPriorFileV1,
+        NativeRepoMapPriorNodeDegreeV1, native_repomap_rank_policy,
     },
 };
 use quanta_index_core::index::{
-    IndexError, IndexQueryPort, MemoryLease, MemoryLifetime, QueryOutcome,
-    QueryReadContext, WorkBudget, owner_map_key,
+    IndexError, IndexQueryPort, MemoryLease, MemoryLifetime, QueryOutcome, QueryReadContext,
+    WorkBudget,
     effort::ResourceNeed,
+    owner_map_key,
     ports::{ImmutableObjectPort, PersistentMapPort},
 };
 
-use super::{NativeGraph, read_root_for_query};
-use super::affected::{
-    edge_key, edge_prefix, incoming_key, incoming_prefix, node_key,
-};
+use super::affected::{edge_key, edge_prefix, incoming_key, incoming_prefix, node_key};
 use super::contribution::{
     GraphElement, LoadedGraphOutput, load_output_retained, load_owner, load_projection,
-    load_support,
-    validate_rank_coverage, validate_source_owned_facts,
+    load_support, validate_rank_coverage, validate_source_owned_facts,
 };
 use super::query::{NativeGraphReader, scan_prefix};
+use super::{NativeGraph, read_root_for_query};
 
 /// One file contributor of a node in the selected predecessor Graph. The
 /// retained prior context carries its authenticated Source, facts and degrees;
@@ -151,13 +149,23 @@ impl NativeGraph {
                 .ok_or(IndexError::CorruptObject(
                     "prior RepoMap endpoint has no file contributor".into(),
                 ))?;
-            if !prior.wire().facts.nodes.iter().any(|node| match (endpoint, node) {
-                (RepoMapNodeRef::File(id), RepoMapNode::File(file)) => id == &file.file_id,
-                (RepoMapNodeRef::Module(id), RepoMapNode::Module(module)) => id == &module.module_id,
-                (RepoMapNodeRef::Symbol(id), RepoMapNode::Symbol(symbol)) => id == &symbol.symbol_id,
-                (RepoMapNodeRef::Chunk(id), RepoMapNode::Chunk(chunk)) => id == &chunk.chunk_id,
-                _ => false,
-            }) {
+            if !prior
+                .wire()
+                .facts
+                .nodes
+                .iter()
+                .any(|node| match (endpoint, node) {
+                    (RepoMapNodeRef::File(id), RepoMapNode::File(file)) => id == &file.file_id,
+                    (RepoMapNodeRef::Module(id), RepoMapNode::Module(module)) => {
+                        id == &module.module_id
+                    }
+                    (RepoMapNodeRef::Symbol(id), RepoMapNode::Symbol(symbol)) => {
+                        id == &symbol.symbol_id
+                    }
+                    (RepoMapNodeRef::Chunk(id), RepoMapNode::Chunk(chunk)) => id == &chunk.chunk_id,
+                    _ => false,
+                })
+            {
                 return Err(IndexError::CorruptObject(
                     "prior RepoMap endpoint differs from owner facts".into(),
                 ));
@@ -394,10 +402,10 @@ impl NativeGraph {
             "prior RepoMap file lacks Source record".into(),
         ))?;
         if maps.lookup_object(
-                root.projection.source.owners,
-                &owner_map_key(source_owner),
-                budget,
-            )? != Some(source)
+            root.projection.source.owners,
+            &owner_map_key(source_owner),
+            budget,
+        )? != Some(source)
         {
             return Err(IndexError::CorruptObject(
                 "prior RepoMap file Source cut differs".into(),
@@ -475,9 +483,11 @@ fn validate_indexed_supports(
             (root.edges, edge_key(edge, owner)?),
             (root.incoming, incoming_key(edge, owner)?),
         ] {
-            let reference = maps.lookup_object(root, &key, budget)?.ok_or(
-                IndexError::CorruptObject("prior RepoMap edge is absent from Graph root".into()),
-            )?;
+            let reference =
+                maps.lookup_object(root, &key, budget)?
+                    .ok_or(IndexError::CorruptObject(
+                        "prior RepoMap edge is absent from Graph root".into(),
+                    ))?;
             let support = load_support(reference, objects, budget)?;
             if support.support.owner != owner
                 || support.support.projection.is_some()
@@ -591,9 +601,14 @@ fn scan_degree(
         }
         let owner_suffix = owner_map_key(support.owner).len();
         let canonical = key
-            .get(..key.len().checked_sub(owner_suffix).ok_or(IndexError::CorruptObject(
-                "prior RepoMap adjacency key is short".into(),
-            ))?)
+            .get(
+                ..key
+                    .len()
+                    .checked_sub(owner_suffix)
+                    .ok_or(IndexError::CorruptObject(
+                        "prior RepoMap adjacency key is short".into(),
+                    ))?,
+            )
             .ok_or(IndexError::CorruptObject(
                 "prior RepoMap adjacency key is short".into(),
             ))?;

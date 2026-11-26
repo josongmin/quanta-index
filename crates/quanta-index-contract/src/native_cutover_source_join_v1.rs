@@ -4666,18 +4666,28 @@ mod tests {
     fn imported_native_sibling_requires_distinct_completed_binding() {
         use crate::index::{
             NativeImportedNativeSourceCompactV1, NativeImportedNativeSourceHeadV1,
-            NativeProtectedSourceHeadV1,
-            NativeSourceOriginV1, imported_native_source_completed_digest_v1,
-            imported_native_source_manifest_digest_v1, native_source_target_manifest_digest_v1,
+            NativeProtectedSourceHeadV1, NativeSourceOriginV1,
+            imported_native_source_completed_digest_v1, imported_native_source_manifest_digest_v1,
+            native_source_target_manifest_digest_v1,
         };
 
         let (mut evidence, repo, revision) = initial_with_imported_sibling_v1();
-        let position = evidence.source_facts.iter().position(|fact|
-            matches!(fact, Fact::ImportedLegacySource { .. })).expect("legacy import fixture");
-        let Fact::ImportedLegacySource { head: legacy, target, request } =
-            evidence.source_facts.remove(position) else { unreachable!() };
+        let position = evidence
+            .source_facts
+            .iter()
+            .position(|fact| matches!(fact, Fact::ImportedLegacySource { .. }))
+            .expect("legacy import fixture");
+        let Fact::ImportedLegacySource {
+            head: legacy,
+            target,
+            request,
+        } = evidence.source_facts.remove(position)
+        else {
+            unreachable!()
+        };
         let old_head = NativeProtectedSourceHeadV1 {
-            repo_id: repo.clone(), revision_id: revision.clone(),
+            repo_id: repo.clone(),
+            revision_id: revision.clone(),
             source_operation: legacy.source_operation.clone(),
             source_publication: legacy.source_publication.clone(),
             operation: legacy.source_operation.clone(),
@@ -4686,19 +4696,30 @@ mod tests {
         let origin = NativeSourceOriginV1 {
             old_root_nonce: Digest([71; 32]),
             old_routes_ref: ObjectRef(Digest([72; 32])),
-            repo_id: repo.clone(), revision_id: revision.clone(), old_source_head: old_head,
-            file_count: 1, file_census_sha256: Digest([73; 32]),
+            repo_id: repo.clone(),
+            revision_id: revision.clone(),
+            old_source_head: old_head,
+            file_count: 1,
+            file_census_sha256: Digest([73; 32]),
             accepted_transcript_sha256: Digest([74; 32]),
         };
         let new_source_manifest_sha256 =
             native_source_target_manifest_digest_v1(origin.file_census_sha256);
         let manifest = imported_native_source_manifest_digest_v1(
-            &origin, legacy.candidate_root_nonce, legacy.original_snapshot_id,
-            new_source_manifest_sha256, &target, &request,
-        ).expect("native import manifest");
+            &origin,
+            legacy.candidate_root_nonce,
+            legacy.original_snapshot_id,
+            new_source_manifest_sha256,
+            &target,
+            &request,
+        )
+        .expect("native import manifest");
         let completed = imported_native_source_completed_digest_v1(
-            manifest, &legacy.source_operation, &legacy.source_publication,
-        ).expect("native import completion");
+            manifest,
+            &legacy.source_operation,
+            &legacy.source_publication,
+        )
+        .expect("native import completion");
         let full = NativeImportedNativeSourceHeadV1 {
             origin,
             candidate_root_nonce: legacy.candidate_root_nonce,
@@ -4707,55 +4728,98 @@ mod tests {
             source_binding: NativeCutoverEvidenceSourcePublicationBindingV1 {
                 transition_digest: NativeCutoverDigest64V1(sa_payload_to_hex(&manifest)),
                 completion_pointer_digest: NativeCutoverDigest64V1(sa_payload_to_hex(&completed)),
-                physical_target_source_digest: NativeCutoverDigest64V1(sa_payload_to_hex(&new_source_manifest_sha256)),
+                physical_target_source_digest: NativeCutoverDigest64V1(sa_payload_to_hex(
+                    &new_source_manifest_sha256,
+                )),
                 target_snapshot_id: legacy.original_snapshot_id,
             },
             original_snapshot_id: legacy.original_snapshot_id,
-            original_request_sha256: Digest(sha2::Sha256::digest(serde_json::to_vec(&request).expect("request JSON")).into()),
+            original_request_sha256: Digest(
+                sha2::Sha256::digest(serde_json::to_vec(&request).expect("request JSON")).into(),
+            ),
             new_source_manifest_sha256,
             completed_journal_digest: completed,
         };
         assert!(full.matches_completed_binding_v1(&target, &request));
         let head = NativeImportedNativeSourceCompactV1::from_completed_v1(&full, &target, &request)
             .expect("compact Native import");
-        evidence.source_facts.push(Fact::ImportedNativeSource { head, target, request });
-        evidence.source_facts.sort_by(|left, right| mixed_rank(left).cmp(&mixed_rank(right)));
+        evidence.source_facts.push(Fact::ImportedNativeSource {
+            head,
+            target,
+            request,
+        });
+        evidence
+            .source_facts
+            .sort_by(|left, right| mixed_rank(left).cmp(&mixed_rank(right)));
         let joined = join_test(&evidence, &mut |_| Ok::<_, ()>(())).expect("native sibling join");
         assert_eq!(joined.imported_native_source_count_v1(), 1);
-        assert!(joined.imported_native_source_inputs_for_pair_v1(&repo, &revision).is_some());
-        let compact = evidence.source_facts.iter().find(|fact|
-            matches!(fact, Fact::ImportedNativeSource { .. })).expect("native import").clone();
+        assert!(
+            joined
+                .imported_native_source_inputs_for_pair_v1(&repo, &revision)
+                .is_some()
+        );
+        let compact = evidence
+            .source_facts
+            .iter()
+            .find(|fact| matches!(fact, Fact::ImportedNativeSource { .. }))
+            .expect("native import")
+            .clone();
         let mut duplicate = evidence.clone();
         duplicate.source_facts.push(compact.clone());
         assert!(join_test(&duplicate, &mut |_| Ok::<_, ()>(())).is_err());
         let mut missing = evidence.clone();
-        missing.source_facts.retain(|fact| !matches!(fact, Fact::ImportedNativeSource { .. }));
+        missing
+            .source_facts
+            .retain(|fact| !matches!(fact, Fact::ImportedNativeSource { .. }));
         assert!(join_test(&missing, &mut |_| Ok::<_, ()>(())).is_err());
         // Wire-size probe only: these rows intentionally share a journal key.
         // SourceJoin above independently rejects that duplicate; the physical
         // verifier still decides whether a real 368-head installation fits.
         let mut capacity = evidence.clone();
-        capacity.source_facts.retain(|fact| !matches!(fact, Fact::ImportedNativeSource { .. }));
+        capacity
+            .source_facts
+            .retain(|fact| !matches!(fact, Fact::ImportedNativeSource { .. }));
         for index in 0..368 {
             let mut row = compact.clone();
             let suffix = format!("{index:03}");
             if let Fact::ImportedNativeSource { head, .. } = &mut row {
-                head.origin.repo_id = RepoId::new(format!("{}{}", "r".repeat(RepoId::MAX_UTF8_BYTES_V1 - suffix.len()), suffix))
-                    .expect("maximum canonical repo");
-                head.origin.revision_id = RevisionId::new(format!("{}{}", "v".repeat(RevisionId::MAX_UTF8_BYTES_V1 - suffix.len()), suffix))
-                    .expect("maximum canonical revision");
+                head.origin.repo_id = RepoId::new(format!(
+                    "{}{}",
+                    "r".repeat(RepoId::MAX_UTF8_BYTES_V1 - suffix.len()),
+                    suffix
+                ))
+                .expect("maximum canonical repo");
+                head.origin.revision_id = RevisionId::new(format!(
+                    "{}{}",
+                    "v".repeat(RevisionId::MAX_UTF8_BYTES_V1 - suffix.len()),
+                    suffix
+                ))
+                .expect("maximum canonical revision");
             }
             capacity.source_facts.push(row);
         }
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&capacity, &mut encoded).expect("FD6 CBOR encode");
-        assert!(encoded.len() <= crate::native_cutover_evidence_v1::MAX_NATIVE_CUTOVER_EVIDENCE_BYTES_V1,
-            "368 maximum-width compact Native import facts must fit FD6 physical bound in this fixed control fixture");
+        assert!(
+            encoded.len()
+                <= crate::native_cutover_evidence_v1::MAX_NATIVE_CUTOVER_EVIDENCE_BYTES_V1,
+            "368 maximum-width compact Native import facts must fit FD6 physical bound in this fixed control fixture"
+        );
         for mutate in 0..5 {
             let mut forged = evidence.clone();
-            let fact = forged.source_facts.iter_mut().find(|fact|
-                matches!(fact, Fact::ImportedNativeSource { .. })).expect("native import");
-            let Fact::ImportedNativeSource { head, target, request } = fact else { unreachable!() };
+            let fact = forged
+                .source_facts
+                .iter_mut()
+                .find(|fact| matches!(fact, Fact::ImportedNativeSource { .. }))
+                .expect("native import");
+            let Fact::ImportedNativeSource {
+                head,
+                target,
+                request,
+            } = fact
+            else {
+                unreachable!()
+            };
             match mutate {
                 0 => head.origin.old_root_nonce = Digest([91; 32]),
                 1 => head.origin.accepted_transcript_sha256 = Digest([92; 32]),

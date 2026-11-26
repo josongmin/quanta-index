@@ -1,5 +1,5 @@
-use super::*;
 use super::offline_protected_routes::protected_budget_v1;
+use super::*;
 
 #[test]
 fn policy_only_boot_seal_preserves_empty_source_routes_and_rejects_extra_ingress() -> TestResult {
@@ -30,17 +30,29 @@ fn policy_only_boot_seal_preserves_empty_source_routes_and_rejects_extra_ingress
             identity_count: 1,
         };
         let outcome = catalog.select_native_boot_manifest_with_retired_policy_ingress_if_current(
-            primary.key, ingress, policy, &mut protected_budget_v1(),
+            primary.key,
+            ingress,
+            policy,
+            &mut protected_budget_v1(),
         );
         if extra {
             check!(outcome.is_err());
-            check_eq!(catalog.native_boot_manifest(&mut protected_budget_v1())?, None);
+            check_eq!(
+                catalog.native_boot_manifest(&mut protected_budget_v1())?,
+                None
+            );
         } else {
             let selected = outcome?;
             check_eq!(selected.protected_source_routes, None);
             check_eq!(selected.retired_projection_policy, Some(policy));
-            check_eq!(selected.format_version, NativeBootManifest::FORMAT_VERSION_V2);
-            check_eq!(catalog.native_boot_manifest(&mut protected_budget_v1())?, Some(selected));
+            check_eq!(
+                selected.format_version,
+                NativeBootManifest::FORMAT_VERSION_V2
+            );
+            check_eq!(
+                catalog.native_boot_manifest(&mut protected_budget_v1())?,
+                Some(selected)
+            );
         }
     }
     Ok(())

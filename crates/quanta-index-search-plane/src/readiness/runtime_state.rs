@@ -336,12 +336,29 @@ pub fn runtime_catalog_chunk_ids_v1(
         .iter()
         .map(|record| &record.doc_id)
         .chain(batch.facet_entries.iter().map(|record| &record.doc_id))
-        .chain(batch.snapshot_entries.iter().flat_map(|record| &record.doc_ids))
-        .chain(batch.affected_entries.iter().flat_map(|record| &record.doc_ids))
-        .chain(batch.invalidated_by_entries.iter().flat_map(|record| &record.doc_ids))
+        .chain(
+            batch
+                .snapshot_entries
+                .iter()
+                .flat_map(|record| &record.doc_ids),
+        )
+        .chain(
+            batch
+                .affected_entries
+                .iter()
+                .flat_map(|record| &record.doc_ids),
+        )
+        .chain(
+            batch
+                .invalidated_by_entries
+                .iter()
+                .flat_map(|record| &record.doc_ids),
+        )
 }
 
-pub fn validate_runtime_catalog_keys_v1(batch: &RuntimeCatalogIngestBatch) -> Result<(), CoreError> {
+pub fn validate_runtime_catalog_keys_v1(
+    batch: &RuntimeCatalogIngestBatch,
+) -> Result<(), CoreError> {
     validate_runtime_catalog_keys_with_checkpoint(batch, || Ok(()))
 }
 

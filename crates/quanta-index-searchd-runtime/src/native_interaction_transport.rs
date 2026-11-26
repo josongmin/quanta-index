@@ -78,7 +78,6 @@ pub(super) fn dispatch(
         | NativeIndexRequest::BindOverlaySave(_)
         | NativeIndexRequest::CompleteOverlaySave(_)
         | NativeIndexRequest::QueryGraph { .. }
-
         | NativeIndexRequest::LookupSourceOwners { .. }
         | NativeIndexRequest::ListProducerSourceOwners { .. }
         | NativeIndexRequest::DiffProjectionSourceOwners { .. }
@@ -93,7 +92,7 @@ pub(super) fn dispatch(
         | NativeIndexRequest::StageRepositorySources { .. }
         | NativeIndexRequest::StageProfile { .. }
         | NativeIndexRequest::StageProjectionOutput { .. }
-            | NativeIndexRequest::StageImmutableObject { .. }
+        | NativeIndexRequest::StageImmutableObject { .. }
         | NativeIndexRequest::StageProjectionOwner { .. }
         | NativeIndexRequest::StageProjectionCertificate { .. }
         | NativeIndexRequest::StageMutationPage { .. }
@@ -116,9 +115,7 @@ pub(super) fn dispatch(
         | NativeIndexRequest::ReadView(_)
         | NativeIndexRequest::ObserveRootView(_)
         | NativeIndexRequest::ObserveCandidateInstallationV1
-
         | NativeIndexRequest::ResolveProtectedSourceHead { .. }
-
         | NativeIndexRequest::PublishedViewMetadata(_)
         | NativeIndexRequest::ReadProjection { .. }
         | NativeIndexRequest::LookupProjectionOwners { .. }

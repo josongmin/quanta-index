@@ -194,7 +194,6 @@ impl crate::NamespaceIngest for RuntimeNs {
             | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-
             | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
@@ -351,7 +350,6 @@ fn dispatch_runtime_query_request_v1(
         | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(

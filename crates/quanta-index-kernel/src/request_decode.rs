@@ -550,7 +550,13 @@ pub(crate) fn decode(bytes: &[u8], budget: &WorkBudget) -> Result<LoadedRequest,
         KindTag::SourceHistoryResync => {
             let parts: HistoryResyncParts<'_> = read(raw, budget)?;
             let (transition, memory) = source_history(parts.transition, budget)?;
-            (UpdateKind::SourceHistoryResync { prior_epoch: parts.prior_epoch, transition }, memory)
+            (
+                UpdateKind::SourceHistoryResync {
+                    prior_epoch: parts.prior_epoch,
+                    transition,
+                },
+                memory,
+            )
         }
         KindTag::ProjectionAdvance => {
             let parts: ProjectionParts<'_> = read(raw, budget)?;

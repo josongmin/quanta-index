@@ -72,8 +72,8 @@ use crate::native_effort::NativeEffortConfiguration;
 mod boot;
 #[path = "native_boot/legacy_source_census_v1.rs"]
 pub(crate) mod legacy_source_census_v1;
-pub(crate) use boot::{FundedInstalledHistoryV1, RestoreForwardHistoryV1};
 pub(crate) use boot::retired_policy_profile_v1::reject_candidate_profile_overlap_v1;
+pub(crate) use boot::{FundedInstalledHistoryV1, RestoreForwardHistoryV1};
 #[path = "history_checkpoint_export.rs"]
 pub mod history_checkpoint_export;
 
@@ -2631,7 +2631,9 @@ fn run_command_inner(
             .is_some()
     {
         Some(retirement_approval_v2::verify_selected_v2(
-            command, &config, config_sha256,
+            command,
+            &config,
+            config_sha256,
         )?)
     } else {
         None
@@ -2694,10 +2696,15 @@ fn run_command_inner(
     } else {
         None
     };
-    if let Some(policy) = command.identity.and_then(|identity| identity.retired_projection_policy) {
-        let selected = authority.as_mut()
+    if let Some(policy) = command
+        .identity
+        .and_then(|identity| identity.retired_projection_policy)
+    {
+        let selected = authority
+            .as_mut()
             .ok_or_else(|| anyhow!("retired Native serve has no BOOT authority"))?;
-        let approval = retirement_approval.take()
+        let approval = retirement_approval
+            .take()
             .ok_or_else(|| anyhow!("retired Native serve lost signed approval"))?;
         let (retired_projections, retired_instances, index_memory) =
             boot::with_admitted_control_budget(&config, request.clone(), false, |budget, _| {

@@ -229,7 +229,11 @@ mod tests {
     struct NoAdmission(Arc<AtomicU64>);
 
     impl MemoryScopePort for NoAdmission {
-        fn reserve(&self, _bytes: u64, _lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+        fn reserve(
+            &self,
+            _bytes: u64,
+            _lifetime: MemoryLifetime,
+        ) -> Result<MemoryLease, IndexError> {
             let _previous = self.0.fetch_add(1, Ordering::SeqCst);
             Err(IndexError::ResourceLimited)
         }

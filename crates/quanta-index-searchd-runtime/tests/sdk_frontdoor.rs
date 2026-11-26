@@ -14,18 +14,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use quanta_index_contract::lex::{
-    LanguageCode, LexicalErrorCode, SymbolKindFamily, SymbolRecord,
-    compute_parse_tree_source_hash,
+    LanguageCode, LexicalErrorCode, SymbolKindFamily, SymbolRecord, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin, GenerationSelector,
     HistoryOrderV1, HistoryQueryRequest, HybridSeedQueryRequest, ManifestGeneration, RepoId,
-    RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord,
-    RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest,
-    RuntimeSnapshotRecord, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
-    SearchPlaneErrorCodeV2, SearchPlaneTrackKind, SemanticQueryRequest, SourceFileKey,
-    SourcePublicationEvent, StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
-    TextQuerySyntax,
+    RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
+    RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest, RuntimeSnapshotRecord,
+    SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1, SearchPlaneErrorCodeV2,
+    SearchPlaneTrackKind, SemanticQueryRequest, SourceFileKey, SourcePublicationEvent,
+    StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::IntegrityScrubPolicyV1;
 use quanta_index_sdk::{

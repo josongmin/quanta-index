@@ -191,7 +191,6 @@ pub struct RetirementCheckV2 {
     pub policy_sha256: Digest,
 }
 
-
 impl fmt::Debug for WorkBudget {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -242,7 +241,9 @@ impl WorkBudget {
 
     pub fn set_retirement_check_v2(&mut self, check: RetirementCheckV2) -> Result<(), IndexError> {
         if self.retirement_check_v2.is_some() {
-            return Err(IndexError::BackendViolation("retirement check was replaced".into()));
+            return Err(IndexError::BackendViolation(
+                "retirement check was replaced".into(),
+            ));
         }
         self.retirement_check_v2 = Some(check);
         Ok(())
@@ -251,7 +252,6 @@ impl WorkBudget {
     pub const fn retirement_check_v2(&self) -> Option<RetirementCheckV2> {
         self.retirement_check_v2
     }
-
 
     /// Record the first enclosing stage to observe an unsuccessful result.
     /// This diagnostic neither changes admission nor identifies the dominant
