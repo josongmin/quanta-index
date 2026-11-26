@@ -155,7 +155,8 @@ mod tests {
 
     impl MemoryScopePort for TestMemory {
         fn reserve(&self, bytes: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
-            self.0
+            let _previous_live = self
+                .0
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
                     live.checked_add(bytes).filter(|next| *next <= 1 << 20)
                 })
@@ -182,7 +183,7 @@ mod tests {
         };
         let mut bytes = Vec::new();
         let mut encode_scratch = [IndexInstanceId([0; 16]); 1];
-        encode_retired_projection_policy_v1(
+        let _policy_digest = encode_retired_projection_policy_v1(
             header,
             &[old],
             &mut encode_scratch,
