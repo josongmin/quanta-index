@@ -83,6 +83,7 @@ pub use server::{
     send_request_body_with_budget_admitted_bound_peer_v1,
     send_request_body_with_budget_admitted_deadline_v1,
     send_request_body_with_budget_admitted_multiframe_bound_peer_v1,
+    send_request_body_with_budget_admitted_multiframe_v1,
     send_request_body_with_budget_admitted_with_work_v1, send_request_negotiated,
     send_request_observed, send_request_observed_negotiated, send_request_with_budget,
     send_request_with_budget_bound_peer_v1, send_request_with_commit_deadline_v1,

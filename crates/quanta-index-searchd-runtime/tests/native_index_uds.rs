@@ -2224,6 +2224,16 @@ impl MemoryScopePort for CountedNativeTestMemory {
 #[cfg(target_os = "linux")]
 #[test]
 fn native_uds_bound_admitted_projection_stage_crosses_single_frame_with_child_ref() -> TestResult {
+    admitted_projection_stage_crosses_single_frame_with_child_ref(true)
+}
+
+#[test]
+fn native_uds_unbound_admitted_projection_stage_crosses_single_frame_with_child_ref() -> TestResult
+{
+    admitted_projection_stage_crosses_single_frame_with_child_ref(false)
+}
+
+fn admitted_projection_stage_crosses_single_frame_with_child_ref(bind_peer: bool) -> TestResult {
     use quanta_index_contract::index::native_immutable_object_ref_v1;
     use quanta_index_contract::native_protocol::NativeProjectionOutputChildren;
 
@@ -2238,13 +2248,14 @@ fn native_uds_bound_admitted_projection_stage_crosses_single_frame_with_child_re
     let active = Arc::new(AtomicU64::new(0));
     let memory = MemoryScope::new(Arc::new(CountedNativeTestMemory(Arc::clone(&active))));
     let request_budget = RequestBudgetV1::for_duration(Duration::from_secs(120));
-    let observed =
-        NativeUdsClient::new(&socket).capture_peer_process_admitted_v1(&request_budget, &memory)?;
-    assert_eq!(observed.credentials_v1().pid, Some(std::process::id()));
-    let peer = observed.share_lease_v1();
-    drop(observed);
-    let client = NativeUdsClient::new(&socket).with_bound_peer_process_v1(&peer);
-    drop(peer);
+    let client = NativeUdsClient::new(&socket);
+    let client = if bind_peer {
+        let observed = client.capture_peer_process_admitted_v1(&request_budget, &memory)?;
+        assert_eq!(observed.credentials_v1().pid, Some(std::process::id()));
+        client.with_bound_peer_process_v1(&observed.share_lease_v1())
+    } else {
+        client
+    };
 
     let created = client.request_publication_admitted(
         NativeIndexRequest::CreateWorkspace {

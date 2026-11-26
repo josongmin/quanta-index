@@ -214,12 +214,26 @@ mod tests {
         lex::CommitSha,
         native_protocol::{NativeIndexRequestEnvelope, NativeIndexResponseEnvelope},
     };
+    use quanta_index_ipc::{IndexError, MemoryLease, MemoryLifetime, MemoryScopePort};
     use std::{
         io::Write,
         os::unix::net::UnixListener,
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
         time::{Duration, Instant},
     };
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    struct NoAdmission(Arc<AtomicU64>);
+
+    impl MemoryScopePort for NoAdmission {
+        fn reserve(&self, _bytes: u64, _lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+            let _previous = self.0.fetch_add(1, Ordering::SeqCst);
+            Err(IndexError::ResourceLimited)
+        }
+    }
 
     fn fixture() -> TestResult<(
         NativeReadSessionStatus,
@@ -413,6 +427,40 @@ mod tests {
         assert!(
             matches!(listener.accept(),Err(error) if error.kind()==std::io::ErrorKind::WouldBlock)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_raw_history_search_requires_typed_route_before_connect() -> TestResult {
+        let (status, query, _) = fixture()?;
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("no-admitted-history.sock");
+        let listener = UnixListener::bind(&socket)?;
+        listener.set_nonblocking(true)?;
+        let reservations = Arc::new(AtomicU64::new(0));
+        let memory = MemoryScope::new(Arc::new(NoAdmission(Arc::clone(&reservations))));
+        let request = NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchHistory {
+            session: status.session,
+            instance: IndexInstanceId([8; 16]),
+            query,
+            after: None,
+        });
+
+        let result = NativeUdsClient::new(socket).request_publication_admitted(
+            request,
+            &RequestBudgetV1::for_duration(Duration::from_secs(2)),
+            &memory,
+        );
+        assert!(matches!(
+            result,
+            Err(NativeUdsError::Protocol(ref message))
+                if message == "History search requires search_history_in_read_session"
+        ));
+        assert_eq!(reservations.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
         Ok(())
     }
 }
