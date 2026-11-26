@@ -33,7 +33,8 @@ use quanta_index_contract::{
         NativeOverlaySaveReceipt, NativeOverlaySemanticResult, NativeOverlaySession,
         NativeOverlayTextQuery, NativeOverlayTextResult, NativeOverlayTextSource, NativePathPage,
         NativeProducerSourcePage, NativeProjectionOwnerLookup, NativeProjectionRead,
-        NativeRepositoryPathCursor, NativeRepositoryPathPage, NativeRootScopedViewV1,
+        NativeReadSessionRequest, NativeRepositoryPathCursor, NativeRepositoryPathPage,
+        NativeRootScopedViewV1,
         NativeSemanticResult, NativeSourceOwnerKeys, NativeSourceOwnerLookup, NativeStubReply,
         NativeStubRequest, NativeTextPathResultV1, NativeTextPreviewResult, NativeTextResult,
         SourceStageReplayContextV1,
@@ -686,6 +687,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
     /// memory scope. The returned owner retains both raw and decoded charges.
     /// Error replies remain canonical `NativeIndexResponse::Error` values so
     /// their bounded message stays charged until this owner is dropped.
+    /// History search pages use [Self::search_history_in_read_session].
     pub fn request_publication_admitted(
         &self,
         payload: NativeIndexRequest,
@@ -803,6 +805,14 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         budget: &RequestBudgetV1,
         memory: &MemoryScope,
     ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        if matches!(
+            payload,
+            NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchHistory { .. })
+        ) {
+            return Err(NativeUdsError::Protocol(
+                "History search requires search_history_in_read_session".into(),
+            ));
+        }
         if !matches!(
             payload,
             NativeIndexRequest::CreateWorkspace { .. }
@@ -1296,6 +1306,14 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                     budget,
                     memory,
                     peer,
+                )
+            }
+            (AdmittedWireRoute::StageProjectionOutput, None) => {
+                quanta_index_ipc::send_request_body_with_budget_admitted_multiframe_v1(
+                    self.socket.as_ref(),
+                    envelope,
+                    budget,
+                    memory,
                 )
             }
             (_, Some(peer)) => {
@@ -5332,6 +5350,93 @@ mod tests {
         assert!(matches!(reply.response(), NativeIndexResponse::Created(view) if *view == genesis));
         server.join().map_err(|_| "workspace peer panicked")??;
         assert!(active.load(AtomicOrdering::SeqCst) > 0);
+        drop(reply);
+        assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn unbound_admitted_stage_round_trips_fragmented_projection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::native_protocol::NativeProjectionOutputChildren;
+
+        let directory = tempfile::tempdir()?;
+        let socket = directory.path().join("native-stage-fragments.sock");
+        let listener = UnixListener::bind(&socket)?;
+        listener.set_nonblocking(true)?;
+        let ingress = IngressRef {
+            operation: key(79),
+            fence: 1,
+        };
+        let child = ObjectRef(Digest([4; 32]));
+        let staged = ObjectRef(Digest([5; 32]));
+        // A 0xff element occupies two bytes in the projection output CBOR
+        // array. The stored payload fits the object cap, but its wire does not
+        // fit a single frame.
+        let bytes_len = quanta_index_ipc::MAX_FRAME_BODY_BYTES / 2 + 1;
+        let request = NativeIndexRequest::StageProjectionOutput {
+            ingress,
+            bytes: vec![0xff; bytes_len],
+            children: NativeProjectionOutputChildren::new(vec![child])?,
+        };
+        let timeout = Duration::from_secs(120);
+        let client_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let peer_finished = Arc::clone(&client_finished);
+        let peer = std::thread::spawn(
+            move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                let accept_deadline = Instant::now() + timeout;
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && Instant::now() < accept_deadline
+                                && !peer_finished.load(AtomicOrdering::Acquire) =>
+                        {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                };
+                stream.set_nonblocking(false)?;
+                stream.set_read_timeout(Some(timeout))?;
+                let request: NativeIndexRequestEnvelope =
+                    quanta_index_ipc::decode_request(&mut stream)?;
+                match request.payload {
+                    NativeIndexRequest::StageProjectionOutput {
+                        ingress: actual,
+                        bytes,
+                        children,
+                    } if actual == ingress
+                        && bytes.len() == bytes_len
+                        && bytes.iter().all(|byte| *byte == 0xff)
+                        && children.as_slice() == [child] => {}
+                    _ => return Err("decoded stage did not preserve its complete payload".into()),
+                }
+                stream.write_all(&quanta_index_ipc::encode_response(
+                    &NativeIndexResponseEnvelope {
+                        request_id: request.request_id,
+                        payload: NativeIndexResponse::Staged(staged),
+                    },
+                )?)?;
+                Ok(())
+            },
+        );
+        let (memory, active, _) = publication_scope(false);
+        let budget = RequestBudgetV1::for_duration(timeout);
+        let reply =
+            NativeUdsClient::new(socket).request_publication_admitted(request, &budget, &memory);
+        client_finished.store(true, AtomicOrdering::Release);
+        let peer_result = peer
+            .join()
+            .map_err(|_| "fragmented projection peer panicked")?;
+        let reply = match (reply, peer_result) {
+            (Ok(reply), Ok(())) => reply,
+            (reply, peer) => {
+                return Err(format!("fragmented stage failed: SDK={reply:?}, peer={peer:?}").into());
+            }
+        };
+        assert_eq!(reply.response(), &NativeIndexResponse::Staged(staged));
         drop(reply);
         assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
         Ok(())

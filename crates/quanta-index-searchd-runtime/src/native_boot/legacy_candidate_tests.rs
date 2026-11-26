@@ -14,6 +14,8 @@ use quanta_index_contract::{
     native_cutover_evidence_v1::NativeCutoverEvidenceTargetV1,
     native_protocol::{NativeIndexRequest, NativeIndexResponse},
 };
+use quanta_index_core::index::WorkBudget;
+use quanta_index_core::index::ports::IndexBuildPort;
 use quanta_index_sdk::native_uds::NativeUdsClient;
 use std::{
     error::Error,
@@ -28,6 +30,128 @@ mod legacy_physical_fixture;
 mod native_physical_profile;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn Error>>;
+
+// This producer emits the exact pre-path-postings empty Tree root. Its Source
+// cursor refuses eligible text, so the fixed root is a truthful old v20 image.
+struct RetainedTreeV20Fixture(Digest);
+type IndexResult<T> = std::result::Result<T, IndexError>;
+
+impl IndexBuildPort for RetainedTreeV20Fixture {
+    type Delta = quanta_index_core::index::SourceDelta;
+    type Plan = (
+        quanta_index_core::index::PlanContext,
+        Option<quanta_index_core::index::MemberBinding>,
+    );
+    type Candidate = quanta_index_core::index::MemberBinding;
+
+    fn resource_demand(&self) -> ResourceNeed {
+        ResourceNeed::default()
+    }
+
+    fn validate_instance(&self, instance: &InstanceSpec) -> IndexResult<()> {
+        if instance.policy != self.0
+            || instance.activation != GroupActivation::CoreRequired
+            || instance.input_domain != InputDomain::SourceLocal
+        {
+            return Err(IndexError::InvalidInput(
+                "retained Tree v20 fixture profile mismatch".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn plan(
+        &self,
+        base: quanta_index_core::index::BaseMember,
+        _: quanta_index_core::index::DeltaInput<Self::Delta>,
+        context: &quanta_index_core::index::PlanContext,
+        budget: &mut WorkBudget,
+    ) -> IndexResult<quanta_index_core::index::PlanDecision<Self::Plan>> {
+        budget.checkpoint()?;
+        self.validate_instance(&context.instance)?;
+        let base = match base {
+            quanta_index_core::index::BaseMember::Absent => None,
+            quanta_index_core::index::BaseMember::Present(member) => Some(*member),
+        };
+        Ok(quanta_index_core::index::PlanDecision::Incremental((
+            context.clone(),
+            base,
+        )))
+    }
+
+    fn prepare<'a>(
+        &'a self,
+        (plan, base): Self::Plan,
+        context: &'a mut quanta_index_core::index::AttemptContext<'_>,
+    ) -> quanta_index_core::index::ports::IndexFuture<'a, Self::Candidate> {
+        Box::pin(async move {
+            let mut source = quanta_index_core::index::SourceInputCursor::new(
+                plan.source,
+                quanta_index_core::index::DeltaInput::Bootstrap,
+                context.maps,
+                context.objects,
+            )?;
+            while let Some(change) = source.next_change(context.budget)? {
+                if let Some((_, record)) = change.next
+                    && record.text != SourceTextAdmission::Excluded
+                {
+                    return Err(IndexError::InvalidInput(
+                        "retained empty Tree fixture requires excluded Source".into(),
+                    ));
+                }
+            }
+            const ROOT: &[u8] = br#"{"owners":null,"terms":null,"docs":0,"indexed_tokens":0}"#;
+            let artifact = if let Some(base) = base {
+                if base.input.policy != self.0 {
+                    return Err(IndexError::Conflict);
+                }
+                base.artifact
+            } else {
+                context.put(ROOT, &[])?
+            };
+            Ok(quanta_index_core::index::MemberBinding {
+                instance: plan.instance.instance,
+                format: plan.instance.format,
+                artifact,
+                input: plan.input,
+                logical_commitment: Digest(Sha256::digest(ROOT).into()),
+            })
+        })
+    }
+
+    fn verify_and_seal<'a>(
+        &'a self,
+        candidate: Self::Candidate,
+        context: &'a mut quanta_index_core::index::AttemptContext<'_>,
+    ) -> quanta_index_core::index::ports::IndexFuture<'a, quanta_index_core::index::MemberBinding>
+    {
+        Box::pin(async move {
+            const ROOT: &[u8] = br#"{"owners":null,"terms":null,"docs":0,"indexed_tokens":0}"#;
+            let stored = context.objects.get(candidate.artifact, context.budget)?;
+            if stored.payload != ROOT
+                || !stored.registration.children.is_empty()
+                || stored.registration.reference != candidate.artifact
+            {
+                return Err(IndexError::CorruptObject(
+                    "retained Tree fixture root mismatch".into(),
+                ));
+            }
+            Ok(candidate)
+        })
+    }
+}
+
+fn retained_tree_v20_registry(config: &ValidatedConfig) -> TestResult<AdapterRegistry> {
+    let previous = config
+        .text_recipe
+        .retained_source_tree_policy_v20()
+        .ok_or("fixture requires Tree layout")?;
+    let mut registry = AdapterRegistry::new();
+    registry.register(config.text, RetainedTreeV20Fixture(previous), |delta| {
+        Ok(delta.clone())
+    })?;
+    Ok(registry)
+}
 fn require(condition: bool, message: &str) -> TestResult {
     if condition {
         Ok(())
@@ -159,6 +283,13 @@ struct PreparedNativeFixture {
     record: quanta_index_contract::index::ObjectRef,
 }
 fn prepare_native_fixture() -> TestResult<PreparedNativeFixture> {
+    prepare_native_fixture_with_tree(false, false)
+}
+
+fn prepare_native_fixture_with_tree(
+    historical_tree: bool,
+    excluded_text: bool,
+) -> TestResult<PreparedNativeFixture> {
     // This in-process harness bypasses run_command_inner. Match its real
     // daemon entry condition before any adapter creates Catalog inputs.
     let _inherited_umask = quanta_index_searchd::app::harden_umask();
@@ -191,14 +322,11 @@ fn prepare_native_fixture() -> TestResult<PreparedNativeFixture> {
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
     let config_digest = Digest(Sha256::digest(&config_bytes).into());
     let config = read_config_checked(&config_path, Some(config_digest))?;
-    let service = bind(
-        &config,
-        config_digest,
-        compose(&config)?,
-        None,
-        &request(),
-        false,
-    )?;
+    let mut composition = compose(&config)?;
+    if historical_tree {
+        composition.capabilities.builders = retained_tree_v20_registry(&config)?;
+    }
+    let service = bind(&config, config_digest, composition, None, &request(), false)?;
     let shutdown = service.shutdown_handle();
     let running = RunningFixture {
         shutdown,
@@ -220,10 +348,17 @@ fn prepare_native_fixture() -> TestResult<PreparedNativeFixture> {
         return Err("fixture workspace was not created".into());
     };
     let input = client.begin_input(operation(1), &request())?;
+    let mut tree = text_spec();
+    if historical_tree {
+        tree.policy = config
+            .text_recipe
+            .retained_source_tree_policy_v20()
+            .ok_or("fixture requires Tree layout")?;
+    }
     let profile = client.stage_profile(
         input,
         IndexProfile {
-            instances: vec![text_spec()],
+            instances: vec![tree],
         },
         &request(),
     )?;
@@ -241,8 +376,12 @@ fn prepare_native_fixture() -> TestResult<PreparedNativeFixture> {
         vec![SourceInput {
             path: "legacy-negative.rs".into(),
             bytes: b"actual Q source needle".to_vec(),
-            text: SourceTextAdmission::Utf8 {
-                policy: Digest([31; 32]),
+            text: if excluded_text {
+                SourceTextAdmission::Excluded
+            } else {
+                SourceTextAdmission::Utf8 {
+                    policy: Digest([31; 32]),
+                }
             },
             language: None,
         }],

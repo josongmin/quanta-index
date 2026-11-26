@@ -2892,6 +2892,7 @@ pub fn send_request_body_with_budget_admitted_deadline_v1<RequestEnvelopeT: serd
         budget,
         Some(memory),
         true,
+        false,
         &AdmittedRawClientResponse {
             budget,
             memory,
@@ -2965,6 +2966,7 @@ where
         budget,
         None,
         false,
+        false,
         &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
     )
 }
@@ -2986,6 +2988,7 @@ where
         budget,
         None,
         true,
+        false,
         &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
     )
 }
@@ -2996,11 +2999,13 @@ fn send_budgeted_request<RequestEnvelopeT: serde::Serialize, Decoder: ClientResp
     budget: &RequestBudgetV1,
     memory: Option<&MemoryScope>,
     propagate_deadline: bool,
+    admitted_multiframe: bool,
     decoder: &Decoder,
 ) -> Result<Decoder::Output, IpcError> {
     check_stream_budget(budget).map_err(IpcError::Io)?;
     let mut io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
     io_policy.propagate_deadline = propagate_deadline;
+    io_policy.admitted_multiframe = admitted_multiframe;
     send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
         socket,
         request,
@@ -3062,6 +3067,30 @@ pub fn send_request_body_with_budget_admitted<RequestEnvelopeT: serde::Serialize
         budget,
         Some(memory),
         false,
+        false,
+        &AdmittedRawClientResponse {
+            budget,
+            memory,
+            work: None,
+        },
+    )
+}
+
+/// Admit the request and reply under the original scope, permitting a request
+/// body larger than a single frame to use the existing fragment wire.
+pub fn send_request_body_with_budget_admitted_multiframe_v1<RequestEnvelopeT: serde::Serialize>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+) -> Result<AdmittedClientResponseBody, IpcError> {
+    send_budgeted_request(
+        socket,
+        request,
+        budget,
+        Some(memory),
+        false,
+        true,
         &AdmittedRawClientResponse {
             budget,
             memory,

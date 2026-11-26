@@ -1,14 +1,68 @@
-use quanta_index_contract::index::ProjectionOwnerContribution;
 use quanta_index_contract::index::MAX_SOURCE_PATH_BYTES;
+use quanta_index_contract::index::ProjectionOwnerContribution;
+use quanta_index_contract::native_protocol::GraphProjectionRow;
+pub use quanta_index_contract::native_protocol::{GraphEdge, GraphNode, GraphOwnerOutput};
 use quanta_index_contract::native_protocol::{
     MAX_NATIVE_GRAPH_ITEMS, MAX_NATIVE_GRAPH_OUTPUT_BYTES, NativeRepoMapFileFactsV1,
 };
-pub use quanta_index_contract::native_protocol::{GraphEdge, GraphNode, GraphOwnerOutput};
 use quanta_index_core::index::{
     IndexError, MemoryLease, MemoryLifetime, ObjectRef, OwnerKey, SourceRecordOwner, StoredObject,
-    WorkBudget,
-    ports::ImmutableObjectPort,
+    WorkBudget, ports::ImmutableObjectPort,
 };
+use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
+    de::{self, SeqAccess, Visitor},
+};
+use std::{fmt, marker::PhantomData};
+
+/// The v20 output wire before typed facts. Keep its bounds and canonical
+/// encoding independent of the current four-field output contract.
+struct LegacyGraphOwnerOutput {
+    nodes: LimitedGraphItems<GraphNode>,
+    edges: LimitedGraphItems<GraphEdge>,
+    projection: LimitedGraphItems<GraphProjectionRow>,
+}
+quanta_index_contract::native_serde_struct!(LegacyGraphOwnerOutput {
+    nodes: LimitedGraphItems<GraphNode>,
+    edges: LimitedGraphItems<GraphEdge>,
+    projection: LimitedGraphItems<GraphProjectionRow>,
+});
+
+struct LimitedGraphItems<T>(Vec<T>);
+
+impl<T: Serialize> Serialize for LimitedGraphItems<T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for LimitedGraphItems<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Items<T>(PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for Items<T> {
+            type Value = LimitedGraphItems<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a bounded graph array")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut items = Vec::new();
+                while let Some(item) = seq.next_element::<T>()? {
+                    if items.len() >= MAX_NATIVE_GRAPH_ITEMS {
+                        return Err(de::Error::custom("graph output exceeds item bound"));
+                    }
+                    items
+                        .try_reserve(1)
+                        .map_err(|_| de::Error::custom("graph output allocation refused"))?;
+                    items.push(item);
+                }
+                Ok(LimitedGraphItems(items))
+            }
+        }
+        deserializer.deserialize_seq(Items(PhantomData))
+    }
+}
 
 pub(super) struct LoadedGraphOutput {
     pub output: GraphOwnerOutput,
@@ -99,7 +153,17 @@ pub(super) fn load_output(
     objects: &dyn ImmutableObjectPort,
     budget: &mut WorkBudget,
 ) -> Result<LoadedGraphOutput, IndexError> {
-    load_output_with_lifetime(reference, objects, budget, MemoryLifetime::Temporary)
+    load_output_with_lifetime(reference, objects, budget, MemoryLifetime::Temporary, false)
+}
+
+/// The old three-field output is valid only under a retained nonrank Graph
+/// root. The current output decoder remains strict for all other callers.
+pub(super) fn load_legacy_nonrank_output(
+    reference: ObjectRef,
+    objects: &dyn ImmutableObjectPort,
+    budget: &mut WorkBudget,
+) -> Result<LoadedGraphOutput, IndexError> {
+    load_output_with_lifetime(reference, objects, budget, MemoryLifetime::Temporary, true)
 }
 
 pub(super) fn load_output_retained(
@@ -107,7 +171,7 @@ pub(super) fn load_output_retained(
     objects: &dyn ImmutableObjectPort,
     budget: &mut WorkBudget,
 ) -> Result<LoadedGraphOutput, IndexError> {
-    load_output_with_lifetime(reference, objects, budget, MemoryLifetime::Retained)
+    load_output_with_lifetime(reference, objects, budget, MemoryLifetime::Retained, false)
 }
 
 fn load_output_with_lifetime(
@@ -115,6 +179,7 @@ fn load_output_with_lifetime(
     objects: &dyn ImmutableObjectPort,
     budget: &mut WorkBudget,
     lifetime: MemoryLifetime,
+    allow_legacy_nonrank: bool,
 ) -> Result<LoadedGraphOutput, IndexError> {
     let stored = objects.get(reference, budget)?;
     if stored.payload.is_empty() {
@@ -134,7 +199,11 @@ fn load_output_with_lifetime(
         u64::try_from(allowance).map_err(|_error| IndexError::ResourceLimited)?,
         lifetime,
     )?;
-    let output: GraphOwnerOutput = decode(&stored, reference)?;
+    let output: GraphOwnerOutput = if allow_legacy_nonrank {
+        decode(&stored, reference).or_else(|_| decode_legacy_output(&stored, reference))?
+    } else {
+        decode(&stored, reference)?
+    };
     let mut children: Vec<ObjectRef> = output.projection.iter().map(|row| row.row).collect();
     children.extend(output.facts);
     children.sort_unstable();
@@ -156,6 +225,30 @@ fn load_output_with_lifetime(
         facts,
         _memory: memory,
         _facts_memory: facts_memory,
+    })
+}
+
+fn decode_legacy_output(
+    stored: &StoredObject,
+    reference: ObjectRef,
+) -> Result<GraphOwnerOutput, IndexError> {
+    let old: LegacyGraphOwnerOutput = decode(stored, reference)?;
+    if old
+        .nodes
+        .0
+        .len()
+        .checked_add(old.edges.0.len())
+        .is_none_or(|count| count > MAX_NATIVE_GRAPH_ITEMS)
+    {
+        return Err(IndexError::CorruptObject(
+            "legacy graph output exceeds item bound".into(),
+        ));
+    }
+    Ok(GraphOwnerOutput {
+        nodes: old.nodes.0,
+        edges: old.edges.0,
+        projection: old.projection.0,
+        facts: None,
     })
 }
 

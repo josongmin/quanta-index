@@ -15,4 +15,3 @@ path = "src/lib.rs"
 [dependencies]
 tinyvec = { workspace = true, features = ["alloc", "rustc_1_57"] }
 unicode-normalization = { workspace = true }
-

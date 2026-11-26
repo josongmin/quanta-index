@@ -199,6 +199,43 @@ fn file_contains_skips_body_of_ineligible_exact_path_owner() -> Result<(), Index
 }
 
 #[test]
+fn regex_skips_bodies_of_ineligible_paths() -> Result<(), IndexError> {
+    let (mut fixture, _) = substring_fixture()?;
+    let second = fixture
+        .objects
+        .stored
+        .get(&reference(71))
+        .ok_or(IndexError::ResourceLimited)?;
+    let second: SourceRecord = decode(&second.payload)?;
+    fixture.objects.counted_body = Some(second.bytes);
+    let selected = quanta_index_contract::ExactRepoRelativePathV1::new("src/lib.rs")
+        .map_err(|error| IndexError::InvalidInput(error.into()))?;
+    let constraints =
+        quanta_index_contract::QueryConstraintSetV1::from_exact_repo_relative_path(selected);
+    for (query, constraints) in [
+        ("/foo_bar/", &constraints),
+        (
+            "file:lib[.]rs /foo_bar/",
+            &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        ),
+    ] {
+        let result = search_with_constraints(&fixture, query, 1, constraints)?;
+        if result.matched != 1
+            || result
+                .hits
+                .first()
+                .is_none_or(|hit| hit.owner != fixture.owner)
+            || fixture.objects.body_reads.load(Ordering::Relaxed) != 0
+        {
+            return Err(IndexError::BackendViolation(format!(
+                "regex matched the wrong source or read an ineligible body: {query}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn file_contains_matches_published_non_token_bytes_before_boolean_and_top_k()
 -> Result<(), IndexError> {
     let (fixture, other) = substring_fixture()?;

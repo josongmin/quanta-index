@@ -10,10 +10,11 @@ use quanta_index_contract::{
     QueryConstraintSetV1, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
     index::{IndexInstanceId, ViewRef, ViewSelection},
     native_protocol::{
-        MAX_NATIVE_SOURCE_OWNER_LOOKUP, MAX_NATIVE_TEXT_TOP_K, NativeHybridFileResult,
-        NativeTextHit,
+        MAX_NATIVE_SOURCE_OWNER_LOOKUP, MAX_NATIVE_TEXT_TOP_K, NativeFilePathEntry,
+        NativeHybridFileResult, NativeTextHit,
     },
 };
+use quanta_index_ipc::RequestBudgetV1;
 use quanta_index_retrieval_bench::{
     BenchError, BenchResult,
     canonical::canonical_json,
@@ -100,6 +101,60 @@ fn pool_hashes(result: &NativeHybridFileResult) -> BenchResult<Value> {
         "lexical": pool_hash("lexical", &lexical)?,
         "dense": pool_hash("dense", &dense)?,
     }))
+}
+
+fn collect_indexed_paths(
+    client: &NativeUdsClient,
+    view: ViewRef,
+    file_instance: IndexInstanceId,
+    file_universe: &[(String, String)],
+    budget: &impl Fn() -> RequestBudgetV1,
+) -> BenchResult<Vec<NativeFilePathEntry>> {
+    let mut paths: Vec<NativeFilePathEntry> = Vec::with_capacity(file_universe.len());
+    let mut after = None;
+    loop {
+        let page = client
+            .query_repository_paths(
+                ViewSelection::Exact(view),
+                file_instance,
+                String::new(),
+                after,
+                128,
+                &budget(),
+            )
+            .map_err(sdk)?;
+        for entry in page.entries {
+            let file = entry.file;
+            // The SDK orders pairs of path and repository. A single frozen Git
+            // universe must still reject multiple owners of the same path.
+            if paths.last().is_some_and(|prior| prior.path >= file.path) {
+                return Err(BenchError::Protocol(
+                    "Native indexed path page is unordered or repeated".into(),
+                ));
+            }
+            if paths.len() == file_universe.len() {
+                return Err(BenchError::Protocol(
+                    "Native indexed path count exceeds frozen file universe".into(),
+                ));
+            }
+            paths.push(file);
+        }
+        after = page.next_after;
+        if after.is_none() {
+            break;
+        }
+    }
+    let expected_paths: BTreeSet<_> = file_universe
+        .iter()
+        .map(|(path, _digest)| path.as_str())
+        .collect();
+    let actual_paths: BTreeSet<_> = paths.iter().map(|entry| entry.path.as_str()).collect();
+    if paths.len() != file_universe.len() || actual_paths != expected_paths {
+        return Err(BenchError::Protocol(
+            "Native indexed paths differ from frozen file universe".into(),
+        ));
+    }
+    Ok(paths)
 }
 
 pub(super) fn run(args: &Args) -> BenchResult<()> {
@@ -220,56 +275,8 @@ pub(super) fn run(args: &Args) -> BenchResult<()> {
         }
         // The retained session keeps the exact view readable across independent
         // path and owner requests. Each request still selects that view exactly.
-        let mut paths = Vec::with_capacity(pack.file_universe.len());
-        let mut after: Option<String> = None;
-        loop {
-            let page = client
-                .query_paths(
-                    ViewSelection::Exact(view),
-                    file_instance,
-                    "",
-                    after.as_deref(),
-                    128,
-                    &budget(),
-                )
-                .map_err(sdk)?;
-            if page.view != view || (page.has_more && page.entries.is_empty()) {
-                return Err(BenchError::Protocol(
-                    "Native path page view or continuation differs".into(),
-                ));
-            }
-            for entry in page.entries {
-                if after
-                    .as_deref()
-                    .is_some_and(|prior| entry.path.as_str() <= prior)
-                {
-                    return Err(BenchError::Protocol(
-                        "Native indexed path page is unordered or repeated".into(),
-                    ));
-                }
-                after = Some(entry.path.clone());
-                paths.push(entry);
-                if paths.len() > pack.file_universe.len() {
-                    return Err(BenchError::Protocol(
-                        "Native indexed path count exceeds frozen file universe".into(),
-                    ));
-                }
-            }
-            if !page.has_more {
-                break;
-            }
-        }
-        let expected_paths: BTreeSet<_> = pack
-            .file_universe
-            .iter()
-            .map(|(path, _digest)| path.as_str())
-            .collect();
-        let actual_paths: BTreeSet<_> = paths.iter().map(|entry| entry.path.as_str()).collect();
-        if paths.len() != pack.file_universe.len() || actual_paths != expected_paths {
-            return Err(BenchError::Protocol(
-                "Native indexed paths differ from frozen file universe".into(),
-            ));
-        }
+        let paths =
+            collect_indexed_paths(&client, view, file_instance, &pack.file_universe, &budget)?;
         let mut owners: Vec<_> = paths.iter().map(|entry| entry.owner).collect();
         owners.sort_unstable();
         if owners.windows(2).any(|pair| pair[0] == pair[1])
@@ -419,7 +426,152 @@ pub(super) fn run(args: &Args) -> BenchResult<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::{io::Write as _, os::unix::net::UnixListener, sync::mpsc, thread};
+
+    use quanta_index_contract::{
+        RepoId,
+        index::{
+            CollectionId, Digest, ObjectRef, OwnerKey, ProducerId, SlotId, StableOwnerId, TenantId,
+            WorkspaceKey, WorktreeId,
+        },
+        native_protocol::{
+            NativeIndexRequest, NativeIndexRequestEnvelope, NativeIndexResponse,
+            NativeIndexResponseEnvelope, NativeRepositoryPathCursor, NativeRepositoryPathEntry,
+            NativeRepositoryPathPage,
+        },
+    };
+
     use super::*;
+
+    type TestResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+    fn repository_path_capture(
+        second_path: &str,
+        second_repo: &str,
+    ) -> TestResult<BenchResult<Vec<NativeFilePathEntry>>> {
+        let root = tempfile::tempdir()?;
+        let socket = root.path().join("native.sock");
+        let listener = UnixListener::bind(&socket)?;
+        let view = ViewRef {
+            workspace: WorkspaceKey {
+                tenant: TenantId([1; 16]),
+                collection: CollectionId([2; 16]),
+                worktree: WorktreeId([3; 16]),
+                slot: SlotId([4; 16]),
+            },
+            epoch: 1,
+            sequence: 1,
+            digest: Digest([5; 32]),
+        };
+        let instance = IndexInstanceId([6; 16]);
+        let entry = |path: &str, id, repository| NativeRepositoryPathEntry {
+            repository: Some(repository),
+            file: NativeFilePathEntry {
+                owner: OwnerKey {
+                    producer: ProducerId([7; 16]),
+                    stable_id: StableOwnerId([id; 16]),
+                },
+                path: path.into(),
+                source: ObjectRef(Digest([id; 32])),
+                bytes: ObjectRef(Digest([9; 32])),
+                byte_len: 1,
+            },
+        };
+        let first = entry("src/a.rs", 10, RepoId::new("repo-a")?);
+        let cursor = NativeRepositoryPathCursor {
+            view,
+            instance,
+            prefix: String::new(),
+            path: first.file.path.clone(),
+            repository: first.repository.clone(),
+        };
+        let pages = [
+            (
+                None,
+                NativeRepositoryPathPage {
+                    view,
+                    entries: vec![first],
+                    has_more: true,
+                    next_after: Some(cursor.clone()),
+                },
+            ),
+            (
+                Some(cursor),
+                NativeRepositoryPathPage {
+                    view,
+                    entries: vec![entry(second_path, 11, RepoId::new(second_repo)?)],
+                    has_more: false,
+                    next_after: None,
+                },
+            ),
+        ];
+        let (sender, receiver) = mpsc::channel();
+        let _peer = thread::spawn(move || {
+            let served = (|| -> TestResult<()> {
+                for (expected_after, page) in pages {
+                    let (mut stream, _) = listener.accept()?;
+                    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+                    let request: NativeIndexRequestEnvelope =
+                        quanta_index_ipc::decode_request(&mut stream)?;
+                    assert_eq!(
+                        request.payload,
+                        NativeIndexRequest::QueryRepositoryPaths {
+                            selection: ViewSelection::Exact(view),
+                            instance,
+                            prefix: String::new(),
+                            after: expected_after,
+                            limit: 128,
+                        }
+                    );
+                    let reply = NativeIndexResponseEnvelope {
+                        request_id: request.request_id,
+                        payload: NativeIndexResponse::RepositoryPathPage(page),
+                    };
+                    stream.write_all(&quanta_index_ipc::encode_response(&reply)?)?;
+                }
+                Ok(())
+            })();
+            let _sent = sender.send(served);
+        });
+        let paths = collect_indexed_paths(
+            &NativeUdsClient::new(socket),
+            view,
+            instance,
+            &[
+                ("src/a.rs".into(), String::new()),
+                ("src/b.rs".into(), String::new()),
+            ],
+            &|| RequestBudgetV1::for_duration(Duration::from_secs(2)),
+        );
+        receiver.recv_timeout(Duration::from_secs(3))??;
+        Ok(paths)
+    }
+
+    #[test]
+    fn scoped_file_inventory_follows_repository_cursor() -> TestResult<()> {
+        let paths = repository_path_capture("src/b.rs", "repo-a")??;
+        assert_eq!(
+            paths
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/a.rs", "src/b.rs"]
+        );
+        assert_eq!(
+            paths.last().map(|file| file.source),
+            Some(ObjectRef(Digest([11; 32])))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_file_inventory_refuses_a_duplicate_path_across_repositories() -> TestResult<()> {
+        assert!(matches!(
+            repository_path_capture("src/a.rs", "repo-b")?,
+            Err(BenchError::Protocol(message)) if message == "Native indexed path page is unordered or repeated"
+        ));
+        Ok(())
+    }
 
     #[test]
     fn pool_hash_uses_independent_fixed_gold_and_binds_lane_order_source_and_score() {

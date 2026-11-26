@@ -115,7 +115,7 @@ fn overlay_regex_matches_nfc_body_and_authoritative_path() -> Result<(), IndexEr
         NativeRegexProgram::compile(&["café", "delta"], &[path], CaseMode::Folded, &mut work)?;
     for (path, body, gold) in [
         ("src/main.rs", "CAFE\u{301}", (0b01, true)),
-        ("tests/main.rs", "DELTA", (0b10, false)),
+        ("tests/main.rs", "DELTA", (0b00, false)),
         ("src/empty.rs", "", (0b00, true)),
     ] {
         let actual = program.evaluate_overlay(path, body, &mut work)?;
@@ -124,6 +124,12 @@ fn overlay_regex_matches_nfc_body_and_authoritative_path() -> Result<(), IndexEr
                 "overlay regex fixed body/path gold differs".into(),
             ));
         }
+    }
+    let body = "DELTA".repeat(1_024);
+    if program.evaluate_overlay("tests/main.rs", &body, &mut budget(4_096)?)? != (0, false) {
+        return Err(IndexError::BackendViolation(
+            "a rejected path must never consume the body scan budget".into(),
+        ));
     }
     Ok(())
 }

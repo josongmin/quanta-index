@@ -2,11 +2,20 @@
 //! The caller authenticates their physical object bytes and selected catalog row.
 
 use quanta_index_core::index::{
-    CatalogView, HistoryTransition, ImmutableOperation, IndexError, StoredObject, UpdateKind,
-    WorkBudget,
+    CatalogView, Digest, HistoryTransition, ImmutableOperation, IndexError, IndexInstanceId,
+    InputDomain, InstanceSpec, MemoryLifetime, StoredObject, UpdateKind, WorkBudget,
 };
 
-use crate::{AdapterRegistry, profile, request_decode, request_preparation};
+use crate::{AdapterDescriptor, AdapterRegistry, profile, request_decode, request_preparation};
+
+/// One historical Tree identity accepted only while authenticating a held
+/// predecessor as a Source witness. Candidate and listener profiles stay live.
+#[derive(Clone, Copy)]
+pub struct RetainedSourceTreePolicyV20 {
+    pub descriptor: AdapterDescriptor,
+    pub previous: Digest,
+    pub current: Digest,
+}
 
 /// Borrow the sealed History FULL after the separately authenticated initial
 /// publication. This only validates its exact predecessor and profile change.
@@ -70,6 +79,32 @@ pub fn verify_native_boot_inputs(
         profile,
         registry,
         false,
+        None,
+        budget,
+    )
+    .map(|_| ())
+}
+
+/// Return the historical Text instance only after the original immutable
+/// request/profile and the complete current registry shape have been checked.
+/// The caller must also authenticate that member's old policy binding.
+pub fn verify_native_boot_retained_source_inputs_v20(
+    operation: &ImmutableOperation,
+    publication: &CatalogView,
+    request: &StoredObject,
+    profile: &StoredObject,
+    registry: &AdapterRegistry,
+    tree: RetainedSourceTreePolicyV20,
+    budget: &mut WorkBudget,
+) -> Result<Option<IndexInstanceId>, IndexError> {
+    verify_native_boot_inputs_with_policy(
+        operation,
+        publication,
+        request,
+        profile,
+        registry,
+        false,
+        Some(tree),
         budget,
     )
 }
@@ -91,8 +126,10 @@ pub fn verify_native_boot_candidate_inputs(
         profile,
         registry,
         true,
+        None,
         budget,
     )
+    .map(|_| ())
 }
 
 fn verify_native_boot_inputs_with_policy(
@@ -102,8 +139,9 @@ fn verify_native_boot_inputs_with_policy(
     profile: &StoredObject,
     registry: &AdapterRegistry,
     candidate: bool,
+    retained_tree: Option<RetainedSourceTreePolicyV20>,
     budget: &mut WorkBudget,
-) -> Result<(), IndexError> {
+) -> Result<Option<IndexInstanceId>, IndexError> {
     budget.checkpoint()?;
     verify_immutable_publication(operation, publication, request)?;
     let decoded = request_decode::decode(&request.payload, budget)?;
@@ -122,8 +160,61 @@ fn verify_native_boot_inputs_with_policy(
     if candidate {
         crate::update::reject_retired_repomap_profile(&loaded, budget)?;
     }
-    registry.validate_profile(&loaded.instances, budget)?;
-    budget.checkpoint()
+    let historical = if let Some(tree) = retained_tree {
+        if candidate || tree.previous == tree.current {
+            return Err(IndexError::InvalidInput(
+                "invalid retained Tree policy gate".into(),
+            ));
+        }
+        let mut found = None;
+        for instance in &loaded.instances {
+            if instance.kind == tree.descriptor.kind && instance.policy == tree.previous {
+                if instance.schema != tree.descriptor.schema
+                    || instance.format != tree.descriptor.format
+                    || instance.input_domain != InputDomain::SourceLocal
+                    || found.replace(instance.instance).is_some()
+                {
+                    return Err(IndexError::InvalidInput(
+                        "retained Tree profile identity mismatch".into(),
+                    ));
+                }
+            }
+        }
+        if let Some(instance_id) = found {
+            let bytes = loaded
+                .instances
+                .len()
+                .checked_mul(std::mem::size_of::<InstanceSpec>())
+                .ok_or(IndexError::ResourceLimited)?;
+            let _memory = budget
+                .reserve_memory(
+                    u64::try_from(bytes).map_err(|_| IndexError::ResourceLimited)?,
+                    MemoryLifetime::Temporary,
+                )?
+                .ok_or(IndexError::ResourceLimited)?;
+            let mut validation = Vec::new();
+            validation
+                .try_reserve_exact(loaded.instances.len())
+                .map_err(|_| IndexError::ResourceLimited)?;
+            validation.extend(loaded.instances.iter().cloned());
+            let item = validation
+                .iter_mut()
+                .find(|item| item.instance == instance_id)
+                .ok_or(IndexError::BackendViolation(
+                    "retained Tree instance disappeared".into(),
+                ))?;
+            item.policy = tree.current;
+            registry.validate_profile(&validation, budget)?;
+        } else {
+            registry.validate_profile(&loaded.instances, budget)?;
+        }
+        found
+    } else {
+        registry.validate_profile(&loaded.instances, budget)?;
+        None
+    };
+    budget.checkpoint()?;
+    Ok(historical)
 }
 
 fn verify_immutable_publication(
@@ -357,6 +448,163 @@ mod tests {
     use super::*;
     use crate::request_decode::tests::scoped;
     use crate::request_preparation::tests::requests;
+
+    struct CurrentTreeOnly(Digest);
+
+    impl quanta_index_core::index::ports::IndexBuildPort for CurrentTreeOnly {
+        type Delta = ();
+        type Plan = ();
+        type Candidate = ();
+
+        fn resource_demand(&self) -> quanta_index_core::index::effort::ResourceNeed {
+            quanta_index_core::index::effort::ResourceNeed::default()
+        }
+
+        fn validate_instance(&self, instance: &InstanceSpec) -> Result<(), IndexError> {
+            if instance.policy != self.0 || instance.input_domain != InputDomain::SourceLocal {
+                return Err(IndexError::InvalidInput(
+                    "current Tree recipe required".into(),
+                ));
+            }
+            Ok(())
+        }
+
+        fn plan(
+            &self,
+            _: quanta_index_core::index::BaseMember,
+            _: quanta_index_core::index::DeltaInput<()>,
+            _: &quanta_index_core::index::PlanContext,
+            _: &mut WorkBudget,
+        ) -> Result<quanta_index_core::index::PlanDecision<()>, IndexError> {
+            Err(IndexError::BackendViolation(
+                "boot test must not build".into(),
+            ))
+        }
+
+        fn prepare<'a>(
+            &'a self,
+            _: (),
+            _: &'a mut quanta_index_core::index::AttemptContext<'_>,
+        ) -> quanta_index_core::index::ports::IndexFuture<'a, ()> {
+            Box::pin(async {
+                Err(IndexError::BackendViolation(
+                    "boot test must not build".into(),
+                ))
+            })
+        }
+
+        fn verify_and_seal<'a>(
+            &'a self,
+            _: (),
+            _: &'a mut quanta_index_core::index::AttemptContext<'_>,
+        ) -> quanta_index_core::index::ports::IndexFuture<'a, quanta_index_core::index::MemberBinding>
+        {
+            Box::pin(async {
+                Err(IndexError::BackendViolation(
+                    "boot test must not build".into(),
+                ))
+            })
+        }
+    }
+
+    #[test]
+    fn retained_v20_tree_profile_is_only_a_prior_source_witness()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = request_rows()
+            .into_iter()
+            .next()
+            .ok_or(IndexError::Conflict)?;
+        let (operation, publication, stored_request, _) = fixture(&request)?;
+        let descriptor = AdapterDescriptor {
+            kind: IndexKind([72; 16]),
+            schema: SchemaId([74; 16]),
+            format: StorageFormatId([75; 16]),
+        };
+        let previous = Digest([11; 32]);
+        let current = Digest([12; 32]);
+        let instance = InstanceSpec {
+            instance: IndexInstanceId([71; 16]),
+            kind: descriptor.kind,
+            group: PublicationGroupId([73; 16]),
+            activation: GroupActivation::CoreRequired,
+            input_domain: InputDomain::SourceLocal,
+            schema: descriptor.schema,
+            policy: previous,
+            format: descriptor.format,
+        };
+        let mut registry = AdapterRegistry::new();
+        registry.register(descriptor, CurrentTreeOnly(current), |_| Ok(()))?;
+        let stored_profile = object(
+            publication.profile,
+            serde_json::to_vec(&IndexProfile {
+                instances: vec![instance.clone()],
+            })?,
+            Vec::new(),
+        )?;
+        let gate = RetainedSourceTreePolicyV20 {
+            descriptor,
+            previous,
+            current,
+        };
+        require(
+            verify_native_boot_inputs(
+                &operation,
+                &publication,
+                &stored_request,
+                &stored_profile,
+                &registry,
+                &mut budget()?,
+            )
+            .is_err(),
+        )?;
+        require(
+            verify_native_boot_candidate_inputs(
+                &operation,
+                &publication,
+                &stored_request,
+                &stored_profile,
+                &registry,
+                &mut budget()?,
+            )
+            .is_err(),
+        )?;
+        require(
+            verify_native_boot_retained_source_inputs_v20(
+                &operation,
+                &publication,
+                &stored_request,
+                &stored_profile,
+                &registry,
+                gate,
+                &mut budget()?,
+            )? == Some(instance.instance),
+        )?;
+        for wrong in [Digest([13; 32]), Digest([0; 32])] {
+            let invalid = object(
+                publication.profile,
+                serde_json::to_vec(&IndexProfile {
+                    instances: vec![InstanceSpec {
+                        policy: wrong,
+                        ..instance.clone()
+                    }],
+                })?,
+                Vec::new(),
+            )?;
+            require(
+                verify_native_boot_retained_source_inputs_v20(
+                    &operation,
+                    &publication,
+                    &stored_request,
+                    &invalid,
+                    &registry,
+                    gate,
+                    &mut budget()?,
+                )
+                .is_err(),
+            )?;
+        }
+        Ok(())
+    }
 
     fn request_rows() -> impl IntoIterator<Item = UpdateRequest> {
         let mut rows = requests();

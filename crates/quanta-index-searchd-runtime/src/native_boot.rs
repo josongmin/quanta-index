@@ -5,10 +5,10 @@
 mod catalog_digest;
 #[path = "native_boot/receipt.rs"]
 mod receipt;
-#[path = "native_boot/retired_policy_profile_v1.rs"]
-pub(crate) mod retired_policy_profile_v1;
 #[path = "native_boot/restore_forward.rs"]
 mod restore_forward;
+#[path = "native_boot/retired_policy_profile_v1.rs"]
+pub(crate) mod retired_policy_profile_v1;
 #[path = "native_boot/settle_published_v1.rs"]
 mod settle_published_v1;
 
@@ -19,15 +19,14 @@ pub(crate) use settle_published_v1::with_verified_settlement_root_v1;
 use std::{fs, sync::Arc};
 
 use anyhow::{Result, anyhow, bail};
-use quanta_index_contract::index::{
-    RetiredProjectionPolicyErrorV1, decode_retired_projection_policy_v1,
-    preflight_retired_projection_policy_v1, RetiredProjectionPolicyRefV1,
-};
-use sha2::{Digest as _, Sha256};
 use quanta_index_catalog::{
     NativeBootManifest, SqliteCatalog, verify_native_boot_candidate, verify_native_boot_catalog,
     verify_native_boot_current_candidate, verify_native_legacy_history_recovery_publications_v1,
     verify_native_rollback_with_source_publications,
+};
+use quanta_index_contract::index::{
+    RetiredProjectionPolicyErrorV1, RetiredProjectionPolicyRefV1,
+    decode_retired_projection_policy_v1, preflight_retired_projection_policy_v1,
 };
 use quanta_index_contract::native_cutover_evidence_v1::{
     NativeCutoverControlTerminalV1, NativeCutoverInstalledHistoryV1,
@@ -36,8 +35,7 @@ use quanta_index_core::{
     RequestBudgetV1,
     index::{
         IndexError, IndexInstanceId, MemoryLease, MemoryLifetime, ObjectReadIoPort, ObjectRef,
-        RegisteredObject, WorkBudget,
-        effort::ReservationGuard,
+        RegisteredObject, WorkBudget, effort::ReservationGuard,
     },
 };
 use quanta_index_kernel::{AdapterRegistry, verify_native_boot_inputs};
@@ -46,6 +44,7 @@ use quanta_index_searchd::{
     cli::{NativeBootIdentityV1, NativeCommandModeV1, NativeStateCommandV1},
 };
 use quanta_index_storage::FileObjectReader;
+use sha2::{Digest as _, Sha256};
 
 use super::ValidatedConfig;
 use crate::deployment_selection::{
@@ -66,7 +65,11 @@ pub(super) fn read_verified_retirement_policy_v2(
     authority: &NativeBootAuthority,
     policy: RetiredProjectionPolicyRefV1,
     budget: &mut WorkBudget,
-) -> Result<(Vec<quanta_index_contract::index::ProjectionId>, Vec<IndexInstanceId>, MemoryLease)> {
+) -> Result<(
+    Vec<quanta_index_contract::index::ProjectionId>,
+    Vec<IndexInstanceId>,
+    MemoryLease,
+)> {
     let root = authority.lease.state_root_identity_v1();
     let object_root = root.join("native-objects");
     let io = Arc::new(NativeObjectReadIo::new(Arc::clone(&authority.physical)));
@@ -74,48 +77,67 @@ pub(super) fn read_verified_retirement_policy_v2(
     let reader = FileObjectReader::open_existing(&object_root, lock, io, budget)?;
     let stored = reader.get(policy.object, budget)?;
     if !stored.registration.children.is_empty()
-        || stored.payload.len() > quanta_index_contract::index::MAX_RETIRED_PROJECTION_POLICY_BYTES_V1
+        || stored.payload.len()
+            > quanta_index_contract::index::MAX_RETIRED_PROJECTION_POLICY_BYTES_V1
         || preflight_retired_projection_policy_v1(&stored.payload)
-            .map_err(|_| IndexError::DigestConflict)? != policy.identity_count as usize
+            .map_err(|_| IndexError::DigestConflict)?
+            != policy.identity_count as usize
         || quanta_index_core::index::Digest(Sha256::digest(&stored.payload).into()) != policy.sha256
     {
         return Err(IndexError::DigestConflict.into());
     }
     let count = policy.identity_count as usize;
-    let retained_bytes = count.checked_mul(
-        std::mem::size_of::<IndexInstanceId>()
-            + std::mem::size_of::<quanta_index_contract::index::ProjectionId>(),
-    )
+    let retained_bytes = count
+        .checked_mul(
+            std::mem::size_of::<IndexInstanceId>()
+                + std::mem::size_of::<quanta_index_contract::index::ProjectionId>(),
+        )
         .ok_or(IndexError::ResourceLimited)?;
-    let grant_bytes = u64::try_from(retained_bytes)?.checked_mul(2)
+    let grant_bytes = u64::try_from(retained_bytes)?
+        .checked_mul(2)
         .and_then(|bytes| bytes.checked_add(128))
         .ok_or(IndexError::ResourceLimited)?;
-    let retained = budget.reserve_memory(
-        grant_bytes,
-        MemoryLifetime::Retained,
-    )?.ok_or(IndexError::ResourceLimited)?;
+    let retained = budget
+        .reserve_memory(grant_bytes, MemoryLifetime::Retained)?
+        .ok_or(IndexError::ResourceLimited)?;
     let mut scratch = Vec::new();
-    scratch.try_reserve_exact(count).map_err(|_| IndexError::ResourceLimited)?;
+    scratch
+        .try_reserve_exact(count)
+        .map_err(|_| IndexError::ResourceLimited)?;
     scratch.resize(count, IndexInstanceId([0; 16]));
-    let view = decode_retired_projection_policy_v1(
-        &stored.payload, &mut scratch, &mut || budget.checkpoint(),
-    ).map_err(|error| match error {
+    let view = decode_retired_projection_policy_v1(&stored.payload, &mut scratch, &mut || {
+        budget.checkpoint()
+    })
+    .map_err(|error| match error {
         RetiredProjectionPolicyErrorV1::Admission(error) => error,
         _ => IndexError::DigestConflict,
     })?;
     let mut projections = Vec::new();
-    projections.try_reserve_exact(count).map_err(|_| IndexError::ResourceLimited)?;
-    let actual_bytes = scratch.capacity().checked_mul(std::mem::size_of::<IndexInstanceId>())
-        .and_then(|bytes| projections.capacity()
-            .checked_mul(std::mem::size_of::<quanta_index_contract::index::ProjectionId>())
-            .and_then(|other| bytes.checked_add(other)))
+    projections
+        .try_reserve_exact(count)
+        .map_err(|_| IndexError::ResourceLimited)?;
+    let actual_bytes = scratch
+        .capacity()
+        .checked_mul(std::mem::size_of::<IndexInstanceId>())
+        .and_then(|bytes| {
+            projections
+                .capacity()
+                .checked_mul(std::mem::size_of::<
+                    quanta_index_contract::index::ProjectionId,
+                >())
+                .and_then(|other| bytes.checked_add(other))
+        })
         .ok_or(IndexError::ResourceLimited)?;
     if u64::try_from(actual_bytes)? > grant_bytes {
         return Err(IndexError::ResourceLimited.into());
     }
     for index in 0..count {
         budget.checkpoint()?;
-        projections.push(view.identity_v1(index).ok_or(IndexError::DigestConflict)?.projection);
+        projections.push(
+            view.identity_v1(index)
+                .ok_or(IndexError::DigestConflict)?
+                .projection,
+        );
     }
     Ok((projections, scratch, retained))
 }
@@ -269,6 +291,33 @@ fn authenticate(
             ProtectedRouteCheckV1::Retained
         },
         candidate_profile,
+        None,
+        budget,
+    )
+    .map(|_| ())
+}
+
+fn authenticate_retained_source_v20(
+    authority: &NativeBootAuthority,
+    snapshot: &quanta_index_catalog::NativeBootCatalogSnapshot,
+    manifest: &NativeBootManifest,
+    registry: &AdapterRegistry,
+    maximum: u64,
+    tree: quanta_index_kernel::RetainedSourceTreePolicyV20,
+    budget: &mut WorkBudget,
+) -> Result<()> {
+    authenticate_with_legacy_history_v1(
+        authority,
+        snapshot,
+        manifest,
+        registry,
+        maximum,
+        None,
+        None,
+        None,
+        ProtectedRouteCheckV1::Retained,
+        false,
+        Some(tree),
         budget,
     )
     .map(|_| ())
@@ -285,6 +334,7 @@ fn authenticate_with_legacy_history_v1(
     native_history: Option<&[FundedNativeRestoreInputV1]>,
     route_check: ProtectedRouteCheckV1,
     candidate_profile: bool,
+    retained_tree: Option<quanta_index_kernel::RetainedSourceTreePolicyV20>,
     budget: &mut WorkBudget,
 ) -> Result<Option<FundedInstalledHistoryV1>> {
     let root = authority.lease.state_root_identity_v1();
@@ -340,11 +390,9 @@ fn authenticate_with_legacy_history_v1(
             .reserve_memory(scratch_bytes.max(1), MemoryLifetime::Temporary)?
             .ok_or(IndexError::ResourceLimited)?;
         let mut scratch = vec![IndexInstanceId([0; 16]); count];
-        let view = decode_retired_projection_policy_v1(
-            &stored.payload,
-            &mut scratch,
-            &mut || budget.checkpoint(),
-        )
+        let view = decode_retired_projection_policy_v1(&stored.payload, &mut scratch, &mut || {
+            budget.checkpoint()
+        })
         .map_err(|error| match error {
             RetiredProjectionPolicyErrorV1::Admission(error) => error,
             _ => IndexError::DigestConflict,
@@ -358,7 +406,10 @@ fn authenticate_with_legacy_history_v1(
             return Err(IndexError::DigestConflict.into());
         }
         retired_policy_profile_v1::reject_candidate_profile_overlap_v1(
-            &view, &scratch, &profile.payload, budget,
+            &view,
+            &scratch,
+            &profile.payload,
+            budget,
         )?;
     }
     if let Some(route) = manifest.protected_source_routes {
@@ -399,7 +450,7 @@ fn authenticate_with_legacy_history_v1(
             },
         )?;
     }
-    if candidate_profile {
+    let historical_tree = if candidate_profile {
         quanta_index_kernel::verify_native_boot_candidate_inputs(
             &manifest.operation,
             &manifest.publication,
@@ -408,6 +459,17 @@ fn authenticate_with_legacy_history_v1(
             registry,
             budget,
         )?;
+        None
+    } else if let Some(tree) = retained_tree {
+        quanta_index_kernel::verify_native_boot_retained_source_inputs_v20(
+            &manifest.operation,
+            &manifest.publication,
+            &request,
+            &profile,
+            registry,
+            tree,
+            budget,
+        )?
     } else {
         verify_native_boot_inputs(
             &manifest.operation,
@@ -417,6 +479,37 @@ fn authenticate_with_legacy_history_v1(
             registry,
             budget,
         )?;
+        None
+    };
+    if let Some(instance) = historical_tree {
+        let tree = retained_tree.ok_or(IndexError::BackendViolation(
+            "retained Tree identity lost".into(),
+        ))?;
+        let reference = reader
+            .lookup_map_object(
+                manifest.publication.members,
+                &quanta_index_core::index::member_map_key(instance),
+                budget,
+            )?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        let stored = reader.get(reference, budget)?;
+        let member = quanta_index_core::index::decode_member_binding(&stored.payload, budget)?;
+        if stored.registration.reference != reference
+            || member.instance != instance
+            || member.format != tree.descriptor.format
+            || member.input.schema != tree.descriptor.schema
+            || member.input.policy != tree.previous
+            || member.input.root != manifest.publication.source.owners
+            || member.input.context != manifest.publication.source.input_context_digest()?
+            || !stored.registration.children.iter().copied().eq([
+                Some(member.artifact),
+                member.input.root.0,
+            ]
+            .into_iter()
+            .flatten())
+        {
+            return Err(IndexError::DigestConflict.into());
+        }
     }
     let installed_history = if let Some(capture) = recovery {
         authenticate_recovery_capture(
@@ -1115,6 +1208,7 @@ pub(super) fn require_candidate_start_v1(
                     None,
                     ProtectedRouteCheckV1::CandidateResume,
                     true,
+                    None,
                     budget,
                 )?;
                 let after = verify_native_boot_catalog(root, authority.io.as_ref(), budget)?;
@@ -1150,8 +1244,8 @@ pub(super) fn refuse_plain_serve_on_selected_boot_v2(
     request: &RequestBudgetV1,
 ) -> Result<()> {
     let root = authority.lease.state_root_identity_v1();
-    let catalog = quanta_index_catalog::catalog_dir(root)
-        .join(quanta_index_catalog::CATALOG_FILE_NAME);
+    let catalog =
+        quanta_index_catalog::catalog_dir(root).join(quanta_index_catalog::CATALOG_FILE_NAME);
     match fs::symlink_metadata(&catalog) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
@@ -1247,7 +1341,8 @@ pub(super) fn execute(
                         protected_source_routes: None,
                         retired_projection_policy: Some(policy),
                         ..
-                    } = command.mode {
+                    } = command.mode
+                    {
                         proposed_manifest.format_version = NativeBootManifest::FORMAT_VERSION_V2;
                         proposed_manifest.retired_projection_policy = Some(policy);
                     }
@@ -1319,9 +1414,12 @@ pub(super) fn execute(
                             NativeCommandModeV1::SelectCandidate {
                                 retired_projection_policy: Some(policy),
                                 ..
-                            } => catalog.select_native_boot_manifest_with_retired_policy_if_current(
-                                operation, policy, &mut budget,
-                            )?,
+                            } => catalog
+                                .select_native_boot_manifest_with_retired_policy_if_current(
+                                    operation,
+                                    policy,
+                                    &mut budget,
+                                )?,
                             NativeCommandModeV1::SelectCandidate { .. } => catalog
                                 .select_native_boot_manifest_if_current(operation, &mut budget)?,
                             _ => catalog.select_native_boot_manifest(operation, &mut budget)?,
@@ -1576,6 +1674,7 @@ fn verify_recovery_candidate_with_legacy_history_v1(
         native_history,
         ProtectedRouteCheckV1::Retained,
         false,
+        None,
         budget,
     )?;
     require_retired(authority)?;

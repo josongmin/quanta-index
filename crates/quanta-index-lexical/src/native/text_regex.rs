@@ -250,7 +250,7 @@ impl NativeRegexProgram {
         path_match: bool,
         budget: &mut WorkBudget,
     ) -> Result<(u8, bool), IndexError> {
-        if self.content.is_empty() {
+        if !path_match || self.content.is_empty() {
             return Ok((0, path_match));
         }
         let source_len =
@@ -364,9 +364,8 @@ impl NativeRegexProgram {
             ));
         }
         let path_match = self.matches_path(&record.path, context.budget)?;
-        // An excluded source can satisfy a path filter, but has no text body
-        // in this index. Never open its bytes for a content regex.
-        if self.content.is_empty() || !admitted {
+        // Only admitted sources that passed the path filter need a body read.
+        if !path_match || self.content.is_empty() || !admitted {
             return Ok((0, path_match));
         }
         let body = context.objects.get(record.bytes, context.budget)?;
