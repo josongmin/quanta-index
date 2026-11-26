@@ -34,7 +34,9 @@ ROOT = Path(__file__).resolve().parents[3]
 BASELINE_DIR = ROOT / "tools" / "ci" / "lint" / "baselines" / "public-api"
 
 GUARDED_CRATES: list[str] = [
-    "quanta-index-contract-base", "quanta-index-contract", "quanta-index-sdk"
+    "quanta-index-contract-base",
+    "quanta-index-contract",
+    "quanta-index-sdk",
 ]
 PUBLIC_API_TOOLCHAIN = "nightly-2026-08-01"
 

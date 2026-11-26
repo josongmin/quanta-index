@@ -82,8 +82,12 @@ def test_lifecycle_owner_derives_mutable_roots_from_one_state_root_v1() -> None:
     assert canonicalize < activation_root < authority_root
     assert "activation_root: impl AsRef<Path>" not in lifecycle
     assert "authority_root: impl AsRef<Path>" not in lifecycle
-    lease_guard = app_runtime.index("state_root_lease\n            .require_state_root_v1(config.state_root())")
-    lifecycle_guard = app_runtime.index("search_corpus_lifecycle\n            .require_state_root_v1(config.state_root())")
+    lease_guard = app_runtime.index(
+        "state_root_lease\n            .require_state_root_v1(config.state_root())"
+    )
+    lifecycle_guard = app_runtime.index(
+        "search_corpus_lifecycle\n            .require_state_root_v1(config.state_root())"
+    )
     leased_root = app_runtime.index(
         "let leased_state_root = state_root_lease.state_root_identity_v1().to_path_buf();"
     )

@@ -525,7 +525,9 @@ def read_json_with_bytes(
             raw = path.read_bytes()
         else:
             raw = _read_committed_bytes(
-                path, expected_bytes, "Native input bytes differ from frozen commitment",
+                path,
+                expected_bytes,
+                "Native input bytes differ from frozen commitment",
             )
         return raw, _parse_json_text(raw.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -1201,9 +1203,7 @@ def validate_suite(
         else:
             require(
                 kind == "composite_git_releases_v1"
-                and set(provenance) == {
-                    "kind", "source_universe_sha256", "source_binding_sha256"
-                },
+                and set(provenance) == {"kind", "source_universe_sha256", "source_binding_sha256"},
                 "composite source provenance shape differs",
             )
             sha(provenance["source_universe_sha256"], "source_universe_sha256")
@@ -1953,11 +1953,15 @@ def _validate_run(
     )
     declared_file_cap = run.get("file_top_k")
     if version == RUNNER_SCHEMA_VERSION and hybrid_file_evidence.ROUTE in provenance:
-        require(type(declared_file_cap) is int and 1 <= declared_file_cap <= contract["top_k"],
-                "hybrid_file runner record lacks a valid declared file cap")
+        require(
+            type(declared_file_cap) is int and 1 <= declared_file_cap <= contract["top_k"],
+            "hybrid_file runner record lacks a valid declared file cap",
+        )
     else:
-        require(declared_file_cap is None and "file_top_k" not in run,
-                "file cap requires the explicit hybrid_file runner route")
+        require(
+            declared_file_cap is None and "file_top_k" not in run,
+            "file cap requires the explicit hybrid_file runner route",
+        )
     if version == 5 and any(
         entry["system"] == "quanta" and entry["execution_profile"]["policy"] == "exact_symbol_name"
         for entry in captures.values()
@@ -2050,7 +2054,13 @@ def _validate_run(
             object_keys_optional(
                 raw,
                 result_keys,
-                ["rank_unit", "ordering", "score_evidence", "file_collection", "hybrid_file_evidence"],
+                [
+                    "rank_unit",
+                    "ordering",
+                    "score_evidence",
+                    "file_collection",
+                    "hybrid_file_evidence",
+                ],
                 "result",
             )
             if version == RUNNER_SCHEMA_VERSION
@@ -2085,15 +2095,19 @@ def _validate_run(
         score_evidence = result.get("score_evidence")
         try:
             hybrid_file_evidence.validate_result(
-                result, capture, contract["top_k"],
+                result,
+                capture,
+                contract["top_k"],
                 declared_file_top_k=declared_file_cap,
             )
         except hybrid_file_evidence.HybridFileEvidenceError as exc:
             raise EvidenceError(str(exc)) from exc
         generic_files = key[1] == hybrid_file_evidence.ROUTE
         if generic_files:
-            require(version == 5 and "semantic_input" not in pack_queries[key[0]],
-                    f"hybrid_file requires original natural-language query input: {key}")
+            require(
+                version == 5 and "semantic_input" not in pack_queries[key[0]],
+                f"hybrid_file requires original natural-language query input: {key}",
+            )
         if profile_policy in query_plan_contract.FILE_PAIR_POLICIES:
             require(
                 span_protocol == 1,
@@ -2163,7 +2177,11 @@ def _validate_run(
                 rank_unit is None,
                 f"Semble capture has no verified distinct_file rank authority: {key}",
             )
-        if profile_policy not in query_plan_contract.FILE_PROJECTION_ORDERING and not semble_file and not generic_files:
+        if (
+            profile_policy not in query_plan_contract.FILE_PROJECTION_ORDERING
+            and not semble_file
+            and not generic_files
+        ):
             require(ordering is None, f"ordering applies only to file projections: {key}")
         if not semble_file:
             require(
@@ -2335,7 +2353,12 @@ def _validate_run(
                 candidate=True,
                 universe=universe,
                 allow_span_accounting=version == 5 and capture["system"] == "quanta",
-                allow_score=score_evidence in ("native_sdk_score_v1", "semble_bm25_score_v1", hybrid_file_evidence.SCORE_EVIDENCE),
+                allow_score=score_evidence
+                in (
+                    "native_sdk_score_v1",
+                    "semble_bm25_score_v1",
+                    hybrid_file_evidence.SCORE_EVIDENCE,
+                ),
             )
             if (
                 profile_policy in ("code_search_file", "code_search_exact_content_file")
@@ -2822,8 +2845,10 @@ def _route_ordering(run: dict[str, Any], route: str, results: dict, task_ids: li
     policy = capture.get("execution_profile", {}).get("policy")
     derived = query_plan_contract.FILE_PROJECTION_ORDERING.get(policy)
     if route == hybrid_file_evidence.ROUTE:
-        require(capture.get("system") == "quanta" and policy == "natural_language",
-                "hybrid_file ordering requires its bound natural-language capture")
+        require(
+            capture.get("system") == "quanta" and policy == "natural_language",
+            "hybrid_file ordering requires its bound natural-language capture",
+        )
         derived = hybrid_file_evidence.ORDERING
     if (
         capture.get("system") == "semble"
@@ -3096,7 +3121,12 @@ def judgment_diagnostics(
                 "score_evidence": (
                     _route_score_evidence(results, route, answerable_ids)
                     if kind == "file_judgments"
-                    and ordering in ("score_desc_path_tiebreak", "score_desc_native_tiebreak", hybrid_file_evidence.ORDERING)
+                    and ordering
+                    in (
+                        "score_desc_path_tiebreak",
+                        "score_desc_native_tiebreak",
+                        hybrid_file_evidence.ORDERING,
+                    )
                     else "not_applicable"
                 ),
                 "rank_metric_interpretation": RANK_METRIC_INTERPRETATION.get(
@@ -4538,8 +4568,7 @@ def load_native_file_replay(
         receipt_bytes = read_control(reviewed_labels)
         if expected_reviewed_labels is not None:
             require(
-                ("sha256:" + digest(receipt_bytes), len(receipt_bytes))
-                == expected_reviewed_labels,
+                ("sha256:" + digest(receipt_bytes), len(receipt_bytes)) == expected_reviewed_labels,
                 "Native reviewed labels bytes differ from frozen commitment",
             )
         receipt = _parse_json_text(receipt_bytes.decode("utf-8"))
@@ -4547,7 +4576,10 @@ def load_native_file_replay(
             captured = RawFile.capture(capture_path)
             expected_capture = captured.sha256, captured.size
     suite, pack, capture, source = _load_native_file_inputs(
-        repo, suite_path, query_pack_path, capture_path,
+        repo,
+        suite_path,
+        query_pack_path,
+        capture_path,
         expected_capture=expected_capture,
         expected_suite=expected_suite,
         expected_query_pack=expected_query_pack,
@@ -4555,22 +4587,36 @@ def load_native_file_replay(
     if reviewed_labels is not None:
         from tools.benchmark.retrieval.holdout_review import bind_native_reviewed_suite
 
-        require(expected_capture is not None, "Native reviewed labels need a raw capture commitment")
+        require(
+            expected_capture is not None, "Native reviewed labels need a raw capture commitment"
+        )
         reviewed, _, _ = validate_suite(
             native_file_paths.resolve_path(repo),
-            bind_native_reviewed_suite(suite, pack, receipt, expected_capture[0].removeprefix("sha256:")),
+            bind_native_reviewed_suite(
+                suite, pack, receipt, expected_capture[0].removeprefix("sha256:")
+            ),
             source_snapshot=source,
         )
         report = native_file_evidence.evaluate(
-            suite, pack, capture, source, source_inputs,
-            release_validator=release_validator, reviewed_suite=reviewed,
+            suite,
+            pack,
+            capture,
+            source,
+            source_inputs,
+            release_validator=release_validator,
+            reviewed_suite=reviewed,
             expected_source_universe=expected_source_universe,
             expected_source_binding=expected_source_binding,
         )
         return {"suite": reviewed, "execution_suite": suite, "capture": capture, "report": report}
 
     report = native_file_evidence.evaluate(
-        suite, pack, capture, source, source_inputs, release_validator=release_validator,
+        suite,
+        pack,
+        capture,
+        source,
+        source_inputs,
+        release_validator=release_validator,
         expected_source_universe=expected_source_universe,
         expected_source_binding=expected_source_binding,
     )
@@ -4595,13 +4641,21 @@ def load_native_file_execution(
     from tools.benchmark.retrieval import native_file_evidence
 
     suite, pack, capture, source = _load_native_file_inputs(
-        repo, suite_path, query_pack_path, capture_path,
+        repo,
+        suite_path,
+        query_pack_path,
+        capture_path,
         expected_capture=expected_capture,
         expected_suite=expected_suite,
         expected_query_pack=expected_query_pack,
     )
     native_file_evidence.verify_execution(
-        suite, pack, capture, source, source_inputs, release_validator=release_validator,
+        suite,
+        pack,
+        capture,
+        source,
+        source_inputs,
+        release_validator=release_validator,
         expected_source_universe=expected_source_universe,
         expected_source_binding=expected_source_binding,
     )
@@ -4625,7 +4679,8 @@ def _load_native_file_inputs(
         else read_json_with_bytes(suite_path, expected_bytes=expected_suite)[1]
     )
     pack_bytes, observed_pack = read_json_with_bytes(
-        query_pack_path, expected_bytes=expected_query_pack,
+        query_pack_path,
+        expected_bytes=expected_query_pack,
     )
     if expected_capture is None:
         capture = read_json(capture_path)
@@ -4678,7 +4733,12 @@ def _native_cohort_manifest(path: Path) -> tuple[bytes, dict]:
         and bool(manifest["families"]),
         "Native cohort target roster or families differ",
     )
-    fields = {"repo", "family_id", *native_file_paths.COHORT_FILES, *native_file_paths.RELEASE_ROOTS}
+    fields = {
+        "repo",
+        "family_id",
+        *native_file_paths.COHORT_FILES,
+        *native_file_paths.RELEASE_ROOTS,
+    }
     runtime_fields = {"daemon_config", "daemon_config_sha256"}
     selection_fields = {"selection_path", "selection_sha256"}
     seen_families: set[str] = set()
@@ -4689,7 +4749,11 @@ def _native_cohort_manifest(path: Path) -> tuple[bytes, dict]:
     manifest_dir = native_file_paths.resolve_path(path.parent)
     for family in manifest["families"]:
         selected = isinstance(family, dict) and selection_fields <= set(family)
-        expected = fields if manifest["schema_version"] == 1 else fields | runtime_fields | (selection_fields if selected else set())
+        expected = (
+            fields
+            if manifest["schema_version"] == 1
+            else fields | runtime_fields | (selection_fields if selected else set())
+        )
         require(
             isinstance(family, dict)
             and set(family) == expected
@@ -4741,7 +4805,9 @@ def verify_native_replay_sources(replays: Iterable[tuple[Path, dict]]) -> None:
 
 
 def evaluate_native_file_cohort(
-    path: Path, *, output: native_file_paths.Output | None = None,
+    path: Path,
+    *,
+    output: native_file_paths.Output | None = None,
 ) -> dict:
     """Replay each family from files before repository-cluster aggregation."""
     from tools.benchmark.evidence import file_digest, read_control
@@ -4753,10 +4819,12 @@ def evaluate_native_file_cohort(
     declared_manifest = manifest_dir / path.name
     raw, manifest = _native_cohort_manifest(declared_manifest)
     if output is not None:
-        output.protect((
-            ("cohort manifest", path),
-            *native_file_paths.cohort_inputs(declared_manifest, manifest),
-        ))
+        output.protect(
+            (
+                ("cohort manifest", path),
+                *native_file_paths.cohort_inputs(declared_manifest, manifest),
+            )
+        )
     file_keys = native_file_paths.COHORT_FILES
     family_paths = [
         {key: resolve(manifest_dir / item[key]) for key in ("repo", *file_keys)}
@@ -4780,7 +4848,11 @@ def evaluate_native_file_cohort(
             item["family_id"],
         )
         replay = load_native_file_replay(
-            paths["repo"], paths["suite"], paths["query_pack"], paths["capture"], source_inputs,
+            paths["repo"],
+            paths["suite"],
+            paths["query_pack"],
+            paths["capture"],
+            source_inputs,
             expected_suite=commitments[paths["suite"]],
             expected_query_pack=commitments[paths["query_pack"]],
             expected_capture=commitments[paths["capture"]],
@@ -4845,9 +4917,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         native_evaluation = args.command in ("evaluate-native-file", "evaluate-native-file-cohort")
         output = (
             native_file_paths.Output.prepare(
-                args.output, exists_error=f"Native evaluation output already exists: {args.output}",
+                args.output,
+                exists_error=f"Native evaluation output already exists: {args.output}",
             )
-            if native_evaluation and args.output is not None else None
+            if native_evaluation and args.output is not None
+            else None
         )
         if args.command == "freeze":
             _, value, _ = validate_suite(args.repo.resolve(), read_json(args.suite))
@@ -4871,16 +4945,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output.protect(
                     (role, path)
                     for role, path in (
-                        ("source repository", args.repo), ("suite", args.suite),
-                        ("query pack", args.query_pack), ("capture", args.runner),
+                        ("source repository", args.repo),
+                        ("suite", args.suite),
+                        ("query pack", args.query_pack),
+                        ("capture", args.runner),
                         ("source universe", args.source_universe),
-                        ("source binding", args.source_binding), ("base release", args.base_release),
+                        ("source binding", args.source_binding),
+                        ("base release", args.base_release),
                         ("target releases", args.target_releases),
                     )
                     if path is not None
                 )
             replay = load_native_file_replay(
-                repo, args.suite, args.query_pack, args.runner,
+                repo,
+                args.suite,
+                args.query_pack,
+                args.runner,
                 source_inputs if all(value is not None for value in source_inputs) else None,
             )
             require(

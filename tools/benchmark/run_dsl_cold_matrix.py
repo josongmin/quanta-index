@@ -78,18 +78,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--bin-cwd", type=Path, help="frozen producer checkout")
     parser.add_argument("--bin-head", help="expected full commit at --bin-cwd")
-    parser.add_argument("--bin-sha256", help="expected sha256:<hex> of the absolute producer binary")
     parser.add_argument(
-        "--bin-mode", choices=("cold", "warm"), default="cold",
+        "--bin-sha256", help="expected sha256:<hex> of the absolute producer binary"
+    )
+    parser.add_argument(
+        "--bin-mode",
+        choices=("cold", "warm"),
+        default="cold",
         help="use the warm binary for a frozen release, or the default cold matrix",
     )
     parser.add_argument("--native-runner", type=Path)
     parser.add_argument(
-        "--native-artifact", action="store_true",
+        "--native-artifact",
+        action="store_true",
         help="assemble the captured Native samples with the pinned Rust BenchArtifactV1 writer",
     )
     parser.add_argument(
-        "--native-authority", action="store_true",
+        "--native-authority",
+        action="store_true",
         help="require a frozen Linux Native capture with measured daemon RSS",
     )
     parser.add_argument("--native-daemon", type=Path)
@@ -100,7 +106,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_bin(
-    bin_cmd: list[str], *extra: str, stdin: str | None = None, cwd: Path | None = None,
+    bin_cmd: list[str],
+    *extra: str,
+    stdin: str | None = None,
+    cwd: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -175,9 +184,7 @@ def collect_samples(run: BinRunner, scenario_id: str, samples: int) -> list[dict
     return collected
 
 
-def assemble(
-    run: BinRunner, out: Path, samples: int, collected: list[dict[str, object]]
-) -> None:
+def assemble(run: BinRunner, out: Path, samples: int, collected: list[dict[str, object]]) -> None:
     from compare_dsl_bench import ArtifactRefused, load_artifact
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -192,7 +199,9 @@ def assemble(
             stdin=json.dumps(collected),
         )
         if completed.returncode != 0:
-            raise RuntimeError(f"--assemble failed (exit {completed.returncode}):\n{completed.stderr}")
+            raise RuntimeError(
+                f"--assemble failed (exit {completed.returncode}):\n{completed.stderr}"
+            )
         try:
             artifact = load_artifact(staged, role="cold DSL artifact")
         except FileNotFoundError as exc:
@@ -271,7 +280,9 @@ def measure_frozen(args: argparse.Namespace, bin_cmd: list[str]) -> int:
                 sample_count = measure(run, args.samples, staged)
             artifact = load_artifact(staged, role=f"frozen {args.bin_mode} producer")
             if artifact.git_head != args.bin_head or artifact.mode != args.bin_mode:
-                raise RuntimeError("frozen producer emitted an artifact for a different commit or mode")
+                raise RuntimeError(
+                    "frozen producer emitted an artifact for a different commit or mode"
+                )
             require_frozen_source(checkout, args.bin_head)
             if RawFile.capture(binary.path) != binary:
                 raise RuntimeError("frozen producer binary changed during capture")
@@ -288,7 +299,9 @@ def native_json(run: BinRunner, description: str, *argv: str) -> dict:
 
     completed = run(*argv)
     if completed.returncode:
-        raise RuntimeError(f"{description} failed (exit {completed.returncode}):\n{completed.stderr}")
+        raise RuntimeError(
+            f"{description} failed (exit {completed.returncode}):\n{completed.stderr}"
+        )
     if not completed.stdout.strip():
         raise RuntimeError(f"missing {description}")
     payload = parse_json(completed.stdout)
@@ -298,8 +311,13 @@ def native_json(run: BinRunner, description: str, *argv: str) -> dict:
 
 
 def validate_native_report(
-    payload: dict, kind: str, scenario: str, mode: str, daemon_sha: str,
-    history_config_sha: str, history_target: dict,
+    payload: dict,
+    kind: str,
+    scenario: str,
+    mode: str,
+    daemon_sha: str,
+    history_config_sha: str,
+    history_target: dict,
 ) -> None:
     if kind == "history":
         report = payload.get("history")
@@ -323,7 +341,9 @@ def validate_native_report(
         if not isinstance(witness, dict) or any(
             witness.get(part) != history_target[part] for part in ("view", "cut", "instance")
         ):
-            raise RuntimeError(f"Native History publication differs from the pinned fixture for {scenario}")
+            raise RuntimeError(
+                f"Native History publication differs from the pinned fixture for {scenario}"
+            )
         page = report.get("observed_page")
         if (
             not isinstance(page, dict)
@@ -332,7 +352,10 @@ def validate_native_report(
                 for part in ("session", "view", "instance", "member")
             )
             or page.get("read_epoch") != history_target["cut"]["durable_epoch"]
-            or any(type(page.get(count)) is not int or page[count] != 1 for count in ("matched", "remaining"))
+            or any(
+                type(page.get(count)) is not int or page[count] != 1
+                for count in ("matched", "remaining")
+            )
             or page.get("after") is not None
         ):
             raise RuntimeError(f"Native History observed page differs for {scenario}")
@@ -345,13 +368,20 @@ def validate_native_report(
         or "matched_files" in report
         or "result_unit" in report
     ):
-        raise RuntimeError(f"Native SDK parse error oracle or client preflight scope differs for {scenario}")
-    passes, per_pass, prime = (report.get(key) for key in ("passes", "samples_per_pass", "prime_queries"))
+        raise RuntimeError(
+            f"Native SDK parse error oracle or client preflight scope differs for {scenario}"
+        )
+    passes, per_pass, prime = (
+        report.get(key) for key in ("passes", "samples_per_pass", "prime_queries")
+    )
     samples = report.get("samples_ms")
     if (
         any(type(value) is not int for value in (passes, per_pass, prime))
-        or passes < 1 or per_pass < 1 or prime < 0
-        or not isinstance(samples, list) or len(samples) != passes * per_pass
+        or passes < 1
+        or per_pass < 1
+        or prime < 0
+        or not isinstance(samples, list)
+        or len(samples) != passes * per_pass
         or any(type(value) not in (int, float) or not 0 <= value < math.inf for value in samples)
     ):
         raise RuntimeError(f"invalid Native SDK samples for {scenario}")
@@ -365,21 +395,34 @@ def validate_native_report(
         config = report.get("config_template_sha256")
         published = report.get("published")
         if (
-            not isinstance(query, dict) or not query
-            or not isinstance(fixture, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", fixture)
-            or not isinstance(config, str) or not re.fullmatch(r"[0-9a-f]{64}", config)
-            or not isinstance(published, list) or len(published) != passes
+            not isinstance(query, dict)
+            or not query
+            or not isinstance(fixture, str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", fixture)
+            or not isinstance(config, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", config)
+            or not isinstance(published, list)
+            or len(published) != passes
         ):
             raise RuntimeError(f"Native DSL retained witness is incomplete for {scenario}")
         for observation in published:
             view = observation.get("view") if isinstance(observation, dict) else None
             page = observation.get("page") if isinstance(observation, dict) else None
-            if not isinstance(view, dict) or not view or not isinstance(page, dict) or page.get("view") != view:
+            if (
+                not isinstance(view, dict)
+                or not view
+                or not isinstance(page, dict)
+                or page.get("view") != view
+            ):
                 raise RuntimeError(f"Native DSL retained observation differs for {scenario}")
 
 
 def assemble_native(
-    run: BinRunner, matrix: Path, out: Path, mode: str, head: str,
+    run: BinRunner,
+    matrix: Path,
+    out: Path,
+    mode: str,
+    head: str,
     qualification: str = "diagnostic",
 ) -> None:
     from compare_dsl_bench import ArtifactRefused, load_artifact
@@ -388,7 +431,9 @@ def assemble_native(
     commitment = RawFile.capture(matrix)
     completed = run("--assemble-native", "--input", str(matrix), "--out", str(out))
     if completed.returncode:
-        raise RuntimeError(f"Native DSL artifact producer failed (exit {completed.returncode}):\n{completed.stderr}")
+        raise RuntimeError(
+            f"Native DSL artifact producer failed (exit {completed.returncode}):\n{completed.stderr}"
+        )
     try:
         content = _read_control_file(out).decode("utf-8")
         payload = parse_json(content)
@@ -396,7 +441,8 @@ def assemble_native(
     except (ArtifactRefused, OSError, ValueError) as exc:
         raise RuntimeError(f"Native DSL artifact refused: {exc}") from exc
     if (
-        artifact.mode != mode or artifact.git_head != head
+        artifact.mode != mode
+        or artifact.git_head != head
         or artifact.qualification != qualification
         or payload["detail"].get("native_matrix_sha256") != commitment.sha256
         or RawFile.capture(matrix) != commitment
@@ -412,7 +458,9 @@ def require_native_authority(args: argparse.Namespace) -> bool:
         if not getattr(args, "bin_cwd", None) or not getattr(args, "bin_head", None):
             raise RuntimeError("Native DSL authority requires a frozen --bin-cwd and --bin-head")
         if args.bin_mode == "cold" and args.samples < 20:
-            raise RuntimeError("Native DSL authority requires at least 20 cold samples per scenario")
+            raise RuntimeError(
+                "Native DSL authority requires at least 20 cold samples per scenario"
+            )
         if not sys.platform.startswith("linux"):
             raise RuntimeError("Native DSL authority requires a Linux host")
     return authority
@@ -466,7 +514,9 @@ def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
     if not isinstance(fixture, dict):
         raise RuntimeError("Native DSL History fixture must be a JSON object")
     if authority and fixture.get("source_git_head") != args.bin_head:
-        raise RuntimeError("Native DSL History fixture source HEAD differs from the frozen checkout")
+        raise RuntimeError(
+            "Native DSL History fixture source HEAD differs from the frozen checkout"
+        )
     history_daemon = fixture.get("daemon")
     if (
         not isinstance(history_daemon, str)
@@ -476,7 +526,9 @@ def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
     ):
         raise RuntimeError("Native DSL History fixture targets a different daemon")
     history_config_sha = fixture.get("config_sha256")
-    if not isinstance(history_config_sha, str) or not DIGEST_RE.fullmatch(f"sha256:{history_config_sha}"):
+    if not isinstance(history_config_sha, str) or not DIGEST_RE.fullmatch(
+        f"sha256:{history_config_sha}"
+    ):
         raise RuntimeError("Native DSL History fixture requires a config SHA-256")
     published_history = fixture.get("history")
     if (
@@ -522,21 +574,33 @@ def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
         run = partial(run_bin, [str(private_runner.path)], cwd=cwd, env=env)
         roster = native_json(run, "Native DSL roster", "--list-native")
         if set(roster) != {"text", "error", "history", "retained"}:
-            raise RuntimeError("Native DSL roster requires Text, error, History and retained scenarios")
+            raise RuntimeError(
+                "Native DSL roster requires Text, error, History and retained scenarios"
+            )
 
         seen = set()
-        for kind, label, expected_count in (("text", "Text", 14), ("history", "History", 7), ("retained", "retained", 12)):
+        for kind, label, expected_count in (
+            ("text", "Text", 14),
+            ("history", "History", 7),
+            ("retained", "retained", 12),
+        ):
             scenarios = roster[kind]
             if not isinstance(scenarios, list) or len(scenarios) != expected_count:
-                raise RuntimeError(f"Native DSL {label} roster requires exactly {expected_count} scenarios")
+                raise RuntimeError(
+                    f"Native DSL {label} roster requires exactly {expected_count} scenarios"
+                )
             for scenario in scenarios:
                 if not isinstance(scenario, str) or not scenario or scenario in seen:
                     raise RuntimeError(f"invalid or duplicate Native DSL scenario {scenario!r}")
                 seen.add(scenario)
         errors = roster["error"]
         if (
-            not isinstance(errors, list) or len(errors) != 5
-            or any(not isinstance(scenario, str) or scenario not in roster["text"] for scenario in errors)
+            not isinstance(errors, list)
+            or len(errors) != 5
+            or any(
+                not isinstance(scenario, str) or scenario not in roster["text"]
+                for scenario in errors
+            )
             or len(set(errors)) != 5
         ):
             raise RuntimeError("Native DSL error roster requires five distinct Text SDK scenarios")
@@ -546,7 +610,10 @@ def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
         cold = mode == "cold"
         routes = {
             "text": ("--native-text", daemon.path),
-            "history": ("--native-history" if cold else "--native-history-reopen", private_history.path),
+            "history": (
+                "--native-history" if cold else "--native-history-reopen",
+                private_history.path,
+            ),
             "retained": ("--native-retained", daemon.path),
         }
         rows = []
@@ -554,11 +621,18 @@ def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
             for scenario in roster[kind]:
                 reports = []
                 for _ in range(args.samples if cold else 1):
-                    report = native_json(run, f"SDK report for {scenario}", flag, str(source), scenario)
+                    report = native_json(
+                        run, f"SDK report for {scenario}", flag, str(source), scenario
+                    )
                     report_kind = "error" if scenario in error_set else kind
                     validate_native_report(
-                        report, report_kind, scenario, mode, daemon.sha256,
-                        history_config_sha, history_target,
+                        report,
+                        report_kind,
+                        scenario,
+                        mode,
+                        daemon.sha256,
+                        history_config_sha,
+                        history_target,
                     )
                     if authority:
                         require_native_authority_rss(report, report_kind, scenario)
@@ -583,7 +657,12 @@ def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
         if args.native_artifact:
             assembled = output_stage / "assembled.json"
             assemble_native(
-                run, staged, assembled, mode, args.bin_head, artifact["qualification"],
+                run,
+                staged,
+                assembled,
+                mode,
+                args.bin_head,
+                artifact["qualification"],
             )
             require_frozen_source(cwd, args.bin_head)
             require_unchanged_inputs("assembly")
@@ -607,13 +686,20 @@ def main() -> int:
     try:
         bin_cmd = shlex.split(args.bin_cmd) if args.bin_cmd is not None else []
         native_inputs = (
-            args.native_runner, args.native_artifact, args.native_daemon, args.native_daemon_sha256,
-            args.native_history_fixture, args.native_history_sha256, args.native_authority,
+            args.native_runner,
+            args.native_artifact,
+            args.native_daemon,
+            args.native_daemon_sha256,
+            args.native_history_fixture,
+            args.native_history_sha256,
+            args.native_authority,
         )
         if any(native_inputs):
             if args.native_runner is not None:
                 if bin_cmd:
-                    raise RuntimeError("Native DSL accepts only one of --native-runner and --bin-cmd")
+                    raise RuntimeError(
+                        "Native DSL accepts only one of --native-runner and --bin-cmd"
+                    )
                 bin_cmd = [str(args.native_runner)]
             count = measure_native(args, bin_cmd)
             print(f"wrote {count} Native SDK scenarios to {args.out}", file=sys.stderr)

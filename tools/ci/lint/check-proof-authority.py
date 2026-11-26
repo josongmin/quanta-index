@@ -222,13 +222,18 @@ def _require_passing_nextest_target(
 
 
 def _just_recipe_body(
-    root: Path, recipe: str, *, required_attribute: str | None = None,
+    root: Path,
+    recipe: str,
+    *,
+    required_attribute: str | None = None,
 ) -> str | None:
     lines = (root / "Justfile").read_text(encoding="utf-8").splitlines()
     header = re.compile(rf"^{re.escape(recipe)}(?:\s+[^:]*)?:\s*(?:#.*)?$")
     for index, line in enumerate(lines):
         if header.fullmatch(line):
-            if required_attribute and (index == 0 or lines[index - 1].strip() != required_attribute):
+            if required_attribute and (
+                index == 0 or lines[index - 1].strip() != required_attribute
+            ):
                 return None
             body: list[str] = []
             for candidate in lines[index + 1 :]:
@@ -577,7 +582,9 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             try:
                 case_groups = _nextest_case_groups(proof, "required_nextest_cases")
                 required_lib_cases = _nextest_case_groups(proof, "required_nextest_lib_cases")
-                if proof_id == "p10-state-migration-owner" and set(case_groups) != set(test_targets):
+                if proof_id == "p10-state-migration-owner" and set(case_groups) != set(
+                    test_targets
+                ):
                     findings.append(
                         Finding(path, f"{where} requires nextest cases for every registered target")
                     )
@@ -603,7 +610,9 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                         for target_id in test_targets
                         for owner, binary in [target_binaries.get(target_id, (None, None))]
                     ):
-                        raise ValueError(f"{proof_id} observation is outside a registered test target: {event}")
+                        raise ValueError(
+                            f"{proof_id} observation is outside a registered test target: {event}"
+                        )
                 for scope, scope_proof in NATIVE_RELEASE_SCOPES.items():
                     if proof_id != scope_proof:
                         continue
@@ -623,7 +632,9 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                             P04_PROOF: "read-view",
                             P10_PROOF: "rebuild",
                         }.get(proof_id, scope.removesuffix("-release"))
-                        raise ValueError(f"{label} release proof must use its exact Native {subject} scope")
+                        raise ValueError(
+                            f"{label} release proof must use its exact Native {subject} scope"
+                        )
                 if paired_runner:
                     r5_cases(proof)
             except ValueError as error:
@@ -634,10 +645,14 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                         from tools.ci.p11_attestation import public_key
 
                         public_key(proof.get("attestation_public_key"))
-                    recipe = _just_recipe_body(
-                        root, "rust-verify-hellgate-cross-repo",
-                        required_attribute="[positional-arguments]",
-                    ) or ""
+                    recipe = (
+                        _just_recipe_body(
+                            root,
+                            "rust-verify-hellgate-cross-repo",
+                            required_attribute="[positional-arguments]",
+                        )
+                        or ""
+                    )
                     if (
                         proof.get("command") != "just rust-verify-hellgate-cross-repo"
                         or recipe.strip()
@@ -1096,7 +1111,9 @@ def latest_indexed_release(root: Path, proof_id: str) -> IndexedRelease | None:
                     or proof_archive_relative_path(payload, digest)
                     != (proof_dir / binding / name).as_posix()
                 ):
-                    raise ValueError(f"indexed release receipt has the wrong archive identity: {name}")
+                    raise ValueError(
+                        f"indexed release receipt has the wrong archive identity: {name}"
+                    )
                 end = payload.get("ended_at")
                 if not isinstance(end, str):
                     raise ValueError(f"indexed release receipt has no end time: {name}")
@@ -1113,7 +1130,9 @@ def latest_indexed_release(root: Path, proof_id: str) -> IndexedRelease | None:
     finally:
         os.close(proof_fd)
     if ambiguous:
-        raise ValueError(f"{proof_id} has multiple indexed release receipts for the latest end time")
+        raise ValueError(
+            f"{proof_id} has multiple indexed release receipts for the latest end time"
+        )
     return latest
 
 
@@ -1125,9 +1144,7 @@ def require_current_release(root: Path, payload: dict, digest: str) -> None:
     if latest is None or latest.digest != digest:
         raise ValueError(f"{proof_id} is not the latest indexed release receipt")
     if json.dumps(latest.payload, sort_keys=True) != json.dumps(payload, sort_keys=True):
-        raise ValueError(
-            f"{proof_id} indexed release receipt differs from current alias"
-        )
+        raise ValueError(f"{proof_id} indexed release receipt differs from current alias")
     # Rename makes the index visible before its directory entry is durable.
     # A reader can finish an interrupted publication only by syncing that bucket.
     relative = proof_archive_relative_path(payload, digest)
@@ -1317,7 +1334,11 @@ def committed_proof_authorities(root: Path, head: str) -> dict[str, dict[str, An
     proofs = {}
     for row in rows:
         proof_id = row.get("id") if isinstance(row, dict) else None
-        if not isinstance(proof_id, str) or not PROOF_ID_RE.fullmatch(proof_id) or proof_id in proofs:
+        if (
+            not isinstance(proof_id, str)
+            or not PROOF_ID_RE.fullmatch(proof_id)
+            or proof_id in proofs
+        ):
             raise ValueError(f"recorded proof registry has an invalid or duplicate ID at {head}")
         proofs[proof_id] = row
     return proofs
@@ -1670,7 +1691,12 @@ def source_snapshot(root: Path, *, excluded_paths: Iterable[Path] = ()) -> dict[
     """Return the exact Git identity used by source-bound proof manifests."""
 
     if _git_bytes(
-        root, "--no-replace-objects", "for-each-ref", "--count=1", "--format=%(refname)", "refs/replace/",
+        root,
+        "--no-replace-objects",
+        "for-each-ref",
+        "--count=1",
+        "--format=%(refname)",
+        "refs/replace/",
     ).strip():
         raise RuntimeError("Git replacement refs alter proof source identity")
     status_snapshot = _git_status_snapshot(root)
@@ -1847,7 +1873,9 @@ def paired_content_identity(pair: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def release_source_identity(binding: dict[str, Any]) -> tuple[Any, ...]:
-    return source_content_identity(binding["source"]), paired_content_identity(binding["source_pair"])
+    return source_content_identity(binding["source"]), paired_content_identity(
+        binding["source_pair"]
+    )
 
 
 def _check_manifest_local(
@@ -2103,14 +2131,17 @@ def _check_manifest_local(
                     )
                 if bind_source and (
                     required_cases != _nextest_case_groups(proof, "required_nextest_cases")
-                    or required_lib_cases != _nextest_case_groups(proof, "required_nextest_lib_cases")
+                    or required_lib_cases
+                    != _nextest_case_groups(proof, "required_nextest_lib_cases")
                 ):
                     raise ExecutionResultError(
                         "required nextest cases differ from the registered source commit"
                     )
                 witnesses = daemon_witness_specs(recorded, allow_legacy=True)
                 if bind_source and witnesses != daemon_witness_specs(proof):
-                    raise ExecutionResultError("daemon observations differ from the registered source commit")
+                    raise ExecutionResultError(
+                        "daemon observations differ from the registered source commit"
+                    )
 
                 source_binding = recorded.get("execution_source_binding")
                 if bind_source and proof.get("execution_source_binding") != source_binding:
@@ -2121,23 +2152,29 @@ def _check_manifest_local(
                 provider_approval_sha256 = None
                 if source_binding is True:
                     run_source = ProofRunSource(
-                        proof["id"], head, payload["source"]["dirty_digest"],
+                        proof["id"],
+                        head,
+                        payload["source"]["dirty_digest"],
                         hashlib.sha256(_read_source(head, "Cargo.lock")).hexdigest()
                         if recorded["binary_binding"] == "release-daemon"
                         else None,
                     )
                     if proof["id"] == P07_PROOF:
                         provider_approval_sha256 = p07_provider_approval_digest(recorded)
-                        if (
-                            payload["inputs"]["provider"] != f"sha256:{provider_approval_sha256}"
-                            or (bind_source and p07_provider_approval_digest(proof) != provider_approval_sha256)
+                        if payload["inputs"][
+                            "provider"
+                        ] != f"sha256:{provider_approval_sha256}" or (
+                            bind_source
+                            and p07_provider_approval_digest(proof) != provider_approval_sha256
                         ):
                             raise ExecutionResultError(
                                 "P07 provider input differs from the approved config of the issuing source"
                             )
                 observations = {} if witnesses else None
                 derived_counts, passed_cases = derive_test_result(
-                    root, execution_result, payload["artifacts"],
+                    root,
+                    execution_result,
+                    payload["artifacts"],
                     daemon_observations=observations,
                     daemon_tests={name: launches for name, (_, launches) in witnesses.items()},
                     required_lib_cases=required_lib_cases,
@@ -2153,7 +2190,9 @@ def _check_manifest_local(
 
                     cases = r5_cases(recorded, allow_legacy=True)
                     if bind_source and cases != r5_cases(proof):
-                        raise ExecutionResultError("R5 selections differ from the registered source commit")
+                        raise ExecutionResultError(
+                            "R5 selections differ from the registered source commit"
+                        )
                     validate_release_witnesses(passed_cases, cases=cases)
                     verify_release(root, proof, payload, cases=cases)
                 authority = _test_catalog(head) if target_ids else {}
@@ -2197,16 +2236,23 @@ def _check_manifest_local(
                     if proof["id"] == P10_PROOF and passed_cases != {
                         ("nextest-jsonl", name) for name in witnesses
                     }:
-                        raise ExecutionResultError("P10 requires only the registered Native rebuild test")
+                        raise ExecutionResultError(
+                            "P10 requires only the registered Native rebuild test"
+                        )
                     if set(observations) != set(witnesses):
-                        raise ExecutionResultError(f"{label} lacks a daemon observation for a selected test body")
+                        raise ExecutionResultError(
+                            f"{label} lacks a daemon observation for a selected test body"
+                        )
                     if set(observations.values()) != {payload["daemon_binary"]["sha256"]}:
-                        raise ExecutionResultError(f"{label} executed daemon differs from the release binary")
-                    if (
-                        "daemon_observation_tests" in recorded
-                        and passed_cases != {("nextest-jsonl", name) for name in witnesses}
-                    ):
-                        raise ExecutionResultError(f"{label} requires only the registered daemon witness tests")
+                        raise ExecutionResultError(
+                            f"{label} executed daemon differs from the release binary"
+                        )
+                    if "daemon_observation_tests" in recorded and passed_cases != {
+                        ("nextest-jsonl", name) for name in witnesses
+                    }:
+                        raise ExecutionResultError(
+                            f"{label} requires only the registered daemon witness tests"
+                        )
                     if proof["id"] == P10_PROOF:
                         expected_format = native_state_root_format(
                             _read_source(head, NATIVE_STATE_FORMAT_SOURCE)
@@ -2578,8 +2624,13 @@ def check_manifest(
                         digest = hashlib.sha256(raw).hexdigest()
                         if dependency in P11_RELEASE_PROOFS:
                             selected = parse_proof_json(raw)
-                            if not isinstance(selected, dict) or selected.get("proof_id") != dependency:
-                                raise ValueError(f"current receipt has the wrong proof ID for {dependency}")
+                            if (
+                                not isinstance(selected, dict)
+                                or selected.get("proof_id") != dependency
+                            ):
+                                raise ValueError(
+                                    f"current receipt has the wrong proof ID for {dependency}"
+                                )
                             require_current_release(root, selected, digest)
                         current_digests[dependency] = digest
                     if current_digests[dependency] != receipt["sha256"]:
@@ -3204,7 +3255,9 @@ def _main_locked(argv: list[str] | None = None) -> int:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
 
-    require_current = args.require_all or args.require_code_qualified or args.dependencies_of is not None
+    require_current = (
+        args.require_all or args.require_code_qualified or args.dependencies_of is not None
+    )
     findings = check_registry(registry, root=root, path=registry_path)
     if require_current:
         for label, path in (("registry", registry_path), ("schema", schema_path)):
@@ -3329,7 +3382,9 @@ def _main_locked(argv: list[str] | None = None) -> int:
                     raise ValueError("retired proof manifest is not its immutable archive path")
                 proof = committed_proof_authorities(root, payload["source"]["head"])[proof_id]
             except (OSError, KeyError, TypeError, ValueError) as error:
-                findings.append(Finding(manifest_path, f"cannot replay retired proof authority: {error}"))
+                findings.append(
+                    Finding(manifest_path, f"cannot replay retired proof authority: {error}")
+                )
                 continue
         if proof is None:
             findings.append(Finding(manifest_path, f"proof_id {proof_id!r} is not registered"))

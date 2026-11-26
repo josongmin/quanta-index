@@ -196,7 +196,8 @@ def parse_args(
     )
     replay.add_argument("--family", help="select the newest valid run of this registered family")
     replay.add_argument(
-        "--require-signed-install", action="store_true",
+        "--require-signed-install",
+        action="store_true",
         help="require a published Native run with a verified installed approval",
     )
     replay.add_argument(
@@ -230,7 +231,8 @@ def parse_args(
         child.add_argument("profile", choices=sorted(profiles))
         if command in {"run", "validate", "summarize"}:
             child.add_argument(
-                "--require-signed-install", action="store_true",
+                "--require-signed-install",
+                action="store_true",
                 help="require an installed approval for native-file-capture",
             )
             child.add_argument(
@@ -407,7 +409,9 @@ def admit_dsl_baselines(
                 raise RuntimeError(f"DSL artifact was not written by this run: {artifact_path}")
             raw = _read_control_file(artifact_path)
             if digest_bytes(raw) != capture_artifacts.get(relative_artifact):
-                raise RuntimeError(f"DSL artifact differs from this run's staged output: {artifact_path}")
+                raise RuntimeError(
+                    f"DSL artifact differs from this run's staged output: {artifact_path}"
+                )
             content = raw.decode("utf-8")
             current_stat = artifact_path.lstat()
             if _file_identity(current_stat) != _file_identity(artifact_stat):
@@ -957,8 +961,11 @@ def latest_run_for_family(store: object, family: str) -> str | None:
 
 
 def replay_command(
-    repo_root: Path, reference: str, evidence_root: Path | None,
-    *, require_signed_install: bool = False,
+    repo_root: Path,
+    reference: str,
+    evidence_root: Path | None,
+    *,
+    require_signed_install: bool = False,
 ) -> int:
     """Fresh-process re-validation of one immutable run.
 
@@ -988,7 +995,9 @@ def replay_command(
         if require_signed_install:
             from native_file_capture import load_published_run
 
-            evidence = load_published_run(store, run_id, registered_digest=registry_digest(registry))
+            evidence = load_published_run(
+                store, run_id, registered_digest=registry_digest(registry)
+            )
         else:
             evidence = store.load(run_id)
         from evidence_bridge import verify_host_binding
@@ -1661,8 +1670,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv, profiles, repo_root=repo_root)
     repo_root = args.repo_root.resolve()
     require_signed_install = getattr(args, "require_signed_install", False)
-    if require_signed_install and args.command != "replay" and args.profile != "native-file-capture":
-        print("ERROR: --require-signed-install applies only to Native file capture", file=sys.stderr)
+    if (
+        require_signed_install
+        and args.command != "replay"
+        and args.profile != "native-file-capture"
+    ):
+        print(
+            "ERROR: --require-signed-install applies only to Native file capture", file=sys.stderr
+        )
         return 2
     if (
         getattr(args, "native_plan", None) is not None
@@ -1784,12 +1799,17 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError, RuntimeError) as exc:
             print(f"ERROR: frozen OpenAI A/B capture refused: {exc}", file=sys.stderr)
             return 2
-        print(json.dumps({
-            "scope": "archived_openai_ab_diagnostic",
-            "source_head": args.source_head,
-            "runner_sha256": args.runner_sha256,
-            "outputs": {name: file.sha256 for name, file in files.items()},
-        }, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "scope": "archived_openai_ab_diagnostic",
+                    "source_head": args.source_head,
+                    "runner_sha256": args.runner_sha256,
+                    "outputs": {name: file.sha256 for name, file in files.items()},
+                },
+                sort_keys=True,
+            )
+        )
         return 0
     if args.command == "validate-frozen-openai-ab":
         from relevance_openai_ab_capture import validate_frozen_ab
@@ -1804,11 +1824,16 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError, RuntimeError) as exc:
             print(f"ERROR: frozen OpenAI A/B validation refused: {exc}", file=sys.stderr)
             return 2
-        print(json.dumps({
-            "scope": "frozen_openai_ab_validation",
-            "source_head": args.source_head,
-            "outputs": {name: file.sha256 for name, file in files.items()},
-        }, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "scope": "frozen_openai_ab_validation",
+                    "source_head": args.source_head,
+                    "outputs": {name: file.sha256 for name, file in files.items()},
+                },
+                sort_keys=True,
+            )
+        )
         return 0
     if args.command == "replay":
         if bool(args.reference) == bool(args.family):
@@ -1832,7 +1857,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"ERROR: no promoted run for family {args.family!r}", file=sys.stderr)
                 return 2
         return replay_command(
-            repo_root, reference, args.evidence_root, require_signed_install=require_signed_install,
+            repo_root,
+            reference,
+            args.evidence_root,
+            require_signed_install=require_signed_install,
         )
 
     profile = profiles[args.profile]
@@ -2013,7 +2041,9 @@ def main(argv: list[str] | None = None) -> int:
             if root is None:
                 print("ERROR: Native file capture requires --evidence-root", file=sys.stderr)
                 return 2
-            registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
+            registry = load_registry(
+                repo_root / "tools/benchmark/registry.toml", repo_root=repo_root
+            )
             signed_options = {"require_signed_install": True} if require_signed_install else {}
             if args.command == "run":
                 if args.native_plan is None:
@@ -2036,7 +2066,12 @@ def main(argv: list[str] | None = None) -> int:
                 if timeout < 1:
                     raise EvidenceError("Native producer timeout must be positive")
                 document = capture_native_file(
-                    repo_root, root, registry, timeout, args.native_plan, **signed_options,
+                    repo_root,
+                    root,
+                    registry,
+                    timeout,
+                    args.native_plan,
+                    **signed_options,
                 )
             else:
                 document = validate_native_file(repo_root, root, registry, **signed_options)
@@ -2589,7 +2624,9 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
             "use `plan` or an explicit --evidence-root"
         )
     validated_artifacts = None
-    if args.command == "run" and (evidence_root is not None or native_capture_artifacts is not None):
+    if args.command == "run" and (
+        evidence_root is not None or native_capture_artifacts is not None
+    ):
         if evidence_root is not None and (
             evidence_root == repo_root or repo_root in evidence_root.parents
         ):
@@ -2598,7 +2635,10 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
             )
         try:
             validated_artifacts = snapshot_profile_artifacts(repo_root, args.profile, manifest)
-            if native_capture_artifacts is not None and validated_artifacts != native_capture_artifacts:
+            if (
+                native_capture_artifacts is not None
+                and validated_artifacts != native_capture_artifacts
+            ):
                 raise RuntimeError("Native DSL artifacts differ from this run's staged outputs")
         except RuntimeError as exc:
             capture_error(exc)

@@ -39,30 +39,53 @@ def _inputs(tmp_path: Path) -> tuple[argparse.Namespace, list[str], dict]:
     daemon.write_bytes(b"pinned daemon")
     published = {"view": {"sequence": 5}, "cut": {"durable_epoch": 18}, "instance": [1] * 16}
     fixture = tmp_path / "history.json"
-    fixture.write_text(json.dumps({
-        "source_git_head": "a" * 40,
-        "daemon": str(daemon), "daemon_sha256": _digest(daemon)[7:],
-        "config_sha256": "b" * 64,
-        "history": {"view": published["view"], "cut": published["cut"],
-                    "instance": {"instance": published["instance"]}},
-    }))
+    fixture.write_text(
+        json.dumps(
+            {
+                "source_git_head": "a" * 40,
+                "daemon": str(daemon),
+                "daemon_sha256": _digest(daemon)[7:],
+                "config_sha256": "b" * 64,
+                "history": {
+                    "view": published["view"],
+                    "cut": published["cut"],
+                    "instance": {"instance": published["instance"]},
+                },
+            }
+        )
+    )
     args = argparse.Namespace(
-        samples=20, out=tmp_path / "native.json", bin_mode="cold", bin_cwd=source,
-        bin_head="a" * 40, bin_sha256=_digest(runner), native_artifact=True,
-        native_authority=True, native_daemon=daemon, native_daemon_sha256=_digest(daemon),
-        native_history_fixture=fixture, native_history_sha256=_digest(fixture),
+        samples=20,
+        out=tmp_path / "native.json",
+        bin_mode="cold",
+        bin_cwd=source,
+        bin_head="a" * 40,
+        bin_sha256=_digest(runner),
+        native_artifact=True,
+        native_authority=True,
+        native_daemon=daemon,
+        native_daemon_sha256=_digest(daemon),
+        native_history_fixture=fixture,
+        native_history_sha256=_digest(fixture),
     )
     return args, [str(runner)], published
 
 
-@pytest.mark.parametrize("change,expected", [
-    ({"native_artifact": False}, "--native-artifact"),
-    ({"bin_cwd": None}, "frozen"),
-    ({"bin_head": None}, "frozen"),
-    ({"samples": 19}, "20 cold samples"),
-])
+@pytest.mark.parametrize(
+    "change,expected",
+    [
+        ({"native_artifact": False}, "--native-artifact"),
+        ({"bin_cwd": None}, "frozen"),
+        ({"bin_head": None}, "frozen"),
+        ({"samples": 19}, "20 cold samples"),
+    ],
+)
 def test_authority_preflight_requires_paired_frozen_linux_cold_inputs(
-    collector, monkeypatch, tmp_path, change, expected,
+    collector,
+    monkeypatch,
+    tmp_path,
+    change,
+    expected,
 ):
     args, _, _ = _inputs(tmp_path)
     monkeypatch.setattr(collector.sys, "platform", "linux")
@@ -84,7 +107,11 @@ def test_authority_preflight_rejects_non_linux_and_old_namespace(collector, monk
 @pytest.mark.parametrize("mode", ["warm", "cold"])
 @pytest.mark.parametrize("source_head", [None, "b" * 40])
 def test_authority_refuses_unbound_history_before_launch(
-    collector, monkeypatch, tmp_path, mode, source_head,
+    collector,
+    monkeypatch,
+    tmp_path,
+    mode,
+    source_head,
 ):
     import benchctl
 
@@ -108,18 +135,26 @@ def test_authority_refuses_unbound_history_before_launch(
     assert args.out.read_text() == "previous capture"
 
 
-@pytest.mark.parametrize("mode,fault,expected", [
-    ("cold", None, None),
-    ("warm", None, None),
-    ("cold", "error_null", None),
-    ("cold", "text_missing", "measured daemon RSS"),
-    ("cold", "text_zero", "measured daemon RSS"),
-    ("cold", "history_bool", "measured daemon RSS"),
-    ("cold", "retained_missing", "measured daemon RSS"),
-    ("cold", "error_positive", "client error has daemon RSS"),
-])
+@pytest.mark.parametrize(
+    "mode,fault,expected",
+    [
+        ("cold", None, None),
+        ("warm", None, None),
+        ("cold", "error_null", None),
+        ("cold", "text_missing", "measured daemon RSS"),
+        ("cold", "text_zero", "measured daemon RSS"),
+        ("cold", "history_bool", "measured daemon RSS"),
+        ("cold", "retained_missing", "measured daemon RSS"),
+        ("cold", "error_positive", "client error has daemon RSS"),
+    ],
+)
 def test_authority_aggregate_requires_every_daemon_report_rss(
-    collector, monkeypatch, tmp_path, mode, fault, expected,
+    collector,
+    monkeypatch,
+    tmp_path,
+    mode,
+    fault,
+    expected,
 ):
     args, bin_cmd, published = _inputs(tmp_path)
     args.bin_mode = mode
@@ -131,8 +166,12 @@ def test_authority_aggregate_requires_every_daemon_report_rss(
     text_ids = [f"text.{n}" for n in range(9)] + error_ids
     history_ids = [f"history.{n}" for n in range(7)]
     retained_ids = [f"retained.{n}" for n in range(12)]
-    roster = {"text": text_ids, "error": error_ids, "history": history_ids,
-              "retained": retained_ids}
+    roster = {
+        "text": text_ids,
+        "error": error_ids,
+        "history": history_ids,
+        "retained": retained_ids,
+    }
     calls: dict[str, int] = {}
     samples = 1 if mode == "cold" else 200
 
@@ -157,22 +196,36 @@ def test_authority_aggregate_requires_every_daemon_report_rss(
         kind = "error" if scenario in error_ids else scenario.split(".", 1)[0]
         report = {
             "schema": f"native-dsl-{kind}-samples-v{2 if kind == 'history' else 1}",
-            "scenario_id": scenario, "passes": 1, "samples_per_pass": samples,
-            "prime_queries": 0, "samples_ms": [1.0] * samples,
+            "scenario_id": scenario,
+            "passes": 1,
+            "samples_per_pass": samples,
+            "prime_queries": 0,
+            "samples_ms": [1.0] * samples,
         }
-        wrapper = {"daemon_sha256": args.native_daemon_sha256[7:],
-                   "daemon_peak_rss_bytes": 4096}
+        wrapper = {"daemon_sha256": args.native_daemon_sha256[7:], "daemon_peak_rss_bytes": 4096}
         if kind == "error":
-            report.update(result_shape="typed_error", typed_error_code="PARSE_FAIL",
-                          error_count=samples, engine_touched=[], measurement_scope="client_preflight")
+            report.update(
+                result_shape="typed_error",
+                typed_error_code="PARSE_FAIL",
+                error_count=samples,
+                engine_touched=[],
+                measurement_scope="client_preflight",
+            )
             wrapper.pop("daemon_peak_rss_bytes")
         elif kind == "history":
-            report.update(published={**published, "session": [2] * 16, "member": [3] * 16},
-                          observed_page={"view": published["view"],
-                                         "instance": published["instance"],
-                                         "session": [2] * 16, "member": [3] * 16,
-                                         "read_epoch": 18, "matched": 1,
-                                         "remaining": 1, "after": None})
+            report.update(
+                published={**published, "session": [2] * 16, "member": [3] * 16},
+                observed_page={
+                    "view": published["view"],
+                    "instance": published["instance"],
+                    "session": [2] * 16,
+                    "member": [3] * 16,
+                    "read_epoch": 18,
+                    "matched": 1,
+                    "remaining": 1,
+                    "after": None,
+                },
+            )
             assert argv[0] == ("--native-history" if mode == "cold" else "--native-history-reopen")
             history = Path(argv[1])
             assert history != args.native_history_fixture
@@ -181,10 +234,12 @@ def test_authority_aggregate_requires_every_daemon_report_rss(
             wrapper["config_sha256"] = "b" * 64
             wrapper["history"] = report
         elif kind == "retained":
-            report.update(query={"scope": "repo"}, fixture_sha256="sha256:" + "f" * 64,
-                          config_template_sha256="c" * 64,
-                          published=[{"view": {"sequence": 1},
-                                      "page": {"view": {"sequence": 1}}}])
+            report.update(
+                query={"scope": "repo"},
+                fixture_sha256="sha256:" + "f" * 64,
+                config_template_sha256="c" * 64,
+                published=[{"view": {"sequence": 1}, "page": {"view": {"sequence": 1}}}],
+            )
         if kind != "history":
             wrapper.update(report)
         if first and fault == f"{kind}_missing":
@@ -222,13 +277,21 @@ def test_authority_aggregate_requires_every_daemon_report_rss(
         assert len(calls) == 33 and set(calls.values()) == {20 if mode == "cold" else 1}
 
 
-@pytest.mark.parametrize("qualification,commitment,valid", [
-    ("authority", True, True),
-    ("diagnostic", True, False),
-    ("authority", False, False),
-])
+@pytest.mark.parametrize(
+    "qualification,commitment,valid",
+    [
+        ("authority", True, True),
+        ("diagnostic", True, False),
+        ("authority", False, False),
+    ],
+)
 def test_authority_assembly_checks_qualification_and_raw_matrix_commitment(
-    collector, monkeypatch, tmp_path, qualification, commitment, valid,
+    collector,
+    monkeypatch,
+    tmp_path,
+    qualification,
+    commitment,
+    valid,
 ):
     import compare_dsl_bench
 
@@ -236,15 +299,27 @@ def test_authority_assembly_checks_qualification_and_raw_matrix_commitment(
     matrix.write_text('{"qualification":"authority"}\n')
     artifact = tmp_path / "artifact.json"
     head = "a" * 40
-    monkeypatch.setattr(compare_dsl_bench, "load_artifact", lambda *_args, **_kwargs:
-                        SimpleNamespace(mode="cold", git_head=head,
-                                        qualification=qualification))
+    monkeypatch.setattr(
+        compare_dsl_bench,
+        "load_artifact",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            mode="cold", git_head=head, qualification=qualification
+        ),
+    )
 
     def run(*argv):
         assert argv == ("--assemble-native", "--input", str(matrix), "--out", str(artifact))
-        artifact.write_text(json.dumps({"detail": {
-            "native_matrix_sha256": _digest(matrix) if commitment else "sha256:" + "0" * 64,
-        }}))
+        artifact.write_text(
+            json.dumps(
+                {
+                    "detail": {
+                        "native_matrix_sha256": _digest(matrix)
+                        if commitment
+                        else "sha256:" + "0" * 64,
+                    }
+                }
+            )
+        )
         return SimpleNamespace(returncode=0, stderr="")
 
     if valid:

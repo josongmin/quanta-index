@@ -101,7 +101,12 @@ def _safe_chunk_name(release: str, commit: str, repo: str = REPO) -> str:
     parts = repo.split("/")
     _require(
         len(parts) == 2
-        and all(part and part not in (".", "..") and all(c.isascii() and (c.isalnum() or c in "-_.") for c in part) for part in parts),
+        and all(
+            part
+            and part not in (".", "..")
+            and all(c.isascii() and (c.isalnum() or c in "-_.") for c in part)
+            for part in parts
+        ),
         f"invalid repository identity: {repo}",
     )
     slug = "__".join(parts)
@@ -295,11 +300,15 @@ def restore(
         for release, commits in selected_by_release.items()
     }
     _require(
-        all(isinstance(repos, dict) and all(isinstance(commits, set) for commits in repos.values()) for repos in selection.values()),
+        all(
+            isinstance(repos, dict) and all(isinstance(commits, set) for commits in repos.values())
+            for repos in selection.values()
+        ),
         "invalid corpus selection",
     )
     _require(
-        sum(len(commits) for repos in selection.values() for commits in repos.values()) <= MAX_SELECTED,
+        sum(len(commits) for repos in selection.values() for commits in repos.values())
+        <= MAX_SELECTED,
         "too many selected commits",
     )
     _require(
@@ -341,9 +350,7 @@ def restore(
             manifest_rows = _validate_manifest(work_root / manifest, release, repos)
             for repo, commit in manifest_rows:
                 chunk_name = _safe_chunk_name(release, commit, repo)
-                _validate_chunk_file(
-                    work_root / chunk_name, manifest_rows[(repo, commit)]
-                )
+                _validate_chunk_file(work_root / chunk_name, manifest_rows[(repo, commit)])
                 key = (repo, commit)
                 digest = found[chunk_name]
                 _require(
@@ -356,7 +363,9 @@ def restore(
                 "archive_sha256": expected_archive,
                 "corpus_manifest_sha256": found[manifest],
                 "selected_chunks_sha256": {
-                    (commit if repo == REPO else f"{repo}@{commit}"): found[_safe_chunk_name(release, commit, repo)]
+                    (commit if repo == REPO else f"{repo}@{commit}"): found[
+                        _safe_chunk_name(release, commit, repo)
+                    ]
                     for repo, commits in sorted(repos.items())
                     for commit in sorted(commits)
                 },

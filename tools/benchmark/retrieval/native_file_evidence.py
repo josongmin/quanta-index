@@ -75,15 +75,17 @@ def verify_indexed_universe(
     expected = {row["path"]: row["file_sha256"] for row in universe}
     ev.require(len(expected) == len(universe), "Native frozen file universe has duplicate path")
     entries = inventory["entries"]
-    ev.require(isinstance(entries, list) and len(entries) == len(expected), "Native indexed file count differs")
+    ev.require(
+        isinstance(entries, list) and len(entries) == len(expected),
+        "Native indexed file count differs",
+    )
     by_path: dict[str, tuple[tuple[bytes, bytes], bytes]] = {}
     by_owner: dict[tuple[bytes, bytes], bytes] = {}
     prior_path: str | None = None
     producer: bytes | None = None
     for row in entries:
         ev.require(
-            isinstance(row, dict)
-            and set(row) == {"owner", "path", "source", "bytes", "byte_len"},
+            isinstance(row, dict) and set(row) == {"owner", "path", "source", "bytes", "byte_len"},
             "Native indexed file row shape differs",
         )
         path = row["path"]
@@ -151,8 +153,11 @@ _SOURCE_CUT_FIELDS = ("owners", "paths", "frontiers")
 def _native_context_digest(label: bytes, payload: dict) -> bytes:
     wire = json.dumps(payload, separators=(",", ":")).encode()
     return hashlib.sha256(
-        b"quanta-index-vnext\0" + len(label).to_bytes(8, "big") + label
-        + len(wire).to_bytes(8, "big") + wire
+        b"quanta-index-vnext\0"
+        + len(label).to_bytes(8, "big")
+        + label
+        + len(wire).to_bytes(8, "big")
+        + wire
     ).digest()
 
 
@@ -161,7 +166,9 @@ def verify_selected_view(manifest: dict, view: dict) -> None:
     identity_fields = ("workspace", "epoch", "sequence", "digest")
     workspace_fields = ("tenant", "collection", "worktree", "slot")
     ev.object_keys(manifest, manifest_fields, "Native selected manifest")
-    identity = ev.object_keys(manifest["identity"], identity_fields, "Native selected view identity")
+    identity = ev.object_keys(
+        manifest["identity"], identity_fields, "Native selected view identity"
+    )
     workspace = ev.object_keys(identity["workspace"], workspace_fields, "Native selected workspace")
     source = ev.object_keys(manifest["source"], _SOURCE_CUT_FIELDS, "Native selected SourceCut")
     ev.require(identity == view, "Native selected view differs")
@@ -213,7 +220,16 @@ def verify_selected_profile(capture: dict) -> dict:
     )
     # IndexProfile is staged as a childless object. Match the Rust DTO field
     # order and enum shapes independently of the capture's JSON key order.
-    fields = ("instance", "kind", "group", "activation", "input_domain", "schema", "policy", "format")
+    fields = (
+        "instance",
+        "kind",
+        "group",
+        "activation",
+        "input_domain",
+        "schema",
+        "policy",
+        "format",
+    )
     instances = {}
     for raw in profile["instances"]:
         spec = ev.object_keys(raw, fields, "Native profile spec")
@@ -228,7 +244,9 @@ def verify_selected_profile(capture: dict) -> dict:
         if domain != "SourceLocal":
             projection_fields = ("projection", "producer")
             projection = ev.object_keys(domain, ("Projection",), "Native profile input domain")
-            binding = ev.object_keys(projection["Projection"], projection_fields, "Native profile projection")
+            binding = ev.object_keys(
+                projection["Projection"], projection_fields, "Native profile projection"
+            )
             for name in projection_fields:
                 _bytes(binding[name], 16, "profile " + name)
             domain = {"Projection": {name: binding[name] for name in projection_fields}}
@@ -242,9 +260,7 @@ def verify_selected_profile(capture: dict) -> dict:
         _body_ref(payload) == _bytes(capture["selected_manifest"]["profile"], 32, "profile ref"),
         "Native selected profile reference differs",
     )
-    lanes = {
-        key: _bytes(capture[key], 16, key) for key in ("text_instance", "semantic_instance")
-    }
+    lanes = {key: _bytes(capture[key], 16, key) for key in ("text_instance", "semantic_instance")}
     file_instance = _bytes(capture["indexed_universe"]["file_instance"], 16, "file instance")
     ev.require(
         len({file_instance, *lanes.values()}) == 3,
@@ -294,7 +310,8 @@ def _verify_dense_chunk(hit: dict, source: bytes, policy: bytes) -> None:
         chunk, ("id", "payload", "input", "input_digest", "span"), "Native dense chunk"
     )
     binding = ev.object_keys(
-        chunk["input"], ("source", "projection", "producer_context", "derivation_policy"),
+        chunk["input"],
+        ("source", "projection", "producer_context", "derivation_policy"),
         "Native dense chunk input",
     )
     ev.require(
@@ -323,12 +340,16 @@ def _verify_dense_chunk(hit: dict, source: bytes, policy: bytes) -> None:
     if domain == "RenderedMember":
         bounds = ev.object_keys(bounds, ("ordinal",), "Native dense chunk member")
         ordinal = bounds["ordinal"]
-        ev.require(type(ordinal) is int and 0 <= ordinal < 4096, "Native dense chunk ordinal differs")
+        ev.require(
+            type(ordinal) is int and 0 <= ordinal < 4096, "Native dense chunk ordinal differs"
+        )
     else:
         bounds = ev.object_keys(bounds, ("start_byte", "end_byte"), "Native dense chunk byte span")
         start, end = bounds["start_byte"], bounds["end_byte"]
         ev.require(
-            type(start) is int and type(end) is int and 0 <= start <= end <= 16_777_216
+            type(start) is int
+            and type(end) is int
+            and 0 <= start <= end <= 16_777_216
             and (start != end or start == 0),
             "Native dense chunk byte bounds differ",
         )
@@ -362,8 +383,7 @@ def replay_pools(
     )
     desired = coverage["desired"]
     ev.require(
-        isinstance(desired, dict)
-        and set(desired) == {"root", "schema", "policy", "context"},
+        isinstance(desired, dict) and set(desired) == {"root", "schema", "policy", "context"},
         "Native semantic coverage authority differs",
     )
     if desired["root"] is not None:
@@ -508,10 +528,18 @@ def replay_pools(
     }
 
 
-REVIEW_FILE_LABEL_FIELDS = frozenset({
-    "query_intent", "answerable", "answerability_min_grade", "gold",
-    "file_judgments", "judgment_policy", "evaluation_contract", "label_review",
-})
+REVIEW_FILE_LABEL_FIELDS = frozenset(
+    {
+        "query_intent",
+        "answerable",
+        "answerability_min_grade",
+        "gold",
+        "file_judgments",
+        "judgment_policy",
+        "evaluation_contract",
+        "label_review",
+    }
+)
 
 
 def _require_review_overlay(execution_suite: dict, reviewed_suite: dict) -> None:
@@ -522,7 +550,10 @@ def _require_review_overlay(execution_suite: dict, reviewed_suite: dict) -> None
     )
     original = {key: value for key, value in execution_suite.items() if key != "tasks"}
     reviewed = {key: value for key, value in reviewed_suite.items() if key != "tasks"}
-    if "diagnostic_policy" not in original and reviewed.get("diagnostic_policy") == ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY:
+    if (
+        "diagnostic_policy" not in original
+        and reviewed.get("diagnostic_policy") == ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    ):
         reviewed.pop("diagnostic_policy")
     ev.require(
         ev.canonical(original) == ev.canonical(reviewed),
@@ -547,8 +578,12 @@ def _require_review_overlay(execution_suite: dict, reviewed_suite: dict) -> None
             and ("gold" not in before or before["gold"] == []),
             "Native execution suite is already judged or malformed",
         )
-        immutable_before = {key: value for key, value in before.items() if key not in REVIEW_FILE_LABEL_FIELDS}
-        immutable_after = {key: value for key, value in after.items() if key not in REVIEW_FILE_LABEL_FIELDS}
+        immutable_before = {
+            key: value for key, value in before.items() if key not in REVIEW_FILE_LABEL_FIELDS
+        }
+        immutable_after = {
+            key: value for key, value in after.items() if key not in REVIEW_FILE_LABEL_FIELDS
+        }
         ev.require(
             ev.canonical(immutable_before) == ev.canonical(immutable_after),
             "Native reviewed suite tasks differ from execution suite",
@@ -565,7 +600,9 @@ def repository_cluster_ci_from_native_families(
     this aggregation cannot itself authenticate a running daemon or qrels review.
     """
     ev.require(isinstance(families, list) and bool(families), "Native family list is empty")
-    ev.require(isinstance(repositories, dict) and bool(repositories), "Native target roster is empty")
+    ev.require(
+        isinstance(repositories, dict) and bool(repositories), "Native target roster is empty"
+    )
     rows: list[tuple[str, str, str, float]] = []
     cohort: list[dict] = []
     seen_families: set[str] = set()
@@ -575,7 +612,12 @@ def repository_cluster_ci_from_native_families(
         overlay = isinstance(item, dict) and "execution_suite" in item
         ev.require(
             isinstance(item, dict)
-            and set(item) == ({"suite", "execution_suite", "capture", "report"} if overlay else {"suite", "capture", "report"}),
+            and set(item)
+            == (
+                {"suite", "execution_suite", "capture", "report"}
+                if overlay
+                else {"suite", "capture", "report"}
+            ),
             "Native family replay shape differs",
         )
         suite, capture, report = item["suite"], item["capture"], item["report"]
@@ -657,7 +699,10 @@ def repository_cluster_ci_from_native_families(
             and capture.get("source_binding_sha256") == source_binding
             and capture.get("suite_commitment_sha256") == execution_suite_sha
             and report.get("suite_commitment_sha256") == suite_sha
-            and (not overlay or report.get("execution_suite_commitment_sha256") == execution_suite_sha)
+            and (
+                not overlay
+                or report.get("execution_suite_commitment_sha256") == execution_suite_sha
+            )
             and report.get("capture_commitment_sha256") == capture_sha
             and report.get("status") == "native_file_evidence_unqualified"
             and report.get("product_default_decision") is False
@@ -671,12 +716,12 @@ def repository_cluster_ci_from_native_families(
         captured = capture.get("tasks")
         per_query = report.get("per_query")
         ev.require(
-            isinstance(tasks, list)
-            and isinstance(captured, list)
-            and isinstance(per_query, list),
+            isinstance(tasks, list) and isinstance(captured, list) and isinstance(per_query, list),
             "Native family task inventory is malformed",
         )
-        eval_tasks = [task for task in tasks if isinstance(task, dict) and task.get("split") == "eval"]
+        eval_tasks = [
+            task for task in tasks if isinstance(task, dict) and task.get("split") == "eval"
+        ]
         task_ids = {task.get("task_id") for task in eval_tasks}
         ev.require(
             bool(eval_tasks)
@@ -686,8 +731,7 @@ def repository_cluster_ci_from_native_families(
             and {row.get("task_id") for row in captured if isinstance(row, dict)} == task_ids
             and len(per_query) == 2 * len(eval_tasks)
             and {
-                (row.get("task_id"), row.get("route"))
-                for row in per_query if isinstance(row, dict)
+                (row.get("task_id"), row.get("route")) for row in per_query if isinstance(row, dict)
             }
             == {(task_id, route) for task_id in task_ids for route in ("lexical", "hybrid")},
             "Native family task rows are missing, foreign, or repeated",
@@ -695,23 +739,27 @@ def repository_cluster_ci_from_native_families(
         paired = ev.paired_query_family_rows(
             suite, report, "lexical", "hybrid", require_graded=True
         )
-        rows.extend((target, task_id, family_id, delta) for task_id, family_id, _category, delta in paired)
+        rows.extend(
+            (target, task_id, family_id, delta) for task_id, family_id, _category, delta in paired
+        )
         cohort_row = {
-                "family_id": family,
-                "target_repository": target,
-                "target_commit": target_commit,
-                "target_release_digest": target_release,
-                "source_commit": source_commit,
-                "file_universe_digest": universe_digest,
-                "source_universe_sha256": source_universe,
-                "source_binding_sha256": source_binding,
-                "suite_commitment_sha256": suite_sha,
-                "capture_commitment_sha256": capture_sha,
-            }
+            "family_id": family,
+            "target_repository": target,
+            "target_commit": target_commit,
+            "target_release_digest": target_release,
+            "source_commit": source_commit,
+            "file_universe_digest": universe_digest,
+            "source_universe_sha256": source_universe,
+            "source_binding_sha256": source_binding,
+            "suite_commitment_sha256": suite_sha,
+            "capture_commitment_sha256": capture_sha,
+        }
         if overlay:
             cohort_row["execution_suite_commitment_sha256"] = execution_suite_sha
         cohort.append(cohort_row)
-    ev.require(set(target_releases) == set(repositories), "Native target repository coverage is incomplete")
+    ev.require(
+        set(target_releases) == set(repositories), "Native target repository coverage is incomplete"
+    )
     cohort.sort(key=lambda item: (item["target_repository"], item["family_id"]))
     cohort_sha = ev.digest(ev.canonical({"base_release_digest": base_release, "families": cohort}))
     # The cohort hash seeds the existing statistics; it is not a signed release.
@@ -761,8 +809,7 @@ def _replay_candidate_pools(
     )
     contract = ev.declared_evaluation_contract(suite["tasks"])
     ev.require(
-        contract is None
-        or contract["request_mode"] == query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+        contract is None or contract["request_mode"] == query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
         "Native file capture request mode differs from frozen suite",
     )
     provenance = suite.get("source_provenance")
@@ -785,7 +832,11 @@ def _replay_candidate_pools(
         from tools.benchmark.retrieval import composite_source_binding
 
         source_binding = composite_source_binding.verify(
-            source, suite, pack, capture, *composite_source_inputs,
+            source,
+            suite,
+            pack,
+            capture,
+            *composite_source_inputs,
             release_validator=release_validator,
             expected_source_universe=expected_source_universe,
             expected_source_binding=expected_source_binding,
@@ -932,10 +983,13 @@ def _replay_candidate_pools(
             )
             ev.require(
                 row["hybrid"]["lexical_artifact"] == selected_hybrid["lexical_artifact"]
-                and row["hybrid"].get("semantic_coverage") == selected_hybrid.get("semantic_coverage"),
+                and row["hybrid"].get("semantic_coverage")
+                == selected_hybrid.get("semantic_coverage"),
                 "Native same-view query resources differ",
             )
-            pools = replay_pools(row, capture["lane_top_k"], capture["file_top_k"], universe, indexed)
+            pools = replay_pools(
+                row, capture["lane_top_k"], capture["file_top_k"], universe, indexed
+            )
             if semantic_spec is not None:
                 desired = row["hybrid"]["semantic_coverage"]["desired"]
                 ev.require(
@@ -967,7 +1021,11 @@ def verify_execution(
 ) -> None:
     """Replay the exact captured SDK execution without relevance judgments."""
     indexed, _, rows = _replay_candidate_pools(
-        suite, pack, capture, source, composite_source_inputs,
+        suite,
+        pack,
+        capture,
+        source,
+        composite_source_inputs,
         release_validator=release_validator,
         expected_source_universe=expected_source_universe,
         expected_source_binding=expected_source_binding,
@@ -989,18 +1047,22 @@ def prepare_review_candidates(
         capture.get("schema_version") == 2 and source is not None,
         "Native review preparation requires authenticated indexed inventory",
     )
-    _, _, rows = _replay_candidate_pools(
-        suite, pack, capture, source, composite_source_inputs
-    )
+    _, _, rows = _replay_candidate_pools(suite, pack, capture, source, composite_source_inputs)
     universe = {file["path"]: file["file_sha256"] for file in pack["file_universe"]}
     prepared: dict[str, dict[str, list[dict]]] = {"lexical": {}, "hybrid": {}, "dense": {}}
     for task, _row, pools in rows:
         ev.require(
-            task["answerable"] is False and task["gold"] == []
-            and not set(task).intersection({
-                "judgment_policy", "file_judgments", "declaration_judgments",
-                "label_review", "source_oracle",
-            }),
+            task["answerable"] is False
+            and task["gold"] == []
+            and not set(task).intersection(
+                {
+                    "judgment_policy",
+                    "file_judgments",
+                    "declaration_judgments",
+                    "label_review",
+                    "source_oracle",
+                }
+            ),
             "Native review preparation requires unjudged eval tasks",
         )
         for route in prepared:
@@ -1029,10 +1091,15 @@ def evaluate(
     judged_suite = reviewed_suite if reviewed_suite is not None else suite
     judged_tasks = (
         {task["task_id"]: task for task in reviewed_suite["tasks"] if task["split"] == "eval"}
-        if reviewed_suite is not None else None
+        if reviewed_suite is not None
+        else None
     )
     indexed_verified, source_binding, replayed = _replay_candidate_pools(
-        suite, pack, capture, source, composite_source_inputs,
+        suite,
+        pack,
+        capture,
+        source,
+        composite_source_inputs,
         release_validator=release_validator,
         expected_source_universe=expected_source_universe,
         expected_source_binding=expected_source_binding,
@@ -1046,7 +1113,9 @@ def evaluate(
         for route in negative
     }
     for execution_task, row, pools in replayed:
-        task = judged_tasks[execution_task["task_id"]] if judged_tasks is not None else execution_task
+        task = (
+            judged_tasks[execution_task["task_id"]] if judged_tasks is not None else execution_task
+        )
         ev.require(
             task.get("judgment_policy")
             in (ev.COMPLETE_JUDGMENT_POLICY, ev.SOURCE_ORACLE_JUDGMENT_POLICY),

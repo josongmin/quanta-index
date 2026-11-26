@@ -305,9 +305,7 @@ def prepare_terminal(
     return root / terminal_path
 
 
-def verify_release(
-    root: Path, proof: dict, manifest: dict, *, cases: tuple[R5Case, ...]
-) -> None:
+def verify_release(root: Path, proof: dict, manifest: dict, *, cases: tuple[R5Case, ...]) -> None:
     artifacts = {item["source_path"]: item for item in manifest["artifacts"]}
     indexes = [Path(path) for path in artifacts if Path(path).name == INDEX]
     if len(indexes) != 1:

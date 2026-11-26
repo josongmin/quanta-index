@@ -176,8 +176,11 @@ def test_idle_lane_removed_protected_and_recent_lanes_kept(tree: dict[str, Path]
     ],
 )
 def test_explicit_idle_lane_eviction_keeps_current_and_requested_protection(
-    tree: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
-    options: list[str], current_lane: str | None, removed: bool,
+    tree: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    options: list[str],
+    current_lane: str | None,
+    removed: bool,
 ) -> None:
     lane = _make_lane(tree["live"], "shared", hours=48)
     monkeypatch.setattr(target_gc, "git_worktrees", lambda _: ([str(tree["checkout"])], None))
@@ -186,26 +189,49 @@ def test_explicit_idle_lane_eviction_keeps_current_and_requested_protection(
         monkeypatch.delenv("QUANTA_INDEX_BUILD_LANE", raising=False)
     else:
         monkeypatch.setenv("QUANTA_INDEX_BUILD_LANE", current_lane)
-    assert target_gc.main([
-        "--cache-root", str(tree["cache"]), "--repo-root", str(tree["checkout"]),
-        "--no-orphans", "--no-artifacts", "--no-incremental", *options,
-    ]) == 0
+    assert (
+        target_gc.main(
+            [
+                "--cache-root",
+                str(tree["cache"]),
+                "--repo-root",
+                str(tree["checkout"]),
+                "--no-orphans",
+                "--no-artifacts",
+                "--no-incremental",
+                *options,
+            ]
+        )
+        == 0
+    )
     assert lane.exists() is not removed
 
 
 def test_explicit_idle_lane_eviction_cannot_remove_a_cargo_locked_lane(
-    tree: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+    tree: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     lane = _make_lane(tree["live"], "shared", hours=48)
     monkeypatch.setattr(target_gc, "git_worktrees", lambda _: ([str(tree["checkout"])], None))
     monkeypatch.delenv("QUANTA_INDEX_BUILD_LANE", raising=False)
     with (lane / "debug" / ".cargo-lock").open("r+") as held:
         fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        assert target_gc.main([
-            "--cache-root", str(tree["cache"]), "--repo-root", str(tree["checkout"]),
-            "--no-orphans", "--no-artifacts", "--no-incremental",
-            "--unprotect-idle-lane", "shared",
-        ]) == 0
+        assert (
+            target_gc.main(
+                [
+                    "--cache-root",
+                    str(tree["cache"]),
+                    "--repo-root",
+                    str(tree["checkout"]),
+                    "--no-orphans",
+                    "--no-artifacts",
+                    "--no-incremental",
+                    "--unprotect-idle-lane",
+                    "shared",
+                ]
+            )
+            == 0
+        )
         assert lane.is_dir()
 
 
@@ -347,7 +373,9 @@ def test_incremental_only_scopes_actions_and_preserves_other_artifacts(
     old_exe = _exe(lane / "debug" / "deps", "core_tests-aaaaaaaaaaaaaaaa", hours=72)
     _exe(lane / "debug" / "deps", "core_tests-bbbbbbbbbbbbbbbb", hours=1)
     report = _gc(
-        tree, dry_run=dry_run, incremental_only_lane="test-workspace-lane",
+        tree,
+        dry_run=dry_run,
+        incremental_only_lane="test-workspace-lane",
         artifact_seconds=6 * HOUR,
     )
     assert _kinds(report) == {"stale-incremental": [str(old)]}
@@ -370,7 +398,8 @@ def _deny_trash_removal(monkeypatch: pytest.MonkeyPatch, name_prefix: str) -> No
 
 
 def test_incremental_only_reports_and_retries_failed_trash_deletion(
-    tree: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+    tree: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     lane = _make_lane(tree["live"], "test-workspace-lane", hours=1)
     other = _make_lane(tree["live"], "shared", hours=1)
@@ -396,7 +425,8 @@ def test_incremental_only_reports_and_retries_failed_trash_deletion(
 
 
 def test_sweep_reports_failed_trash_deletion_without_claiming_bytes(
-    tree: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+    tree: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     trash = tree["live"] / f"{target_gc.TRASH_PREFIX}retired-lane-1-2"
     trash.mkdir()
@@ -412,7 +442,9 @@ def test_sweep_reports_failed_trash_deletion_without_claiming_bytes(
 
 @pytest.mark.parametrize("redirect", ["incremental", "checkout"])
 def test_incremental_only_does_not_follow_symlinked_cache_directories(
-    tree: dict[str, Path], tmp_path: Path, redirect: str,
+    tree: dict[str, Path],
+    tmp_path: Path,
+    redirect: str,
 ) -> None:
     name = "test-workspace-lane"
     outside = _make_lane(tmp_path / "outside", name, hours=1)
@@ -436,7 +468,8 @@ def test_incremental_only_does_not_follow_symlinked_cache_directories(
 
 
 def test_artifact_pruning_does_not_follow_symlinked_deps(
-    tree: dict[str, Path], tmp_path: Path,
+    tree: dict[str, Path],
+    tmp_path: Path,
 ) -> None:
     lane = _make_lane(tree["live"], "shared", hours=1)
     outside = tmp_path / "outside-deps"

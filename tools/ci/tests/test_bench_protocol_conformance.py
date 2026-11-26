@@ -262,7 +262,9 @@ def test_exit_code_refuses_values_outside_the_wire_type(status: str, exit_code: 
     ("status", "exit_code"),
     [("failed", (1 << 31) - 1), ("interrupted", -(1 << 31)), ("timeout", None)],
 )
-def test_exit_code_preserves_signed_limits_and_missing_status(status: str, exit_code: int | None) -> None:
+def test_exit_code_preserves_signed_limits_and_missing_status(
+    status: str, exit_code: int | None
+) -> None:
     module = _load_evidence_module()
     evidence = module.sample_evidence()
     evidence["command"].update(status=status, exit_code=exit_code)

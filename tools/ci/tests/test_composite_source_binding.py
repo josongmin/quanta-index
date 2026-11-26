@@ -207,14 +207,25 @@ def _write_bound_native_inputs(suite, pack, capture, suite_file, pack_file, capt
 
 
 def _run_native_cli(tmp_path: Path, suite_file: Path, pack_file: Path, capture_file: Path) -> int:
-    return ev.main([
-        "evaluate-native-file", "--repo", str(tmp_path), "--suite", str(suite_file),
-        "--runner", str(capture_file), "--query-pack", str(pack_file),
-    ])
+    return ev.main(
+        [
+            "evaluate-native-file",
+            "--repo",
+            str(tmp_path),
+            "--suite",
+            str(suite_file),
+            "--runner",
+            str(capture_file),
+            "--query-pack",
+            str(pack_file),
+        ]
+    )
 
 
 def test_marked_capture_requires_source_inputs_before_scoring(tmp_path: Path, monkeypatch) -> None:
-    suite, pack, capture, suite_file, pack_file, capture_file = _native_cli_fixture(tmp_path, monkeypatch)
+    suite, pack, capture, suite_file, pack_file, capture_file = _native_cli_fixture(
+        tmp_path, monkeypatch
+    )
     suite["source_provenance"] = {
         "kind": "composite_git_releases_v1",
         "source_universe_sha256": "0" * 64,
@@ -254,7 +265,9 @@ def test_unmarked_native_capture_retains_existing_single_source_path(
 def test_frozen_composite_source_cannot_score_without_capture_markers(
     tmp_path: Path, monkeypatch
 ) -> None:
-    suite, pack, capture, suite_file, pack_file, capture_file = _native_cli_fixture(tmp_path, monkeypatch)
+    suite, pack, capture, suite_file, pack_file, capture_file = _native_cli_fixture(
+        tmp_path, monkeypatch
+    )
     suite["source_provenance"] = {
         "kind": "composite_git_releases_v1",
         "source_universe_sha256": "0" * 64,
@@ -265,7 +278,9 @@ def test_frozen_composite_source_cannot_score_without_capture_markers(
 
 
 def test_untyped_source_is_not_accepted_as_native_score(tmp_path: Path, monkeypatch) -> None:
-    suite, pack, capture, suite_file, pack_file, capture_file = _native_cli_fixture(tmp_path, monkeypatch)
+    suite, pack, capture, suite_file, pack_file, capture_file = _native_cli_fixture(
+        tmp_path, monkeypatch
+    )
     del suite["source_provenance"]
     _write_bound_native_inputs(suite, pack, capture, suite_file, pack_file, capture_file)
     assert _run_native_cli(tmp_path, suite_file, pack_file, capture_file) == 2
@@ -309,46 +324,68 @@ def test_verified_composite_source_exposes_exact_target_release_without_qualific
         }
         row = {
             "recipe": {
-                "name": repository, "revision": revision,
+                "name": repository,
+                "revision": revision,
                 "url": f"https://example.invalid/official/{repository}",
             },
             "views": {"code_only": view},
         }
         if index != 0:
             base_rows.append(row)
-        roster.append({
-            "repository": repository,
-            "namespace": namespace,
-            "release_digest": release_digest,
-            "commit": revision,
-            "file_universe_digest": view["file_universe_digest"],
-            "file_count": 1,
-        })
+        roster.append(
+            {
+                "repository": repository,
+                "namespace": namespace,
+                "release_digest": release_digest,
+                "commit": revision,
+                "file_universe_digest": view["file_universe_digest"],
+                "file_count": 1,
+            }
+        )
         files.append({"path": f"{namespace}/main.go", "file_sha256": sha})
-    base_rows.insert(0, {
-        "recipe": {
-            "name": "repo00", "revision": base_commit,
-            "url": "https://example.invalid/official/repo00",
+    base_rows.insert(
+        0,
+        {
+            "recipe": {
+                "name": "repo00",
+                "revision": base_commit,
+                "url": "https://example.invalid/official/repo00",
+            },
+            "views": {
+                "code_only": {
+                    "manifest": "unused",
+                    "file_universe_digest": "unused",
+                    "file_count": 1,
+                }
+            },
         },
-        "views": {"code_only": {"manifest": "unused", "file_universe_digest": "unused", "file_count": 1}},
-    })
+    )
     _write_json(target / "release.json", {"digest": target_digest})
     # The target release's exact manifest is selected only for repo00.
-    target_rows = [{
-        "recipe": {
-            "name": "repo00", "revision": target_commit,
-            "url": "https://example.invalid/official/repo00",
-        },
-        "views": {"code_only": {
-            "manifest": "manifests/repo00.json",
-            "file_universe_digest": roster[0]["file_universe_digest"],
-            "file_count": 1,
-        }},
-    }]
+    target_rows = [
+        {
+            "recipe": {
+                "name": "repo00",
+                "revision": target_commit,
+                "url": "https://example.invalid/official/repo00",
+            },
+            "views": {
+                "code_only": {
+                    "manifest": "manifests/repo00.json",
+                    "file_universe_digest": roster[0]["file_universe_digest"],
+                    "file_count": 1,
+                }
+            },
+        }
+    ]
     monkeypatch.setattr(
-        corpus_release, "validate",
-        lambda path: {"digest": target_digest, "repositories": target_rows}
-        if path == target else {"digest": base_digest, "repositories": base_rows},
+        corpus_release,
+        "validate",
+        lambda path: (
+            {"digest": target_digest, "repositories": target_rows}
+            if path == target
+            else {"digest": base_digest, "repositories": base_rows}
+        ),
     )
     commit = _git_commit(git)
     case = {
@@ -361,12 +398,15 @@ def test_verified_composite_source_exposes_exact_target_release_without_qualific
         "file_universe_digest": "sha256:" + ev.universe_digest(files),
     }
     universe_path, binding_path = tmp_path / "universe.json", tmp_path / "binding.json"
-    _write_json(universe_path, {
-        "kind": "provisional_source_only_twelve_repo_universes_v1",
-        "status": "NOT_ADMITTED_NO_QRELS_NO_SDK_RANKS",
-        "base_release_digest": base_digest,
-        "cases": [case],
-    })
+    _write_json(
+        universe_path,
+        {
+            "kind": "provisional_source_only_twelve_repo_universes_v1",
+            "status": "NOT_ADMITTED_NO_QRELS_NO_SDK_RANKS",
+            "base_release_digest": base_digest,
+            "cases": [case],
+        },
+    )
     binding = {
         "kind": "provisional_composite_git_source_binding_v1",
         "status": "SOURCE_ONLY_NOT_FORMAL_EVAL",
@@ -398,15 +438,17 @@ def test_verified_composite_source_exposes_exact_target_release_without_qualific
             "output_unit_policy": "rank_prefix",
             "span_unit": ev.SPAN_UNIT,
         },
-        "tasks": [{
-            "task_id": "review-entry-point",
-            "split": "eval",
-            "query": query,
-            "query_sha256": ev.digest(query.encode()),
-            "query_family_id": case["family_id"],
-            "answerable": False,
-            "gold": [],
-        }],
+        "tasks": [
+            {
+                "task_id": "review-entry-point",
+                "split": "eval",
+                "query": query,
+                "query_sha256": ev.digest(query.encode()),
+                "query_family_id": case["family_id"],
+                "answerable": False,
+                "gold": [],
+            }
+        ],
     }
     suite, pack, source = ev.validate_suite(git, suite)
     result = composite_source_binding.verify(
@@ -426,14 +468,28 @@ def test_verified_composite_source_exposes_exact_target_release_without_qualific
     _write_json(target / "nested" / "release.json", {"digest": target_digest})
     with pytest.raises(ev.EvidenceError, match="ambiguous"):
         composite_source_binding.verify(
-            source, suite, pack, capture, universe_path, binding_path,
-            base, target, case["family_id"],
+            source,
+            suite,
+            pack,
+            capture,
+            universe_path,
+            binding_path,
+            base,
+            target,
+            case["family_id"],
         )
     mismatched_pack = {**pack, "file_universe_digest": "0" * 64}
     with pytest.raises(ev.EvidenceError, match="source/query/capture binding differs"):
         composite_source_binding.verify(
-            source, suite, mismatched_pack, capture, universe_path, binding_path,
-            base, targets, case["family_id"],
+            source,
+            suite,
+            mismatched_pack,
+            capture,
+            universe_path,
+            binding_path,
+            base,
+            targets,
+            case["family_id"],
         )
 
     base_target = base_rows[0]
@@ -441,19 +497,43 @@ def test_verified_composite_source_exposes_exact_target_release_without_qualific
     target_recipe["url"] = "https://example.invalid/fork/repo00"
     with pytest.raises(ev.EvidenceError, match="target upstream repository differs from base"):
         composite_source_binding.verify(
-            source, suite, pack, capture, universe_path, binding_path, base, targets, case["family_id"]
+            source,
+            suite,
+            pack,
+            capture,
+            universe_path,
+            binding_path,
+            base,
+            targets,
+            case["family_id"],
         )
     target_recipe["url"] = base_target["recipe"]["url"]
     base_target["recipe"]["revision"] = target_commit
     with pytest.raises(ev.EvidenceError, match="target commit must differ"):
         composite_source_binding.verify(
-            source, suite, pack, capture, universe_path, binding_path, base, targets, case["family_id"]
+            source,
+            suite,
+            pack,
+            capture,
+            universe_path,
+            binding_path,
+            base,
+            targets,
+            case["family_id"],
         )
     base_target["recipe"]["revision"] = base_commit
     base_target["views"]["code_only"]["file_universe_digest"] = roster[0]["file_universe_digest"]
     with pytest.raises(ev.EvidenceError, match="target code-only universe must differ"):
         composite_source_binding.verify(
-            source, suite, pack, capture, universe_path, binding_path, base, targets, case["family_id"]
+            source,
+            suite,
+            pack,
+            capture,
+            universe_path,
+            binding_path,
+            base,
+            targets,
+            case["family_id"],
         )
 
 
@@ -473,25 +553,41 @@ def test_build_materializes_exactly_one_changed_repository_per_family(tmp_path, 
             files = [{"path": "mod.py", "file_sha256": ev.digest(content)}]
             manifest = f"manifests/{name}.json"
             _write_json(root / manifest, {"files": files})
-            rows.append({
-                "recipe": {
-                    "name": name, "url": f"https://example.invalid/{name}",
-                    "revision": ev.digest(f"{role}:{name}".encode())[:40],
-                },
-                "views": {"code_only": {
-                    "manifest": manifest, "file_count": 1,
-                    "manifest_digest": f"sha256:{ev.digest((root / manifest).read_bytes())}",
-                    "file_universe_digest": f"sha256:{ev.universe_digest(files)}",
-                }},
-            })
+            rows.append(
+                {
+                    "recipe": {
+                        "name": name,
+                        "url": f"https://example.invalid/{name}",
+                        "revision": ev.digest(f"{role}:{name}".encode())[:40],
+                    },
+                    "views": {
+                        "code_only": {
+                            "manifest": manifest,
+                            "file_count": 1,
+                            "manifest_digest": f"sha256:{ev.digest((root / manifest).read_bytes())}",
+                            "file_universe_digest": f"sha256:{ev.universe_digest(files)}",
+                        }
+                    },
+                }
+            )
         release = {"digest": f"sha256:{ev.digest(role.encode())}", "repositories": rows}
         releases[root] = release
         _write_json(root / "release.json", release)
     monkeypatch.setattr(corpus_release, "validate", releases.__getitem__)
     output = tmp_path / "composite"
-    assert composite_source_binding.main([
-        "--base-release", str(base), "--target-release", str(target), "--output", str(output),
-    ]) == 0
+    assert (
+        composite_source_binding.main(
+            [
+                "--base-release",
+                str(base),
+                "--target-release",
+                str(target),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
     universe_path = output / "source-universe.json"
     universe = ev.read_json(universe_path)
     assert len(universe["cases"]) == 12
@@ -505,7 +601,8 @@ def test_build_materializes_exactly_one_changed_repository_per_family(tmp_path, 
             role = "target" if i == index else "base"
             assert source.file(f"r{i:02d}/mod.py")[0] == f"VALUE = '{role}-{i}'\n".encode()
         suite = {
-            "repository_commit": source.commit, "file_universe": case["files"],
+            "repository_commit": source.commit,
+            "file_universe": case["files"],
             "file_universe_digest": ev.universe_digest(case["files"]),
         }
         capture = {
@@ -513,10 +610,20 @@ def test_build_materializes_exactly_one_changed_repository_per_family(tmp_path, 
             "source_binding_sha256": ev.digest(binding_path.read_bytes()),
         }
         result = composite_source_binding.verify(
-            source, suite, suite, capture, universe_path, binding_path, base, targets, name,
+            source,
+            suite,
+            suite,
+            capture,
+            universe_path,
+            binding_path,
+            base,
+            targets,
+            name,
         )
         assert result["target_repository"] == name
-        assert result["target_commit"] == releases[target]["repositories"][index]["recipe"]["revision"]
+        assert (
+            result["target_commit"] == releases[target]["repositories"][index]["recipe"]["revision"]
+        )
     with pytest.raises(FileExistsError):
         composite_source_binding.build(base, target, output)
     _write_json(base / "manifests/repo00.json", {"files": []})

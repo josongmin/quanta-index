@@ -287,7 +287,9 @@ def test_native_control_parser_reads_record_and_newtype_variants():
 
 
 def test_native_control_parser_reads_explicitly_tagged_unit_variants():
-    source = NATIVE_RS.replace("Submit(UpdateRequest),", "ObserveCandidateInstallationV1,\n    Submit(UpdateRequest),")
+    source = NATIVE_RS.replace(
+        "Submit(UpdateRequest),", "ObserveCandidateInstallationV1,\n    Submit(UpdateRequest),"
+    )
     source += """
         quanta_index_contract_base::native_serde_enum!(NativeIndexRequest {
             units { ObserveCandidateInstallationV1 = 68 }
@@ -296,7 +298,9 @@ def test_native_control_parser_reads_explicitly_tagged_unit_variants():
         });
     """
     assert MODULE.parse_native_enums(textwrap.dedent(source))["NativeIndexRequest"] == [
-        "CreateWorkspace", "ObserveCandidateInstallationV1", "Submit",
+        "CreateWorkspace",
+        "ObserveCandidateInstallationV1",
+        "Submit",
     ]
 
 
@@ -313,9 +317,7 @@ def test_native_control_parser_refuses_unrecognized_variant_shape():
 def test_native_control_enum_without_inventory_row_fails(tmp_path: Path):
     root = make_workspace(tmp_path)
     inventory = load(INVENTORY_OK)
-    inventory["ipc"] = [
-        row for row in inventory["ipc"] if row["enum"] != "NativeIndexResponse"
-    ]
+    inventory["ipc"] = [row for row in inventory["ipc"] if row["enum"] != "NativeIndexResponse"]
     found = messages(MODULE.check(inventory, root))
     assert any("`NativeIndexResponse` has no [[ipc]] row" in message for message in found)
 
@@ -330,8 +332,7 @@ def test_native_control_new_variant_requires_inventory_update(tmp_path: Path):
     )
     found = messages(MODULE.check(load(INVENTORY_OK), root))
     assert any(
-        "variant `Resume` exists in the code but is not listed" in message
-        for message in found
+        "variant `Resume` exists in the code but is not listed" in message for message in found
     )
 
 
@@ -343,12 +344,10 @@ def test_native_control_inventory_rejects_unknown_and_duplicate_variants(tmp_pat
     found = messages(MODULE.check(inventory, root))
     assert any("`variants` lists a name twice" in message for message in found)
     assert any(
-        "variant `Submit` exists in the code but is not listed" in message
-        for message in found
+        "variant `Submit` exists in the code but is not listed" in message for message in found
     )
     assert any(
-        "variant `Ghost` is listed but the enum has no such variant" in message
-        for message in found
+        "variant `Ghost` is listed but the enum has no such variant" in message for message in found
     )
 
 

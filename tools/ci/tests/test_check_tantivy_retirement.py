@@ -38,18 +38,24 @@ def checkout(tmp_path, monkeypatch):
     (tmp_path / "Cargo.lock").write_text(f'[[package]]\nname = "{daemon}"\n')
     cargo = {
         "tree": f"{daemon} v0.1.0\n",
-        "metadata": json.dumps({
-            "workspace_members": ["daemon-package"],
-            "packages": [{"id": "daemon-package", "name": daemon, "features": {}}],
-        }),
+        "metadata": json.dumps(
+            {
+                "workspace_members": ["daemon-package"],
+                "packages": [{"id": "daemon-package", "name": daemon, "features": {}}],
+            }
+        ),
     }
 
     def cargo_output(root, command, *args):
         assert root == tmp_path
         if command == "--lane":
             assert args == (
-                checker.NATIVE_RELEASE_LANE, "metadata", "--format-version", "1",
-                "--no-deps", "--no-default-features",
+                checker.NATIVE_RELEASE_LANE,
+                "metadata",
+                "--format-version",
+                "1",
+                "--no-deps",
+                "--no-default-features",
             )
             return cargo["metadata"]
         assert "--all-features" in args
@@ -84,11 +90,21 @@ def test_default_release_daemon_uses_the_native_artifact_producer():
     assert "--all-features" not in command
 
 
-@pytest.mark.parametrize(("role", "fault"), [
-    ("daemon", None), ("cli", None), ("daemon", "source-drift"), ("daemon", "source-restored"),
-    ("cli", "compiler-exit"), ("cli", "foreign-artifact"), ("cli", "wrong-target"),
-])
-def test_release_build_receipt_round_trips_to_real_shipment_reader(tmp_path, monkeypatch, role, fault):
+@pytest.mark.parametrize(
+    ("role", "fault"),
+    [
+        ("daemon", None),
+        ("cli", None),
+        ("daemon", "source-drift"),
+        ("daemon", "source-restored"),
+        ("cli", "compiler-exit"),
+        ("cli", "foreign-artifact"),
+        ("cli", "wrong-target"),
+    ],
+)
+def test_release_build_receipt_round_trips_to_real_shipment_reader(
+    tmp_path, monkeypatch, role, fault
+):
     from tools.ci.source_closure import ClosureError
 
     checker = load_checker()
@@ -99,13 +115,26 @@ def test_release_build_receipt_round_trips_to_real_shipment_reader(tmp_path, mon
     source = root / "Cargo.toml"
     source.write_text("[workspace]\n")
     real_run = subprocess.run
-    for args in (["init", "-q"], ["add", "Cargo.toml"],
-                 ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "input"]):
+    for args in (
+        ["init", "-q"],
+        ["add", "Cargo.toml"],
+        [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-qm",
+            "input",
+        ],
+    ):
         real_run(["git", *args], cwd=root, check=True)
     target = tmp_path / "cargo-target"
     evidence = tmp_path / "release-evidence"
     inputs = {
-        "daemon": (("quanta-index-searchd-runtime", "quanta-index-searchd", "bin", "quanta-index-searchd"),),
+        "daemon": (
+            ("quanta-index-searchd-runtime", "quanta-index-searchd", "bin", "quanta-index-searchd"),
+        ),
         "cli": (
             ("quanta-index-sdk", "quanta_index_sdk", "lib", "libquanta_index_sdk-abc.rlib"),
             ("quanta-index-searchctl", "quanta-index-searchctl", "bin", "quanta-index-searchctl"),
@@ -115,9 +144,13 @@ def test_release_build_receipt_round_trips_to_real_shipment_reader(tmp_path, mon
     def metadata(checkout, *args):
         assert checkout == root
         assert args[:3] == (
-            "--lane", "release-native-daemon-bin-lane" if role == "daemon" else "release-bin-lane", "metadata",
+            "--lane",
+            "release-native-daemon-bin-lane" if role == "daemon" else "release-bin-lane",
+            "metadata",
         )
-        return json.dumps({"target_directory": str(target), "build_directory": str(tmp_path / "cargo-build")})
+        return json.dumps(
+            {"target_directory": str(target), "build_directory": str(tmp_path / "cargo-build")}
+        )
 
     def run(command, *args, **kwargs):
         if command[0] != str(root / "scripts/cargow"):
@@ -125,7 +158,12 @@ def test_release_build_receipt_round_trips_to_real_shipment_reader(tmp_path, mon
         assert kwargs["cwd"] == root
         assert kwargs.get("env", {}).get("QUANTA_INDEX_RESOURCE_ADMISSION") == "1"
         assert kwargs["env"]["CI"] == "true"
-        assert {"--release", "--locked", "--offline", "--message-format=json-render-diagnostics"} <= set(command)
+        assert {
+            "--release",
+            "--locked",
+            "--offline",
+            "--message-format=json-render-diagnostics",
+        } <= set(command)
         assert ("--no-default-features" if role == "daemon" else "--all-features") in command
         assert command[command.index("--target") + 1] == "x86_64-unknown-linux-gnu"
         assert command[command.index("--bin") + 1] == inputs[role][-1][1]
@@ -134,20 +172,29 @@ def test_release_build_receipt_round_trips_to_real_shipment_reader(tmp_path, mon
         rows = []
         for package, name, kind, filename in inputs[role]:
             package_path = root / "crates" / package
-            artifact_dir = (private_target if fault != "foreign-artifact" else target) / "x86_64-unknown-linux-gnu" / "release"
+            artifact_dir = (
+                (private_target if fault != "foreign-artifact" else target)
+                / "x86_64-unknown-linux-gnu"
+                / "release"
+            )
             artifact_dir.mkdir(parents=True, exist_ok=True)
             artifact = artifact_dir / filename
             image = release_elf(package.encode(), machine=183 if fault == "wrong-target" else 62)
             artifact.write_bytes(image if kind == "bin" else package.encode())
             if kind == "bin":
                 artifact.chmod(0o755)
-            rows.append({
-                "reason": "compiler-artifact", "package_id": f"path+{package_path.as_uri()}#0.1.0",
-                "manifest_path": str(package_path / "Cargo.toml"),
-                "target": {"name": name, "kind": [kind]}, "profile": {"test": False, "opt_level": "3"},
-                "features": [], "executable": str(artifact) if kind == "bin" else None,
-                "filenames": [str(artifact)],
-            })
+            rows.append(
+                {
+                    "reason": "compiler-artifact",
+                    "package_id": f"path+{package_path.as_uri()}#0.1.0",
+                    "manifest_path": str(package_path / "Cargo.toml"),
+                    "target": {"name": name, "kind": [kind]},
+                    "profile": {"test": False, "opt_level": "3"},
+                    "features": [],
+                    "executable": str(artifact) if kind == "bin" else None,
+                    "filenames": [str(artifact)],
+                }
+            )
         rows.append({"reason": "build-finished", "success": True})
         kwargs["stdout"].write("".join(json.dumps(row) + "\n" for row in rows).encode())
         if fault == "source-drift":
@@ -180,7 +227,9 @@ def test_release_build_receipt_round_trips_to_real_shipment_reader(tmp_path, mon
     evidence = evidence.rename(tmp_path / "relocated release evidence")
     if role == "daemon":
         findings, binary_digest, captured = checker.release_build_findings(
-            evidence, digest, installed_linux=True,
+            evidence,
+            digest,
+            installed_linux=True,
         )
         assert binary_digest == hashlib.sha256(release_elf(inputs[role][0][0].encode())).hexdigest()
     else:
@@ -190,12 +239,23 @@ def test_release_build_receipt_round_trips_to_real_shipment_reader(tmp_path, mon
     assert not list(target.glob(".tantivy-release-*"))
     if role == "daemon":
         assert checker.select_captured_daemon(root, evidence, digest) == (
-            binary_digest, evidence / "quanta-index-searchd",
+            binary_digest,
+            evidence / "quanta-index-searchd",
         )
         source.write_text("[workspace]\n# next release\n")
         real_run(
-            ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qam", "next"],
-            cwd=root, check=True,
+            [
+                "git",
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "-qam",
+                "next",
+            ],
+            cwd=root,
+            check=True,
         )
         with pytest.raises(ValueError, match="source files differ"):
             checker.select_captured_daemon(root, evidence, digest)
@@ -205,11 +265,17 @@ def test_retirement_recipes_install_locked_dependencies_without_building_the_che
     checker = load_checker()
     for recipe, required_flags in (
         ("rust-check-tantivy-retirement", ("--check-migrations",)),
-        ("rust-check-tantivy-shipment", ("--proof-checkout", "--installed-readback", "--installed-q-approval-request")),
+        (
+            "rust-check-tantivy-shipment",
+            ("--proof-checkout", "--installed-readback", "--installed-q-approval-request"),
+        ),
     ):
         command = subprocess.run(
-            ["just", "--dry-run", recipe], cwd=checker.ROOT, check=True,
-            capture_output=True, text=True,
+            ["just", "--dry-run", recipe],
+            cwd=checker.ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stderr
         sync, invoke = command.split("uv run ", 1)
         assert "uv sync " in sync
@@ -220,7 +286,9 @@ def test_retirement_recipes_install_locked_dependencies_without_building_the_che
 
 
 @pytest.mark.parametrize("revision", [None, "a" * 40])
-@pytest.mark.parametrize(("statuses", "expected"), [((1, 0), 1), ((0, 1), 1), ((1, 2), 2), ((0, 0), 0)])
+@pytest.mark.parametrize(
+    ("statuses", "expected"), [((1, 0), 1), ((0, 1), 1), ((1, 2), 2), ((0, 0), 0)]
+)
 def test_retirement_checks_both_dispositions(checkout, monkeypatch, revision, statuses, expected):
     checker, _ = checkout
     root = checker.ROOT
@@ -245,19 +313,29 @@ def test_retirement_checks_both_dispositions(checkout, monkeypatch, revision, st
     ("recipe", "expected_proof_steps"),
     (
         ("proof-authority-code-gate", ["check-proof-authority.py"]),
-        ("proof-authority-final-qualification", ["retirement --publish-aggregate", "check-proof-authority.py"]),
+        (
+            "proof-authority-final-qualification",
+            ["retirement --publish-aggregate", "check-proof-authority.py"],
+        ),
         ("proof-authority-release-gate", ["retirement --require-aggregate"]),
     ),
 )
 @pytest.mark.parametrize("retirement_exit", (0, 1, 2))
 def test_release_gates_require_retirement_before_proof_steps(
-    tmp_path, recipe, expected_proof_steps, retirement_exit,
+    tmp_path,
+    recipe,
+    expected_proof_steps,
+    retirement_exit,
 ):
     justfile = (load_checker().ROOT / "Justfile").read_text()
     # Keep recipe commands intact while preventing a login shell from changing PATH.
-    (tmp_path / "Justfile").write_text(justfile.replace(
-        'set shell := ["/bin/zsh", "-lc"]', 'set shell := ["/bin/sh", "-c"]', 1,
-    ))
+    (tmp_path / "Justfile").write_text(
+        justfile.replace(
+            'set shell := ["/bin/zsh", "-lc"]',
+            'set shell := ["/bin/sh", "-c"]',
+            1,
+        )
+    )
     (tmp_path / "uv").write_text(
         '#!/bin/sh\nif [ "$1" = sync ]; then exit 0; fi\n'
         'case " $* " in *" --proof-checkout "*) ;; *) exit 91 ;; esac\n'
@@ -295,9 +373,17 @@ def test_release_gates_require_retirement_before_proof_steps(
     assert result.stdout.splitlines() == expected
 
 
-@pytest.mark.parametrize("outcome", [
-    "valid", "failed-proof", "changed-proof", "different-daemon", "valid-aggregate", "changed-action",
-])
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "valid",
+        "failed-proof",
+        "changed-proof",
+        "different-daemon",
+        "valid-aggregate",
+        "changed-action",
+    ],
+)
 def test_shipment_derives_authority_from_unchanged_current_proofs(tmp_path, monkeypatch, outcome):
     checker = load_checker()
     registry = tmp_path / "tools/ci/proof-authority.toml"
@@ -310,14 +396,23 @@ def test_shipment_derives_authority_from_unchanged_current_proofs(tmp_path, monk
     daemon = "a" * 64
     semantica_head = "b" * 40
     quanta_head = "d" * 40
-    (tmp_path / "p10.json").write_text(json.dumps({
-        "daemon_binary": {"sha256": daemon}, "source": {"head": quanta_head},
-    }))
+    (tmp_path / "p10.json").write_text(
+        json.dumps(
+            {
+                "daemon_binary": {"sha256": daemon},
+                "source": {"head": quanta_head},
+            }
+        )
+    )
     p11 = tmp_path / "p11.json"
-    p11.write_text(json.dumps({
-        "daemon_binary": {"sha256": "c" * 64 if outcome == "different-daemon" else daemon},
-        "source_pair": {"source": {"head": semantica_head}},
-    }))
+    p11.write_text(
+        json.dumps(
+            {
+                "daemon_binary": {"sha256": "c" * 64 if outcome == "different-daemon" else daemon},
+                "source_pair": {"source": {"head": semantica_head}},
+            }
+        )
+    )
     require_aggregate = outcome in {"valid-aggregate", "changed-action"}
     target = {
         "state_root": "/var/lib/quanta/native",
@@ -328,9 +423,13 @@ def test_shipment_derives_authority_from_unchanged_current_proofs(tmp_path, monk
         with registry.open("a") as stream:
             for action in ("deployment", "activation", "rollback"):
                 stream.write(f'[[proofs]]\nid = "p11-{action}"\nartifact = "{action}.json"\n')
-                (tmp_path / f"{action}.json").write_text(json.dumps({
-                    "execution_result": {"kind": "operational", "target": target},
-                }))
+                (tmp_path / f"{action}.json").write_text(
+                    json.dumps(
+                        {
+                            "execution_result": {"kind": "operational", "target": target},
+                        }
+                    )
+                )
     paired_checkout = tmp_path / "Semantica checkout"
 
     def check_proofs(argv, *, cwd, check):
@@ -351,16 +450,27 @@ def test_shipment_derives_authority_from_unchanged_current_proofs(tmp_path, monk
             checker.proof_bound_candidate(tmp_path, paired_checkout)
     elif outcome in {"changed-proof", "changed-action"}:
         with pytest.raises(ValueError, match="changed"):
-            checker.proof_bound_candidate(tmp_path, paired_checkout, require_aggregate=require_aggregate)
+            checker.proof_bound_candidate(
+                tmp_path, paired_checkout, require_aggregate=require_aggregate
+            )
     elif outcome == "different-daemon":
         with pytest.raises(ValueError, match="different daemon"):
             checker.proof_bound_candidate(tmp_path, paired_checkout)
     else:
         installation = (
-            target["state_root"], target["config_sha256"], target["release_manifest_sha256"],
-        ) if require_aggregate else None
-        assert checker.proof_bound_candidate(tmp_path, paired_checkout, require_aggregate=require_aggregate) == (
-            (daemon, semantica_head, quanta_head), installation,
+            (
+                target["state_root"],
+                target["config_sha256"],
+                target["release_manifest_sha256"],
+            )
+            if require_aggregate
+            else None
+        )
+        assert checker.proof_bound_candidate(
+            tmp_path, paired_checkout, require_aggregate=require_aggregate
+        ) == (
+            (daemon, semantica_head, quanta_head),
+            installation,
         )
 
 
@@ -371,11 +481,21 @@ def test_final_release_source_requires_complete_current_tree(tmp_path):
     for argv in (
         ("init", "-q"),
         ("add", "."),
-        ("-c", "user.name=Gate Test", "-c", "user.email=gate@example.test", "commit", "-qm", "fixture"),
+        (
+            "-c",
+            "user.name=Gate Test",
+            "-c",
+            "user.email=gate@example.test",
+            "commit",
+            "-qm",
+            "fixture",
+        ),
     ):
         subprocess.run(["git", *argv], cwd=tmp_path, check=True)
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
-    expected = {name: hashlib.sha256(name.encode()).hexdigest() for name in ("Cargo.lock", "src.rs")}
+    expected = {
+        name: hashlib.sha256(name.encode()).hexdigest() for name in ("Cargo.lock", "src.rs")
+    }
     assert checker.capture_release_source(tmp_path) == {"files": expected}
     checker.require_release_source(tmp_path, json.dumps({"files": expected}).encode(), head)
     for observed in ({"Cargo.lock": expected["Cargo.lock"]}, {**expected, "src.rs": "0" * 64}):
@@ -397,7 +517,8 @@ def test_final_release_source_rejects_hidden_cargo_lock_change(tmp_path, visibil
     def git(*args):
         return subprocess.check_output(
             ["git", "-c", "user.name=Gate Test", "-c", "user.email=gate@example.test", *args],
-            cwd=tmp_path, text=True,
+            cwd=tmp_path,
+            text=True,
         ).strip()
 
     git("init", "-q")
@@ -479,11 +600,11 @@ def test_disconnected_rust_sources_block_retirement(checkout, capsys):
     (sources / "alternate.rs").write_text("extern crate tantivy_fst as old_fst;\n")
     (sources / "legacy.rs").write_text("use tantivy /* old engine */ ::schema::Field;\n")
     (sources / "format.rs").write_text(
-        '/* Preserve the old envelope. /* use tantivy::Index; */ tantivy::schema */\n'
+        "/* Preserve the old envelope. /* use tantivy::Index; */ tantivy::schema */\n"
         'const FORMAT: &str = r#"tantivy::DocAddress"#;\n'
-        '// use tantivy_fst::Automaton;\n'
-        'use internal::{tantivy as local_type};\n'
-        'quote! { use internal::{tantivy as local_type}; }\n'
+        "// use tantivy_fst::Automaton;\n"
+        "use internal::{tantivy as local_type};\n"
+        "quote! { use internal::{tantivy as local_type}; }\n"
     )
     assert checker.main() == 1
     assert capsys.readouterr().err.splitlines() == [
@@ -563,14 +684,16 @@ def test_legacy_bench_feature_still_blocks_retirement_after_dependency_removal(c
     checker, cargo = checkout
     metadata = json.loads(cargo["metadata"])
     metadata["workspace_members"].extend(["harness-package", "unrelated-package"])
-    metadata["packages"].extend([
-        {
-            "id": "harness-package",
-            "name": "quanta-index-searchd-harness",
-            "features": {"legacy-bench": [], "semantic-bench": []},
-        },
-        {"id": "unrelated-package", "name": "unrelated", "features": {"legacy-bench": []}},
-    ])
+    metadata["packages"].extend(
+        [
+            {
+                "id": "harness-package",
+                "name": "quanta-index-searchd-harness",
+                "features": {"legacy-bench": [], "semantic-bench": []},
+            },
+            {"id": "unrelated-package", "name": "unrelated", "features": {"legacy-bench": []}},
+        ]
+    )
     cargo["metadata"] = json.dumps(metadata)
     assert checker.main() == 1
     assert capsys.readouterr().err.splitlines() == [
@@ -581,11 +704,13 @@ def test_legacy_bench_feature_still_blocks_retirement_after_dependency_removal(c
 def test_retirement_feature_check_is_scoped_to_workspace_members(checkout):
     checker, cargo = checkout
     metadata = json.loads(cargo["metadata"])
-    metadata["packages"].append({
-        "id": "unrelated",
-        "name": "unrelated-package",
-        "features": {"legacy-tantivy": []},
-    })
+    metadata["packages"].append(
+        {
+            "id": "unrelated",
+            "name": "unrelated-package",
+            "features": {"legacy-tantivy": []},
+        }
+    )
     cargo["metadata"] = json.dumps(metadata)
     assert checker.main() == 0
 
@@ -622,24 +747,32 @@ def release_build(checkout):
     binary.write_bytes(compiler_path.read_bytes())
     package_directory = checker.ROOT / "crates" / checker.WORKSPACE_PACKAGE
     daemon_id = f"path+{package_directory.as_uri()}#0.1.0"
-    cargo["metadata"] = json.dumps({
-        "target_directory": str(checker.ROOT / "target"),
-        "build_directory": str(checker.ROOT / "build-cache"),
-    })
+    cargo["metadata"] = json.dumps(
+        {
+            "target_directory": str(checker.ROOT / "target"),
+            "build_directory": str(checker.ROOT / "build-cache"),
+        }
+    )
     receipt = {
         "status": "VERIFIED",
         "exit_code": 0,
         "source_before_after_equal": True,
         "command": [
-            "./scripts/cargow", "build", "--release", "--locked", "--offline",
+            "./scripts/cargow",
+            "build",
+            "--release",
+            "--locked",
+            "--offline",
             "--message-format=json-render-diagnostics",
         ],
-        "binaries": {checker.DAEMON_BINARY: {
-            "path": str(binary),
-            "compiler_artifact": str(compiler_path),
-            "compiler_artifact_sha256": checker.file_sha256(compiler_path),
-            "sha256": checker.file_sha256(binary),
-        }},
+        "binaries": {
+            checker.DAEMON_BINARY: {
+                "path": str(binary),
+                "compiler_artifact": str(compiler_path),
+                "compiler_artifact_sha256": checker.file_sha256(compiler_path),
+                "sha256": checker.file_sha256(binary),
+            }
+        },
     }
     for name in ("source-before.json", "source-after-build.json"):
         (evidence / name).write_text(json.dumps({"files": {"Cargo.toml": "a" * 64}}))
@@ -681,9 +814,7 @@ def test_observed_release_is_independent_of_live_checkout(
     release_build, monkeypatch, capsys, relocated
 ):
     checker, evidence, binary, events = release_build
-    historical_package = (
-        evidence.parent / "build source #1" / "crates" / checker.WORKSPACE_PACKAGE
-    )
+    historical_package = evidence.parent / "build source #1" / "crates" / checker.WORKSPACE_PACKAGE
     events[0]["package_id"] = f"path+{historical_package.as_uri()}#0.1.0"
     events[0]["manifest_path"] = str(historical_package / "Cargo.toml")
     receipt_sha256 = record_release_stream(checker, evidence, events)
@@ -698,37 +829,57 @@ def test_observed_release_is_independent_of_live_checkout(
     monkeypatch.setattr(
         checker, "cargo_output", lambda *_: pytest.fail("archive queried live Cargo metadata")
     )
-    assert checker.main(
-        evidence, installed_sha256, expected_build_receipt_sha256=receipt_sha256
-    ) == 0
+    assert (
+        checker.main(evidence, installed_sha256, expected_build_receipt_sha256=receipt_sha256) == 0
+    )
     assert installed_sha256 in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(("package_id", "name"), [
-    ("path+file:///old/vendor/other-folder#tantivy@0.22.1", "tantivy"),
-    ("path+file:///old/vendor/tantivy-fst#0.5.0", "tantivy-fst"),
-    ("git+ssh://git@example.org/repo?branch=old#tantivy-common@0.7.0", "tantivy-common"),
-    ("sparse+https://index.crates.io/#tantivy-stacker@0.3.0", "tantivy-stacker"),
-])
+@pytest.mark.parametrize(
+    ("package_id", "name"),
+    [
+        ("path+file:///old/vendor/other-folder#tantivy@0.22.1", "tantivy"),
+        ("path+file:///old/vendor/tantivy-fst#0.5.0", "tantivy-fst"),
+        ("git+ssh://git@example.org/repo?branch=old#tantivy-common@0.7.0", "tantivy-common"),
+        ("sparse+https://index.crates.io/#tantivy-stacker@0.3.0", "tantivy-stacker"),
+    ],
+)
 def test_archive_checks_canonical_package_name(release_build, capsys, package_id, name):
     checker, evidence, binary, events = release_build
     events.insert(0, {"reason": "compiler-artifact", "package_id": package_id})
     receipt_sha256 = record_release_stream(checker, evidence, events)
-    assert checker.main(
-        evidence, checker.file_sha256(binary), expected_build_receipt_sha256=receipt_sha256
-    ) == 1
+    assert (
+        checker.main(
+            evidence, checker.file_sha256(binary), expected_build_receipt_sha256=receipt_sha256
+        )
+        == 1
+    )
     assert capsys.readouterr().err.splitlines() == [f"Release compiler artifact: {name}"]
 
 
-@pytest.mark.parametrize(("receipt_update", "files"), [
-    ({"exit_code": False}, None),
-    ({"exit_code": 0.0}, None),
-    ({"command": ["build", "--release", "--locked", "--offline",
-                  "--message-format=json-render-diagnostics", None]}, None),
-    ({}, ["Cargo.toml"]),
-    ({}, {"Cargo.toml": "not-a-sha"}),
-    ({}, {"../Cargo.toml": "a" * 64}),
-])
+@pytest.mark.parametrize(
+    ("receipt_update", "files"),
+    [
+        ({"exit_code": False}, None),
+        ({"exit_code": 0.0}, None),
+        (
+            {
+                "command": [
+                    "build",
+                    "--release",
+                    "--locked",
+                    "--offline",
+                    "--message-format=json-render-diagnostics",
+                    None,
+                ]
+            },
+            None,
+        ),
+        ({}, ["Cargo.toml"]),
+        ({}, {"Cargo.toml": "not-a-sha"}),
+        ({}, {"../Cargo.toml": "a" * 64}),
+    ],
+)
 def test_archive_rejects_pinned_malformed_receipt_and_capture(
     release_build, capsys, receipt_update, files
 ):
@@ -744,9 +895,12 @@ def test_archive_rejects_pinned_malformed_receipt_and_capture(
         receipt["source_capture_sha256"] = checker.file_sha256(before)
     receipt_path.write_text(json.dumps(receipt))
     receipt_sha256 = record_release_stream(checker, evidence, events)
-    assert checker.main(
-        evidence, checker.file_sha256(binary), expected_build_receipt_sha256=receipt_sha256
-    ) == 2
+    assert (
+        checker.main(
+            evidence, checker.file_sha256(binary), expected_build_receipt_sha256=receipt_sha256
+        )
+        == 2
+    )
     assert not capsys.readouterr().out
 
 
@@ -762,29 +916,35 @@ def test_archive_requires_original_compiler_output_digest(release_build, capsys,
         daemon["compiler_artifact_sha256"] = compiler_digest
     receipt_path.write_text(json.dumps(receipt))
     receipt_sha256 = record_release_stream(checker, evidence, events)
-    assert checker.main(
-        evidence, checker.file_sha256(binary), expected_build_receipt_sha256=receipt_sha256
-    ) == 2
+    assert (
+        checker.main(
+            evidence, checker.file_sha256(binary), expected_build_receipt_sha256=receipt_sha256
+        )
+        == 2
+    )
     output = capsys.readouterr()
     assert not output.out
     assert "compiler artifact SHA-256" in output.err
 
 
-@pytest.mark.parametrize("fault, expected", [
-    (None, 0),
-    ("tantivy", 1),
-    ("missing_terminal", 2),
-    ("wrong_executable", 2),
-    ("wrong_manifest", 2),
-    ("malformed_package_id", 2),
-    ("opaque_package_id", 2),
-    ("legacy_feature", 2),
-    ("missing_features", 2),
-    ("binary_changed", 2),
-    ("binary_symlink", 2),
-    ("source_changed", 2),
-    ("both_sources_changed", 2),
-])
+@pytest.mark.parametrize(
+    "fault, expected",
+    [
+        (None, 0),
+        ("tantivy", 1),
+        ("missing_terminal", 2),
+        ("wrong_executable", 2),
+        ("wrong_manifest", 2),
+        ("malformed_package_id", 2),
+        ("opaque_package_id", 2),
+        ("legacy_feature", 2),
+        ("missing_features", 2),
+        ("binary_changed", 2),
+        ("binary_symlink", 2),
+        ("source_changed", 2),
+        ("both_sources_changed", 2),
+    ],
+)
 def test_observed_release_compiler_packages(release_build, fault, expected, capsys):
     checker, evidence, binary, events = release_build
     installed_sha256 = checker.file_sha256(binary)
@@ -801,9 +961,13 @@ def test_observed_release_compiler_packages(release_build, fault, expected, caps
     elif fault == "malformed_package_id":
         events.insert(0, {"reason": "compiler-artifact", "package_id": "path+file:///old#lib@"})
     elif fault == "opaque_package_id":
-        events.insert(0, {
-            "reason": "compiler-artifact", "package_id": "lib 1.0.0 (registry+https://example.org)"
-        })
+        events.insert(
+            0,
+            {
+                "reason": "compiler-artifact",
+                "package_id": "lib 1.0.0 (registry+https://example.org)",
+            },
+        )
     elif fault == "legacy_feature":
         events[0]["features"] = ["legacy-tantivy"]
     elif fault == "missing_features":
@@ -819,9 +983,10 @@ def test_observed_release_compiler_packages(release_build, fault, expected, caps
         for name in ("source-before.json", "source-after-build.json"):
             (evidence / name).write_text('{"files":{"Cargo.toml":"different"}}')
     receipt_sha256 = record_release_stream(checker, evidence, events)
-    assert checker.main(
-        evidence, installed_sha256, expected_build_receipt_sha256=receipt_sha256
-    ) == expected
+    assert (
+        checker.main(evidence, installed_sha256, expected_build_receipt_sha256=receipt_sha256)
+        == expected
+    )
     if fault == "tantivy":
         assert "Release compiler artifact: tantivy-fst" in capsys.readouterr().err
 
@@ -832,9 +997,7 @@ def test_release_matches_installed_daemon_digest(release_build, expected, capsys
     receipt_sha256 = record_release_stream(checker, evidence, events)
     actual = checker.file_sha256(binary)
     anchor = {"same": actual, "different": "0" * 64, "invalid": "missing"}[expected]
-    status = checker.main(
-        evidence, anchor, expected_build_receipt_sha256=receipt_sha256
-    )
+    status = checker.main(evidence, anchor, expected_build_receipt_sha256=receipt_sha256)
     observed = capsys.readouterr()
     if expected == "same":
         assert status == 0
@@ -859,25 +1022,34 @@ def test_release_refuses_another_compiler_stream_for_the_same_artifact_path(rele
     forbidden = {"reason": "compiler-artifact", "package_id": TANTIVY_PACKAGE_ID}
     original_receipt_sha256 = record_release_stream(checker, evidence, [forbidden, *events])
     installed_sha256 = checker.file_sha256(binary)
-    assert checker.main(
-        evidence, installed_sha256, expected_build_receipt_sha256=original_receipt_sha256
-    ) == 1
+    assert (
+        checker.main(
+            evidence, installed_sha256, expected_build_receipt_sha256=original_receipt_sha256
+        )
+        == 1
+    )
     assert "Release compiler artifact: tantivy-fst" in capsys.readouterr().err
 
     # The replacement is a complete successful stream for the same executable path.
     artifacts.write_text("".join(json.dumps(row) + "\n" for row in events))
-    assert checker.main(
-        evidence, installed_sha256, expected_build_receipt_sha256=original_receipt_sha256
-    ) == 2
+    assert (
+        checker.main(
+            evidence, installed_sha256, expected_build_receipt_sha256=original_receipt_sha256
+        )
+        == 2
+    )
     rejected = capsys.readouterr()
     assert not rejected.out
     assert "compiler stream SHA-256 differs" in rejected.err
 
     replacement_receipt_sha256 = record_release_stream(checker, evidence, events)
     assert replacement_receipt_sha256 != original_receipt_sha256
-    assert checker.main(
-        evidence, installed_sha256, expected_build_receipt_sha256=original_receipt_sha256
-    ) == 2
+    assert (
+        checker.main(
+            evidence, installed_sha256, expected_build_receipt_sha256=original_receipt_sha256
+        )
+        == 2
+    )
     rejected = capsys.readouterr()
     assert not rejected.out
     assert "build receipt SHA-256 differs" in rejected.err
@@ -888,11 +1060,14 @@ def test_archive_without_a_recorded_stream_digest_is_unavailable(release_build, 
     (evidence / "build-artifacts.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in events)
     )
-    assert checker.main(
-        evidence,
-        checker.file_sha256(binary),
-        expected_build_receipt_sha256=checker.file_sha256(evidence / "build-result.json"),
-    ) == 2
+    assert (
+        checker.main(
+            evidence,
+            checker.file_sha256(binary),
+            expected_build_receipt_sha256=checker.file_sha256(evidence / "build-result.json"),
+        )
+        == 2
+    )
     assert "compiler_stream_sha256" in capsys.readouterr().err
 
 
@@ -913,11 +1088,25 @@ def shipped_release(release_build, tmp_path, request):
 
     def command(lane, package, name, feature, target):
         return [
-            str(checker.ROOT / "scripts/cargow"), "--lane", lane,
-            "build", "-p", package, "--bin", name, feature, "--locked", "--offline", "--release",
-            "--config", f'build.build-dir={json.dumps(str(checker.ROOT / "build-cache"))}',
-            "--target-dir", str(target), "--message-format=json-render-diagnostics",
-            "--target", "x86_64-unknown-linux-gnu",
+            str(checker.ROOT / "scripts/cargow"),
+            "--lane",
+            lane,
+            "build",
+            "-p",
+            package,
+            "--bin",
+            name,
+            feature,
+            "--locked",
+            "--offline",
+            "--release",
+            "--config",
+            f"build.build-dir={json.dumps(str(checker.ROOT / 'build-cache'))}",
+            "--target-dir",
+            str(target),
+            "--message-format=json-render-diagnostics",
+            "--target",
+            "x86_64-unknown-linux-gnu",
         ]
 
     daemon_target = checker.ROOT / "target/.tantivy-release-daemon"
@@ -926,17 +1115,27 @@ def shipped_release(release_build, tmp_path, request):
     events[0]["executable"] = str(compiler_daemon)
     daemon_receipt["binaries"][checker.DAEMON_BINARY]["compiler_artifact"] = str(compiler_daemon)
     daemon_receipt["command"] = command(
-        checker.NATIVE_RELEASE_LANE, checker.WORKSPACE_PACKAGE, checker.DAEMON_BINARY,
-        "--no-default-features", daemon_target,
+        checker.NATIVE_RELEASE_LANE,
+        checker.WORKSPACE_PACKAGE,
+        checker.DAEMON_BINARY,
+        "--no-default-features",
+        daemon_target,
     )
     daemon_receipt_path.write_text(json.dumps(daemon_receipt))
 
     cli_target = checker.ROOT / "target/.tantivy-release-cli"
     cli_output = cli_target / "x86_64-unknown-linux-gnu" / "release"
     cli_output.mkdir(parents=True)
-    cli_receipt = {**daemon_receipt, "command": command(
-        checker.CLI_RELEASE_LANE, checker.CLI_BINARY, checker.CLI_BINARY, "--all-features", cli_target,
-    )}
+    cli_receipt = {
+        **daemon_receipt,
+        "command": command(
+            checker.CLI_RELEASE_LANE,
+            checker.CLI_BINARY,
+            checker.CLI_BINARY,
+            "--all-features",
+            cli_target,
+        ),
+    }
     cli_receipt["binaries"] = {}
     for name in ("source-before.json", "source-after-build.json"):
         (cli_evidence / name).write_bytes((evidence / name).read_bytes())
@@ -950,20 +1149,23 @@ def shipped_release(release_build, tmp_path, request):
         retained = cli_evidence / filename
         retained.write_bytes(compiler.read_bytes())
         cli_receipt["binaries"][package] = {
-            "path": str(retained), "compiler_artifact": str(compiler),
+            "path": str(retained),
+            "compiler_artifact": str(compiler),
             "compiler_artifact_sha256": checker.file_sha256(compiler),
             "sha256": checker.file_sha256(retained),
         }
-        cli_events.append({
-            "reason": "compiler-artifact",
-            "package_id": f"path+{package_dir.as_uri()}#0.1.0",
-            "manifest_path": str(package_dir / "Cargo.toml"),
-            "target": {"name": target, "kind": [kind]},
-            "profile": {"test": False, "opt_level": "3"},
-            "features": [],
-            "executable": str(compiler) if kind == "bin" else None,
-            "filenames": [str(compiler)],
-        })
+        cli_events.append(
+            {
+                "reason": "compiler-artifact",
+                "package_id": f"path+{package_dir.as_uri()}#0.1.0",
+                "manifest_path": str(package_dir / "Cargo.toml"),
+                "target": {"name": target, "kind": [kind]},
+                "profile": {"test": False, "opt_level": "3"},
+                "features": [],
+                "executable": str(compiler) if kind == "bin" else None,
+                "filenames": [str(compiler)],
+            }
+        )
     cli_events.append({"reason": "build-finished", "success": True})
     (cli_evidence / "build-result.json").write_text(json.dumps(cli_receipt))
     cli_receipt_sha = record_release_stream(checker, cli_evidence, cli_events)
@@ -990,16 +1192,23 @@ def shipped_release(release_build, tmp_path, request):
         member.parent.mkdir(parents=True, exist_ok=True)
         member.write_bytes(role.encode())
         member.chmod(0o755)
-        manifest["artifacts"].append({
-            "role": role, "relative_path": relative,
-            "sha256": checker.file_sha256(member), "size_bytes": member.stat().st_size,
-        })
+        manifest["artifacts"].append(
+            {
+                "role": role,
+                "relative_path": relative,
+                "sha256": checker.file_sha256(member),
+                "size_bytes": member.stat().st_size,
+            }
+        )
     copied_receipt = provisional / "share/quanta/build-receipt.json"
     copied_receipt.parent.mkdir(parents=True, exist_ok=True)
     copied_receipt.write_text(json.dumps({"source_snapshot_digest": "a" * 64}))
-    manifest["build_receipt"].update({
-        "sha256": checker.file_sha256(copied_receipt), "size_bytes": copied_receipt.stat().st_size,
-    })
+    manifest["build_receipt"].update(
+        {
+            "sha256": checker.file_sha256(copied_receipt),
+            "size_bytes": copied_receipt.stat().st_size,
+        }
+    )
     manifest_bytes = json.dumps(manifest, sort_keys=True).encode()
     manifest_sha = checker.hashlib.sha256(manifest_bytes).hexdigest()
     bundle = provisional.rename(install_root / "releases" / manifest_sha)
@@ -1008,80 +1217,171 @@ def shipped_release(release_build, tmp_path, request):
     trust = tmp_path / "trust"
     trust.mkdir()
     key = Ed25519PrivateKey.generate()
-    active_bytes = signed_product_active(key, install_root, manifest_sha, role_digests={
-        "cli_sha256": checker.file_sha256(bundle / "bin/quanta"),
-        "server_sha256": checker.file_sha256(bundle / "libexec/quanta/quanta-cli-server"),
-        "sql_rulepack_worker_sha256": checker.file_sha256(bundle / "libexec/quanta/quanta-sql-rulepack-worker"),
-        "parser_native_worker_sha256": checker.file_sha256(bundle / "libexec/quanta/quanta_native_worker_v3"),
-    })
+    active_bytes = signed_product_active(
+        key,
+        install_root,
+        manifest_sha,
+        role_digests={
+            "cli_sha256": checker.file_sha256(bundle / "bin/quanta"),
+            "server_sha256": checker.file_sha256(bundle / "libexec/quanta/quanta-cli-server"),
+            "sql_rulepack_worker_sha256": checker.file_sha256(
+                bundle / "libexec/quanta/quanta-sql-rulepack-worker"
+            ),
+            "parser_native_worker_sha256": checker.file_sha256(
+                bundle / "libexec/quanta/quanta_native_worker_v3"
+            ),
+        },
+    )
     (trust / "active-generation.json").write_bytes(active_bytes)
-    (trust / "deployment-public-key.bin").write_bytes(key.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    ))
+    (trust / "deployment-public-key.bin").write_bytes(
+        key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
     deployment = tmp_path / "q-deployment"
     deployment.mkdir(mode=0o700)
     selected_q, approval_request = selection_fixture(
-        deployment, binary_bytes=binary.read_bytes(),
+        deployment,
+        binary_bytes=binary.read_bytes(),
         retired_policy=getattr(request, "param", False),
     )
     request_path = deployment / "approval-request.json"
     request_path.write_text(json.dumps(approval_request))
     payload = binding(
-        selected_q, approval_request["selection_sha256"], approval_request["decision_policy_sha256"],
-        checker.hashlib.sha256(active_bytes).hexdigest(), manifest_sha,
+        selected_q,
+        approval_request["selection_sha256"],
+        approval_request["decision_policy_sha256"],
+        checker.hashlib.sha256(active_bytes).hexdigest(),
+        manifest_sha,
         selection_path=approval_request["selection_path"],
     )
     readback = tmp_path / "LOCAL-INSTALLED-LINUX-PRODUCED.json"
-    readback.write_text(json.dumps({
-        "state": "LOCAL_SIGNED_LINUX_INSTALLED_PRODUCT_PRODUCED_NOT_C01_ACCEPTANCE",
-        "installed_active_generation_sha256": payload["active_generation_sha256"],
-        "selected": json.loads(active_bytes)["payload"],
-        "native_q_approval": {"payload": payload, "signature_hex": key.sign(signing_bytes(payload)).hex()},
-        "original_Linux_C01_bodies": 0,
-        "C01_acceptance": False,
-    }))
+    readback.write_text(
+        json.dumps(
+            {
+                "state": "LOCAL_SIGNED_LINUX_INSTALLED_PRODUCT_PRODUCED_NOT_C01_ACCEPTANCE",
+                "installed_active_generation_sha256": payload["active_generation_sha256"],
+                "selected": json.loads(active_bytes)["payload"],
+                "native_q_approval": {
+                    "payload": payload,
+                    "signature_hex": key.sign(signing_bytes(payload)).hex(),
+                },
+                "original_Linux_C01_bodies": 0,
+                "C01_acceptance": False,
+            }
+        )
+    )
     return (
-        checker, evidence, binary, events, receipt_sha, cli_evidence, cli_events,
-        cli_receipt_sha, bundle, readback, trust, request_path, selected_q,
+        checker,
+        evidence,
+        binary,
+        events,
+        receipt_sha,
+        cli_evidence,
+        cli_events,
+        cli_receipt_sha,
+        bundle,
+        readback,
+        trust,
+        request_path,
+        selected_q,
     )
 
 
 @pytest.mark.parametrize("shipped_release", [True], indirect=True)
 def test_shipped_retirement_approval_uses_selected_policy(shipped_release):
-    checker, _, binary, _, _, _, _, _, bundle, readback, trust, request, selected_q = shipped_release
+    checker, _, binary, _, _, _, _, _, bundle, readback, trust, request, selected_q = (
+        shipped_release
+    )
     assert checker.shipped_bundle_findings(
-        bundle, readback, checker.file_sha256(binary), "b" * 40,
-        approval_request_path=request, trust_root=trust,
+        bundle,
+        readback,
+        checker.file_sha256(binary),
+        "b" * 40,
+        approval_request_path=request,
+        trust_root=trust,
     ) == (str(selected_q.state_root), selected_q.native_config_sha256, bundle.name)
 
     policy = Path(json.loads(request.read_text())["decision_policy_path"])
     policy.write_text('{"decision":"rejected"}')
     with pytest.raises(ValueError, match="selection or decision policy changed"):
         checker.shipped_bundle_findings(
-            bundle, readback, checker.file_sha256(binary), "b" * 40,
-            approval_request_path=request, trust_root=trust,
+            bundle,
+            readback,
+            checker.file_sha256(binary),
+            "b" * 40,
+            approval_request_path=request,
+            trust_root=trust,
         )
 
 
-@pytest.mark.parametrize("fault", [
-    None, "missing_sdk", "missing_cli", "tantivy", "swapped_member", "missing_member",
-    "wrong_approval", "wrong_manifest", "wrong_source", "swapped_cli", "swapped_sdk",
-    "wrong_s_head", "wrong_provenance", "cli_mach_o", "cli_aarch64",
-    "readback_state", "readback_generation", "readback_selection", "standalone_approval", "swapped_selected_q",
-    "foreign_product_key",
-])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "missing_sdk",
+        "missing_cli",
+        "tantivy",
+        "swapped_member",
+        "missing_member",
+        "wrong_approval",
+        "wrong_manifest",
+        "wrong_source",
+        "swapped_cli",
+        "swapped_sdk",
+        "wrong_s_head",
+        "wrong_provenance",
+        "cli_mach_o",
+        "cli_aarch64",
+        "readback_state",
+        "readback_generation",
+        "readback_selection",
+        "standalone_approval",
+        "swapped_selected_q",
+        "foreign_product_key",
+    ],
+)
 def test_shipped_release_requires_compiled_consumers_and_approved_bundle(
-    shipped_release, fault, capsys, monkeypatch,
+    shipped_release,
+    fault,
+    capsys,
+    monkeypatch,
 ):
-    checker, evidence, binary, events, _, cli_evidence, cli_events, _, bundle, readback, trust, request, selected_q = shipped_release
+    (
+        checker,
+        evidence,
+        binary,
+        events,
+        _,
+        cli_evidence,
+        cli_events,
+        _,
+        bundle,
+        readback,
+        trust,
+        request,
+        selected_q,
+    ) = shipped_release
     if fault in {"missing_sdk", "missing_cli", "tantivy"}:
         if fault == "missing_sdk":
-            cli_events[:] = [row for row in cli_events if row.get("target", {}).get("name") != "quanta_index_sdk"]
+            cli_events[:] = [
+                row for row in cli_events if row.get("target", {}).get("name") != "quanta_index_sdk"
+            ]
         elif fault == "missing_cli":
-            cli_events[:] = [row for row in cli_events if row.get("target", {}).get("name") != "quanta-index-searchctl"]
+            cli_events[:] = [
+                row
+                for row in cli_events
+                if row.get("target", {}).get("name") != "quanta-index-searchctl"
+            ]
         else:
-            cli_events.insert(-1, {"reason": "compiler-artifact", "package_id": "registry+https://index.crates.io/#tantivy@0.22.1"})
+            cli_events.insert(
+                -1,
+                {
+                    "reason": "compiler-artifact",
+                    "package_id": "registry+https://index.crates.io/#tantivy@0.22.1",
+                },
+            )
     elif fault in {"swapped_member", "missing_member"}:
         member = bundle / "bin/quanta"
         if fault == "swapped_member":
@@ -1105,7 +1405,12 @@ def test_shipped_release_requires_compiled_consumers_and_approved_bundle(
         approval = issued["native_q_approval"]
         approval["signature_hex"] = key.sign(signing_bytes(approval["payload"])).hex()
         readback.write_text(json.dumps(issued))
-    elif fault in {"readback_state", "readback_generation", "readback_selection", "standalone_approval"}:
+    elif fault in {
+        "readback_state",
+        "readback_generation",
+        "readback_selection",
+        "standalone_approval",
+    }:
         issued = json.loads(readback.read_text())
         if fault == "readback_state":
             issued["state"] = "SIGNING_OR_INSTALL_FAILED"
@@ -1119,19 +1424,31 @@ def test_shipped_release_requires_compiled_consumers_and_approved_bundle(
     elif fault == "wrong_manifest":
         (bundle / "share/quanta/release-manifest.json").write_bytes(b"{}")
     elif fault == "wrong_provenance":
-        (bundle / "share/quanta/build-receipt.json").write_text(json.dumps({"source_snapshot_digest": "0" * 64}))
+        (bundle / "share/quanta/build-receipt.json").write_text(
+            json.dumps({"source_snapshot_digest": "0" * 64})
+        )
     elif fault == "wrong_source":
-        (cli_evidence / "source-before.json").write_text('{"files":{"Cargo.toml":"' + "b" * 64 + '"}}')
-        (cli_evidence / "source-after-build.json").write_bytes((cli_evidence / "source-before.json").read_bytes())
+        (cli_evidence / "source-before.json").write_text(
+            '{"files":{"Cargo.toml":"' + "b" * 64 + '"}}'
+        )
+        (cli_evidence / "source-after-build.json").write_bytes(
+            (cli_evidence / "source-before.json").read_bytes()
+        )
         cli_receipt = json.loads((cli_evidence / "build-result.json").read_text())
-        cli_receipt["source_capture_sha256"] = checker.file_sha256(cli_evidence / "source-before.json")
+        cli_receipt["source_capture_sha256"] = checker.file_sha256(
+            cli_evidence / "source-before.json"
+        )
         (cli_evidence / "build-result.json").write_text(json.dumps(cli_receipt))
     elif fault in {"swapped_cli", "swapped_sdk"}:
-        filename = "quanta-index-searchctl" if fault == "swapped_cli" else "libquanta_index_sdk-123.rlib"
+        filename = (
+            "quanta-index-searchctl" if fault == "swapped_cli" else "libquanta_index_sdk-123.rlib"
+        )
         (cli_evidence / filename).write_bytes(b"swapped")
     elif fault in {"cli_mach_o", "cli_aarch64"}:
         archived = cli_evidence / "quanta-index-searchctl"
-        archived.write_bytes(b"\xcf\xfa\xed\xfe" + bytes(116) if fault == "cli_mach_o" else release_elf(machine=183))
+        archived.write_bytes(
+            b"\xcf\xfa\xed\xfe" + bytes(116) if fault == "cli_mach_o" else release_elf(machine=183)
+        )
         receipt_path = cli_evidence / "build-result.json"
         receipt = json.loads(receipt_path.read_bytes())
         entry = receipt["binaries"]["quanta-index-searchctl"]
@@ -1142,22 +1459,33 @@ def test_shipped_release_requires_compiled_consumers_and_approved_bundle(
     s_head = "0" * 40 if fault == "wrong_s_head" else "b" * 40
     identity = (checker.file_sha256(binary), s_head, "d" * 40)
     installation = (str(selected_q.state_root), selected_q.native_config_sha256, bundle.name)
-    monkeypatch.setattr(checker, "proof_bound_candidate", lambda *args, **kw: (identity, installation))
+    monkeypatch.setattr(
+        checker, "proof_bound_candidate", lambda *args, **kw: (identity, installation)
+    )
     monkeypatch.setattr(checker, "require_release_source", lambda *_: None)
     monkeypatch.setattr(checker, "check_migration_dispositions", lambda *_: 0)
     monkeypatch.setattr(checker, "verify_paired_product_bundle", lambda *_: None)
     monkeypatch.setattr(checker, "retirement_findings", lambda *_: [])
     result = checker.main(
-        evidence, expected_build_receipt_sha256=receipt_sha,
-        release_cli_build=cli_evidence, expected_cli_build_receipt_sha256=cli_receipt_sha,
-        shipped_bundle=bundle, installed_readback=readback, trust_root=trust,
+        evidence,
+        expected_build_receipt_sha256=receipt_sha,
+        release_cli_build=cli_evidence,
+        expected_cli_build_receipt_sha256=cli_receipt_sha,
+        shipped_bundle=bundle,
+        installed_readback=readback,
+        trust_root=trust,
         installed_q_approval_request=request,
         proof_checkout=checker.ROOT / "s",
     )
     assert result == (0 if fault is None else 1 if fault == "tantivy" else 2)
     if fault in {"cli_mach_o", "cli_aarch64"}:
         assert "Linux x86-64 executable" in capsys.readouterr().err
-    if fault in {"readback_state", "readback_generation", "readback_selection", "standalone_approval"}:
+    if fault in {
+        "readback_state",
+        "readback_generation",
+        "readback_selection",
+        "standalone_approval",
+    }:
         assert "signed install readback differs" in capsys.readouterr().err
     if fault == "swapped_selected_q":
         assert "selected binary SHA-256 changed" in capsys.readouterr().err
@@ -1165,12 +1493,15 @@ def test_shipped_release_requires_compiled_consumers_and_approved_bundle(
         assert "installed Product generation signature differs" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(("field", "role"), [
-    ("cli_sha256", "public-cli"),
-    ("server_sha256", "server"),
-    ("sql_rulepack_worker_sha256", "sql-rulepack-worker"),
-    ("parser_native_worker_sha256", "parser-native-worker"),
-])
+@pytest.mark.parametrize(
+    ("field", "role"),
+    [
+        ("cli_sha256", "public-cli"),
+        ("server_sha256", "server"),
+        ("sql_rulepack_worker_sha256", "sql-rulepack-worker"),
+        ("parser_native_worker_sha256", "parser-native-worker"),
+    ],
+)
 def test_shipped_bundle_requires_each_signed_role_digest(shipped_release, field, role):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -1179,36 +1510,69 @@ def test_shipped_bundle_requires_each_signed_role_digest(shipped_release, field,
 
     checker, _, binary, _, _, _, _, _, bundle, readback, trust, request, _ = shipped_release
     installed = json.loads(readback.read_text())
-    role_digests = {name: digest for name, digest in installed["selected"].items() if name in {
-        "cli_sha256", "server_sha256", "sql_rulepack_worker_sha256", "parser_native_worker_sha256",
-    }}
+    role_digests = {
+        name: digest
+        for name, digest in installed["selected"].items()
+        if name
+        in {
+            "cli_sha256",
+            "server_sha256",
+            "sql_rulepack_worker_sha256",
+            "parser_native_worker_sha256",
+        }
+    }
     role_digests[field] = "0" * 64
     key = Ed25519PrivateKey.generate()
-    active = signed_product_active(key, bundle.parent.parent, bundle.name, role_digests=role_digests)
+    active = signed_product_active(
+        key, bundle.parent.parent, bundle.name, role_digests=role_digests
+    )
     (trust / "active-generation.json").write_bytes(active)
     (trust / "deployment-public-key.bin").write_bytes(key.public_key().public_bytes_raw())
     installed["selected"] = json.loads(active)["payload"]
     installed["installed_active_generation_sha256"] = hashlib.sha256(active).hexdigest()
     approval = installed["native_q_approval"]
-    approval["payload"]["active_generation_sha256"] = installed["installed_active_generation_sha256"]
+    approval["payload"]["active_generation_sha256"] = installed[
+        "installed_active_generation_sha256"
+    ]
     approval["signature_hex"] = key.sign(signing_bytes(approval["payload"])).hex()
     readback.write_text(json.dumps(installed))
 
-    with pytest.raises(ValueError, match=f"installed Product role {role} differs from the shipped manifest"):
+    with pytest.raises(
+        ValueError, match=f"installed Product role {role} differs from the shipped manifest"
+    ):
         checker.shipped_bundle_findings(
-            bundle, readback, checker.file_sha256(binary), "b" * 40,
-            approval_request_path=request, trust_root=trust,
+            bundle,
+            readback,
+            checker.file_sha256(binary),
+            "b" * 40,
+            approval_request_path=request,
+            trust_root=trust,
         )
 
 
-def test_signed_bundle_cannot_qualify_without_committed_candidate_authority(shipped_release, capsys):
-    checker, evidence, binary, _, receipt_sha, cli, _, cli_sha, bundle, readback, trust, *_ = shipped_release
-    assert checker.main(
-        evidence, checker.file_sha256(binary), expected_build_receipt_sha256=receipt_sha,
-        release_cli_build=cli, expected_cli_build_receipt_sha256=cli_sha,
-        shipped_bundle=bundle, installed_readback=readback, trust_root=trust,
-    ) == 2
-    assert "requires --proof-checkout to select committed Q/S and test authority" in capsys.readouterr().err
+def test_signed_bundle_cannot_qualify_without_committed_candidate_authority(
+    shipped_release, capsys
+):
+    checker, evidence, binary, _, receipt_sha, cli, _, cli_sha, bundle, readback, trust, *_ = (
+        shipped_release
+    )
+    assert (
+        checker.main(
+            evidence,
+            checker.file_sha256(binary),
+            expected_build_receipt_sha256=receipt_sha,
+            release_cli_build=cli,
+            expected_cli_build_receipt_sha256=cli_sha,
+            shipped_bundle=bundle,
+            installed_readback=readback,
+            trust_root=trust,
+        )
+        == 2
+    )
+    assert (
+        "requires --proof-checkout to select committed Q/S and test authority"
+        in capsys.readouterr().err
+    )
 
 
 @pytest.mark.parametrize("role", ["daemon", "cli"])
@@ -1225,7 +1589,9 @@ def test_installed_release_rejects_wrong_compiler_invocation(shipped_release, ro
     elif field == "target":
         command[command.index("--target") + 1] = "aarch64-unknown-linux-gnu"
     elif field == "output":
-        command[command.index("--target-dir") + 1] = str(checker.ROOT / "target/.tantivy-release-other")
+        command[command.index("--target-dir") + 1] = str(
+            checker.ROOT / "target/.tantivy-release-other"
+        )
     else:
         command[0] = str(checker.ROOT / "another-source/scripts/cargow")
     path.write_text(json.dumps(receipt))
@@ -1239,17 +1605,43 @@ def test_installed_release_rejects_wrong_compiler_invocation(shipped_release, ro
 
 @pytest.mark.parametrize(
     ("residue", "installed_change", "disposition_exit"),
-    [(False, None, 0), (True, None, 0), (False, "readback", 0), (False, "q-elf", 0), (False, None, 1)],
+    [
+        (False, None, 0),
+        (True, None, 0),
+        (False, "readback", 0),
+        (False, "q-elf", 0),
+        (False, None, 1),
+    ],
 )
 def test_final_qualification_only_publishes_the_checked_candidate(
-    shipped_release, monkeypatch, capsys, residue, installed_change, disposition_exit,
+    shipped_release,
+    monkeypatch,
+    capsys,
+    residue,
+    installed_change,
+    disposition_exit,
 ):
-    checker, evidence, binary, _, receipt_sha, cli, _, cli_sha, bundle, readback, trust, request, selected_q = shipped_release
+    (
+        checker,
+        evidence,
+        binary,
+        _,
+        receipt_sha,
+        cli,
+        _,
+        cli_sha,
+        bundle,
+        readback,
+        trust,
+        request,
+        selected_q,
+    ) = shipped_release
     paired_checkout = checker.ROOT / "s"
     identity = (checker.file_sha256(binary), "b" * 40, "d" * 40)
     events = []
     monkeypatch.setattr(
-        checker, "proof_bound_candidate",
+        checker,
+        "proof_bound_candidate",
         lambda root, checkout, *, require_aggregate: (identity, None),
     )
     monkeypatch.setattr(checker, "require_release_source", lambda *args: events.append("source"))
@@ -1269,7 +1661,11 @@ def test_final_qualification_only_publishes_the_checked_candidate(
 
     def publish(checkout, observed_identity, installation):
         assert checkout == paired_checkout and observed_identity == identity
-        assert installation == (str(selected_q.state_root), selected_q.native_config_sha256, bundle.name)
+        assert installation == (
+            str(selected_q.state_root),
+            selected_q.native_config_sha256,
+            bundle.name,
+        )
         events.append("published")
 
     monkeypatch.setattr(checker, "retirement_findings", check_workspace)
@@ -1282,11 +1678,16 @@ def test_final_qualification_only_publishes_the_checked_candidate(
 
     monkeypatch.setattr(checker, "check_migration_dispositions", check_disposition)
     result = checker.main(
-        evidence, expected_build_receipt_sha256=receipt_sha,
-        release_cli_build=cli, expected_cli_build_receipt_sha256=cli_sha,
-        shipped_bundle=bundle, installed_readback=readback, trust_root=trust,
+        evidence,
+        expected_build_receipt_sha256=receipt_sha,
+        release_cli_build=cli,
+        expected_cli_build_receipt_sha256=cli_sha,
+        shipped_bundle=bundle,
+        installed_readback=readback,
+        trust_root=trust,
         installed_q_approval_request=request,
-        proof_checkout=paired_checkout, publish_aggregate=True,
+        proof_checkout=paired_checkout,
+        publish_aggregate=True,
     )
     if disposition_exit:
         assert result == 1 and events == ["source", "disposition"]
@@ -1295,20 +1696,42 @@ def test_final_qualification_only_publishes_the_checked_candidate(
         assert result == 2
         assert events == ["source", "disposition", "bundle"]
         message = (
-            "signed install readback changed" if installed_change == "readback" else "selected binary SHA-256 changed"
+            "signed install readback changed"
+            if installed_change == "readback"
+            else "selected binary SHA-256 changed"
         )
         assert message in capsys.readouterr().err
         return
     assert result == (1 if residue else 0)
-    assert events == ["source", "disposition", "bundle", "workspace"] + ([] if residue else ["published"])
+    assert events == ["source", "disposition", "bundle", "workspace"] + (
+        [] if residue else ["published"]
+    )
 
 
 @pytest.mark.parametrize("changed", [None, "config", "root", "manifest"])
 @pytest.mark.parametrize("explicit_aggregate_flag", [False, True])
 def test_release_gate_binds_operational_target_to_signed_readback(
-    shipped_release, monkeypatch, capsys, changed, explicit_aggregate_flag,
+    shipped_release,
+    monkeypatch,
+    capsys,
+    changed,
+    explicit_aggregate_flag,
 ):
-    checker, evidence, binary, _, receipt_sha, cli, _, cli_sha, bundle, readback, trust, request, selected_q = shipped_release
+    (
+        checker,
+        evidence,
+        binary,
+        _,
+        receipt_sha,
+        cli,
+        _,
+        cli_sha,
+        bundle,
+        readback,
+        trust,
+        request,
+        selected_q,
+    ) = shipped_release
     signed = (str(selected_q.state_root), selected_q.native_config_sha256, bundle.name)
     installation = {
         None: signed,
@@ -1327,22 +1750,33 @@ def test_release_gate_binds_operational_target_to_signed_readback(
     monkeypatch.setattr(checker, "retirement_findings", lambda *_: [])
     monkeypatch.setattr(checker, "check_migration_dispositions", lambda root, revision: 0)
     result = checker.main(
-        evidence, expected_build_receipt_sha256=receipt_sha,
-        release_cli_build=cli, expected_cli_build_receipt_sha256=cli_sha,
-        shipped_bundle=bundle, installed_readback=readback, trust_root=trust,
+        evidence,
+        expected_build_receipt_sha256=receipt_sha,
+        release_cli_build=cli,
+        expected_cli_build_receipt_sha256=cli_sha,
+        shipped_bundle=bundle,
+        installed_readback=readback,
+        trust_root=trust,
         installed_q_approval_request=request,
-        proof_checkout=checker.ROOT / "s", require_aggregate=explicit_aggregate_flag,
+        proof_checkout=checker.ROOT / "s",
+        require_aggregate=explicit_aggregate_flag,
     )
     assert result == (0 if installation == signed else 2)
     if installation != signed:
-        assert "operational proofs differ from the signed installation target" in capsys.readouterr().err
+        assert (
+            "operational proofs differ from the signed installation target"
+            in capsys.readouterr().err
+        )
 
 
-@pytest.mark.parametrize(("daemon_pin", "receipt_pin", "error"), [
-    (None, "a" * 64, "requires expected daemon and build receipt"),
-    ("a" * 64, None, "requires expected daemon and build receipt"),
-    ("a" * 64, "invalid", "build receipt SHA-256 must be 64 lowercase hex characters"),
-])
+@pytest.mark.parametrize(
+    ("daemon_pin", "receipt_pin", "error"),
+    [
+        (None, "a" * 64, "requires expected daemon and build receipt"),
+        ("a" * 64, None, "requires expected daemon and build receipt"),
+        ("a" * 64, "invalid", "build receipt SHA-256 must be 64 lowercase hex characters"),
+    ],
+)
 def test_release_requires_independent_pins(release_build, daemon_pin, receipt_pin, error, capsys):
     checker, evidence, _, _ = release_build
     assert checker.main(evidence, daemon_pin, expected_build_receipt_sha256=receipt_pin) == 2
@@ -1355,17 +1789,20 @@ def test_build_receipt_digest_requires_release_evidence(checkout, capsys):
     assert "requires --release-build" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(("fault", "expected"), [
-    (None, 0),
-    ("forbidden_dependency", 1),
-    ("failure_after_terminal", 2),
-    ("missing_daemon_artifact", 2),
-    ("compiler_failed", 2),
-    ("wrong_installed_digest", 2),
-    ("staged_symlink", 2),
-    ("existing_verified", 0),
-    ("wrong_verified_bytes", 2),
-])
+@pytest.mark.parametrize(
+    ("fault", "expected"),
+    [
+        (None, 0),
+        ("forbidden_dependency", 1),
+        ("failure_after_terminal", 2),
+        ("missing_daemon_artifact", 2),
+        ("compiler_failed", 2),
+        ("wrong_installed_digest", 2),
+        ("staged_symlink", 2),
+        ("existing_verified", 0),
+        ("wrong_verified_bytes", 2),
+    ],
+)
 def test_native_release_recipe_checks_its_own_compiler_stream(
     release_build, monkeypatch, capsys, fault, expected
 ):
@@ -1398,11 +1835,23 @@ def test_native_release_recipe_checks_its_own_compiler_stream(
         output = Path(command[command.index("--target-dir") + 1])
         assert output.parent == target
         assert command == [
-            str(cwd / "scripts/cargow"), "--lane", checker.NATIVE_RELEASE_LANE,
-            "build", "-p", checker.WORKSPACE_PACKAGE, "--bin", checker.DAEMON_BINARY,
-            "--no-default-features", "--locked", "--offline", "--release",
-            "--config", f'build.build-dir={json.dumps(str(cwd / "build-cache"))}',
-            "--target-dir", str(output), "--message-format=json-render-diagnostics",
+            str(cwd / "scripts/cargow"),
+            "--lane",
+            checker.NATIVE_RELEASE_LANE,
+            "build",
+            "-p",
+            checker.WORKSPACE_PACKAGE,
+            "--bin",
+            checker.DAEMON_BINARY,
+            "--no-default-features",
+            "--locked",
+            "--offline",
+            "--release",
+            "--config",
+            f"build.build-dir={json.dumps(str(cwd / 'build-cache'))}",
+            "--target-dir",
+            str(output),
+            "--message-format=json-render-diagnostics",
         ]
         staged = output / "release" / checker.DAEMON_BINARY
         staged.parent.mkdir()
@@ -1421,7 +1870,9 @@ def test_native_release_recipe_checks_its_own_compiler_stream(
         return checker.subprocess.CompletedProcess(command, exit_code)
 
     monkeypatch.setattr(checker.subprocess, "run", run)
-    assert checker.main(expected_daemon_sha256=expected_digest, build_native_daemon=True) == expected
+    assert (
+        checker.main(expected_daemon_sha256=expected_digest, build_native_daemon=True) == expected
+    )
     result = capsys.readouterr()
     if expected == 0:
         assert checker.file_sha256(binary) in result.out

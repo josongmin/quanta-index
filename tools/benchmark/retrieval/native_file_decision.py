@@ -166,7 +166,9 @@ def selected_file_bytes(path: Path) -> bytes:
 
 
 def _cohort_runtime(
-    manifest_path: Path, family: dict, legacy_config: Path | None,
+    manifest_path: Path,
+    family: dict,
+    legacy_config: Path | None,
 ) -> tuple[Path, str, tuple[Path, str] | None]:
     """Resolve the frozen config and optional selected installation for a family."""
     if "daemon_config" not in family:
@@ -176,11 +178,14 @@ def _cohort_runtime(
     _require(legacy_config is None, "Native v2 cohort supplies per-family daemon configs")
     config_path = resolve_path(manifest_path.parent / family["daemon_config"])
     config_sha = _sha(config_path)
-    _require(config_sha == family["daemon_config_sha256"], "Native family daemon config digest differs")
+    _require(
+        config_sha == family["daemon_config_sha256"], "Native family daemon config digest differs"
+    )
     selection = None
     if "selection_path" in family:
         selection = (
-            (manifest_path.parent / family["selection_path"]).absolute(), family["selection_sha256"],
+            (manifest_path.parent / family["selection_path"]).absolute(),
+            family["selection_sha256"],
         )
     return config_path, config_sha, selection
 
@@ -313,7 +318,12 @@ class _ScoredFamilyInputs:
 
 
 _REVIEW_SOURCE_ROLES = (
-    "contexts", "control_pools", "review_1", "review_2", "adjudication", "task_contracts",
+    "contexts",
+    "control_pools",
+    "review_1",
+    "review_2",
+    "adjudication",
+    "task_contracts",
 )
 
 
@@ -332,9 +342,12 @@ def _signed_review_sources(source: RawFile) -> tuple[int, dict[str, tuple[Path, 
     for role in _REVIEW_SOURCE_ROLES:
         value = document["inputs"][role]
         _require(
-            isinstance(value, dict) and set(value) == {"path", "sha256"}
-            and isinstance(value["path"], str) and bool(value["path"])
-            and isinstance(value["sha256"], str) and len(value["sha256"]) == 64
+            isinstance(value, dict)
+            and set(value) == {"path", "sha256"}
+            and isinstance(value["path"], str)
+            and bool(value["path"])
+            and isinstance(value["sha256"], str)
+            and len(value["sha256"]) == 64
             and all(char in "0123456789abcdef" for char in value["sha256"]),
             "Native original review source reference differs",
         )
@@ -391,7 +404,9 @@ def verify_controlled_capture_runs(
     if require_signed_install:
         _require(per_family, "Native signed installation requires a v2 selected cohort")
     if scored_inputs is not None:
-        _require(scored_inputs.keys() == families.keys(), "Native controlled scoring roster differs")
+        _require(
+            scored_inputs.keys() == families.keys(), "Native controlled scoring roster differs"
+        )
     _require(
         isinstance(run_ids, list)
         and len(run_ids) == len(families)
@@ -415,7 +430,9 @@ def verify_controlled_capture_runs(
     }
     for run_id in run_ids:
         evidence = native_file_capture.load_published_run(
-            store, run_id, registered_digest=registry_sha,
+            store,
+            run_id,
+            registered_digest=registry_sha,
         )
         _require(
             evidence["source"] == current_source,
@@ -431,7 +448,9 @@ def verify_controlled_capture_runs(
         )
         family_id = evidence["case_id"]
         _require(
-            family_id in families and family_id not in commitments and plan["family_id"] == family_id,
+            family_id in families
+            and family_id not in commitments
+            and plan["family_id"] == family_id,
             "Native controlled capture family is foreign or repeated",
         )
         if scored_inputs is not None:
@@ -442,17 +461,27 @@ def verify_controlled_capture_runs(
                 "Native controlled execution raw bytes differ from scored capture",
             )
             inputs = {
-                row["id"]: row["digest"] for row in evidence["inputs"]
+                row["id"]: row["digest"]
+                for row in evidence["inputs"]
                 if row["availability"] == "present"
             }
             _require(
                 all(inputs.get(key) == digest for key, digest in expected.digests.items()),
                 "Native controlled execution inputs differ from scored family",
             )
-        config_path, _, selected = _cohort_runtime(manifest_path, families[family_id], daemon_config)
-        plan_selected = (Path(plan["selection_path"]), plan["selection_sha256"]) if "selection_path" in plan else None
+        config_path, _, selected = _cohort_runtime(
+            manifest_path, families[family_id], daemon_config
+        )
+        plan_selected = (
+            (Path(plan["selection_path"]), plan["selection_sha256"])
+            if "selection_path" in plan
+            else None
+        )
         if per_family:
-            _require(plan_selected == selected, "Native controlled capture selection differs from its family")
+            _require(
+                plan_selected == selected,
+                "Native controlled capture selection differs from its family",
+            )
         else:
             selections.add(plan_selected)
         _require(
@@ -461,7 +490,9 @@ def verify_controlled_capture_runs(
             "Native controlled capture belongs to a different input cohort",
         )
         commitment = native_file_capture.replay_run(
-            store, evidence, release_validator=release_validator,
+            store,
+            evidence,
+            release_validator=release_validator,
             require_signed_install=require_signed_install,
         )
         if require_signed_install:
@@ -471,7 +502,9 @@ def verify_controlled_capture_runs(
             identity = {
                 key: payload[key]
                 for key in (
-                    "active_generation_sha256", "release_manifest_sha256", "q_elf_sha256",
+                    "active_generation_sha256",
+                    "release_manifest_sha256",
+                    "q_elf_sha256",
                 )
             }
             _require(
@@ -482,7 +515,9 @@ def verify_controlled_capture_runs(
             if representative is None:
                 representative = (plan, Path(plan["selection_path"]), plan["selection_sha256"])
         commitments[family_id] = commitment
-    _require(commitments.keys() == families.keys(), "Native controlled capture family coverage differs")
+    _require(
+        commitments.keys() == families.keys(), "Native controlled capture family coverage differs"
+    )
     if not per_family:
         _require(len(selections) == 1, "Native controlled capture selection commitments differ")
     if require_signed_install:
@@ -542,9 +577,12 @@ def build_native_file_decision(
         output.protect(
             (role, path)
             for role, path in (
-                ("cohort manifest", declared_manifest), ("decision policy", policy_path),
-                ("daemon binary", daemon_binary), ("runner binary", runner_binary),
-                ("daemon config", daemon_config), ("reviewed labels", reviewed_labels_path),
+                ("cohort manifest", declared_manifest),
+                ("decision policy", policy_path),
+                ("daemon binary", daemon_binary),
+                ("runner binary", runner_binary),
+                ("daemon config", daemon_config),
+                ("reviewed labels", reviewed_labels_path),
                 *native_file_paths.cohort_inputs(manifest_path, manifest),
             )
             if path is not None
@@ -572,8 +610,10 @@ def build_native_file_decision(
         )
 
     for path, observed in (
-        (manifest_path, manifest_sha), (policy_file, policy_sha),
-        (daemon_file, daemon_sha), (runner_file, runner_sha),
+        (manifest_path, manifest_sha),
+        (policy_file, policy_sha),
+        (daemon_file, daemon_sha),
+        (runner_file, runner_sha),
     ):
         bind_digest(tracked_files, path, observed)
 
@@ -588,10 +628,14 @@ def build_native_file_decision(
     for family in manifest["families"]:
         config_path, config_sha, selection = _cohort_runtime(manifest_path, family, legacy_config)
         raw_config = read_control(config_path)
-        _require(hashlib.sha256(raw_config).hexdigest() == config_sha, "Native daemon config changed during read")
+        _require(
+            hashlib.sha256(raw_config).hexdigest() == config_sha,
+            "Native daemon config changed during read",
+        )
         config = evaluator._parse_json_text(raw_config.decode("utf-8"))
         _require(
-            isinstance(config, dict) and isinstance(config.get("socket_path"), str)
+            isinstance(config, dict)
+            and isinstance(config.get("socket_path"), str)
             and Path(config["socket_path"]).is_absolute(),
             "Native daemon config lacks an absolute socket_path",
         )
@@ -604,18 +648,31 @@ def build_native_file_decision(
                 "Native family daemon config lacks an absolute state_root",
             )
             root, socket_path = resolve_path(Path(state_root)), resolve_path(Path(socket))
-            _require(root not in roots and socket_path not in sockets, "Native family state root or socket is shared")
+            _require(
+                root not in roots and socket_path not in sockets,
+                "Native family state root or socket is shared",
+            )
             roots.add(root)
             sockets.add(socket_path)
-            recipe = evaluator.canonical({
-                key: value for key, value in config.items() if key not in {"state_root", "socket_path"}
-            })
-            _require(common_recipe is None or recipe == common_recipe, "Native family daemon configs differ beyond state root and socket")
+            recipe = evaluator.canonical(
+                {
+                    key: value
+                    for key, value in config.items()
+                    if key not in {"state_root", "socket_path"}
+                }
+            )
+            _require(
+                common_recipe is None or recipe == common_recipe,
+                "Native family daemon configs differ beyond state root and socket",
+            )
             common_recipe = recipe
         if selection is not None:
             selection_path, selection_sha = selection
             _, selected = load_selected_snapshot(selection_path, selection_sha)
-            _require(selected.state_root == Path(config["state_root"]), "Native family selection root differs")
+            _require(
+                selected.state_root == Path(config["state_root"]),
+                "Native family selection root differs",
+            )
             bind_digest(tracked_selections, selection_path, selection_sha)
         bind_digest(tracked_files, config_path, config_sha)
         runtime[family["family_id"]] = config_path, config_sha, socket, selected
@@ -641,7 +698,9 @@ def build_native_file_decision(
         if output is not None:
             output.protect(("reviewed label receipt", path) for path in declared_reviews.values())
         reviewed = {family: resolve_path(path) for family, path in declared_reviews.items()}
-        _require(len(set(reviewed.values())) == len(reviewed), "Native reviewed label file is repeated")
+        _require(
+            len(set(reviewed.values())) == len(reviewed), "Native reviewed label file is repeated"
+        )
         tracked_path_targets.extend(
             (declared, reviewed[family]) for family, declared in declared_reviews.items()
         )
@@ -730,8 +789,7 @@ def build_native_file_decision(
                 "daemon_config": f"sha256:{runtime[family_id][1]}",
                 "runner_binary": f"sha256:{runner_sha}",
                 **{
-                    key: tracked_input_bytes[paths[key]][0]
-                    for key in file_keys if key != "capture"
+                    key: tracked_input_bytes[paths[key]][0] for key in file_keys if key != "capture"
                 },
                 **{
                     key: f"sha256:{tracked_releases[release_path(entry, key)]}"
@@ -741,7 +799,8 @@ def build_native_file_decision(
             if "selection_sha256" in entry:
                 digests["selection"] = f"sha256:{entry['selection_sha256']}"
             scored_inputs[family_id] = _ScoredFamilyInputs(
-                tracked_input_bytes[paths["capture"]], digests,
+                tracked_input_bytes[paths["capture"]],
+                digests,
             )
         options = (
             {
@@ -749,7 +808,8 @@ def build_native_file_decision(
                 "signed_install_identity": signed_install_identity,
                 "signed_install_recheck": signed_install_recheck,
             }
-            if require_signed_install else {}
+            if require_signed_install
+            else {}
         )
         return verify_controlled_capture_runs(
             manifest_path,
@@ -783,22 +843,32 @@ def build_native_file_decision(
             seed, sources = signed_reviews[family_id]
             documents = {
                 role: _read_signed_review_input(
-                    source, form=role in {"review_1", "review_2", "adjudication"},
+                    source,
+                    form=role in {"review_1", "review_2", "adjudication"},
                 )
                 for role, source in sources.items()
             }
             issued = replay_native_review_labels(
-                paths["repo"], paths["suite"], paths["query_pack"], paths["capture"],
+                paths["repo"],
+                paths["suite"],
+                paths["query_pack"],
+                paths["capture"],
                 source_inputs=(
-                    paths["source_universe"], paths["source_binding"],
-                    release_path(entry, "base_release"), release_path(entry, "target_releases"),
+                    paths["source_universe"],
+                    paths["source_binding"],
+                    release_path(entry, "base_release"),
+                    release_path(entry, "target_releases"),
                     family_id,
                 ),
-                contexts=documents["contexts"], control_pools=documents["control_pools"],
+                contexts=documents["contexts"],
+                control_pools=documents["control_pools"],
                 completed_forms=[documents["review_1"], documents["review_2"]],
-                adjudicated_form=documents["adjudication"], task_contracts=documents["task_contracts"],
+                adjudicated_form=documents["adjudication"],
+                task_contracts=documents["task_contracts"],
                 seed=seed,
-                expected_capture_sha256=tracked_input_bytes[paths["capture"]][0].removeprefix("sha256:"),
+                expected_capture_sha256=tracked_input_bytes[paths["capture"]][0].removeprefix(
+                    "sha256:"
+                ),
             )
             options = {"reviewed_labels": evaluator.canonical(issued)}
         elif (receipt := reviewed.get(family_id)) is not None:
@@ -1011,15 +1081,19 @@ def build_native_file_decision(
         "execution_binding_verified": False,
         "controlled_capture_verified": controlled_capture_verified,
         "controlled_capture_scope": "owned_subprocess_record_and_replayed_raw_capture_only",
-        **({
-            "signed_install_verified": True,
-            "signed_install_scope": "verified_installed_approval_for_selected_native_cohort",
-            "signed_install": signed_install_identity,
-            "review_source_manifest_sha256": {
-                family: reviewed_bytes[path][0].removeprefix("sha256:")
-                for family, path in sorted(reviewed.items())
-            },
-        } if require_signed_install else {}),
+        **(
+            {
+                "signed_install_verified": True,
+                "signed_install_scope": "verified_installed_approval_for_selected_native_cohort",
+                "signed_install": signed_install_identity,
+                "review_source_manifest_sha256": {
+                    family: reviewed_bytes[path][0].removeprefix("sha256:")
+                    for family, path in sorted(reviewed.items())
+                },
+            }
+            if require_signed_install
+            else {}
+        ),
         "capture_binding_consistent": True,
         "capture_consistency_scope": "replayed_capture_commitments_and_current_input_files",
         "qualification_scope": "replayed_file_quality_and_capture_consistency_only",

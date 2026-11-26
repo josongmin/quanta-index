@@ -1175,7 +1175,9 @@ def capture_detached_ab(
             "private runner copy differs",
         )
         private_runner.chmod(stat.S_IRUSR | stat.S_IXUSR)
-        _require(os.access(private_runner, os.X_OK), "runner scratch directory must allow execution")
+        _require(
+            os.access(private_runner, os.X_OK), "runner scratch directory must allow execution"
+        )
         _require(
             RawFile.capture(private_runner).sha256 == runner_sha256, "private executable changed"
         )

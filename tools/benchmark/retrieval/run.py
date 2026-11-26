@@ -2419,8 +2419,9 @@ def _merge_validated_records(
     if any(run.get("span_accounting_version") == 1 for run in validated_runs):
         combined["span_accounting_version"] = 1
     if hybrid_file_evidence.ROUTE in provenance:
-        owners = [run for run in validated_runs
-                  if hybrid_file_evidence.ROUTE in run["route_provenance"]]
+        owners = [
+            run for run in validated_runs if hybrid_file_evidence.ROUTE in run["route_provenance"]
+        ]
         if len(owners) != 1:
             raise RunError("hybrid file cap has no unique source record")
         combined["file_top_k"] = owners[0]["file_top_k"]
@@ -3478,8 +3479,10 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
     _spec_int(spec, "top_k", 1)
     try:
         hybrid_file_evidence.validate_route_configuration(
-            quanta_profile["policy"], spec.get("routes", ["lexical", "semantic", "hybrid"]),
-            spec["top_k"], spec.get("file_top_k"),
+            quanta_profile["policy"],
+            spec.get("routes", ["lexical", "semantic", "hybrid"]),
+            spec["top_k"],
+            spec.get("file_top_k"),
         )
     except hybrid_file_evidence.HybridFileEvidenceError as exc:
         raise RunError(str(exc)) from exc
@@ -4133,13 +4136,9 @@ def _validate_explanation(
         )
         expected_touched = (["lexical"] if lexical else []) + (["semantic"] if dense else [])
         expected_strategy = (
-            "hybrid_file_rrf" if hybrid_file else "rrf"
-        ) if hybrid_file or (lexical and dense) else (
-            "lexical_only"
-            if lexical
-            else "semantic_only"
-            if dense
-            else "empty"
+            ("hybrid_file_rrf" if hybrid_file else "rrf")
+            if hybrid_file or (lexical and dense)
+            else ("lexical_only" if lexical else "semantic_only" if dense else "empty")
         )
         if (
             ("hybrid.dense_fetch" in counts) != ("hybrid.lexical_search" in counts)
@@ -4258,10 +4257,16 @@ def _validate_diagnostic_response_v3(
         if key[1] != hybrid_file_evidence.ROUTE or version != 9 or reference is None:
             raise RunError(f"{where} file response has no explicit route/record contract")
         detail = _exact_keys(response, {"lane_top_k", "file_top_k", "typed_response"}, where)
-        if reference.get("hybrid_file_evidence") != {
-            "schema_version": 1, "lane_top_k": detail["lane_top_k"],
-            "file_top_k": detail["file_top_k"], "response": detail["typed_response"],
-        } or detail["lane_top_k"] != top_k:
+        if (
+            reference.get("hybrid_file_evidence")
+            != {
+                "schema_version": 1,
+                "lane_top_k": detail["lane_top_k"],
+                "file_top_k": detail["file_top_k"],
+                "response": detail["typed_response"],
+            }
+            or detail["lane_top_k"] != top_k
+        ):
             raise RunError(f"{where} file evidence differs from runner record")
         typed = detail["typed_response"]
         if not isinstance(typed, dict):
@@ -4274,14 +4279,27 @@ def _validate_diagnostic_response_v3(
             _, _, observed = _typed_window(typed.get(lane + "_window"), f"{where}.{lane}")
             lanes.update(observed)
         raw_explanation = typed.get("explanation")
-        explanation_fields = {"request_id", "early_stop_reason", "engines_executed",
-                              "engines_touched", "strategy", "planner_trace", "stage_timings"}
+        explanation_fields = {
+            "request_id",
+            "early_stop_reason",
+            "engines_executed",
+            "engines_touched",
+            "strategy",
+            "planner_trace",
+            "stage_timings",
+        }
         if not isinstance(raw_explanation, dict) or not explanation_fields <= set(raw_explanation):
             raise RunError(f"{where} file explanation is incomplete")
         explanation = {field: raw_explanation[field] for field in explanation_fields}
-        _validate_explanation(explanation, f"{where}.explanation", "hybrid",
-                              version, len(hits), observation_policy,
-                              hybrid_file=True)
+        _validate_explanation(
+            explanation,
+            f"{where}.explanation",
+            "hybrid",
+            version,
+            len(hits),
+            observation_policy,
+            hybrid_file=True,
+        )
         observed_candidates = row.get("candidates")
         recorded_candidates = reference.get("candidates")
         scored_file_count = 0 if row.get("status") == "error" else len(hits)
@@ -4301,8 +4319,7 @@ def _validate_diagnostic_response_v3(
                 or not isinstance(witness, dict)
                 or not isinstance(witness.get("candidate"), dict)
                 or not isinstance(recorded.get("span_accounting"), dict)
-                or observed.get("candidate_id")
-                != recorded["span_accounting"].get("unit_id")
+                or observed.get("candidate_id") != recorded["span_accounting"].get("unit_id")
                 or observed.get("candidate_id") != witness["candidate"].get("candidate_id")
                 or not is_finite_json_number(observed.get("score"))
                 or not is_finite_json_number(recorded.get("score"))
@@ -4958,7 +4975,9 @@ def validate_retrieval_diagnostic(
         capture = record.get("captures", {}).get(capture_owner.get("capture_id"), {})
         try:
             hybrid_file_evidence.validate_result(
-                reference, capture, diagnostic["top_k"],
+                reference,
+                capture,
+                diagnostic["top_k"],
                 declared_file_top_k=record.get("file_top_k"),
             )
         except hybrid_file_evidence.HybridFileEvidenceError as exc:
@@ -5000,8 +5019,12 @@ def validate_retrieval_diagnostic(
                 )
             if key[1] == hybrid_file_evidence.ROUTE and row["response_kind"] == "returned_files":
                 explanation = row["response"]["typed_response"]["explanation"]
-                _validate_hybrid_initial_fetch(explanation["planner_trace"], diagnostic["top_k"],
-                                               diagnostic["hybrid_fetch_policy"], prefix="hybrid_file")
+                _validate_hybrid_initial_fetch(
+                    explanation["planner_trace"],
+                    diagnostic["top_k"],
+                    diagnostic["hybrid_fetch_policy"],
+                    prefix="hybrid_file",
+                )
                 request_id = explanation["request_id"]
                 if request_id in seen_request_ids:
                     raise RunError("retrieval diagnostic reuses a file transport request id")
@@ -5098,8 +5121,7 @@ def validate_retrieval_diagnostic(
 
 def _bind_record_file_cap_to_spec(spec: dict, routes: list[str], record: dict) -> None:
     if hybrid_file_evidence.ROUTE in routes:
-        if (type(record.get("file_top_k")) is not int
-                or record["file_top_k"] != spec["file_top_k"]):
+        if type(record.get("file_top_k")) is not int or record["file_top_k"] != spec["file_top_k"]:
             raise RunError("captured hybrid file cap differs from declared spec")
     elif "file_top_k" in record:
         raise RunError("captured file cap lacks the explicit hybrid_file route")
@@ -6914,8 +6936,7 @@ def _validate_linux_resource_metrics(payload: dict, where: str) -> dict:
 
 def _validate_resource_metrics(payload: object, where: str) -> dict:
     if isinstance(payload, dict) and (
-        payload.get("sampler") == "linux-process-owner-v1"
-        or payload.get("schema_version") == 3
+        payload.get("sampler") == "linux-process-owner-v1" or payload.get("schema_version") == 3
     ):
         return _validate_linux_resource_metrics(payload, where)
     keys = {

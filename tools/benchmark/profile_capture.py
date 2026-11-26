@@ -526,9 +526,7 @@ def commit_capture(
         raise EvidenceError("capture replayed run digest inventory differs")
     records, actual, source = [], {}, None
     for run_id in run_ids:
-        expected_digest = (
-            expected_run_digests[run_id] if expected_run_digests is not None else None
-        )
+        expected_digest = expected_run_digests[run_id] if expected_run_digests is not None else None
         evidence = store.load(run_id, expected_digest=expected_digest)
         if evidence["profile"] != profile:
             raise EvidenceError("capture run belongs to a different profile")
@@ -569,7 +567,11 @@ def commit_capture(
     # before publishing the immutable record. The final caller check follows
     # that disk I/O so a source change during it cannot escape the check.
     _validate_capture_document(
-        root, encoded, capture_id=capture_id, profile=profile, registry_digest=registry_digest,
+        root,
+        encoded,
+        capture_id=capture_id,
+        profile=profile,
+        registry_digest=registry_digest,
     )
     if verify_at_commit is not None:
         verify_at_commit()
@@ -625,7 +627,11 @@ def load_capture(
     _run_id(capture_id)
     raw = _read_control_file(root / "captures" / f"{capture_id}.json")
     return _validate_capture_document(
-        root, raw, capture_id=capture_id, profile=profile, registry_digest=registry_digest,
+        root,
+        raw,
+        capture_id=capture_id,
+        profile=profile,
+        registry_digest=registry_digest,
         pointer=pointer,
     )
 

@@ -73,8 +73,10 @@ def test_replay_family_forwards_validator_and_archived_capture_commitment(
     archived = tmp_path / "archived-capture.json"
     archived.write_bytes(b"{}")
     captured = RawFile.capture(archived)
+
     def validator(path):
         return {"release": str(path)}
+
     forwarded = {}
 
     def fake_replay(*args, expected_capture, release_validator):
@@ -94,7 +96,9 @@ def test_replay_family_forwards_validator_and_archived_capture_commitment(
     }
 
 
-@pytest.mark.parametrize("mutation", [None, "foreign_config", "changed_config", "wrong_selection", "missing_selection"])
+@pytest.mark.parametrize(
+    "mutation", [None, "foreign_config", "changed_config", "wrong_selection", "missing_selection"]
+)
 def test_v2_plan_runtime_is_bound_to_family(tmp_path, mutation):
     manifest = tmp_path / "cohort.json"
     config = tmp_path / "daemon.json"
@@ -152,18 +156,24 @@ def test_controlled_replay_accepts_unjudged_pools_but_checks_each_query(
 
     suite, pack, observed, source = unlabelled_capture()
     provenance = {
-        "source_universe_sha256": "a" * 64, "source_binding_sha256": "b" * 64,
+        "source_universe_sha256": "a" * 64,
+        "source_binding_sha256": "b" * 64,
     }
     suite["source_provenance"] = {"kind": "composite_git_releases_v1", **provenance}
     for task in suite["tasks"]:
         task["query_family_id"] = "family"
     pack["suite_commitment_sha256"] = evaluator.digest(evaluator.canonical(suite))
     observed.update(
-        **provenance, suite_commitment_sha256=pack["suite_commitment_sha256"],
+        **provenance,
+        suite_commitment_sha256=pack["suite_commitment_sha256"],
         query_pack_sha256=evaluator.digest(evaluator.canonical(pack)),
     )
-    monkeypatch.setattr(evaluator, "_load_native_file_inputs", lambda *_a, **_k: (suite, pack, observed, source))
-    monkeypatch.setattr(composite_source_binding, "verify", lambda *_a, **_k: {"family_id": "family"})
+    monkeypatch.setattr(
+        evaluator, "_load_native_file_inputs", lambda *_a, **_k: (suite, pack, observed, source)
+    )
+    monkeypatch.setattr(
+        composite_source_binding, "verify", lambda *_a, **_k: {"family_id": "family"}
+    )
     archive = tmp_path / "capture.json"
     archive.write_bytes(evaluator.canonical(observed))
     stored = RawFile.capture(archive)
@@ -328,8 +338,12 @@ def test_signed_plan_cannot_omit_the_installed_approval(tmp_path):
     + [
         (False, False, False, overlap, False)
         for overlap in (
-            "profile_pointer_output", "policy_as_pointer", "store_under_release", "output_under_release",
-            "store_under_source_repository", "output_under_source_repository",
+            "profile_pointer_output",
+            "policy_as_pointer",
+            "store_under_release",
+            "output_under_release",
+            "store_under_source_repository",
+            "output_under_source_repository",
         )
     ],
 )
@@ -360,8 +374,12 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
     root = tmp_path / "evidence"
     profile_pointer = root / "profiles" / f"{capture.PROFILE}.json"
     overlap = mismatched_field in {
-        "profile_pointer_output", "policy_as_pointer", "store_under_release", "output_under_release",
-        "store_under_source_repository", "output_under_source_repository",
+        "profile_pointer_output",
+        "policy_as_pointer",
+        "store_under_release",
+        "output_under_release",
+        "store_under_source_repository",
+        "output_under_source_repository",
     }
     if mismatched_field == "profile_pointer_output":
         profile_pointer.parent.mkdir(parents=True)
@@ -392,11 +410,18 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
         other_repo.unlink(missing_ok=True)
         other_repo.mkdir(parents=True)
         subprocess.run(["git", "-C", str(other_repo), "init", "-q"], check=True)
-        subprocess.run(["git", "-C", str(other_repo), "config", "user.email", "native-test@example.invalid"], check=True)
-        subprocess.run(["git", "-C", str(other_repo), "config", "user.name", "Native Test"], check=True)
+        subprocess.run(
+            ["git", "-C", str(other_repo), "config", "user.email", "native-test@example.invalid"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(other_repo), "config", "user.name", "Native Test"], check=True
+        )
         (other_repo / "tracked.txt").write_text("other family source\n")
         subprocess.run(["git", "-C", str(other_repo), "add", "tracked.txt"], check=True)
-        subprocess.run(["git", "-C", str(other_repo), "commit", "-qm", "Other family source"], check=True)
+        subprocess.run(
+            ["git", "-C", str(other_repo), "commit", "-qm", "Other family source"], check=True
+        )
         if other_family_location == "store_under_release":
             root = other_base / "evidence"
         elif other_family_location == "output_under_release":
@@ -448,13 +473,21 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
             other_state = tmp_path / "other-native-state"
             other_state.mkdir()
             other_config = tmp_path / "other-native-config.json"
-            other_config.write_text(json.dumps({
-                "state_root": str(other_state),
-                "socket_path": str(tmp_path / "other-native.sock"),
-            }))
+            other_config.write_text(
+                json.dumps(
+                    {
+                        "state_root": str(other_state),
+                        "socket_path": str(tmp_path / "other-native.sock"),
+                    }
+                )
+            )
             other_config.chmod(0o600)
             other_selected = launcher.proposed_native_selection(
-                daemon, other_state, other_config, {}, chosen.native_boot_receipt,
+                daemon,
+                other_state,
+                other_config,
+                {},
+                chosen.native_boot_receipt,
             )
             other_selection = tmp_path / "other-native-selection.json"
             other_selection.write_text(json.dumps(other_selected.to_wire(), sort_keys=True) + "\n")
@@ -492,12 +525,21 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
         source_repo.unlink(missing_ok=True)
         source_repo.mkdir(parents=True)
         subprocess.run(["git", "-C", str(source_repo), "init", "-q"], check=True)
-        subprocess.run(["git", "-C", str(source_repo), "config", "user.email", "native-test@example.invalid"], check=True)
-        subprocess.run(["git", "-C", str(source_repo), "config", "user.name", "Native Test"], check=True)
+        subprocess.run(
+            ["git", "-C", str(source_repo), "config", "user.email", "native-test@example.invalid"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(source_repo), "config", "user.name", "Native Test"], check=True
+        )
         (source_repo / "tracked.txt").write_text("original source\n")
         subprocess.run(["git", "-C", str(source_repo), "add", "tracked.txt"], check=True)
-        subprocess.run(["git", "-C", str(source_repo), "commit", "-qm", "Original source"], check=True)
-        frozen_head = subprocess.check_output(["git", "-C", str(source_repo), "rev-parse", "HEAD"], text=True).strip()
+        subprocess.run(
+            ["git", "-C", str(source_repo), "commit", "-qm", "Original source"], check=True
+        )
+        frozen_head = subprocess.check_output(
+            ["git", "-C", str(source_repo), "rev-parse", "HEAD"], text=True
+        ).strip()
         suite = json.loads(suite_path.read_bytes())
         suite["repository_commit"] = frozen_head
         suite_path.write_text(json.dumps(suite))
@@ -620,8 +662,14 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
             if installation_changed:
                 raise ValueError("Native release approval installation changed")
 
-        monkeypatch.setattr(capture.native_release_approval, "verify_installed_approval", verify_approval)
-        if signed_install in ("changed_during_commit", "policy_changed_during_commit", "elf_changed_during_commit"):
+        monkeypatch.setattr(
+            capture.native_release_approval, "verify_installed_approval", verify_approval
+        )
+        if signed_install in (
+            "changed_during_commit",
+            "policy_changed_during_commit",
+            "elf_changed_during_commit",
+        ):
             original_load = RunStore.load
 
             def reload_then_change_install(store, run_id, *, expected_digest=None):
@@ -662,7 +710,9 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
         other_base = tmp_path / other_family["base_release"]
         other_repo = tmp_path / other_family["repo"]
         original_base_digest = native_file_decision._release_tree_sha(other_base)
-        original_head = subprocess.check_output(["git", "-C", str(other_repo), "rev-parse", "HEAD"], text=True).strip()
+        original_head = subprocess.check_output(
+            ["git", "-C", str(other_repo), "rev-parse", "HEAD"], text=True
+        ).strip()
         assert real_verify_repo(other_repo, original_head) == other_repo.resolve()
         with pytest.raises(ValueError, match="overlap|other family"):
             capture.capture(repo, root, registry, 5, plan_path)
@@ -672,10 +722,13 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
         assert not (root / "profiles" / f"{capture.PROFILE}.json").exists()
         return
     if change_source_head_at is not None:
+
         def change_head():
             (source_repo / "tracked.txt").write_text("replacement source\n")
             subprocess.run(["git", "-C", str(source_repo), "add", "tracked.txt"], check=True)
-            subprocess.run(["git", "-C", str(source_repo), "commit", "-qm", "Replacement source"], check=True)
+            subprocess.run(
+                ["git", "-C", str(source_repo), "commit", "-qm", "Replacement source"], check=True
+            )
             with pytest.raises(ValueError, match="HEAD differs"):
                 evaluator.verify_repo(source_repo, frozen_head)
 
@@ -732,6 +785,7 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
         error = f"execution plan.*{mismatched_field}"
         with monkeypatch.context() as legacy:
             if mismatched_field == "foreign_policy_cohort":
+
                 def hash_without_cohort_check(policy_input, *_):
                     raw = capture.read_control(policy_input)
                     return {}, hashlib.sha256(raw).hexdigest()
@@ -758,7 +812,12 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
         assert not list(RunStore(root).runs_dir.glob("*"))
         return
     document = capture.capture(
-        repo, root, registry, 5, plan_path, require_signed_install=require_signed_install,
+        repo,
+        root,
+        registry,
+        5,
+        plan_path,
+        require_signed_install=require_signed_install,
     )
     if signed_install == "stable":
         run_id = document["runs"][0]["run_id"]
@@ -867,7 +926,9 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
             with monkeypatch.context() as during_replay:
                 original_replay = evaluator.load_native_file_execution
 
-                def replace_after_replay(*args, target=path, before=original, replay=original_replay, **kwargs):
+                def replace_after_replay(
+                    *args, target=path, before=original, replay=original_replay, **kwargs
+                ):
                     result = replay(*args, **kwargs)
                     target.write_bytes(before + b" ")
                     return result
@@ -947,14 +1008,21 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
     }
     if v2_family:
         scored_capture = RawFile.capture(output)
-        input_digests = {row["id"]: row["digest"] for row in record["inputs"] if row["id"] != "plan"}
+        input_digests = {
+            row["id"]: row["digest"] for row in record["inputs"] if row["id"] != "plan"
+        }
         args = (manifest, policy, daemon, None, runner, root, [record["run_id"]])
         exact = native_file_decision._ScoredFamilyInputs(
-            (scored_capture.sha256, scored_capture.size), input_digests,
+            (scored_capture.sha256, scored_capture.size),
+            input_digests,
         )
-        assert native_file_decision.verify_controlled_capture_runs(
-            *args, scored_inputs={family["family_id"]: exact},
-        ) == commitments
+        assert (
+            native_file_decision.verify_controlled_capture_runs(
+                *args,
+                scored_inputs={family["family_id"]: exact},
+            )
+            == commitments
+        )
 
         reformatted = output.read_bytes() + b"\n"
         assert json.loads(reformatted) == json.loads(output.read_bytes())
@@ -963,7 +1031,8 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
             input_digests,
         )
         different_cohort = native_file_decision._ScoredFamilyInputs(
-            exact.capture, {**input_digests, "cohort": "sha256:" + "a" * 64},
+            exact.capture,
+            {**input_digests, "cohort": "sha256:" + "a" * 64},
         )
         for observed, error in (
             (different_capture, "raw bytes differ from scored capture"),
@@ -971,7 +1040,8 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
         ):
             with pytest.raises(ValueError, match=error):
                 native_file_decision.verify_controlled_capture_runs(
-                    *args, scored_inputs={family["family_id"]: observed},
+                    *args,
+                    scored_inputs={family["family_id"]: observed},
                 )
     if selected:
         selection_path.write_bytes(selection_bytes + b" ")
@@ -994,9 +1064,18 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
 
 @pytest.mark.parametrize(
     "drift_target",
-    ["policy", "output", "suite_alias", "daemon_config_alias", "repo_alias", "repo_alias_during_hash"],
+    [
+        "policy",
+        "output",
+        "suite_alias",
+        "daemon_config_alias",
+        "repo_alias",
+        "repo_alias_during_hash",
+    ],
 )
-def test_native_capture_refuses_input_drift_after_domain_replay(tmp_path, monkeypatch, drift_target):
+def test_native_capture_refuses_input_drift_after_domain_replay(
+    tmp_path, monkeypatch, drift_target
+):
     original_publish = capture.publish_capture
 
     def publish_with_drift(*args, replay, **kwargs):
@@ -1035,7 +1114,11 @@ def test_native_capture_refuses_input_drift_after_domain_replay(tmp_path, monkey
                 alias.unlink()
                 alias.symlink_to(alternate)
             else:
-                path = tmp_path / "policy.json" if drift_target == "policy" else Path(record["command"]["argv"][-1])
+                path = (
+                    tmp_path / "policy.json"
+                    if drift_target == "policy"
+                    else Path(record["command"]["argv"][-1])
+                )
                 path.write_bytes(path.read_bytes() + b" ")
             return result
 
@@ -1047,10 +1130,14 @@ def test_native_capture_refuses_input_drift_after_domain_replay(tmp_path, monkey
         match="frozen inputs changed before publication|capture output changed|daemon config differs from cohort family",
     ):
         test_controlled_native_capture_promotes_and_replays_one_raw_family(
-            tmp_path, monkeypatch,
+            tmp_path,
+            monkeypatch,
             drift_target == "suite_alias" or drift_target.startswith("repo_alias"),
             drift_target == "daemon_config_alias",
-            False, None, False, alias_family_config=drift_target == "daemon_config_alias",
+            False,
+            None,
+            False,
+            alias_family_config=drift_target == "daemon_config_alias",
         )
     assert not (tmp_path / "evidence" / "profiles" / f"{capture.PROFILE}.json").exists()
 
@@ -1059,7 +1146,9 @@ def test_native_capture_refuses_input_drift_after_domain_replay(tmp_path, monkey
     ("target", "message"),
     [("policy", "frozen inputs changed before publication"), ("output", "capture output changed")],
 )
-def test_native_capture_refuses_drift_during_final_runstore_read(tmp_path, monkeypatch, target, message):
+def test_native_capture_refuses_drift_during_final_runstore_read(
+    tmp_path, monkeypatch, target, message
+):
     original_load = RunStore.load
     commit_reads = 0
 
@@ -1071,7 +1160,8 @@ def test_native_capture_refuses_drift_during_final_runstore_read(tmp_path, monke
             if commit_reads == 2:
                 path = (
                     tmp_path / "policy.json"
-                    if target == "policy" else Path(record["command"]["argv"][-1])
+                    if target == "policy"
+                    else Path(record["command"]["argv"][-1])
                 )
                 path.write_bytes(path.read_bytes() + b"\n")
         return record
@@ -1079,7 +1169,13 @@ def test_native_capture_refuses_drift_during_final_runstore_read(tmp_path, monke
     monkeypatch.setattr(RunStore, "load", load_then_change_input)
     with pytest.raises(ValueError, match=message):
         test_controlled_native_capture_promotes_and_replays_one_raw_family(
-            tmp_path, monkeypatch, False, True, False, None, False,
+            tmp_path,
+            monkeypatch,
+            False,
+            True,
+            False,
+            None,
+            False,
         )
     assert commit_reads == 2
     root = tmp_path / "evidence"
@@ -1092,50 +1188,94 @@ def test_native_capture_refuses_drift_during_final_runstore_read(tmp_path, monke
     ("store_under_release", "output_under_release", "store_under_repo", "output_under_repo"),
 )
 def test_selected_capture_protects_other_family_source_and_release(
-    tmp_path, monkeypatch, location,
+    tmp_path,
+    monkeypatch,
+    location,
 ):
     test_controlled_native_capture_promotes_and_replays_one_raw_family(
-        tmp_path, monkeypatch, False, True, False, None, False,
+        tmp_path,
+        monkeypatch,
+        False,
+        True,
+        False,
+        None,
+        False,
         other_family_location=location,
     )
 
 
 @pytest.mark.parametrize("boundary", ["domain_replay", "commit_reload", "manifest_reload"])
-def test_selected_capture_refuses_source_head_changed_before_publication(tmp_path, monkeypatch, boundary):
+def test_selected_capture_refuses_source_head_changed_before_publication(
+    tmp_path, monkeypatch, boundary
+):
     test_controlled_native_capture_promotes_and_replays_one_raw_family(
-        tmp_path, monkeypatch, False, True, False, None, False,
+        tmp_path,
+        monkeypatch,
+        False,
+        True,
+        False,
+        None,
+        False,
         change_source_head_at=boundary,
     )
 
 
 def test_selected_replay_refuses_other_family_repo_retarget_to_published_store(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     test_controlled_native_capture_promotes_and_replays_one_raw_family(
-        tmp_path, monkeypatch, False, True, False, None, False,
+        tmp_path,
+        monkeypatch,
+        False,
+        True,
+        False,
+        None,
+        False,
         retarget_other_repo_after_capture=True,
     )
 
 
-@pytest.mark.parametrize("drift", ["changed_during_commit", "policy_changed_during_commit",
-                                   "elf_changed_during_commit"])
+@pytest.mark.parametrize(
+    "drift", ["changed_during_commit", "policy_changed_during_commit", "elf_changed_during_commit"]
+)
 def test_signed_capture_refuses_installation_changed_during_commit(tmp_path, monkeypatch, drift):
     test_controlled_native_capture_promotes_and_replays_one_raw_family(
-        tmp_path, monkeypatch, False, True, False, None, False,
+        tmp_path,
+        monkeypatch,
+        False,
+        True,
+        False,
+        None,
+        False,
         signed_install=drift,
     )
 
 
 def test_signed_capture_refuses_selected_unsigned_plan_before_admission(tmp_path, monkeypatch):
     test_controlled_native_capture_promotes_and_replays_one_raw_family(
-        tmp_path, monkeypatch, False, True, False, None, False, require_signed_install=True,
+        tmp_path,
+        monkeypatch,
+        False,
+        True,
+        False,
+        None,
+        False,
+        require_signed_install=True,
     )
 
 
 def test_signed_native_revalidates_only_a_published_approved_run(tmp_path, monkeypatch, capsys):
     test_controlled_native_capture_promotes_and_replays_one_raw_family(
-        tmp_path, monkeypatch, False, True, False, None, False,
-        signed_install="stable", require_signed_install=True,
+        tmp_path,
+        monkeypatch,
+        False,
+        True,
+        False,
+        None,
+        False,
+        signed_install="stable",
+        require_signed_install=True,
     )
     observed = capsys.readouterr()
     assert '"signed_install_verified": true' in observed.out

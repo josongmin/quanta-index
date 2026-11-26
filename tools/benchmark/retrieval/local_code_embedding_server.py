@@ -110,10 +110,17 @@ def load_model(root: Path, manifest: dict):
     if not weight.is_symlink() or weight.resolve() != (root / "model/model.safetensors").resolve():
         raise ValueError("runtime weight link differs from pinned artifact")
     device = "mps" if torch.backends.mps.is_available() else "cpu"
-    model = AutoModel.from_pretrained(
-        str(model_dir), trust_remote_code=True, local_files_only=True,
-        use_safetensors=True, torch_dtype=torch.float32,
-    ).to(device).eval()
+    model = (
+        AutoModel.from_pretrained(
+            str(model_dir),
+            trust_remote_code=True,
+            local_files_only=True,
+            use_safetensors=True,
+            torch_dtype=torch.float32,
+        )
+        .to(device)
+        .eval()
+    )
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir), local_files_only=True, use_fast=True)
     if model.config.hidden_size != DIMENSIONS or tokenizer.model_max_length != CONTEXT_TOKENS:
         raise ValueError("loaded model dimension or tokenizer context differs")
@@ -121,7 +128,12 @@ def load_model(root: Path, manifest: dict):
 
 
 def embed(torch, tokenizer, model, device: str, inputs: list[str], max_input_tokens: int):
-    tokenized = [tokenizer(text, add_special_tokens=True, truncation=False, max_length=CONTEXT_TOKENS)["input_ids"] for text in inputs]
+    tokenized = [
+        tokenizer(text, add_special_tokens=True, truncation=False, max_length=CONTEXT_TOKENS)[
+            "input_ids"
+        ]
+        for text in inputs
+    ]
     lengths = [len(tokens) for tokens in tokenized]
     if any(length > max_input_tokens for length in lengths):
         raise RequestError(413, f"input exceeds {max_input_tokens} tokens")
@@ -129,7 +141,11 @@ def embed(torch, tokenizer, model, device: str, inputs: list[str], max_input_tok
     start = 0
     while start < len(inputs):
         end = start + 1
-        while end < len(inputs) and end - start < MAX_SUBBATCH and max(lengths[start : end + 1]) * (end + 1 - start) <= MAX_SUBBATCH_TOKENS:
+        while (
+            end < len(inputs)
+            and end - start < MAX_SUBBATCH
+            and max(lengths[start : end + 1]) * (end + 1 - start) <= MAX_SUBBATCH_TOKENS
+        ):
             end += 1
         group = inputs[start:end]
         encoded = tokenizer(group, padding=True, truncation=False, return_tensors="pt").to(device)
@@ -140,7 +156,11 @@ def embed(torch, tokenizer, model, device: str, inputs: list[str], max_input_tok
             normalized = torch.nn.functional.normalize(pooled.float(), p=2, dim=1)
         for row in normalized.cpu().tolist():
             norm = math.sqrt(sum(value * value for value in row))
-            if len(row) != DIMENSIONS or not all(math.isfinite(value) for value in row) or not 0.999 <= norm <= 1.001:
+            if (
+                len(row) != DIMENSIONS
+                or not all(math.isfinite(value) for value in row)
+                or not 0.999 <= norm <= 1.001
+            ):
                 raise RuntimeError("model returned invalid embedding")
             vectors.append(row)
         start = end
@@ -177,14 +197,20 @@ def make_handler(state):
                     raise RequestError(404, "unknown path")
                 self._reply(200, state["health"])
             except RequestError as error:
-                self._reply(error.status, {"error": {"message": str(error), "type": "invalid_request_error"}})
+                self._reply(
+                    error.status,
+                    {"error": {"message": str(error), "type": "invalid_request_error"}},
+                )
 
         def do_POST(self):
             try:
                 self._check_host()
                 if self.path != "/v1/embeddings":
                     raise RequestError(404, "unknown path")
-                if self.headers.get("Content-Type", "").split(";", 1)[0].lower() != "application/json":
+                if (
+                    self.headers.get("Content-Type", "").split(";", 1)[0].lower()
+                    != "application/json"
+                ):
                     raise RequestError(415, "application/json required")
                 if self.headers.get("Transfer-Encoding") is not None:
                     raise RequestError(400, "chunked bodies unsupported")
@@ -197,21 +223,37 @@ def make_handler(state):
                     raise RequestError(400, "invalid UTF-8 JSON") from None
                 if not isinstance(request, dict) or request.get("model") != MODEL_ID:
                     raise RequestError(400, "pinned model name required")
-                if request.get("dimensions", DIMENSIONS) != DIMENSIONS or isinstance(request.get("dimensions", DIMENSIONS), bool):
+                if request.get("dimensions", DIMENSIONS) != DIMENSIONS or isinstance(
+                    request.get("dimensions", DIMENSIONS), bool
+                ):
                     raise RequestError(400, "dimensions must be 768")
                 inputs = request.get("input")
                 if isinstance(inputs, str):
                     inputs = [inputs]
-                if not isinstance(inputs, list) or not 1 <= len(inputs) <= MAX_ITEMS or not all(isinstance(item, str) and item for item in inputs):
+                if (
+                    not isinstance(inputs, list)
+                    or not 1 <= len(inputs) <= MAX_ITEMS
+                    or not all(isinstance(item, str) and item for item in inputs)
+                ):
                     raise RequestError(400, "input must contain 1 to 64 nonempty strings")
                 vectors, token_count = embed(*state["engine"], inputs, state["max_input_tokens"])
-                self._reply(200, {
-                    "object": "list", "model": MODEL_ID,
-                    "data": [{"object": "embedding", "index": i, "embedding": row} for i, row in enumerate(vectors)],
-                    "usage": {"prompt_tokens": token_count, "total_tokens": token_count},
-                })
+                self._reply(
+                    200,
+                    {
+                        "object": "list",
+                        "model": MODEL_ID,
+                        "data": [
+                            {"object": "embedding", "index": i, "embedding": row}
+                            for i, row in enumerate(vectors)
+                        ],
+                        "usage": {"prompt_tokens": token_count, "total_tokens": token_count},
+                    },
+                )
             except RequestError as error:
-                self._reply(error.status, {"error": {"message": str(error), "type": "invalid_request_error"}})
+                self._reply(
+                    error.status,
+                    {"error": {"message": str(error), "type": "invalid_request_error"}},
+                )
 
     return Handler
 
@@ -229,17 +271,30 @@ def main(argv=None):
     engine = load_model(args.artifact_root, manifest)
     torch, tokenizer, model, device, versions = engine
     health = {
-        "model": MODEL_ID, "revision": MODEL_REVISION, "code_revision": CODE_REVISION,
+        "model": MODEL_ID,
+        "revision": MODEL_REVISION,
+        "code_revision": CODE_REVISION,
         "artifact_sha256": EXPECTED_SHA256["model/model.safetensors"],
         "manifest_sha256": manifest["_manifest_sha256"],
-        "sha256": EXPECTED_SHA256, "dimensions": DIMENSIONS, "context_tokens": CONTEXT_TOKENS,
-        "pooling": "attention_mask_mean", "normalization": "l2", "device": device,
-        "dtype": "float32", "runtime_versions": versions,
+        "sha256": EXPECTED_SHA256,
+        "dimensions": DIMENSIONS,
+        "context_tokens": CONTEXT_TOKENS,
+        "pooling": "attention_mask_mean",
+        "normalization": "l2",
+        "device": device,
+        "dtype": "float32",
+        "runtime_versions": versions,
         "max_input_tokens": args.max_input_tokens,
     }
-    state = {"health": health, "engine": (torch, tokenizer, model, device), "max_input_tokens": args.max_input_tokens}
+    state = {
+        "health": health,
+        "engine": (torch, tokenizer, model, device),
+        "max_input_tokens": args.max_input_tokens,
+    }
     server = HTTPServer(("127.0.0.1", args.port), make_handler(state))
-    print(f"local code embedding ready on 127.0.0.1:{server.server_port} device={device}", flush=True)
+    print(
+        f"local code embedding ready on 127.0.0.1:{server.server_port} device={device}", flush=True
+    )
     server.serve_forever(poll_interval=0.5)
 
 

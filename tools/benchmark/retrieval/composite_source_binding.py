@@ -59,14 +59,25 @@ def _commit_source(root: Path, message: str, git_environment: dict) -> ev.Source
         ["rev-parse", "HEAD"],
     )
     git = [
-        "git", "-c", "core.autocrlf=false", "-c", "core.filemode=true",
-        "-c", "user.name=Quanta Benchmark", "-c", "user.email=benchmark@example.invalid",
+        "git",
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.filemode=true",
+        "-c",
+        "user.name=Quanta Benchmark",
+        "-c",
+        "user.email=benchmark@example.invalid",
     ]
     for command in commands:
         try:
             result = subprocess.run(
-                [*git, *command], cwd=root, env=environment, check=True,
-                capture_output=True, timeout=300,
+                [*git, *command],
+                cwd=root,
+                env=environment,
+                check=True,
+                capture_output=True,
+                timeout=300,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ev.EvidenceError(f"composite source Git {command[0]} failed") from exc
@@ -106,16 +117,21 @@ def build(base_release: Path, target_release: Path, output: Path) -> dict:
             for index, name in enumerate(names):
                 namespace = f"r{index:02d}"
                 release, document, row = (
-                    (target_release, target, target_rows[name]) if name == changed
+                    (target_release, target, target_rows[name])
+                    if name == changed
                     else (base_release, base, base_rows[name])
                 )
                 view = row["views"]["code_only"]
-                roster.append({
-                    "repository": name, "namespace": namespace,
-                    "release_digest": document["digest"], "commit": row["recipe"]["revision"],
-                    "file_universe_digest": view["file_universe_digest"],
-                    "file_count": view["file_count"],
-                })
+                roster.append(
+                    {
+                        "repository": name,
+                        "namespace": namespace,
+                        "release_digest": document["digest"],
+                        "commit": row["recipe"]["revision"],
+                        "file_universe_digest": view["file_universe_digest"],
+                        "file_count": view["file_count"],
+                    }
+                )
                 raw, manifest = ev.read_json_with_bytes(release / view["manifest"])
                 ev.require(
                     f"sha256:{ev.digest(raw)}" == view["manifest_digest"],
@@ -129,32 +145,44 @@ def build(base_release: Path, target_release: Path, output: Path) -> dict:
                     shutil.copyfile(original, destination)
                     destination.chmod(0o755 if original.stat().st_mode & 0o111 else 0o644)
                     files.append({**file, "path": relative})
-            source = _commit_source(root, f"Composite source for {changed}", corpus_release.environment())
+            source = _commit_source(
+                root, f"Composite source for {changed}", corpus_release.environment()
+            )
             expected, ordered = ev.validate_file_universe(source, files)
             ev.require(source.tracked == set(expected), "composite Git file inventory differs")
             case = {
-                "family_id": changed, "target_repository": changed,
+                "family_id": changed,
+                "target_repository": changed,
                 "target_commit": target_rows[changed]["recipe"]["revision"],
-                "release_roster": roster, "files": ordered, "file_count": len(ordered),
+                "release_roster": roster,
+                "files": ordered,
+                "file_count": len(ordered),
                 "file_universe_digest": f"sha256:{ev.universe_digest(ordered)}",
             }
             cases.append(case)
-            bindings.append({
-                "kind": "provisional_composite_git_source_binding_v1",
-                "status": "SOURCE_ONLY_NOT_FORMAL_EVAL",
-                "family_id": changed, "source_commit": source.commit,
-                "file_universe_digest": case["file_universe_digest"],
-                "file_count": len(ordered), "repository_count": len(roster),
-            })
+            bindings.append(
+                {
+                    "kind": "provisional_composite_git_source_binding_v1",
+                    "status": "SOURCE_ONLY_NOT_FORMAL_EVAL",
+                    "family_id": changed,
+                    "source_commit": source.commit,
+                    "file_universe_digest": case["file_universe_digest"],
+                    "file_count": len(ordered),
+                    "repository_count": len(roster),
+                }
+            )
         universe = {
             "kind": "provisional_source_only_twelve_repo_universes_v1",
             "status": "NOT_ADMITTED_NO_QRELS_NO_SDK_RANKS",
-            "base_release_digest": base["digest"], "cases": cases,
+            "base_release_digest": base["digest"],
+            "cases": cases,
         }
         encoded = ev.canonical(universe)
         for binding in bindings:
             binding["universe_sha256"] = ev.digest(encoded)
-            (output / binding["family_id"] / "source-binding.json").write_bytes(ev.canonical(binding))
+            (output / binding["family_id"] / "source-binding.json").write_bytes(
+                ev.canonical(binding)
+            )
         (output / "source-universe.json").write_bytes(encoded)
         return universe
     except BaseException:
@@ -180,10 +208,12 @@ def verify(
     read_release = validate_release if release_validator is None else release_validator
 
     universe_bytes, universe = ev.read_json_with_bytes(
-        universe_path, expected_bytes=expected_source_universe,
+        universe_path,
+        expected_bytes=expected_source_universe,
     )
     binding_bytes, binding = ev.read_json_with_bytes(
-        binding_path, expected_bytes=expected_source_binding,
+        binding_path,
+        expected_bytes=expected_source_binding,
     )
     ev.require(
         universe.get("kind") == "provisional_source_only_twelve_repo_universes_v1"
@@ -241,8 +271,7 @@ def verify(
     ev.require(base["digest"] == universe["base_release_digest"], "base release differs")
     base_rows = {row["recipe"]["name"]: row for row in base["repositories"]}
     ev.require(
-        len(base["repositories"]) == len(base_rows) == 12
-        and set(base_rows) == set(repositories),
+        len(base["repositories"]) == len(base_rows) == 12 and set(base_rows) == set(repositories),
         "composite source roster differs from base release repositories",
     )
     releases = {base["digest"]: (base_release, base)}

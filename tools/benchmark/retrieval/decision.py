@@ -972,26 +972,40 @@ def build_decision(repo: Path, suite: Path, manifest_path: Path, policy_path: Pa
 
 
 def _replay_go_trace_file_page(
-    trace: dict, repo: str, universe: set[str], lane_returned: dict[str, int],
-    frame_path: str | None, task_id: str,
+    trace: dict,
+    repo: str,
+    universe: set[str],
+    lane_returned: dict[str, int],
+    frame_path: str | None,
+    task_id: str,
 ) -> list[dict]:
     pools = _object(trace.get("rank_pools"), set(lane_returned), "Go trace rank pools")
     first = {}
     for lane, returned in lane_returned.items():
         pool = pools[lane]
         if not isinstance(pool, list) or len(pool) != returned:
-            raise DecisionError(f"Go trace {lane} rank pool count differs from its window: {task_id}")
+            raise DecisionError(
+                f"Go trace {lane} rank pool count differs from its window: {task_id}"
+            )
         witnesses = {}
         for chunk_rank, raw in enumerate(pool, 1):
             row = _object(raw, {"file", "candidate_id", "score_bits"}, f"Go trace {lane} pool row")
-            file = _object(row["file"], {"source_repo_id", "repo_relative_path"},
-                           f"Go trace {lane} pool file")
-            path, bits, candidate_id = file["repo_relative_path"], row["score_bits"], row["candidate_id"]
+            file = _object(
+                row["file"], {"source_repo_id", "repo_relative_path"}, f"Go trace {lane} pool file"
+            )
+            path, bits, candidate_id = (
+                file["repo_relative_path"],
+                row["score_bits"],
+                row["candidate_id"],
+            )
             if (
                 file["source_repo_id"] != repo
-                or not isinstance(path, str) or path not in universe
-                or not isinstance(candidate_id, str) or not candidate_id
-                or type(bits) is not int or not 0 <= bits <= 0xFFFF_FFFF
+                or not isinstance(path, str)
+                or path not in universe
+                or not isinstance(candidate_id, str)
+                or not candidate_id
+                or type(bits) is not int
+                or not 0 <= bits <= 0xFFFF_FFFF
                 or bits & 0x7F80_0000 == 0x7F80_0000
             ):
                 raise DecisionError(f"Go trace {lane} pool row is invalid: {task_id}")
@@ -1011,14 +1025,29 @@ def _replay_go_trace_file_page(
         raise DecisionError(f"Go trace file page differs from lane pool replay: {task_id}")
 
     for candidate, (_, negative_score, _, path) in zip(candidates, expected):
-        row = _object(candidate, {"file", "source_repo_id", "path", "candidate_id",
-                                  "file_rrf_score", "production_source", "source_frame",
-                                  "lexical", "dense"}, "Go trace file candidate")
+        row = _object(
+            candidate,
+            {
+                "file",
+                "source_repo_id",
+                "path",
+                "candidate_id",
+                "file_rrf_score",
+                "production_source",
+                "source_frame",
+                "lexical",
+                "dense",
+            },
+            "Go trace file candidate",
+        )
         if row["path"] != path:
             raise DecisionError(f"Go trace file page differs from lane pool replay: {task_id}")
-        if (row["file"] != {"repo_relative_path": path, "source_repo_id": repo}
-                or row["source_repo_id"] != repo
-                or row["production_source"] is not (path.endswith(".go") and not path.endswith("_test.go"))):
+        if (
+            row["file"] != {"repo_relative_path": path, "source_repo_id": repo}
+            or row["source_repo_id"] != repo
+            or row["production_source"]
+            is not (path.endswith(".go") and not path.endswith("_test.go"))
+        ):
             raise DecisionError(f"Go trace file rank provenance is invalid: {task_id}")
         if row["source_frame"] is True and frame_path is None:
             raise DecisionError(f"Go trace frame was promoted without exact owner: {task_id}")
@@ -1032,14 +1061,25 @@ def _replay_go_trace_file_page(
             if expected_witness is None or not isinstance(actual, dict):
                 raise DecisionError(f"Go trace {lane} witness rank is invalid: {task_id}")
             file_rank, chunk_rank, candidate_id, score_bits = expected_witness
-            actual = _object(actual, {"file_rank", "chunk_rank", "candidate_id", "path",
-                                      "source_repo_id", "raw_score"}, f"Go trace {lane} witness")
-            if (type(actual["file_rank"]) is not int or actual["file_rank"] != file_rank
-                    or type(actual["chunk_rank"]) is not int or actual["chunk_rank"] != chunk_rank):
+            actual = _object(
+                actual,
+                {"file_rank", "chunk_rank", "candidate_id", "path", "source_repo_id", "raw_score"},
+                f"Go trace {lane} witness",
+            )
+            if (
+                type(actual["file_rank"]) is not int
+                or actual["file_rank"] != file_rank
+                or type(actual["chunk_rank"]) is not int
+                or actual["chunk_rank"] != chunk_rank
+            ):
                 raise DecisionError(f"Go trace {lane} witness rank is invalid: {task_id}")
             raw_score = actual["raw_score"]
-            if (not is_finite_json_number(raw_score) or actual["candidate_id"] != candidate_id
-                    or actual["source_repo_id"] != repo or actual["path"] != path):
+            if (
+                not is_finite_json_number(raw_score)
+                or actual["candidate_id"] != candidate_id
+                or actual["source_repo_id"] != repo
+                or actual["path"] != path
+            ):
                 raise DecisionError(f"Go trace {lane} witness drift: {task_id}")
             try:
                 packed_score = struct.pack("<f", raw_score)
@@ -1050,7 +1090,10 @@ def _replay_go_trace_file_page(
         representative = first["lexical"].get(path) or first["dense"][path]
         if row["candidate_id"] != representative[2]:
             raise DecisionError(f"Go trace representative identity drift: {task_id}")
-        if not is_finite_json_number(row["file_rrf_score"]) or row["file_rrf_score"] != -negative_score:
+        if (
+            not is_finite_json_number(row["file_rrf_score"])
+            or row["file_rrf_score"] != -negative_score
+        ):
             raise DecisionError(f"Go trace RRF score disagrees with lane ranks: {task_id}")
     return [{"path": path} for _, _, _, path in expected]
 
@@ -1175,7 +1218,9 @@ def evaluate_go_trace_file_holdout(
                     )
                 )
             except (ValueError, OSError) as exc:
-                raise DecisionError(f"Go trace source-only review invalid: {task_id}: {exc}") from exc
+                raise DecisionError(
+                    f"Go trace source-only review invalid: {task_id}: {exc}"
+                ) from exc
         execution = bound("execution.json")
         if (
             execution.get("status") != "VERIFIED"
@@ -1188,7 +1233,8 @@ def evaluate_go_trace_file_holdout(
             raise DecisionError(f"Go trace SDK attempt lacks paired capture: {task_id}")
         paired = bound("paired.json", execution["paired_sha256"])
         if (
-            type(paired.get("schema_version")) is not int or paired["schema_version"] != 4
+            type(paired.get("schema_version")) is not int
+            or paired["schema_version"] != 4
             or paired.get("generic_execution_profile_id")
             != query_plan.PROFILE_IDS["natural_language"]
         ):
@@ -1228,21 +1274,23 @@ def evaluate_go_trace_file_holdout(
         raw_query = pack_tasks[0].get("query")
         if (
             not isinstance(raw_query, str)
-            or pack_tasks[0].get("query_sha256")
-            != hashlib.sha256(raw_query.encode()).hexdigest()
+            or pack_tasks[0].get("query_sha256") != hashlib.sha256(raw_query.encode()).hexdigest()
         ):
             raise DecisionError(f"Go trace query/pack identity drift: {task_id}")
         try:
             semantic_digest = query_plan.go_trace_semantic_digest(semantic_input)
             expected_identity = query_plan.derive_query_identity(
-                "natural_language", raw_query, nl_config,
+                "natural_language",
+                raw_query,
+                nl_config,
                 semantic_input=semantic_input,
             )
         except query_plan.QueryPlanError as exc:
             raise DecisionError(f"Go trace query/pack identity drift: {task_id}: {exc}") from exc
         if (
             not isinstance(identity, dict)
-            or set(identity) != {
+            or set(identity)
+            != {
                 "original_query_sha256",
                 "effective_lexical_request_sha256",
                 "semantic_text_sha256",
@@ -1264,9 +1312,8 @@ def evaluate_go_trace_file_holdout(
             or trace.get("profile") != "go_trace_file_rrf_v2"
             or not isinstance(context, dict)
             or not isinstance(context.get("mode"), str)
-            or context.get("mode") not in {
-                "unowned", "explicit_pilot_owner_v1", "frozen_module_panic_v1"
-            }
+            or context.get("mode")
+            not in {"unowned", "explicit_pilot_owner_v1", "frozen_module_panic_v1"}
             or context.get("pilot_plan_sha256") != tracked[plan_path]
             or context.get("pilot_inputs_sha256") != plan.get("input_sha256")
             or context.get("manifest_sha256") != case.get("manifest_sha256")
@@ -1300,14 +1347,18 @@ def evaluate_go_trace_file_holdout(
             )
             frame_class = ("unresolved", "exact", "ambiguous")[min(len(frame_paths), 2)]
             if trace.get("frame_class") != frame_class:
-                raise DecisionError(f"Go trace frame class disagrees with failure excerpt: {task_id}")
+                raise DecisionError(
+                    f"Go trace frame class disagrees with failure excerpt: {task_id}"
+                )
             if frame_class == "exact" and context["mode"] == "explicit_pilot_owner_v1":
                 relative_frame_path = next(iter(frame_paths))
         comparison = pack.get("comparison_contract")
         if (
-            type(paired.get("lane_top_k")) is not int or paired["lane_top_k"] != 100
+            type(paired.get("lane_top_k")) is not int
+            or paired["lane_top_k"] != 100
             or not isinstance(comparison, dict)
-            or type(comparison.get("top_k")) is not int or comparison["top_k"] != 100
+            or type(comparison.get("top_k")) is not int
+            or comparison["top_k"] != 100
         ):
             raise DecisionError(f"Go trace SDK lane budget drift: {task_id}")
 
@@ -1352,15 +1403,23 @@ def evaluate_go_trace_file_holdout(
             lane_bounds = {}
             for lane, name in (("Lexical", "hybrid.lexical"), ("Dense", "hybrid.dense")):
                 trace = lanes_by_name[name]
-                lane_bounds[lane] = trace["candidates"].get("value", 0) if trace["contributed"] else 0
+                lane_bounds[lane] = (
+                    trace["candidates"].get("value", 0) if trace["contributed"] else 0
+                )
             seen_ranks = {lane: set() for lane in lane_bounds}
             seen_ids: set[str] = set()
             previous_order = None
             for candidate in candidates:
                 if not isinstance(candidate, dict) or set(candidate) != {
-                    "candidate_id", "source_repo_id", "path", "score", "contributions"
+                    "candidate_id",
+                    "source_repo_id",
+                    "path",
+                    "score",
+                    "contributions",
                 }:
-                    raise DecisionError(f"Go trace hybrid candidate provenance is invalid: {task_id}")
+                    raise DecisionError(
+                        f"Go trace hybrid candidate provenance is invalid: {task_id}"
+                    )
                 candidate_id = candidate["candidate_id"]
                 score = candidate["score"]
                 contributions = candidate["contributions"]
@@ -1373,7 +1432,9 @@ def evaluate_go_trace_file_holdout(
                     or not isinstance(contributions, list)
                     or not 1 <= len(contributions) <= 2
                 ):
-                    raise DecisionError(f"Go trace hybrid candidate provenance is invalid: {task_id}")
+                    raise DecisionError(
+                        f"Go trace hybrid candidate provenance is invalid: {task_id}"
+                    )
                 seen_ids.add(candidate_id)
                 lanes = []
                 expected_score = 0.0
@@ -1387,10 +1448,14 @@ def evaluate_go_trace_file_holdout(
                         or not is_finite_json_number(contribution["raw_score"])
                         or abs(contribution["raw_score"]) > f32_max
                     ):
-                        raise DecisionError(f"Go trace hybrid lane provenance is invalid: {task_id}")
+                        raise DecisionError(
+                            f"Go trace hybrid lane provenance is invalid: {task_id}"
+                        )
                     lane, rank = contribution["lane"], contribution["rank"]
                     if rank > lane_bounds[lane]:
-                        raise DecisionError(f"Go trace hybrid lane rank exceeds the captured lane: {task_id}")
+                        raise DecisionError(
+                            f"Go trace hybrid lane rank exceeds the captured lane: {task_id}"
+                        )
                     if rank in seen_ranks[lane]:
                         raise DecisionError(f"Go trace hybrid lane rank is repeated: {task_id}")
                     seen_ranks[lane].add(rank)
@@ -1399,7 +1464,9 @@ def evaluate_go_trace_file_holdout(
                 if lanes not in (["Lexical"], ["Dense"], ["Lexical", "Dense"]):
                     raise DecisionError(f"Go trace hybrid lane provenance is invalid: {task_id}")
                 if score != expected_score:
-                    raise DecisionError(f"Go trace hybrid RRF score disagrees with lane ranks: {task_id}")
+                    raise DecisionError(
+                        f"Go trace hybrid RRF score disagrees with lane ranks: {task_id}"
+                    )
                 order = (-expected_score, "Lexical" not in lanes, candidate_id)
                 if previous_order is not None and previous_order >= order:
                     raise DecisionError(f"Go trace hybrid ranking order is invalid: {task_id}")
@@ -1428,8 +1495,11 @@ def evaluate_go_trace_file_holdout(
                 if not isinstance(candidate, dict):
                     raise DecisionError(f"Go trace {route} candidate is malformed: {task_id}")
                 path = candidate.get("path")
-                if (not isinstance(path, str) or path not in universe
-                        or candidate.get("source_repo_id") != repo):
+                if (
+                    not isinstance(path, str)
+                    or path not in universe
+                    or candidate.get("source_repo_id") != repo
+                ):
                     raise DecisionError(
                         f"Go trace {route} candidate lacks source provenance: {task_id}"
                     )
@@ -1534,7 +1604,8 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.add_argument(f"--{key}")
     parser.add_argument(
-        "--require-signed-install", action="store_true",
+        "--require-signed-install",
+        action="store_true",
         help="Require controlled Native captures, signed installation and --native-reviewed-labels",
     )
     args = parser.parse_args(argv)
@@ -1573,7 +1644,8 @@ def main(argv: list[str] | None = None) -> int:
                     "Native decision requires cohort, policy, daemon, runner and out"
                 )
             output = native_file_paths.Output.prepare(
-                Path(args.out), exists_error="Native decision output must be a new path",
+                Path(args.out),
+                exists_error="Native decision output must be a new path",
             )
             if (args.native_execution_root is None) != (args.native_execution_runs is None):
                 raise DecisionError("Native execution evidence needs both root and run IDs")
@@ -1587,12 +1659,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.native_execution_root is not None:
                 run_ids_path = Path(args.native_execution_runs)
                 output.protect((("execution run IDs", run_ids_path),))
-                options.update({
-                    "execution_evidence_root": Path(args.native_execution_root),
-                    "execution_run_ids": parse_json(
-                        read_control(run_ids_path).decode("utf-8")
-                    ),
-                })
+                options.update(
+                    {
+                        "execution_evidence_root": Path(args.native_execution_root),
+                        "execution_run_ids": parse_json(read_control(run_ids_path).decode("utf-8")),
+                    }
+                )
             if args.native_reviewed_labels is not None:
                 options["reviewed_labels_path"] = Path(args.native_reviewed_labels)
             decision = build_native_file_decision(

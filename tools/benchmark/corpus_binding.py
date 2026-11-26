@@ -407,10 +407,9 @@ def _validated_split_manifest(
             ):
                 raise EvidenceError("split manifest repository commit or source differs")
             prior_side = url_sides.get(url)
-            if (
-                (prior_side is not None and prior_side != entry["split"])
-                or entry["repository_commit"] in commits
-            ):
+            if (prior_side is not None and prior_side != entry["split"]) or entry[
+                "repository_commit"
+            ] in commits:
                 raise EvidenceError("split manifest repeats one upstream repository")
             url_sides[url] = entry["split"]
             commits.add(entry["repository_commit"])

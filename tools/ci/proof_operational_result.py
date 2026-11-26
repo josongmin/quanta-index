@@ -613,7 +613,8 @@ def operational_installation_identity(payload_by_id: dict[str, Any]) -> tuple[st
         proof = payload_by_id.get(proof_id, {})
         result = proof.get("execution_result")
         _require(
-            isinstance(result, dict) and result.get("kind") == "operational"
+            isinstance(result, dict)
+            and result.get("kind") == "operational"
             and isinstance(result.get("target"), dict),
             f"{proof_id} lacks the signed installation target binding",
         )

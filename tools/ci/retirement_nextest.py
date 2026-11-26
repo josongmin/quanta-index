@@ -32,7 +32,9 @@ from tools.ci.source_closure import (
     require_source_files_unchanged,
 )
 
-RUST_PROOF_SOURCE = re.compile(r"crates/[a-z0-9-]+/(?:src|tests)/(?:[a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+\.rs")
+RUST_PROOF_SOURCE = re.compile(
+    r"crates/[a-z0-9-]+/(?:src|tests)/(?:[a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+\.rs"
+)
 NEXTEST_RUN_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 GIT_REVISION = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -79,7 +81,8 @@ def release_event_roster(root: Path, revision: str) -> dict[str, dict[str, str]]
     candidates.extend(
         {"path": target["path"], "tests": group["tests"]}
         for target in lexical["targets"]
-        for group in target["dispositions"] if group["disposition"] == "retain"
+        for group in target["dispositions"]
+        if group["disposition"] == "retain"
     )
     candidates.extend(
         candidate
@@ -91,13 +94,20 @@ def release_event_roster(root: Path, revision: str) -> dict[str, dict[str, str]]
         relative, tests = candidate["path"], candidate["tests"]
         if not isinstance(relative, str) or not RUST_PROOF_SOURCE.fullmatch(relative):
             raise ValueError(f"invalid retirement roster source: {relative!r}")
-        if not isinstance(tests, list) or not tests or any(
-            not isinstance(case, str) or not case.isascii() or not case.isidentifier() for case in tests
+        if (
+            not isinstance(tests, list)
+            or not tests
+            or any(
+                not isinstance(case, str) or not case.isascii() or not case.isidentifier()
+                for case in tests
+            )
         ):
             raise ValueError(f"invalid retirement roster test declaration: {relative}")
         declared.update((relative, case) for case in tests)
 
-    resolve = retirement_event_resolver(root, read, resolve_path=committed_path_resolver(git, root, revision))
+    resolve = retirement_event_resolver(
+        root, read, resolve_path=committed_path_resolver(git, root, revision)
+    )
     events: dict[str, dict[str, str]] = {}
     for relative, case in sorted(declared):
         read(relative)
@@ -120,12 +130,17 @@ def _committed_event_features(root: Path, revision: str) -> dict[str, frozenset[
 
 
 def _require_roster_selection(
-    root: Path, revision: str, events: set[str], features: list[str],
+    root: Path,
+    revision: str,
+    events: set[str],
+    features: list[str],
 ) -> None:
     profiles = _committed_event_features(root, revision)
     outside = events - profiles.keys()
     if outside:
-        raise ValueError(f"Nextest events outside the committed retirement roster: {sorted(outside)}")
+        raise ValueError(
+            f"Nextest events outside the committed retirement roster: {sorted(outside)}"
+        )
     selected_features = frozenset(features)
     for event in sorted(events):
         if selected_features != profiles[event]:
@@ -141,15 +156,19 @@ def release_capture_batches(root: Path, revision: str) -> list[dict]:
 
     @cache
     def test_features(package: str) -> dict[str, tuple[str, ...]]:
-        manifest = tomllib.loads(subprocess.check_output(
-            ["git", "--no-replace-objects", "show", f"{revision}:crates/{package}/Cargo.toml"],
-            cwd=root,
-        ).decode("utf-8"))
+        manifest = tomllib.loads(
+            subprocess.check_output(
+                ["git", "--no-replace-objects", "show", f"{revision}:crates/{package}/Cargo.toml"],
+                cwd=root,
+            ).decode("utf-8")
+        )
         return {
-            target["name"]: tuple(sorted(
-                feature if "/" in feature else f"{package}/{feature}"
-                for feature in target.get("required-features", [])
-            ))
+            target["name"]: tuple(
+                sorted(
+                    feature if "/" in feature else f"{package}/{feature}"
+                    for feature in target.get("required-features", [])
+                )
+            )
             for target in manifest.get("test", [])
         }
 
@@ -178,11 +197,16 @@ def release_capture_batches(root: Path, revision: str) -> list[dict]:
             tests = " | ".join(f"test(={event.partition('$')[2]})" for event in cases)
             filter_parts.append(f"(binary(={target}) & ({tests}))")
             events.extend(cases)
-        batches.append({
-            "package": package, "include_lib": include_lib, "test_targets": test_targets,
-            "features": list(features), "filterset": " | ".join(filter_parts),
-            "expected_events": sorted(events),
-        })
+        batches.append(
+            {
+                "package": package,
+                "include_lib": include_lib,
+                "test_targets": test_targets,
+                "features": list(features),
+                "filterset": " | ".join(filter_parts),
+                "expected_events": sorted(events),
+            }
+        )
     return batches
 
 
@@ -213,8 +237,18 @@ def _retained_file_state(path: Path, *, label: str = "input") -> tuple[tuple[int
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode):
         raise ValueError(f"invalid retained Nextest {label}: {path}")
-    return (*parents, (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
-                       info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+    return (
+        *parents,
+        (
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_nlink,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+        ),
+    )
 
 
 def retained_executable_digests() -> Callable[[Path], str]:
@@ -243,11 +277,14 @@ def _approved_linux_old_q_sha256(root: Path, revision: str) -> str:
         raise ValueError("old-Q approval requires a full Git revision")
     try:
         raw = subprocess.check_output(
-            ["git", "--no-replace-objects", "show", f"{revision}:.circleci/config.yml"], cwd=root,
+            ["git", "--no-replace-objects", "show", f"{revision}:.circleci/config.yml"],
+            cwd=root,
         )
         digest = yaml.safe_load(raw)["jobs"]["verify-rust-tests"]["environment"][LEGACY_SHA_ENV]
     except (KeyError, TypeError, subprocess.CalledProcessError, yaml.YAMLError) as error:
-        raise ValueError("release candidate lacks the committed approved Linux old-Q pin") from error
+        raise ValueError(
+            "release candidate lacks the committed approved Linux old-Q pin"
+        ) from error
     if not isinstance(digest, str) or not SHA256.fullmatch(digest):
         raise ValueError("release candidate has an invalid approved Linux old-Q SHA-256")
     return digest
@@ -262,27 +299,48 @@ def _requires_linux_boot_inventory(package: str, test_targets: list[str]) -> boo
 
 
 def _require_approved_old_q(
-    root: Path, revision: str, package: str, test_targets: list[str], digest: str | None,
+    root: Path,
+    revision: str,
+    package: str,
+    test_targets: list[str],
+    digest: str | None,
 ) -> None:
     if _uses_old_q(package, test_targets):
         if digest is None:
             raise ValueError("retained old-Q executable is absent")
         if digest != _approved_linux_old_q_sha256(root, revision):
-            raise ValueError("retained old-Q executable does not match the committed approved Linux old-Q SHA-256")
+            raise ValueError(
+                "retained old-Q executable does not match the committed approved Linux old-Q SHA-256"
+            )
 
 
 def check_frozen_inputs(
-    artifact: RawFile, observation: dict, root: Path, release_revision: str,
-    *, executable_digest: Callable[[Path], str] | None = None,
+    artifact: RawFile,
+    observation: dict,
+    root: Path,
+    release_revision: str,
+    *,
+    executable_digest: Callable[[Path], str] | None = None,
 ) -> None:
     run_id = observation["run_id"]
     if artifact.sha256 != f"sha256:{observation['source_manifest_sha256']}":
         raise ValueError(f"frozen source manifest SHA-256 differs for {run_id}")
     manifest = parse_proof_json(artifact.read_control())
-    if not isinstance(manifest, dict) or set(manifest) != {
-        "head", "source_tree_sha256", "inventory_sha256", "events_sha256", "execution",
-    } or not isinstance(manifest["head"], str):
-        raise ValueError(f"frozen source manifest lacks its revision and terminal binding for {run_id}")
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest)
+        != {
+            "head",
+            "source_tree_sha256",
+            "inventory_sha256",
+            "events_sha256",
+            "execution",
+        }
+        or not isinstance(manifest["head"], str)
+    ):
+        raise ValueError(
+            f"frozen source manifest lacks its revision and terminal binding for {run_id}"
+        )
     run_tree = release_tree_sha256(root, manifest["head"])
     if run_tree != manifest["source_tree_sha256"]:
         raise ValueError(f"frozen source tree SHA-256 differs for {run_id}")
@@ -290,13 +348,22 @@ def check_frozen_inputs(
         raise ValueError(f"frozen source tree differs from the release candidate for {run_id}")
     for key in ("inventory_sha256", "events_sha256"):
         if manifest[key] != observation[key]:
-            raise ValueError(f"frozen source manifest {key} differs from the observation for {run_id}")
+            raise ValueError(
+                f"frozen source manifest {key} differs from the observation for {run_id}"
+            )
     execution = manifest["execution"]
     if not isinstance(execution, dict) or set(execution) != {
-        "binaries_sha256", "cargo_sha256", "executables", "selection", "commands", "legacy_searchd",
+        "binaries_sha256",
+        "cargo_sha256",
+        "executables",
+        "selection",
+        "commands",
+        "legacy_searchd",
         "workspace_root",
     }:
-        raise ValueError(f"frozen source manifest lacks Nextest build and executable bindings for {run_id}")
+        raise ValueError(
+            f"frozen source manifest lacks Nextest build and executable bindings for {run_id}"
+        )
     folder = artifact.path.parent
     binaries = RawFile.capture(folder / f"{run_id}-binaries.json")
     cargo = RawFile.capture(folder / f"{run_id}-cargo.json")
@@ -307,8 +374,10 @@ def check_frozen_inputs(
         raise ValueError(f"Nextest inventory SHA-256 differs for {run_id}")
     workspace_root = execution["workspace_root"]
     if (
-        not isinstance(workspace_root, str) or not Path(workspace_root).is_absolute()
-        or ".." in Path(workspace_root).parts or str(Path(workspace_root)) != workspace_root
+        not isinstance(workspace_root, str)
+        or not Path(workspace_root).is_absolute()
+        or ".." in Path(workspace_root).parts
+        or str(Path(workspace_root)) != workspace_root
     ):
         raise ValueError(f"invalid retirement execution workspace root for {run_id}")
     target_dir, paths = _build_paths(binaries, cargo, root=Path(workspace_root))
@@ -318,30 +387,46 @@ def check_frozen_inputs(
     _require_roster_selection(root, release_revision, selected, selection["features"])
     _require_retirement_platforms(binaries, inventory, selection)
     expected_commands = _execution_commands(
-        selection, target_dir.parent / binaries.path.name, target_dir.parent / cargo.path.name,
+        selection,
+        target_dir.parent / binaries.path.name,
+        target_dir.parent / cargo.path.name,
     )
     if execution["commands"] != expected_commands:
-        raise ValueError(f"retained Nextest commands differ from the recorded selection for {run_id}")
+        raise ValueError(
+            f"retained Nextest commands differ from the recorded selection for {run_id}"
+        )
     digest = executable_digest or retained_executable_digests()
     legacy = execution["legacy_searchd"]
     if legacy is not None and (not isinstance(legacy, dict) or set(legacy) != {"path", "sha256"}):
         raise ValueError(f"invalid retained old-Q executable identity for {run_id}")
     _require_approved_old_q(
-        root, release_revision, selection["package"], selection["test_targets"],
+        root,
+        release_revision,
+        selection["package"],
+        selection["test_targets"],
         legacy["sha256"] if legacy is not None else None,
     )
     if legacy is not None:
         executed = _legacy_binary_path(legacy["path"], legacy["sha256"])
         if executed != target_dir / LEGACY_EXECUTABLE:
-            raise ValueError(f"old-Q execution path differs from the retained executable for {run_id}")
+            raise ValueError(
+                f"old-Q execution path differs from the retained executable for {run_id}"
+            )
         retained_legacy = folder / f"{run_id}-target" / LEGACY_EXECUTABLE
         if digest(retained_legacy) != legacy["sha256"]:
             raise ValueError("old-Q executable SHA-256 differs from the retirement execution pin")
     fingerprints = execution["executables"]
-    if not isinstance(fingerprints, dict) or set(fingerprints) != set(paths) or any(
-        not isinstance(digest, str) or not SHA256.fullmatch(digest) for digest in fingerprints.values()
+    if (
+        not isinstance(fingerprints, dict)
+        or set(fingerprints) != set(paths)
+        or any(
+            not isinstance(digest, str) or not SHA256.fullmatch(digest)
+            for digest in fingerprints.values()
+        )
     ):
-        raise ValueError(f"retained Nextest executables differ from the built test targets for {run_id}")
+        raise ValueError(
+            f"retained Nextest executables differ from the built test targets for {run_id}"
+        )
     for name, path in paths.items():
         retained = folder / f"{run_id}-target" / path.relative_to(target_dir)
         if digest(retained) != fingerprints[name]:
@@ -349,14 +434,19 @@ def check_frozen_inputs(
 
 
 def _require_frozen_checkout(
-    root: Path, revision: str, states: dict[str, tuple[int, ...]] | None = None,
+    root: Path,
+    revision: str,
+    states: dict[str, tuple[int, ...]] | None = None,
 ) -> None:
     git = ["git", "--no-replace-objects"]
-    current_head = subprocess.check_output([*git, "rev-parse", "--verify", "HEAD"], cwd=root, text=True).strip()
+    current_head = subprocess.check_output(
+        [*git, "rev-parse", "--verify", "HEAD"], cwd=root, text=True
+    ).strip()
     if current_head != revision:
         raise ValueError("frozen source revision differs from retirement checkout HEAD")
     dirty = subprocess.check_output(
-        [*git, "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=root,
+        [*git, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=root,
     )
     if dirty:
         raise ValueError("refusing dirty retirement checkout")
@@ -380,7 +470,10 @@ def _capture_frozen_checkout(root: Path, revision: str) -> dict[str, tuple[int, 
 
 
 def release_source_manifest(
-    root: Path, revision: str, inventory_path: Path, events_path: Path,
+    root: Path,
+    revision: str,
+    inventory_path: Path,
+    events_path: Path,
 ) -> dict[str, str]:
     """Bind retained collection and terminal to the runner's frozen revision."""
     states = _capture_frozen_checkout(root, revision)
@@ -388,7 +481,10 @@ def release_source_manifest(
 
 
 def _source_manifest_for_execution(
-    root: Path, revision: str, inventory_path: Path, events_path: Path,
+    root: Path,
+    revision: str,
+    inventory_path: Path,
+    events_path: Path,
     states: dict[str, tuple[int, ...]],
 ) -> dict[str, str]:
     _require_frozen_checkout(root, revision, states)
@@ -413,9 +509,13 @@ def _build_paths(binaries: RawFile, cargo: RawFile, *, root: Path) -> tuple[Path
     rows = build.get("rust-binaries")
     target = metadata.get("target_directory")
     if (
-        not isinstance(build_meta, dict) or not isinstance(rows, dict) or not rows
-        or not isinstance(target, str) or not Path(target).is_absolute()
-        or ".." in Path(target).parts or build_meta.get("target-directory") != target
+        not isinstance(build_meta, dict)
+        or not isinstance(rows, dict)
+        or not rows
+        or not isinstance(target, str)
+        or not Path(target).is_absolute()
+        or ".." in Path(target).parts
+        or build_meta.get("target-directory") != target
         or metadata.get("workspace_root") != str(root)
     ):
         raise ValueError("Nextest build metadata differs from the workspace or its Cargo target")
@@ -425,14 +525,21 @@ def _build_paths(binaries: RawFile, cargo: RawFile, *, root: Path) -> tuple[Path
         if not isinstance(raw_path, str) or row.get("binary-id") != name:
             raise ValueError("Nextest build inventory lacks executable identity")
         path = Path(raw_path)
-        if not path.is_absolute() or ".." in path.parts or not path.is_relative_to(target) or path == Path(target):
+        if (
+            not path.is_absolute()
+            or ".." in path.parts
+            or not path.is_relative_to(target)
+            or path == Path(target)
+        ):
             raise ValueError("Nextest test executable is outside its Cargo target")
         paths[name] = path
     if len(set(paths.values())) != len(paths):
         raise ValueError("Nextest build inventory repeats an executable path")
     target_dir = Path(target)
     runtime_rows = build_meta.get("non-test-binaries", {})
-    if not isinstance(runtime_rows, dict) or any(not isinstance(rows, list) for rows in runtime_rows.values()):
+    if not isinstance(runtime_rows, dict) or any(
+        not isinstance(rows, list) for rows in runtime_rows.values()
+    ):
         raise ValueError("Nextest runtime artifact inventory is malformed")
     bound_paths = set(paths.values())
     for entries in runtime_rows.values():
@@ -442,10 +549,14 @@ def _build_paths(binaries: RawFile, cargo: RawFile, *, root: Path) -> tuple[Path
                 raise ValueError("Nextest runtime artifact lacks a path")
             relative = Path(raw_path)
             if (
-                relative.is_absolute() or not relative.parts or ".." in relative.parts
+                relative.is_absolute()
+                or not relative.parts
+                or ".." in relative.parts
                 or relative.as_posix() != raw_path
             ):
-                raise ValueError("Nextest runtime artifact is outside its Cargo target or has a noncanonical path")
+                raise ValueError(
+                    "Nextest runtime artifact is outside its Cargo target or has a noncanonical path"
+                )
             path = target_dir / relative
             if path in bound_paths:
                 continue
@@ -461,10 +572,14 @@ def _require_collected_build(binaries: RawFile, inventory: RawFile) -> None:
     built = parse_proof_json(binaries.read_control())["rust-binaries"]
     collection = parse_proof_json(inventory.read_control())
     listed = collection.get("rust-suites") if isinstance(collection, dict) else None
-    if not isinstance(listed, dict) or set(built) != set(listed) or any(
-        not isinstance(listed[name], dict)
-        or any(listed[name].get(key) != value for key, value in row.items())
-        for name, row in built.items()
+    if (
+        not isinstance(listed, dict)
+        or set(built) != set(listed)
+        or any(
+            not isinstance(listed[name], dict)
+            or any(listed[name].get(key) != value for key, value in row.items())
+            for name, row in built.items()
+        )
     ):
         raise ValueError("Nextest collection differs from the built executable inventory")
 
@@ -485,7 +600,9 @@ def _nextest_platforms(artifact: RawFile) -> tuple[str, str]:
         ):
             raise ValueError("Nextest target snapshots disagree")
     except (KeyError, TypeError, ValueError) as error:
-        raise ValueError("Nextest host and target platform metadata is absent or invalid") from error
+        raise ValueError(
+            "Nextest host and target platform metadata is absent or invalid"
+        ) from error
     return host, target
 
 
@@ -505,7 +622,8 @@ def _require_retirement_platforms(binaries: RawFile, inventory: RawFile, selecti
 
 def _exact_events(values: object) -> set[str]:
     if (
-        not isinstance(values, list) or not values
+        not isinstance(values, list)
+        or not values
         or any(not isinstance(value, str) or not NEXTEST_EVENT.fullmatch(value) for value in values)
         or len(set(values)) != len(values)
     ):
@@ -515,12 +633,23 @@ def _exact_events(values: object) -> set[str]:
 
 def _check_selection(selection: dict, inventory: RawFile) -> set[str]:
     fields = {
-        "lane", "package", "include_lib", "test_targets", "filterset", "features",
+        "lane",
+        "package",
+        "include_lib",
+        "test_targets",
+        "filterset",
+        "features",
     }
-    if not isinstance(selection, dict) or set(selection) not in (fields, fields | {"expected_events"}):
+    if not isinstance(selection, dict) or set(selection) not in (
+        fields,
+        fields | {"expected_events"},
+    ):
         raise ValueError("invalid retained Nextest selection")
     if (
-        not all(isinstance(selection[key], str) and selection[key] for key in ("lane", "package", "filterset"))
+        not all(
+            isinstance(selection[key], str) and selection[key]
+            for key in ("lane", "package", "filterset")
+        )
         or type(selection["include_lib"]) is not bool
         or any(
             not isinstance(selection[key], list)
@@ -537,8 +666,7 @@ def _check_selection(selection: dict, inventory: RawFile) -> set[str]:
         raise ValueError("recorded Nextest test targets are duplicated")
     for package, target, kind in suites:
         if package != selection["package"] or not (
-            kind == "lib" and selection["include_lib"]
-            or kind == "test" and target in test_targets
+            kind == "lib" and selection["include_lib"] or kind == "test" and target in test_targets
         ):
             raise ValueError("Nextest collection contains a target outside the recorded selection")
     if missing := test_targets - {target for _, target, kind in suites if kind == "test"}:
@@ -566,24 +694,53 @@ def _execution_commands(selection: dict, binaries: Path, cargo: Path) -> dict[st
         build.append("--lib")
     for target in selection["test_targets"]:
         build.extend(["--test", target])
-    reuse = ["--binaries-metadata", str(binaries), "--cargo-metadata", str(cargo), "-E", selection["filterset"]]
+    reuse = [
+        "--binaries-metadata",
+        str(binaries),
+        "--cargo-metadata",
+        str(cargo),
+        "-E",
+        selection["filterset"],
+    ]
     return {
-        "binaries.json": [*wrapper, "nextest", "list", *build, "--list-type", "binaries-only", "--message-format", "json"],
+        "binaries.json": [
+            *wrapper,
+            "nextest",
+            "list",
+            *build,
+            "--list-type",
+            "binaries-only",
+            "--message-format",
+            "json",
+        ],
         "cargo.json": [*wrapper, "metadata", "--format-version", "1", *resolution],
         "inventory.json": [*wrapper, "nextest", "list", *reuse, "--message-format", "json"],
         "nextest.jsonl": [
-            *wrapper, "nextest", "run", *reuse, "--no-tests", "fail",
-            "--message-format", "libtest-json-plus", "--message-format-version", "0.1",
+            *wrapper,
+            "nextest",
+            "run",
+            *reuse,
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "--message-format-version",
+            "0.1",
         ],
     }
 
 
 def _legacy_binary_path(path: str, digest: str) -> Path:
     if (
-        not isinstance(path, str) or not isinstance(digest, str) or not SHA256.fullmatch(digest)
-        or not Path(path).is_absolute() or ".." in Path(path).parts
+        not isinstance(path, str)
+        or not isinstance(digest, str)
+        or not SHA256.fullmatch(digest)
+        or not Path(path).is_absolute()
+        or ".." in Path(path).parts
     ):
-        raise ValueError("old-Q retirement execution requires an absolute executable path and SHA-256")
+        raise ValueError(
+            "old-Q retirement execution requires an absolute executable path and SHA-256"
+        )
     return Path(path)
 
 
@@ -592,7 +749,9 @@ def _read_legacy_input(environment: Mapping[str, str]) -> RawFile | None:
         return None
     original = Path(environment.get(LEGACY_BINARY_ENV, ""))
     if not original.is_absolute():
-        raise ValueError("old-Q retirement execution requires an absolute executable path and SHA-256")
+        raise ValueError(
+            "old-Q retirement execution requires an absolute executable path and SHA-256"
+        )
     path = str(original.resolve(strict=True))
     digest = environment.get(LEGACY_SHA_ENV, "")
     binary = RawFile.capture(_legacy_binary_path(path, digest))
@@ -611,8 +770,16 @@ def _require_capture_host(package: str, test_targets: list[str]) -> None:
 
 
 def capture_release_execution(
-    root: Path, revision: str, evidence_dir: Path, *, lane: str, package: str,
-    include_lib: bool, test_targets: list[str], filterset: str, features: list[str],
+    root: Path,
+    revision: str,
+    evidence_dir: Path,
+    *,
+    lane: str,
+    package: str,
+    include_lib: bool,
+    test_targets: list[str],
+    filterset: str,
+    features: list[str],
     expected_events: list[str] | None = None,
     _require_evidence_directory: Callable[[], None] | None = None,
 ) -> Path:
@@ -686,13 +853,23 @@ def capture_release_execution(
         require_capture_identity()
         path = evidence_dir / f"{run_id}-{suffix}"
         with path.open("xb") as output:
-            subprocess.run([str(root / "scripts/cargow"), *command], cwd=root, env=env, stdout=output, check=True)
+            subprocess.run(
+                [str(root / "scripts/cargow"), *command],
+                cwd=root,
+                env=env,
+                stdout=output,
+                check=True,
+            )
         require_capture_identity()
         return pin(path)
 
     selection = {
-        "lane": lane, "package": package, "include_lib": include_lib, "test_targets": test_targets,
-        "filterset": filterset, "features": resolved_features,
+        "lane": lane,
+        "package": package,
+        "include_lib": include_lib,
+        "test_targets": test_targets,
+        "filterset": filterset,
+        "features": resolved_features,
     }
     if selected_events is not None:
         selection["expected_events"] = sorted(selected_events)
@@ -703,7 +880,9 @@ def capture_release_execution(
         environment.pop(LEGACY_BINARY_ENV, None)
         environment.pop(LEGACY_SHA_ENV, None)
     commands = _execution_commands(
-        selection, evidence_dir / f"{run_id}-binaries.json", evidence_dir / f"{run_id}-cargo.json",
+        selection,
+        evidence_dir / f"{run_id}-binaries.json",
+        evidence_dir / f"{run_id}-cargo.json",
     )
     require_capture_identity()
     target_dir.mkdir(mode=0o700)
@@ -733,12 +912,19 @@ def capture_release_execution(
         _require_roster_selection(root, revision, selected, resolved_features)
     require_unchanged(inputs, "Nextest build inputs changed during collection")
     events = capture(
-        "nextest.jsonl", *commands["nextest.jsonl"],
+        "nextest.jsonl",
+        *commands["nextest.jsonl"],
         env={**environment, "NEXTEST_EXPERIMENTAL_LIBTEST_JSON": "1"},
     )
-    require_unchanged([*inputs, inventory, events], "Nextest build inputs or evidence changed during execution")
-    source = _source_manifest_for_execution(root, revision, inventory.path, events.path, source_states)
-    if source["inventory_sha256"] != inventory.sha256.removeprefix("sha256:") or source["events_sha256"] != events.sha256.removeprefix("sha256:"):
+    require_unchanged(
+        [*inputs, inventory, events], "Nextest build inputs or evidence changed during execution"
+    )
+    source = _source_manifest_for_execution(
+        root, revision, inventory.path, events.path, source_states
+    )
+    if source["inventory_sha256"] != inventory.sha256.removeprefix("sha256:") or source[
+        "events_sha256"
+    ] != events.sha256.removeprefix("sha256:"):
         raise ValueError("Nextest results changed before manifest publication")
     manifest = {
         **source,
@@ -746,7 +932,9 @@ def capture_release_execution(
             "workspace_root": str(root),
             "binaries_sha256": binaries.sha256,
             "cargo_sha256": cargo.sha256,
-            "executables": {name: blob.sha256.removeprefix("sha256:") for name, blob in pinned.items()},
+            "executables": {
+                name: blob.sha256.removeprefix("sha256:") for name, blob in pinned.items()
+            },
             "selection": selection,
             "commands": commands,
             "legacy_searchd": legacy,
@@ -765,8 +953,11 @@ def capture_release_execution(
                 raise ValueError("retirement evidence directory changed during capture")
             temporary_name = Path(output.name).name
             os.link(
-                temporary_name, path.name,
-                src_dir_fd=directory_fd, dst_dir_fd=directory_fd, follow_symlinks=False,
+                temporary_name,
+                path.name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
             )
             linked = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
             owns_link = os.path.samestat(linked, os.fstat(output.fileno()))
@@ -776,7 +967,9 @@ def capture_release_execution(
                     # A destination with neither inode belongs to another writer.
                     with suppress(FileNotFoundError):
                         named_temporary = os.stat(
-                            temporary_name, dir_fd=directory_fd, follow_symlinks=False,
+                            temporary_name,
+                            dir_fd=directory_fd,
+                            follow_symlinks=False,
                         )
                         owns_link = os.path.samestat(linked, named_temporary)
                     raise ValueError("published retirement manifest differs from the prepared file")
@@ -799,7 +992,10 @@ def capture_release_execution(
 
 
 def _reusable_captures(
-    root: Path, revision: str, evidence_dir: Path, selections: list[dict],
+    root: Path,
+    revision: str,
+    evidence_dir: Path,
+    selections: list[dict],
 ) -> dict[tuple[str, ...], Path]:
     tree = release_tree_sha256(root, revision)
     retained: dict[tuple[str, ...], Path] = {}
@@ -828,15 +1024,23 @@ def _reusable_captures(
         inventory = RawFile.capture(evidence_dir / f"{run_id}-inventory.json")
         if inventory.sha256 != f"sha256:{observation['inventory_sha256']}":
             raise ValueError(f"Nextest inventory SHA-256 differs for {run_id}")
-        terminal = parse_nextest(evidence_dir / f"{run_id}-nextest.jsonl", parse_nextest_inventory(inventory))
-        if terminal.sha256 != observation["events_sha256"] or set(terminal.passed_names) != set(key):
+        terminal = parse_nextest(
+            evidence_dir / f"{run_id}-nextest.jsonl", parse_nextest_inventory(inventory)
+        )
+        if terminal.sha256 != observation["events_sha256"] or set(terminal.passed_names) != set(
+            key
+        ):
             raise ValueError(f"Nextest terminal {run_id} differs from the planned passing batch")
         retained[key] = path
     return retained
 
 
 def capture_release_roster(
-    root: Path, revision: str, evidence_dir: Path, *, lane: str,
+    root: Path,
+    revision: str,
+    evidence_dir: Path,
+    *,
+    lane: str,
 ) -> Iterator[Path]:
     """Capture every committed retirement event serially, reusing verified batches."""
     root = root.resolve(strict=True)
@@ -848,7 +1052,9 @@ def capture_release_roster(
         try:
             fcntl.flock(directory_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            raise ValueError("a retirement roster capture already holds the evidence directory") from error
+            raise ValueError(
+                "a retirement roster capture already holds the evidence directory"
+            ) from error
         locked = os.fstat(directory_fd)
 
         def require_evidence_directory() -> None:
@@ -856,7 +1062,9 @@ def capture_release_roster(
                 current = evidence_dir.lstat()
                 canonical = evidence_dir.resolve(strict=True)
             except OSError as error:
-                raise ValueError("retirement evidence directory changed during roster capture") from error
+                raise ValueError(
+                    "retirement evidence directory changed during roster capture"
+                ) from error
             if (
                 not stat.S_ISDIR(current.st_mode)
                 or (current.st_dev, current.st_ino) != (locked.st_dev, locked.st_ino)
@@ -869,12 +1077,20 @@ def capture_release_roster(
         selections = [{**batch, "lane": lane} for batch in release_capture_batches(root, revision)]
         retained = _reusable_captures(root, revision, evidence_dir, selections)
         require_evidence_directory()
-        pending = [selection for selection in selections if tuple(selection["expected_events"]) not in retained]
+        pending = [
+            selection
+            for selection in selections
+            if tuple(selection["expected_events"]) not in retained
+        ]
         for selection in pending:
             package, targets = selection["package"], selection["test_targets"]
-            _require_approved_old_q(root, revision, package, targets, os.environ.get(LEGACY_SHA_ENV))
+            _require_approved_old_q(
+                root, revision, package, targets, os.environ.get(LEGACY_SHA_ENV)
+            )
             _require_capture_host(package, targets)
-        if any(_uses_old_q(selection["package"], selection["test_targets"]) for selection in pending):
+        if any(
+            _uses_old_q(selection["package"], selection["test_targets"]) for selection in pending
+        ):
             _read_legacy_input(os.environ)
         for selection in selections:
             require_evidence_directory()
@@ -883,8 +1099,11 @@ def capture_release_roster(
                 manifest = retained[key]
             else:
                 manifest = capture_release_execution(
-                    root, revision, evidence_dir,
-                    _require_evidence_directory=require_evidence_directory, **selection,
+                    root,
+                    revision,
+                    evidence_dir,
+                    _require_evidence_directory=require_evidence_directory,
+                    **selection,
                 )
             require_evidence_directory()
             yield manifest
@@ -915,10 +1134,17 @@ def check_migration_observations(
     observed: set[tuple[str, str]] = set()
     for item in observations:
         if not isinstance(item, dict) or set(item) not in (
-            source_fields, event_fields, evidence_fields, frozen_fields,
+            source_fields,
+            event_fields,
+            evidence_fields,
+            frozen_fields,
         ):
-            raise ValueError("observation requires source, case, source_sha256 and run_id with optional terminal binding")
-        source, case, digest, run_id = (item[key] for key in ("source", "case", "source_sha256", "run_id"))
+            raise ValueError(
+                "observation requires source, case, source_sha256 and run_id with optional terminal binding"
+            )
+        source, case, digest, run_id = (
+            item[key] for key in ("source", "case", "source_sha256", "run_id")
+        )
         if not isinstance(source, str) or not RUST_PROOF_SOURCE.fullmatch(source):
             raise ValueError(f"invalid observation source: {source!r}")
         if not isinstance(case, str) or not case.isascii() or not case.isidentifier():
@@ -939,7 +1165,9 @@ def check_migration_observations(
         if set(item) == source_fields:
             if inventory_only:
                 continue
-            raise ValueError(f"observation lacks an exact Nextest event and evidence digests: {source}::{case}")
+            raise ValueError(
+                f"observation lacks an exact Nextest event and evidence digests: {source}::{case}"
+            )
         event = item["event"]
         if not isinstance(event, str) or not NEXTEST_EVENT.fullmatch(event):
             raise ValueError(f"invalid exact Nextest event: {event!r}")
@@ -965,14 +1193,20 @@ def check_migration_observations(
         if "inventory_sha256" not in item:
             raise ValueError(f"observation lacks the Nextest inventory SHA-256: {source}::{case}")
         if release_revision is not None and "source_manifest_sha256" not in item:
-            raise ValueError(f"observation lacks the frozen source manifest SHA-256: {source}::{case}")
+            raise ValueError(
+                f"observation lacks the frozen source manifest SHA-256: {source}::{case}"
+            )
         if evidence_dir is None:
-            raise ValueError("set QUANTA_RETIREMENT_NEXTEST_EVIDENCE_DIR to the captured Nextest evidence directory")
+            raise ValueError(
+                "set QUANTA_RETIREMENT_NEXTEST_EVIDENCE_DIR to the captured Nextest evidence directory"
+            )
 
         if release_revision is not None:
             check_frozen_inputs(
                 RawFile.capture(evidence_dir / f"{run_id}-source-manifest.json"),
-                item, root, release_revision,
+                item,
+                root,
+                release_revision,
                 executable_digest=executable_digest,
             )
 
@@ -995,36 +1229,70 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=capture_release_execution.__doc__)
     parser.add_argument("--revision", required=True)
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--list-roster", action="store_true", help="Print the committed exact event roster without running Cargo")
-    mode.add_argument("--capture-roster", action="store_true", help="Capture every committed retirement event serially")
+    mode.add_argument(
+        "--list-roster",
+        action="store_true",
+        help="Print the committed exact event roster without running Cargo",
+    )
+    mode.add_argument(
+        "--capture-roster",
+        action="store_true",
+        help="Capture every committed retirement event serially",
+    )
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument("--lane")
     parser.add_argument("--package")
     parser.add_argument("--lib", action="store_true")
     parser.add_argument("--test", dest="test_targets", action="append", default=[])
     parser.add_argument("--filterset")
-    parser.add_argument("--expect-event", action="append", help="Require this exact selected package::binary$test event")
+    parser.add_argument(
+        "--expect-event",
+        action="append",
+        help="Require this exact selected package::binary$test event",
+    )
     parser.add_argument("--features", action="append", default=[])
     args = parser.parse_args()
     try:
         if args.list_roster:
             roster = release_event_roster(Path.cwd(), args.revision)
-            print(json.dumps({"revision": args.revision, "events": roster}, sort_keys=True, indent=2))
+            print(
+                json.dumps({"revision": args.revision, "events": roster}, sort_keys=True, indent=2)
+            )
             raise SystemExit(0)
         if args.capture_roster:
             if not args.evidence_dir or not args.lane:
                 parser.error("--capture-roster requires --evidence-dir and --lane")
-            if any((args.package, args.lib, args.test_targets, args.filterset, args.expect_event, args.features)):
-                parser.error("--capture-roster uses the committed selections and cannot take manual selectors")
-            for manifest in capture_release_roster(Path.cwd(), args.revision, args.evidence_dir, lane=args.lane):
+            if any(
+                (
+                    args.package,
+                    args.lib,
+                    args.test_targets,
+                    args.filterset,
+                    args.expect_event,
+                    args.features,
+                )
+            ):
+                parser.error(
+                    "--capture-roster uses the committed selections and cannot take manual selectors"
+                )
+            for manifest in capture_release_roster(
+                Path.cwd(), args.revision, args.evidence_dir, lane=args.lane
+            ):
                 print(f"{manifest} {RawFile.capture(manifest).sha256}", flush=True)
             raise SystemExit(0)
         if not all((args.evidence_dir, args.lane, args.package, args.filterset)):
             parser.error("execution requires --evidence-dir, --lane, --package and --filterset")
         manifest = capture_release_execution(
-            Path.cwd(), args.revision, args.evidence_dir, lane=args.lane,
-            package=args.package, include_lib=args.lib, test_targets=args.test_targets,
-            filterset=args.filterset, features=args.features, expected_events=args.expect_event,
+            Path.cwd(),
+            args.revision,
+            args.evidence_dir,
+            lane=args.lane,
+            package=args.package,
+            include_lib=args.lib,
+            test_targets=args.test_targets,
+            filterset=args.filterset,
+            features=args.features,
+            expected_events=args.expect_event,
         )
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Retirement execution evidence unavailable: {error}\n")

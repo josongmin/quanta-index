@@ -406,7 +406,9 @@ def bind_identity(
 def load_samples(
     b06: Path, policy: dict[str, Any], selection_profile: str = GIN_PROFILE
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
-    require(selection_profile in (GIN_PROFILE, GO_TRANSFER_PROFILE), "unknown sample selection profile")
+    require(
+        selection_profile in (GIN_PROFILE, GO_TRANSFER_PROFILE), "unknown sample selection profile"
+    )
     samples: dict[str, dict[str, Any]] = {}
     release_by_id: dict[str, str] = {}
     for release in RELEASES:
@@ -439,9 +441,14 @@ def load_samples(
         expected_count = (
             policy["sample_selection"]["expected_counts"][release.removeprefix("v2_")]
             if selection_profile == GIN_PROFILE
-            else sum(GO_TRANSFER_REPOS.values()) if release == "v2_trace2code" else 0
+            else sum(GO_TRANSFER_REPOS.values())
+            if release == "v2_trace2code"
+            else 0
         )
-        require(selected_count == expected_count, f"official sample count differs from release: {release}")
+        require(
+            selected_count == expected_count,
+            f"official sample count differs from release: {release}",
+        )
     if selection_profile == GIN_PROFILE:
         expected_total = policy["sample_selection"]["expected_counts"]["total"]
     else:
@@ -453,7 +460,10 @@ def load_samples(
 
 
 def case_context(
-    case: dict[str, Any], sample: dict[str, Any], index: dict[str, Any], baseline,
+    case: dict[str, Any],
+    sample: dict[str, Any],
+    index: dict[str, Any],
+    baseline,
     selection_profile: str = GIN_PROFILE,
 ):
     spec = read_pinned(Path(case["spec"]), case["spec_sha256"])
@@ -560,9 +570,12 @@ def arm_denominators(
         "arm denominators must be integers",
     )
     denominator = 88 if selection_profile == GIN_PROFILE else sum(GO_TRANSFER_REPOS.values())
-    require(selection_profile in (GIN_PROFILE, GO_TRANSFER_PROFILE), "unknown sample selection profile")
     require(
-        (requested, accepted, refused) == (denominator, accepted_cases, denominator - accepted_cases),
+        selection_profile in (GIN_PROFILE, GO_TRANSFER_PROFILE), "unknown sample selection profile"
+    )
+    require(
+        (requested, accepted, refused)
+        == (denominator, accepted_cases, denominator - accepted_cases),
         "arm denominator/refusal mismatch",
     )
     return requested, accepted, refused
@@ -774,8 +787,12 @@ def score_arm(
                 )
         try:
             corpus_policy = (
-                policy if selection_profile == GIN_PROFILE else {
-                    "arb": {"releases": {"v2_trace2code": policy["arb"]["releases"]["v2_trace2code"]}}
+                policy
+                if selection_profile == GIN_PROFILE
+                else {
+                    "arb": {
+                        "releases": {"v2_trace2code": policy["arb"]["releases"]["v2_trace2code"]}
+                    }
                 }
             )
             corpus = arb_corpus_custody.restore(
@@ -889,7 +906,11 @@ def score_arm(
     return {
         "schema_version": 1,
         "arm": arm.get("arm", "original_text_current_v3"),
-        **({"selection_profile": selection_profile} if selection_profile == GO_TRANSFER_PROFILE else {}),
+        **(
+            {"selection_profile": selection_profile}
+            if selection_profile == GO_TRANSFER_PROFILE
+            else {}
+        ),
         "arm_manifest_sha256": sha256(arm_raw),
         "record_index_sha256": sha256(record_index_raw),
         "capture_preparation_sha256": preparation_sha,

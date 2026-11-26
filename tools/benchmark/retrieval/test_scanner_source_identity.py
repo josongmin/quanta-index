@@ -197,8 +197,14 @@ def test_prepare_control_refuses_a_revision_after_scanner_retirement(source, tmp
     repo, _, _, _, _, _ = source
     _run(repo, "rm", "-f", PATH)
     _run(
-        repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-        "commit", "-qm", "retire scanner",
+        repo,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-qm",
+        "retire scanner",
     )
     head = _run(repo, "rev-parse", "HEAD").decode().strip()
     patch, overlay = tmp_path / "retired.patch", tmp_path / "retired.json"

@@ -205,12 +205,19 @@ def test_repository_registry_is_complete() -> None:
     assert MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH) == []
 
 
-@pytest.mark.parametrize(("field", "value", "message"), [
-    ("required_host", "any", "P04 release proof must use its exact Native read-view scope"),
-    ("binary_binding", "none", "P04 release proof must use its exact Native read-view scope"),
-    ("command", "just rust-profile test-read-view-lifetime", "P04 release proof must use its exact Native read-view scope"),
-    ("launches", 1, "invalid P04 executable observation test"),
-])
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("required_host", "any", "P04 release proof must use its exact Native read-view scope"),
+        ("binary_binding", "none", "P04 release proof must use its exact Native read-view scope"),
+        (
+            "command",
+            "just rust-profile test-read-view-lifetime",
+            "P04 release proof must use its exact Native read-view scope",
+        ),
+        ("launches", 1, "invalid P04 executable observation test"),
+    ],
+)
 def test_p04_registry_refuses_weaker_release_authority(field, value, message) -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
     proof = next(proof for proof in registry["proofs"] if proof["id"] == "p04-read-view-lifetime")
@@ -1254,13 +1261,18 @@ def test_source_snapshot_refuses_edits_hidden_by_the_git_index(tmp_path: Path, f
     assert not subprocess.check_output(["git", "-C", str(tmp_path), "status", "--porcelain"])
     with pytest.raises(RuntimeError, match="Git index hides proof source: tracked"):
         MODULE.source_snapshot(tmp_path)
-    subprocess.run(["git", "-C", str(tmp_path), "update-index", "--no-" + flag[2:], "--", "tracked"], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "update-index", "--no-" + flag[2:], "--", "tracked"],
+        check=True,
+    )
     assert MODULE.source_snapshot(tmp_path)["dirty_digest"] != before["dirty_digest"]
 
 
 def test_source_snapshot_refuses_git_replacement_refs(tmp_path: Path) -> None:
     _init_repo(tmp_path)
-    head = subprocess.check_output(["git", "-C", str(tmp_path), "rev-parse", "HEAD"], text=True).strip()
+    head = subprocess.check_output(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"], text=True
+    ).strip()
     (tmp_path / "tracked").write_bytes(b"replacement source\n")
     subprocess.run(["git", "-C", str(tmp_path), "commit", "-a", "-qm", "replacement"], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "replace", head, "HEAD"], check=True)
@@ -1558,21 +1570,26 @@ def test_p10_owner_requires_the_migrated_case_roster() -> None:
     proof = next(item for item in registry["proofs"] if item["id"] == "p10-state-migration-owner")
     cases = proof["required_nextest_cases"]
     assert sum(len(names) for names in cases.values()) == 61
-    assert "backup_failure_and_interruption_keep_the_source_identical" in cases[
-        "searchd-runtime-offline-state-custody"
-    ]
-    assert "kernel_file_limit_interrupts_offline_first_copy" in cases[
-        "searchd-runtime-offline-state-custody"
-    ]
+    assert (
+        "backup_failure_and_interruption_keep_the_source_identical"
+        in cases["searchd-runtime-offline-state-custody"]
+    )
+    assert (
+        "kernel_file_limit_interrupts_offline_first_copy"
+        in cases["searchd-runtime-offline-state-custody"]
+    )
     cases.pop("searchd-runtime-offline-state-custody")
     lib_cases = proof.pop("required_nextest_lib_cases")
-    assert "app::runtime::tests::potion_code_profile_uses_one_model_for_query_and_corpus" in lib_cases[
-        "quanta-index-searchd"
-    ]
+    assert (
+        "app::runtime::tests::potion_code_profile_uses_one_model_for_query_and_corpus"
+        in lib_cases["quanta-index-searchd"]
+    )
 
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
     assert any("requires nextest cases for every registered target" in msg for msg in messages)
-    assert any("requires nextest lib cases for every declared library package" in msg for msg in messages)
+    assert any(
+        "requires nextest lib cases for every declared library package" in msg for msg in messages
+    )
 
 
 def test_executable_dedicated_proof_requires_existing_scope_bound_recipe() -> None:

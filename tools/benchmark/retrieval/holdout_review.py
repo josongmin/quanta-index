@@ -280,7 +280,9 @@ def capture_native_review_pools(
     require(len(set(names)) == 3, "Native review pool IDs must differ")
     require(
         all(
-            not any(route in name.casefold() for route in ("lexical", "hybrid", "dense", "ann", "rrf"))
+            not any(
+                route in name.casefold() for route in ("lexical", "hybrid", "dense", "ann", "rrf")
+            )
             for name in names
         ),
         "Native review pool IDs must hide route names",
@@ -569,7 +571,12 @@ def _write_review_forms(
         if target.is_relative_to(root) or root.is_relative_to(target):
             raise ValueError("review output root must be external and disjoint")
     forms, custody = prepare(
-        checkout, pack, contexts, pools, seed=seed, native_capture=native_capture,
+        checkout,
+        pack,
+        contexts,
+        pools,
+        seed=seed,
+        native_capture=native_capture,
     )
     output.mkdir(parents=True)
     try:
@@ -598,11 +605,21 @@ def write_native_review_forms(
 ) -> dict:
     """Issue blinded forms with the verified Native capture bound in owner custody."""
     pack, pools, capture_custody = _native_review_inputs(
-        checkout, suite, query_pack, capture, control_pools, source_inputs=source_inputs,
+        checkout,
+        suite,
+        query_pack,
+        capture,
+        control_pools,
+        source_inputs=source_inputs,
     )
     return _write_review_forms(
-        checkout, pack, contexts, pools, output,
-        seed=seed, native_capture=capture_custody,
+        checkout,
+        pack,
+        contexts,
+        pools,
+        output,
+        seed=seed,
+        native_capture=capture_custody,
     )
 
 
@@ -617,15 +634,20 @@ def _native_review_inputs(
 ) -> tuple[dict, list[dict], dict]:
     """Use the same captured candidates and controls for issue and replay."""
     evaluator.require(
-        isinstance(control_pools, list) and all(
+        isinstance(control_pools, list)
+        and all(
             isinstance(pool, dict) and pool.get("kind") in ("source_alternative", "random_control")
             for pool in control_pools
         ),
         "Native review controls must be source alternatives or random controls",
     )
     pack, retrieval_pools, capture_custody = capture_native_review_pools(
-        checkout, suite, query_pack, capture,
-        pool_ids=("route-a", "route-b", "route-c"), source_inputs=source_inputs,
+        checkout,
+        suite,
+        query_pack,
+        capture,
+        pool_ids=("route-a", "route-b", "route-c"),
+        source_inputs=source_inputs,
     )
     return pack, retrieval_pools + control_pools, capture_custody
 
@@ -651,7 +673,11 @@ def replay_native_review_labels(
         "Native reviewed labels require complete composite source inputs",
     )
     pack, pools, capture_custody = _native_review_inputs(
-        checkout, suite_path, query_pack_path, capture_path, control_pools,
+        checkout,
+        suite_path,
+        query_pack_path,
+        capture_path,
+        control_pools,
         source_inputs=source_inputs,
     )
     evaluator.require(
@@ -659,8 +685,15 @@ def replay_native_review_labels(
         "Native reviewed labels raw capture digest differs",
     )
     return finalize_file_review_labels(
-        checkout, pack, contexts, pools, completed_forms, adjudicated_form,
-        task_contracts, seed=seed, native_capture=capture_custody,
+        checkout,
+        pack,
+        contexts,
+        pools,
+        completed_forms,
+        adjudicated_form,
+        task_contracts,
+        seed=seed,
+        native_capture=capture_custody,
     )
 
 
@@ -680,7 +713,12 @@ def validate_completed_forms(
     provenance, complete relevance outside the pool, or adjudicated qrels.
     """
     expected, custody = prepare(
-        checkout, pack, contexts, pools, seed=seed, native_capture=native_capture,
+        checkout,
+        pack,
+        contexts,
+        pools,
+        seed=seed,
+        native_capture=native_capture,
     )
     require = evaluator.require
     require(isinstance(completed, list) and len(completed) == 2, "two review forms required")
@@ -801,7 +839,13 @@ def finalize_file_review_labels(
     changing the suite commitment recorded by the SDK.
     """
     checked = validate_completed_forms(
-        checkout, pack, contexts, pools, completed, seed=seed, native_capture=native_capture,
+        checkout,
+        pack,
+        contexts,
+        pools,
+        completed,
+        seed=seed,
+        native_capture=native_capture,
     )
     for form in completed:
         for row in form["reviews"]:
@@ -819,8 +863,13 @@ def finalize_file_review_labels(
     # Reuse the frozen form/source checks on the actual adjudication form;
     # neither its identity nor any original review is synthesized.
     validate_completed_forms(
-        checkout, pack, contexts, pools, [adjudicated, completed[1]],
-        seed=seed, native_capture=native_capture,
+        checkout,
+        pack,
+        contexts,
+        pools,
+        [adjudicated, completed[1]],
+        seed=seed,
+        native_capture=native_capture,
     )
     evaluator.require(
         isinstance(task_contracts, dict)
@@ -921,20 +970,33 @@ def bind_native_reviewed_suite(suite: dict, pack: dict, receipt: dict, capture_s
     """Overlay adjudicated file labels on the exact unjudged execution inputs."""
     require = evaluator.require
     evidence_fields = (
-        "query_pack_sha256", "review_inputs_sha256", "completed_form_sha256",
-        "adjudicated_form_sha256", "native_capture_sha256",
+        "query_pack_sha256",
+        "review_inputs_sha256",
+        "completed_form_sha256",
+        "adjudicated_form_sha256",
+        "native_capture_sha256",
     )
     evaluator.object_keys(
         receipt,
-        [*evidence_fields, "status", "qualified", "human_provenance_attested",
-         "pool_execution_attested", "reviewer_ids", "adjudicator_id", "task_labels"],
+        [
+            *evidence_fields,
+            "status",
+            "qualified",
+            "human_provenance_attested",
+            "pool_execution_attested",
+            "reviewer_ids",
+            "adjudicator_id",
+            "task_labels",
+        ],
         "Native reviewed labels receipt",
     )
     evidence = {key: receipt[key] for key in evidence_fields}
     require(
         receipt["status"] == "adjudicated_file_labels_unqualified"
-        and receipt["qualified"] is receipt["human_provenance_attested"]
-        is receipt["pool_execution_attested"] is False
+        and receipt["qualified"]
+        is receipt["human_provenance_attested"]
+        is receipt["pool_execution_attested"]
+        is False
         and evidence["query_pack_sha256"] == _digest(pack)
         and evidence["native_capture_sha256"] == capture_sha256,
         "Native reviewed labels differ from the frozen query pack or raw capture",
@@ -942,7 +1004,8 @@ def bind_native_reviewed_suite(suite: dict, pack: dict, receipt: dict, capture_s
     reviewers = receipt["reviewer_ids"]
     adjudicator = evaluator.string(receipt["adjudicator_id"], "Native label adjudicator")
     require(
-        isinstance(reviewers, list) and len(reviewers) == 2
+        isinstance(reviewers, list)
+        and len(reviewers) == 2
         and all(isinstance(identity, str) and identity.strip() for identity in reviewers)
         and evaluator.distinct_review_identities(*reviewers, adjudicator),
         "Native reviewed labels require two reviewers and a distinct adjudicator",
@@ -952,7 +1015,9 @@ def bind_native_reviewed_suite(suite: dict, pack: dict, receipt: dict, capture_s
     form_digests = (*forms, evidence["adjudicated_form_sha256"])
     for digest in (*form_digests, evidence["review_inputs_sha256"]):
         evaluator.sha(digest, "Native review evidence digest")
-    require(len(set(form_digests)) == 3, "Native labels require distinct review and adjudication forms")
+    require(
+        len(set(form_digests)) == 3, "Native labels require distinct review and adjudication forms"
+    )
     labels = receipt["task_labels"]
     require(
         isinstance(labels, dict) and set(labels) == {task["task_id"] for task in suite["tasks"]},
@@ -963,7 +1028,9 @@ def bind_native_reviewed_suite(suite: dict, pack: dict, receipt: dict, capture_s
     for task in suite["tasks"]:
         task_id = task["task_id"]
         require(
-            task["split"] == "eval" and task["answerable"] is False and task["gold"] == []
+            task["split"] == "eval"
+            and task["answerable"] is False
+            and task["gold"] == []
             and task.keys() & label_fields == {"answerable", "gold"},
             "Native reviewed labels require an unjudged execution suite",
         )
@@ -975,14 +1042,20 @@ def bind_native_reviewed_suite(suite: dict, pack: dict, receipt: dict, capture_s
         review = label.get("label_review")
         label_data = {key: value for key, value in label.items() if key != "label_review"}
         require(
-            isinstance(review, dict) and review.get("reviewer_id") == adjudicator
-            and review.get("evidence_sha256") == _digest(
+            isinstance(review, dict)
+            and review.get("reviewer_id") == adjudicator
+            and review.get("evidence_sha256")
+            == _digest(
                 {**evidence, "task_id": task_id, "label": label_data},
             ),
             "Native reviewed label evidence differs",
         )
         tasks.append({**task, **label})
-    return {**suite, "diagnostic_policy": evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY, "tasks": tasks}
+    return {
+        **suite,
+        "diagnostic_policy": evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
+        "tasks": tasks,
+    }
 
 
 def _prepare_native_command(argv: list[str]) -> int:
@@ -998,7 +1071,10 @@ def _prepare_native_command(argv: list[str]) -> int:
     parser.add_argument("--family-id")
     args = parser.parse_args(argv)
     composite = (
-        args.source_universe, args.source_binding, args.base_release, args.target_releases,
+        args.source_universe,
+        args.source_binding,
+        args.base_release,
+        args.target_releases,
         args.family_id,
     )
     if any(value is not None for value in composite) and any(value is None for value in composite):
@@ -1006,8 +1082,15 @@ def _prepare_native_command(argv: list[str]) -> int:
     contexts = parse_json(_read_control_file(args.contexts).decode("utf-8"))
     controls = parse_json(_read_control_file(args.control_pools).decode("utf-8"))
     write_native_review_forms(
-        args.repo, args.suite, args.query_pack, args.capture, contexts, controls, args.output,
-        seed=args.seed, source_inputs=composite if args.family_id is not None else None,
+        args.repo,
+        args.suite,
+        args.query_pack,
+        args.capture,
+        contexts,
+        controls,
+        args.output,
+        seed=args.seed,
+        source_inputs=composite if args.family_id is not None else None,
     )
     print(f"wrote unjudged review forms at {args.output}")
     return 0

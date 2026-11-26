@@ -94,7 +94,9 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.operation == "pin":
-            print(pin(args.built, args.provided, args.destination, archive_sha256=args.archive_sha256))
+            print(
+                pin(args.built, args.provided, args.destination, archive_sha256=args.archive_sha256)
+            )
         else:
             verify(args.digest, args.paths, archive=args.archive)
     except (OSError, ValueError) as error:

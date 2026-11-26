@@ -582,7 +582,11 @@ GO_TRACE_SEMANTIC_MAX_BYTES = 16 * 1024
 
 def go_trace_semantic_digest(value: object) -> str:
     if not isinstance(value, dict) or set(value) != {
-        "profile", "text", "text_sha256", "failure_excerpt", "failure_excerpt_sha256"
+        "profile",
+        "text",
+        "text_sha256",
+        "failure_excerpt",
+        "failure_excerpt_sha256",
     }:
         raise QueryPlanError("invalid Go trace semantic input fields")
     if value["profile"] != GO_TRACE_SEMANTIC_PROFILE:

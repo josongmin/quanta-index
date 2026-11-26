@@ -69,7 +69,10 @@ def load_catalog(path: Path = CATALOG) -> dict[str, Any]:
 
 
 def resolve_targets(
-    data: dict[str, Any], scope_names: list[str], *, root: Path | None = None,
+    data: dict[str, Any],
+    scope_names: list[str],
+    *,
+    root: Path | None = None,
 ) -> tuple[str, int, bool, list[str], list[dict[str, str]]]:
     root = ROOT if root is None else root
     scopes = data.get("local_scopes")
@@ -164,7 +167,12 @@ def resolve_targets(
         cargo_target = entry.get("target", path.stem)
         if not isinstance(cargo_target, str) or not cargo_target:
             raise ValueError(f"local scope target has an invalid Cargo target: {target_id}")
-        row = {"id": target_id, "owner": entry["owner"], "path": entry["path"], "target": cargo_target}
+        row = {
+            "id": target_id,
+            "owner": entry["owner"],
+            "path": entry["path"],
+            "target": cargo_target,
+        }
         if module_only:
             row["module"] = mounted_test_module(
                 root, path, entry["owner"], cargo_target, list(by_id.values())
@@ -312,12 +320,18 @@ def build_inventory_command(run_command: list[str]) -> list[str]:
 def _release_daemon_path(label: str) -> Path:
     path = Path(os.environ.get(DAEMON_PATH_ENV, ""))
     if not (path.is_absolute() and path.is_file() and os.access(path, os.X_OK)):
-        raise ValueError(f"{label} requires an absolute executable release daemon in {DAEMON_PATH_ENV}")
+        raise ValueError(
+            f"{label} requires an absolute executable release daemon in {DAEMON_PATH_ENV}"
+        )
     return path
 
 
 def run_with_proof_evidence(
-    command: list[str], *, scopes: list[str], lane: str, raw_dir: Path,
+    command: list[str],
+    *,
+    scopes: list[str],
+    lane: str,
+    raw_dir: Path,
     targets: list[dict[str, str]],
     witness_specs: dict[str, tuple[str, int]] | None = None,
     source_binding: tuple[dict[str, Any], ProofRunSource] | None = None,
@@ -415,12 +429,20 @@ def run_with_proof_evidence(
             authority, captured = source_binding
             source_exclusions = (*paths, release_binary) if release_binary is not None else paths
             require_run_source(
-                ROOT, authority, captured, phase="test selection", outputs=source_exclusions,
+                ROOT,
+                authority,
+                captured,
+                phase="test selection",
+                outputs=source_exclusions,
             )
             checkout.require_unchanged("test selection")
         with inventory.open("xb") as output, list_stderr.open("xb") as errors:
             listed = subprocess.run(
-                list_command, cwd=execution_root, env=env, stdout=output, stderr=errors,
+                list_command,
+                cwd=execution_root,
+                env=env,
+                stdout=output,
+                stderr=errors,
             )
         if listed.returncode != 0:
             return listed.returncode
@@ -440,11 +462,17 @@ def run_with_proof_evidence(
                     )
         require_daemon_test_inventory(expected, witness_names)
         if release_proof is not None and set(expected) != witness_names:
-            raise ValueError(f"{proof} requires only the registered daemon witness tests in nextest inventory")
+            raise ValueError(
+                f"{proof} requires only the registered daemon witness tests in nextest inventory"
+            )
         if checkout is not None and source_binding is not None:
             checkout.require_unchanged("nextest collection")
             require_run_source(
-                ROOT, authority, captured, phase="nextest collection", outputs=source_exclusions,
+                ROOT,
+                authority,
+                captured,
+                phase="nextest collection",
+                outputs=source_exclusions,
             )
 
         env["NEXTEST_EXPERIMENTAL_LIBTEST_JSON"] = "1"
@@ -459,14 +487,22 @@ def run_with_proof_evidence(
                 env[P07_PROVIDER_SHA_ENV] = provider_approval_sha256
         with events.open("xb") as output, run_stderr.open("xb") as errors:
             ran = subprocess.run(
-                run_command, cwd=execution_root, env=env, stdout=output, stderr=errors,
+                run_command,
+                cwd=execution_root,
+                env=env,
+                stdout=output,
+                stderr=errors,
             )
         if ran.returncode != 0:
             return ran.returncode
         if checkout is not None and source_binding is not None:
             checkout.require_unchanged("nextest execution")
             require_run_source(
-                ROOT, authority, captured, phase="nextest execution", outputs=source_exclusions,
+                ROOT,
+                authority,
+                captured,
+                phase="nextest execution",
+                outputs=source_exclusions,
             )
         if pinned_digest is not None:
             current_binary = release_binary if p10_release else release_binary.resolve(strict=True)
@@ -482,11 +518,16 @@ def run_with_proof_evidence(
                 filename, launches = witness_specs[name]
                 row = parse_proof_json(read_witness(Path(witness_dir), filename))
                 observed = validate_witness(
-                    row, test=name, nonce=nonce, launches=launches,
+                    row,
+                    test=name,
+                    nonce=nonce,
+                    launches=launches,
                     provider_approval_sha256=provider_approval_sha256,
                 )
                 if pinned_digest is not None and observed != pinned_digest:
-                    raise ValueError(f"{proof} executed daemon differs from the pinned release binary")
+                    raise ValueError(
+                        f"{proof} executed daemon differs from the pinned release binary"
+                    )
                 witnesses[name] = row
             if any(RawFile.capture(raw.path) != raw for raw in (inventory_capture, events_capture)):
                 raise ValueError("Nextest evidence changed after validation")
@@ -503,13 +544,15 @@ def run_with_proof_evidence(
                 )
             if source_binding is not None:
                 write_run_binding(
-                    binding_path, captured, format="nextest-jsonl",
+                    binding_path,
+                    captured,
+                    format="nextest-jsonl",
                     digests={
                         "events": parsed.sha256,
                         "inventory": inventory_capture.sha256.removeprefix("sha256:"),
-                        "daemon_observations": RawFile.capture(observations_path).sha256.removeprefix(
-                            "sha256:"
-                        ),
+                        "daemon_observations": RawFile.capture(
+                            observations_path
+                        ).sha256.removeprefix("sha256:"),
                     },
                     daemon_sha256=pinned_digest,
                 )
@@ -568,7 +611,12 @@ def _run_requested_scopes(args: argparse.Namespace, resources: ExitStack) -> int
         raise ValueError("release observations require their own exact test scope")
     proof_id = release_proof or (P04_PROOF if P04_SCOPE in args.scopes else None)
     proof = live_proof(ROOT, proof_id) if proof_id is not None else None
-    if release_proof is not None and not args.dry_run and release_proof != P04_PROOF and not raw_dir:
+    if (
+        release_proof is not None
+        and not args.dry_run
+        and release_proof != P04_PROOF
+        and not raw_dir
+    ):
         raise ValueError(f"{release_proof} requires {PROOF_RAW_DIR}")
     if proof is not None and release_proof is not None and raw_dir and not args.dry_run:
         release_path = _release_daemon_path(proof["id"])
@@ -580,11 +628,17 @@ def _run_requested_scopes(args: argparse.Namespace, resources: ExitStack) -> int
             raise ValueError("proof registry changed during source capture")
         source_binding = (proof, source)
     execution_root = ROOT if checkout is None else checkout.root
-    catalog = load_catalog() if checkout is None else load_catalog(
-        execution_root / "tools" / "ci" / "test-authority.toml",
+    catalog = (
+        load_catalog()
+        if checkout is None
+        else load_catalog(
+            execution_root / "tools" / "ci" / "test-authority.toml",
+        )
     )
     default_lane, test_threads, include_lib, extra_packages, targets = resolve_targets(
-        catalog, args.scopes, root=execution_root,
+        catalog,
+        args.scopes,
+        root=execution_root,
     )
     witnesses = daemon_witness_specs(proof) if proof is not None else {}
     test_threads = effective_test_threads(test_threads, os.environ.get(TEST_THREADS_OVERRIDE))

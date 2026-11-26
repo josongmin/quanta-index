@@ -286,7 +286,6 @@ def test_new_test_scope_is_excluded_but_new_guard_on_existing_code_is_not():
     assert module._eligible_changed_rust_lines(source, {2}, path, {2}) == set()
 
 
-
 @pytest.mark.parametrize(
     "mutation", [None, "before-build", "hidden-edit", "during-build", "head-moved"]
 )
@@ -333,7 +332,7 @@ def test_coverage_recipe_binds_lcov_to_committed_source(tmp_path, mutation):
         "#!/bin/sh\n"
         "set -eu\n"
         'printf "%s\\n" built > "$BUILD_MARKER"\n'
-        'for report do :; done\n'
+        "for report do :; done\n"
         'printf "SF:%s/crates/demo/src/lib.rs\\nDA:1,1\\nend_of_record\\n" "$PWD" > "$report"\n'
         'if [ "$MUTATION" = during-build ] || [ "$MUTATION" = head-moved ]; then\n'
         '    printf "%s\\n" "pub fn demo() -> u32 { 3 }" > crates/demo/src/lib.rs\n'
@@ -341,19 +340,21 @@ def test_coverage_recipe_binds_lcov_to_committed_source(tmp_path, mutation):
         'if [ "$MUTATION" = head-moved ]; then git commit -qam "another candidate"; fi\n'
     )
     uv = bin_dir / "uv"
-    uv.write_text(
-        "#!/bin/sh\n"
-        "set -eu\n"
-        "shift 5\n"
-        f'exec {shlex.quote(sys.executable)} "$@"\n'
-    )
+    uv.write_text(f'#!/bin/sh\nset -eu\nshift 5\nexec {shlex.quote(sys.executable)} "$@"\n')
     for tool in (cargo, uv):
         tool.chmod(0o755)
     result = subprocess.run(
         [
-            just, "--justfile", str(REPO_ROOT / "Justfile"),
-            "--working-directory", str(checkout),
-            "--set", "cargo", str(cargo), "rust-coverage-changed", base,
+            just,
+            "--justfile",
+            str(REPO_ROOT / "Justfile"),
+            "--working-directory",
+            str(checkout),
+            "--set",
+            "cargo",
+            str(cargo),
+            "rust-coverage-changed",
+            base,
         ],
         env={
             **os.environ,
@@ -361,7 +362,9 @@ def test_coverage_recipe_binds_lcov_to_committed_source(tmp_path, mutation):
             "BUILD_MARKER": str(build_marker),
             "MUTATION": mutation or "",
         },
-        check=False, capture_output=True, text=True,
+        check=False,
+        capture_output=True,
+        text=True,
     )
     if mutation is None:
         assert result.returncode == 0, result.stderr

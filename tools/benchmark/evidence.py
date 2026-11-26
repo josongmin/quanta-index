@@ -920,7 +920,9 @@ def _consume_regular_file(path: Path, consume: Callable[[BinaryIO], _Consumed]) 
 
 
 def _read_regular_file(
-    path: Path, *, expected_bytes: tuple[str, int] | None = None,
+    path: Path,
+    *,
+    expected_bytes: tuple[str, int] | None = None,
 ) -> bytes:
     """Materialize raw bytes; large-payload callers must migrate to streaming."""
     if expected_bytes is None:

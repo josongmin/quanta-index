@@ -116,25 +116,25 @@ def test_rule_is_frozen_and_documented():
 
 def test_go_trace_semantic_text_preserves_diagnostic_and_lexical_seed():
     sample = _trace_sample(
-        '$ go test ./...\n'
-        'go: downloading example.org/module v1.0.0\n'
-        '--- FAIL: TestRouteRedirectTrailingSlash (0.00s)\n'
-        '    routes_test.go:189: \n'
-        '        Error Trace:\t/Users/runner/gin/routes_test.go:189\n'
-        '        Error:      \tNot equal: \n'
+        "$ go test ./...\n"
+        "go: downloading example.org/module v1.0.0\n"
+        "--- FAIL: TestRouteRedirectTrailingSlash (0.00s)\n"
+        "    routes_test.go:189: \n"
+        "        Error Trace:\t/Users/runner/gin/routes_test.go:189\n"
+        "        Error:      \tNot equal: \n"
         '            expected: "/api/path"\n'
         '            actual  : "../../../api%2523%253F/path"\n'
-        'FAIL\tgithub.com/gin-gonic/gin 0.010s\n'
-        'FAIL'
+        "FAIL\tgithub.com/gin-gonic/gin 0.010s\n"
+        "FAIL"
     )
     before = copy.deepcopy(sample)
     lexical = adapt(sample)
     text = prepare_go_trace_semantic_text(sample["query"])
     assert text == (
-        '--- FAIL: TestRouteRedirectTrailingSlash\n'
-        '    routes_test.go:189: \n'
-        '        Error Trace:\troutes_test.go:189\n'
-        '        Error:      \tNot equal: \n'
+        "--- FAIL: TestRouteRedirectTrailingSlash\n"
+        "    routes_test.go:189: \n"
+        "        Error Trace:\troutes_test.go:189\n"
+        "        Error:      \tNot equal: \n"
         '            expected: "/api/path"\n'
         '            actual  : "../../../api%2523%253F/path"'
     )
@@ -162,13 +162,25 @@ def test_go_trace_semantic_text_uses_only_public_diagnostic_fields():
         (None, "ARB_GO_TRACE_INVALID_QUERY"),
         ([], "ARB_GO_TRACE_INVALID_QUERY"),
         ({"failure_excerpt": "failure"}, "ARB_GO_TRACE_UNSUPPORTED_COMMAND"),
-        ({"command": "go vet ./.", "failure_excerpt": "failure"}, "ARB_GO_TRACE_UNSUPPORTED_COMMAND"),
-        ({"command": "go testx ./.", "failure_excerpt": "failure"}, "ARB_GO_TRACE_UNSUPPORTED_COMMAND"),
+        (
+            {"command": "go vet ./.", "failure_excerpt": "failure"},
+            "ARB_GO_TRACE_UNSUPPORTED_COMMAND",
+        ),
+        (
+            {"command": "go testx ./.", "failure_excerpt": "failure"},
+            "ARB_GO_TRACE_UNSUPPORTED_COMMAND",
+        ),
         ({"command": "go test ./.", "failure_excerpt": None}, "ARB_GO_TRACE_INVALID_EXCERPT"),
         ({"command": "go test ./.", "failure_excerpt": "  \n "}, "ARB_GO_TRACE_INVALID_EXCERPT"),
-        ({"command": "go test ./.", "failure_excerpt": "bad\0trace"}, "ARB_GO_TRACE_INVALID_EXCERPT"),
+        (
+            {"command": "go test ./.", "failure_excerpt": "bad\0trace"},
+            "ARB_GO_TRACE_INVALID_EXCERPT",
+        ),
         ({"command": "go test ./.", "failure_excerpt": "\ud800"}, "ARB_GO_TRACE_INVALID_EXCERPT"),
-        ({"command": "go test ./.", "failure_excerpt": "$ go test ./...\nPASS\nok\tpkg 0.01s"}, "ARB_GO_TRACE_EMPTY"),
+        (
+            {"command": "go test ./.", "failure_excerpt": "$ go test ./...\nPASS\nok\tpkg 0.01s"},
+            "ARB_GO_TRACE_EMPTY",
+        ),
         ({"command": "go test ./.", "failure_excerpt": "한" * 5462}, "ARB_GO_TRACE_TOO_LONG"),
     ],
 )

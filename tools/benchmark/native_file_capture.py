@@ -206,7 +206,8 @@ def _check_plan_family_runtime(manifest_path: Path, family: dict, plan: dict) ->
         raise EvidenceError("Native execution plan daemon config differs from cohort family")
     planned_selection = (
         (Path(plan["selection_path"]).absolute(), plan["selection_sha256"])
-        if "selection_path" in plan else None
+        if "selection_path" in plan
+        else None
     )
     if planned_selection != selected:
         raise EvidenceError("Native execution plan selection differs from cohort family")
@@ -218,7 +219,10 @@ def _check_frozen_family_snapshot(family: dict, snapshot: dict[str, str]) -> Non
         return
     if snapshot.get("daemon_config") != "sha256:" + family["daemon_config_sha256"]:
         raise EvidenceError("Native execution daemon config differs from frozen cohort family")
-    if "selection_path" in family and snapshot.get("selection") != "sha256:" + family["selection_sha256"]:
+    if (
+        "selection_path" in family
+        and snapshot.get("selection") != "sha256:" + family["selection_sha256"]
+    ):
         raise EvidenceError("Native execution selection differs from frozen cohort family")
 
 
@@ -272,7 +276,10 @@ def _verify_signed_install(plan, selected, policy_sha256):
         raise EvidenceError("Native signed installation lacks its selected BOOT")
     try:
         native_release_approval.verify_installed_approval(
-            plan[SIGNED_INSTALL], selected, plan["selection_sha256"], policy_sha256,
+            plan[SIGNED_INSTALL],
+            selected,
+            plan["selection_sha256"],
+            policy_sha256,
             selection_path=plan["selection_path"],
         )
     except (OSError, KeyError, TypeError, ValueError) as error:
@@ -299,13 +306,16 @@ def _check_capture_paths(
     if output.is_symlink():
         raise EvidenceError("Native capture output changed after controlled execution")
     native_file_paths.require_disjoint(
-        (output,), (("source checkout", repo),),
+        (output,),
+        (("source checkout", repo),),
         error="Native capture output must be external to source checkout",
     )
     protected = (
         *files.items(),
         *native_file_paths.cohort_inputs(
-            manifest_path, manifest, publishing_family=family["family_id"],
+            manifest_path,
+            manifest,
+            publishing_family=family["family_id"],
         ),
     )
     native_file_paths.require_disjoint(
@@ -314,7 +324,9 @@ def _check_capture_paths(
         error="Native {role} overlaps benchmark custody paths",
     )
     native_file_paths.require_disjoint(
-        (output,), protected, error="Native capture output overlaps {role}",
+        (output,),
+        protected,
+        error="Native capture output overlaps {role}",
     )
     return output
 
@@ -451,7 +463,8 @@ def _archived_raw(store: RunStore, evidence: dict, name: str) -> RawFile:
 
 def _check_live_output(path: Path, captured: RawFile) -> None:
     if resolve_path(path) != captured.path or file_digest(captured.path) != (
-        captured.sha256, captured.size,
+        captured.sha256,
+        captured.size,
     ):
         raise EvidenceError("Native capture output changed after controlled execution")
 
@@ -487,8 +500,10 @@ def load_published_run(store: RunStore, run_id: str, *, registered_digest: str) 
     if not run_id.endswith(suffix):
         raise EvidenceError("Native controlled run ID has the wrong family")
     document = load_capture(
-        store.root, profile=PROFILE, registry_digest=registered_digest,
-        capture_id=run_id[:-len(suffix)],
+        store.root,
+        profile=PROFILE,
+        registry_digest=registered_digest,
+        capture_id=run_id[: -len(suffix)],
     )
     if [row["run_id"] for row in document["runs"]] != [run_id]:
         raise EvidenceError("Native controlled run lacks sole original capture membership")
@@ -521,7 +536,8 @@ def replay_run(
     plan = _plan(plan_file, require_signed_install=require_signed_install)
     cohort_ref = _archived_raw(store, evidence, "cohort.json")
     manifest_path, manifest, family, cohort_sha = _family(
-        plan, expected_cohort=cohort_ref.sha256,
+        plan,
+        expected_cohort=cohort_ref.sha256,
     )
     if evidence["case_id"] != family["family_id"]:
         raise EvidenceError("Native capture family identity differs")
@@ -589,7 +605,13 @@ def replay_run(
     # be disjoint from that store and its external capture.
     external_files = {key: path for key, path in files.items() if key != "plan"}
     output = _check_capture_paths(
-        ROOT, store.root, manifest_path, manifest, family, external_files, fresh=False,
+        ROOT,
+        store.root,
+        manifest_path,
+        manifest,
+        family,
+        external_files,
+        fresh=False,
     )
     expected_argv = [
         plan["runner_binary"],
@@ -606,7 +628,12 @@ def replay_run(
         _archived_raw(store, evidence, "execution.json").read_control().decode("utf-8")
     )
     if not isinstance(execution, dict) or set(execution) != {
-        "status", "command", "request", "error_type", "output_errors", "raw",
+        "status",
+        "command",
+        "request",
+        "error_type",
+        "output_errors",
+        "raw",
     }:
         raise EvidenceError("Native capture controlled execution shape differs")
     command, request, streams = execution["command"], execution["request"], execution["raw"]
@@ -679,7 +706,13 @@ def replay_run(
     if not _inputs_unchanged(plan_file, family, paths, current):
         raise EvidenceError("Native capture source inputs changed during replay")
     _check_capture_paths(
-        ROOT, store.root, manifest_path, manifest, family, external_files, fresh=False,
+        ROOT,
+        store.root,
+        manifest_path,
+        manifest,
+        family,
+        external_files,
+        fresh=False,
     )
     _check_live_output(live_output, output_ref)
     if evidence["payload"] != {
@@ -697,15 +730,21 @@ def replay_run(
     evaluator.verify_repo(paths.source_repo, observed["repository_commit"])
     if selected is not None:
         _, selected = native_file_decision.load_selected_snapshot(
-            files["selection"], plan["selection_sha256"],
+            files["selection"],
+            plan["selection_sha256"],
         )
     _verify_signed_install(plan, selected, current["decision_policy"].removeprefix("sha256:"))
     return commitment
 
 
 def capture(
-    repo: Path, root: Path, registry: dict, timeout: int, plan_path: Path,
-    *, require_signed_install: bool = False,
+    repo: Path,
+    root: Path,
+    registry: dict,
+    timeout: int,
+    plan_path: Path,
+    *,
+    require_signed_install: bool = False,
 ) -> dict:
     """Capture one predeclared Native family; product qualification stays separate."""
     if resolve_path(repo) != ROOT:
@@ -718,7 +757,14 @@ def capture(
     paths = _roles(prepared_plan.path, plan, manifest_path, family)
     prepared_output = _check_capture_paths(repo, root, manifest_path, manifest, family, paths.files)
     return _capture_admitted(
-        repo, root, registry, timeout, prepared_plan, cohort_sha, paths, prepared_output,
+        repo,
+        root,
+        registry,
+        timeout,
+        prepared_plan,
+        cohort_sha,
+        paths,
+        prepared_output,
     )
 
 
@@ -937,7 +983,8 @@ def _capture_admitted(
         _check_live_output(live_output, result["capture"])
         if SIGNED_INSTALL in plan:
             _, live_selection = native_file_decision.load_selected_snapshot(
-                files["selection"], plan["selection_sha256"],
+                files["selection"],
+                plan["selection_sha256"],
             )
             _verify_signed_install(plan, live_selection, policy_sha)
         require_frozen_source(repo, head)
@@ -959,7 +1006,11 @@ def _capture_admitted(
 
 
 def validate(
-    repo: Path, root: Path, registry: dict, *, require_signed_install: bool = False,
+    repo: Path,
+    root: Path,
+    registry: dict,
+    *,
+    require_signed_install: bool = False,
 ) -> dict:
     if resolve_path(repo) != ROOT:
         raise EvidenceError("Native capture driver must come from the requested checkout")

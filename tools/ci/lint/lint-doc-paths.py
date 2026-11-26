@@ -22,9 +22,7 @@ IGNORE_DIRS = {
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
 HTML_TAG_RE = re.compile(r"<([A-Za-z][\w:-]*)\b([^<>]*)>")
-HTML_ANCHOR_ATTR_RE = re.compile(
-    r"""\s(id|name)\s*=\s*(["'])([^"'<>]+)\2""", re.IGNORECASE
-)
+HTML_ANCHOR_ATTR_RE = re.compile(r"""\s(id|name)\s*=\s*(["'])([^"'<>]+)\2""", re.IGNORECASE)
 
 
 def is_ignored_doc(path: Path) -> bool:

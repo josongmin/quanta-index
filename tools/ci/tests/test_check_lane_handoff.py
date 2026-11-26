@@ -233,12 +233,15 @@ def test_handoff_replays_schema_from_proof_commit_after_registry_relocation(tmp_
     )
     _run(root, "git", "add", "-A", "tools/ci")
     _run(root, "git", "commit", "-qm", "Relocate proof schemas")
-    assert HANDOFF.validate_handoff(
-        handoff,
-        handoff_path=root / "P00.json",
-        root=root,
-        require_result_head=False,
-    ) == []
+    assert (
+        HANDOFF.validate_handoff(
+            handoff,
+            handoff_path=root / "P00.json",
+            root=root,
+            require_result_head=False,
+        )
+        == []
+    )
 
 
 def test_explicit_retired_proof_archive_replays_issuing_registry(tmp_path, capsys):
@@ -268,7 +271,8 @@ def test_explicit_retired_proof_archive_replays_issuing_registry(tmp_path, capsy
         artifact=f"artifacts/proof-authority/{retired_id}.json",
     )
     registry.write_text(
-        current_registry + "\n[[proofs]]\n"
+        current_registry
+        + "\n[[proofs]]\n"
         + "".join(f"{key} = {json.dumps(value)}\n" for key, value in issuer.items())
     )
     catalog.write_text(

@@ -34,7 +34,9 @@ def test_current_roster_preserves_every_frozen_body(checker, capsys):
 
 def test_retirement_rejects_pending_runtime_execution(checker, capsys):
     source = checker.MANIFEST.read_text(encoding="utf-8")
-    checker.MANIFEST.write_text(source.replace('proof = "VERIFIED"', 'proof = "NOT_RUN"'), encoding="utf-8")
+    checker.MANIFEST.write_text(
+        source.replace('proof = "VERIFIED"', 'proof = "NOT_RUN"'), encoding="utf-8"
+    )
     assert checker.main() == 0
     assert checker.main(require_execution=True) == 1
     errors = capsys.readouterr().err
@@ -52,11 +54,16 @@ def test_runtime_verified_label_requires_execution_observations(checker, capsys,
     assert "current proof group 1: VERIFIED disposition requires" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(("index", "event_prefix"), [
-    (0, "quanta-index-searchd-runtime::process_readiness_owner_v1$e2e_perf_chaos::"),
-    (3, "quanta-index-searchd-runtime::runtime_fast_suite$sdk_frontdoor::matrix_tests::"),
-])
-def test_runtime_observation_accepts_actual_grouped_test_owner(checker, monkeypatch, capsys, index, event_prefix):
+@pytest.mark.parametrize(
+    ("index", "event_prefix"),
+    [
+        (0, "quanta-index-searchd-runtime::process_readiness_owner_v1$e2e_perf_chaos::"),
+        (3, "quanta-index-searchd-runtime::runtime_fast_suite$sdk_frontdoor::matrix_tests::"),
+    ],
+)
+def test_runtime_observation_accepts_actual_grouped_test_owner(
+    checker, monkeypatch, capsys, index, event_prefix
+):
     manifest = checker.MANIFEST.read_text(encoding="utf-8")
     parse_toml = checker.tomllib.loads
     roster = parse_toml(manifest)
@@ -66,17 +73,26 @@ def test_runtime_observation_accepts_actual_grouped_test_owner(checker, monkeypa
         {
             "source": candidate["path"],
             "case": case,
-            "source_sha256": hashlib.sha256((checker.ROOT / candidate["path"]).read_bytes()).hexdigest(),
+            "source_sha256": hashlib.sha256(
+                (checker.ROOT / candidate["path"]).read_bytes()
+            ).hexdigest(),
             "run_id": "3739620b-a0ff-451d-897f-e5a32fc146eb",
             "event": event_prefix + case,
             "events_sha256": "a" * 64,
         }
-        for candidate in proof["candidates"] for case in candidate["tests"]
+        for candidate in proof["candidates"]
+        for case in candidate["tests"]
     ]
-    monkeypatch.setattr(checker, "tomllib", SimpleNamespace(loads=lambda raw: roster if raw == manifest else parse_toml(raw)))
+    monkeypatch.setattr(
+        checker,
+        "tomllib",
+        SimpleNamespace(loads=lambda raw: roster if raw == manifest else parse_toml(raw)),
+    )
     assert checker.main() == 0
     capsys.readouterr()
-    proof["observations"][0]["event"] = event_prefix + "wrong_module::" + proof["observations"][0]["case"]
+    proof["observations"][0]["event"] = (
+        event_prefix + "wrong_module::" + proof["observations"][0]["case"]
+    )
     assert checker.main() == 1
     assert "differs from" in capsys.readouterr().err
 
@@ -117,7 +133,10 @@ def test_current_public_route_runner_admits_additional_tests(checker, tmp_path, 
 
 
 def test_current_public_route_runner_still_requires_original_cases(
-    checker, capsys, tmp_path, monkeypatch,
+    checker,
+    capsys,
+    tmp_path,
+    monkeypatch,
 ):
     required = "regex_false_positive_candidate_is_rejected_by_exact_verify"
     source = checker.CURRENT_PERF.read_text(encoding="utf-8")
@@ -174,7 +193,9 @@ def test_missing_current_candidate_body_is_rejected(checker, capsys):
         encoding="utf-8",
     )
     assert checker.main() == 1
-    assert "has no body-bearing test history_before_candidate_was_deleted" in capsys.readouterr().err
+    assert (
+        "has no body-bearing test history_before_candidate_was_deleted" in capsys.readouterr().err
+    )
 
 
 def test_test_attribute_cannot_attach_to_a_later_helper(checker):

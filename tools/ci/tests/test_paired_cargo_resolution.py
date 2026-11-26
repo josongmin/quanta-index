@@ -130,6 +130,7 @@ def test_binary_custody_retry_requires_no_output_from_failed_pin(tmp_path, monke
     pinned = directory / "daemon"
     with monkeypatch.context() as patch:
         if failure == "file-sync":
+
             def fail_regular_sync(fd):
                 if stat.S_ISREG(os.fstat(fd).st_mode):
                     raise OSError("injected executable sync failure")
@@ -139,6 +140,7 @@ def test_binary_custody_retry_requires_no_output_from_failed_pin(tmp_path, monke
             patch.setattr(binary_custody.os, "fsync", fail_regular_sync)
             error = pytest.raises(OSError, match="executable sync failure")
         else:
+
             def drift_before_final_verification(digest, paths, *, archive=None):
                 if pinned in paths:
                     built.write_bytes(b"changed after copy")
@@ -178,8 +180,13 @@ def _commit_fixture_checkout(root: Path) -> None:
         ["init", "-q"],
         ["add", "."],
         [
-            "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-            "commit", "-qm", "fixture",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
         ],
     ):
         subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
@@ -209,7 +216,10 @@ def paired_bootstrap(resolution, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("entry", ["just", "direct"])
 def test_cross_repo_launch_does_not_run_ambient_shell_startup(
-    paired_bootstrap, tmp_path, monkeypatch, entry,
+    paired_bootstrap,
+    tmp_path,
+    monkeypatch,
+    entry,
 ):
     quanta, paired, runner, _, helper_marker = paired_bootstrap
     shutil.copyfile(Path(__file__).resolve().parents[3] / "Justfile", quanta / "Justfile")
@@ -228,18 +238,26 @@ def test_cross_repo_launch_does_not_run_ambient_shell_startup(
 
     command = ["just", "rust-verify-hellgate-cross-repo"] if entry == "just" else [str(runner)]
     completed = subprocess.run(
-        [*command, str(paired)], cwd=quanta, text=True, capture_output=True, check=False,
+        [*command, str(paired)],
+        cwd=quanta,
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
-    assert (completed.returncode, login_marker.exists(), bash_marker.exists()) == (67, False, False), (
-        completed.stderr
-    )
+    assert (completed.returncode, login_marker.exists(), bash_marker.exists()) == (
+        67,
+        False,
+        False,
+    ), completed.stderr
     assert "fixture resolver reached" in completed.stderr.splitlines()
     assert helper_marker.exists()
 
 
 def test_signed_cross_repo_refuses_bash_without_startup_isolation(
-    paired_bootstrap, tmp_path, monkeypatch,
+    paired_bootstrap,
+    tmp_path,
+    monkeypatch,
 ):
     quanta, paired, runner, _, helper_marker = paired_bootstrap
     for root in (quanta, paired):
@@ -248,7 +266,10 @@ def test_signed_cross_repo_refuses_bash_without_startup_isolation(
     monkeypatch.setenv("QUANTA_P11_SIGNER_SOCKET", str(tmp_path / "fixture-socket"))
 
     completed = subprocess.run(
-        ["/bin/bash", str(runner), str(paired)], text=True, capture_output=True, check=False,
+        ["/bin/bash", str(runner), str(paired)],
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
     assert completed.returncode == 1, completed.stderr
@@ -259,12 +280,21 @@ def test_signed_cross_repo_refuses_bash_without_startup_isolation(
 @pytest.mark.parametrize(
     "source_state",
     [
-        "dirty-quanta", "dirty-paired", "hidden-helper", "hidden-quanta", "hidden-paired",
-        "normalized-helper", "foreign-git-env", "nested-paired", "helper-symlink",
+        "dirty-quanta",
+        "dirty-paired",
+        "hidden-helper",
+        "hidden-quanta",
+        "hidden-paired",
+        "normalized-helper",
+        "foreign-git-env",
+        "nested-paired",
+        "helper-symlink",
     ],
 )
 def test_cross_repo_script_refuses_unbound_source_before_python_helper(
-    paired_bootstrap, monkeypatch, source_state,
+    paired_bootstrap,
+    monkeypatch,
+    source_state,
 ):
     quanta, paired, runner, helper, marker = paired_bootstrap
     helper_path = helper.relative_to(paired)
@@ -296,7 +326,8 @@ def test_cross_repo_script_refuses_unbound_source_before_python_helper(
         git = ["git", "-C", str(dirty_root)]
         subprocess.run(
             [*git, "update-index", flag, "--", str(path.relative_to(dirty_root))],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         path.write_bytes(path.read_bytes() + b"# hidden worktree change\n")
         assert subprocess.check_output([*git, "status", "--porcelain"]) == b""
@@ -320,7 +351,9 @@ def test_cross_repo_script_refuses_unbound_source_before_python_helper(
             monkeypatch.setenv("GIT_WORK_TREE", str(paired))
 
     completed = subprocess.run(
-        [str(runner), str(supplied_root)], text=True, capture_output=True,
+        [str(runner), str(supplied_root)],
+        text=True,
+        capture_output=True,
     )
 
     assert not marker.exists()
@@ -329,7 +362,9 @@ def test_cross_repo_script_refuses_unbound_source_before_python_helper(
 
 
 def test_cross_repo_script_runs_checked_helper_bytes_after_comparison(
-    paired_bootstrap, tmp_path, monkeypatch,
+    paired_bootstrap,
+    tmp_path,
+    monkeypatch,
 ):
     quanta, paired, runner, _, marker = paired_bootstrap
     for root in (quanta, paired):
@@ -343,7 +378,7 @@ def test_cross_repo_script_runs_checked_helper_bytes_after_comparison(
     # candidate bytes are still backed by a writable staging file.
     comparator.write_text(
         "#!/usr/bin/env bash\n"
-        f"{shlex.quote(real_cmp)} \"$@\" || exit $?\n"
+        f'{shlex.quote(real_cmp)} "$@" || exit $?\n'
         "for last; do :; done\n"
         'if [[ -f "$last" ]]; then\n'
         """  printf '\\n%s\\n' 'exit 66' >> "$last"\n"""
@@ -354,7 +389,9 @@ def test_cross_repo_script_runs_checked_helper_bytes_after_comparison(
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
 
     completed = subprocess.run(
-        [str(runner), str(paired)], text=True, capture_output=True,
+        [str(runner), str(paired)],
+        text=True,
+        capture_output=True,
     )
 
     assert completed.returncode == 67
@@ -365,9 +402,18 @@ def test_cross_repo_script_runs_checked_helper_bytes_after_comparison(
 @pytest.mark.parametrize("mutate", [False, True])
 @pytest.mark.parametrize("temporary", ["default", "custom", "alias"])
 @pytest.mark.parametrize("preflight_failure", [False, True])
-@pytest.mark.parametrize(("use_p10", "use_recorded"), [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize(
+    ("use_p10", "use_recorded"), [(False, False), (True, False), (False, True)]
+)
 def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
-    resolution, tmp_path, monkeypatch, mutate, temporary, preflight_failure, use_p10, use_recorded,
+    resolution,
+    tmp_path,
+    monkeypatch,
+    mutate,
+    temporary,
+    preflight_failure,
+    use_p10,
+    use_recorded,
 ):
     import socket
 
@@ -392,7 +438,8 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
     )
     python_path = os.environ.get("PYTHONPATH")
     monkeypatch.setenv(
-        "PYTHONPATH", os.pathsep.join(part for part in (str(startup), python_path) if part),
+        "PYTHONPATH",
+        os.pathsep.join(part for part in (str(startup), python_path) if part),
     )
     python_env = paired / "scripts/lib/python-env.sh"
     python_env.parent.mkdir(parents=True)
@@ -433,10 +480,12 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
     (quanta / "scripts/verify-repomap-cross-repo.sh").chmod(0o700)
     if not use_p10:
         registry = quanta / "tools/ci/proof-authority.toml"
-        registry.write_text(registry.read_text().replace(
-            'features = "index-sdk-ingress-surface"',
-            'features = "index-sdk-ingress-surface,fixture-replay-owner"',
-        ))
+        registry.write_text(
+            registry.read_text().replace(
+                'features = "index-sdk-ingress-surface"',
+                'features = "index-sdk-ingress-surface,fixture-replay-owner"',
+            )
+        )
     # This scenario owns binary custody; resolver/selected-run behavior has
     # independent tests and is stubbed so no QBC lane or Rust build is needed.
     (quanta / "tools/ci/paired_cargo_resolution.py").write_text(
@@ -465,9 +514,11 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
             f"print({hashlib.sha256(built.read_bytes()).hexdigest()!r})\n"
             f"print({str(built)!r})\n"
         )
-    archive = quanta / "artifacts/proof-authority/binaries" / hashlib.sha256(
-        built.read_bytes()
-    ).hexdigest()
+    archive = (
+        quanta
+        / "artifacts/proof-authority/binaries"
+        / hashlib.sha256(built.read_bytes()).hexdigest()
+    )
     if use_p10:
         archive.parent.mkdir(parents=True)
         archive.write_bytes(built.read_bytes())
@@ -519,10 +570,10 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
     monkeypatch.setenv("ZDOTDIR", str(tmp_path))
     (quanta / "Justfile").write_text(
         'set shell := ["/bin/zsh", "-lc"]\n'
-        'rust-build-release-native-daemon:\n'
-        f'    @touch {shlex.quote(str(build_marker))}\n'
+        "rust-build-release-native-daemon:\n"
+        f"    @touch {shlex.quote(str(build_marker))}\n"
         f'    @printf "%s\\n" {shlex.quote("Verified Native daemon " + str(built))}\n'
-        f'    @exit {79 if use_p10 else 0}\n'
+        f"    @exit {79 if use_p10 else 0}\n"
     )
     for root in (quanta, paired):
         (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
@@ -776,7 +827,10 @@ def test_qbc_resolver_uses_own_stable_auxiliary_stdout_and_refuses_bad_owners(
 
 @pytest.mark.parametrize("source_state", ["hidden", "foreign-git-environment"])
 def test_qbc_resolver_checks_source_before_invoking_external_cli(
-    resolution, tmp_path, monkeypatch, source_state,
+    resolution,
+    tmp_path,
+    monkeypatch,
+    source_state,
 ):
     quanta, paired, consumer, _ = resolution
     marker = tmp_path / "qbc-cli-invoked"
@@ -788,8 +842,16 @@ def test_qbc_resolver_checks_source_before_invoking_external_cli(
         _commit_fixture_checkout(root)
     if source_state == "hidden":
         subprocess.run(
-            ["git", "-C", str(paired), "update-index", "--skip-worktree", "scripts/quanta-build-cli"],
-            check=True, capture_output=True,
+            [
+                "git",
+                "-C",
+                str(paired),
+                "update-index",
+                "--skip-worktree",
+                "scripts/quanta-build-cli",
+            ],
+            check=True,
+            capture_output=True,
         )
         cli.write_bytes(cli.read_bytes() + b"# changed worktree\n")
         assert subprocess.check_output(["git", "-C", str(paired), "status", "--porcelain"]) == b""
@@ -802,15 +864,20 @@ def test_qbc_resolver_checks_source_before_invoking_external_cli(
 
     with pytest.raises(ValueError) as error:
         MODULE.resolve_from_qbc(
-            quanta_root=quanta, paired_root=paired, consumer=consumer,
-            feature="index-sdk-ingress", lane="registered-resolution",
+            quanta_root=quanta,
+            paired_root=paired,
+            consumer=consumer,
+            feature="index-sdk-ingress",
+            lane="registered-resolution",
         )
     assert not marker.exists()
     assert expected_error in str(error.value)
 
 
 def test_qbc_resolver_keeps_the_dedicated_signer_out_of_external_cli(
-    resolution, tmp_path, monkeypatch,
+    resolution,
+    tmp_path,
+    monkeypatch,
 ):
     import socket
 
@@ -825,9 +892,7 @@ def test_qbc_resolver_keeps_the_dedicated_signer_out_of_external_cli(
     cli = paired / "scripts/quanta-build-cli"
     cli.parent.mkdir()
     cli.write_text(
-        "#!/bin/sh\n"
-        'test -z "${QUANTA_P11_SIGNER_SOCKET:-}${SSH_AUTH_SOCK:-}" || exit 86\n'
-        "exit 91\n"
+        '#!/bin/sh\ntest -z "${QUANTA_P11_SIGNER_SOCKET:-}${SSH_AUTH_SOCK:-}" || exit 86\nexit 91\n'
     )
     cli.chmod(0o700)
     for root in (quanta, paired):
@@ -835,8 +900,11 @@ def test_qbc_resolver_keeps_the_dedicated_signer_out_of_external_cli(
 
     with pytest.raises(ValueError, match="QBC observational status failed: exit 91"):
         MODULE.resolve_from_qbc(
-            quanta_root=quanta, paired_root=paired, consumer=consumer,
-            feature="index-sdk-ingress", lane="registered-resolution",
+            quanta_root=quanta,
+            paired_root=paired,
+            consumer=consumer,
+            feature="index-sdk-ingress",
+            lane="registered-resolution",
         )
     assert os.environ["SSH_AUTH_SOCK"] == str(signer_alias)
     assert os.environ["QUANTA_P11_SIGNER_SOCKET"] == str(tmp_path / "signer")
@@ -848,7 +916,9 @@ def test_qbc_resolver_executes_source_with_an_older_python_cache(resolution, tmp
     cli.parent.mkdir()
     driver = paired / "qbc_driver.py"
     driver.write_text("from status_profile import STATUS\nraise SystemExit(STATUS)\n")
-    cli.write_text(f"#!/usr/bin/env bash\nexec {shlex.quote(sys.executable)} {shlex.quote(str(driver))}\n")
+    cli.write_text(
+        f"#!/usr/bin/env bash\nexec {shlex.quote(sys.executable)} {shlex.quote(str(driver))}\n"
+    )
     cli.chmod(0o700)
     profile = paired / "status_profile.py"
     profile.write_text("STATUS = 91\n")
@@ -869,8 +939,11 @@ def test_qbc_resolver_executes_source_with_an_older_python_cache(resolution, tmp
 
     with pytest.raises(ValueError, match="QBC observational status failed: exit 91"):
         MODULE.resolve_from_qbc(
-            quanta_root=quanta, paired_root=paired, consumer=consumer,
-            feature="index-sdk-ingress", lane="registered-resolution",
+            quanta_root=quanta,
+            paired_root=paired,
+            consumer=consumer,
+            feature="index-sdk-ingress",
+            lane="registered-resolution",
         )
     assert [marker.name for marker in (bash_started, python_started) if marker.exists()] == []
     assert os.environ["BASH_ENV"] == str(bash_env)
@@ -882,7 +955,9 @@ def test_qbc_auxiliary_output_reader_refuses_fifo_without_waiting_for_writer(tmp
     os.mkfifo(output)
     result = subprocess.run(
         [
-            sys.executable, "-B", "-c",
+            sys.executable,
+            "-B",
+            "-c",
             "import runpy, sys\n"
             "from pathlib import Path\n"
             "reader = runpy.run_path(sys.argv[1])['_read_bounded_regular']\n"
@@ -890,9 +965,13 @@ def test_qbc_auxiliary_output_reader_refuses_fifo_without_waiting_for_writer(tmp
             "    reader(Path(sys.argv[2]))\n"
             "except ValueError as error:\n"
             "    sys.exit(str(error))\n",
-            str(MODULE_PATH), str(output),
+            str(MODULE_PATH),
+            str(output),
         ],
-        text=True, capture_output=True, timeout=4, check=False,
+        text=True,
+        capture_output=True,
+        timeout=4,
+        check=False,
     )
     assert result.returncode == 1
     assert result.stderr.strip() == "QBC metadata output is not a bounded regular file"

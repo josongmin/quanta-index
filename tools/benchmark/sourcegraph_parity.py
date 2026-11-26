@@ -37,9 +37,7 @@ OLD_Q_QUERIES = {
 }
 OLD_Q_QUERY_TABLES = {
     "legacy_text_route_hellgate.rs": (r"for query in \[(.*?)\n\s*\] \{", r"(?:\A|,)"),
-    "legacy_structural_hellgate.rs": (
-        r"for \(query, expected_count\) in \[(.*?)\n\s*\] \{", r"\("
-    ),
+    "legacy_structural_hellgate.rs": (r"for \(query, expected_count\) in \[(.*?)\n\s*\] \{", r"\("),
     "e2e_history_text_predicate.rs": (r"let cases:[^=]+=\s*\[(.*?)\n\s*\];", r"\("),
 }
 NATIVE_REPOSITORY_QUERIES = RUNTIME_TESTS / (
@@ -120,11 +118,11 @@ RETIRED_SURFACE_WITNESSES = {"repo.contains.file", "file.contains.content"}
 # Predicate namespaces and arguments have their own witness table. Quoted text
 # can also contain filter-like tokens without selecting a filter.
 QUERY_TOKENS = re.compile(
-    r''' "(?:\\.|[^"\\])*" | '(?:\\.|[^'\\])*' '''
-    r''' | (?<![\w./])/(?:\\.|[^/\\\n])*/ '''
-    r''' | (?P<predicate>\b(?:repo|file|symbol)[.:][a-z][a-z._]*\() '''
-    r''' | (?P<filter>(?<![\w.])[a-z][a-z._]*)\s*: '''
-    r''' | (?P<open>\() | (?P<close>\)) ''',
+    r""" "(?:\\.|[^"\\])*" | '(?:\\.|[^'\\])*' """
+    r""" | (?<![\w./])/(?:\\.|[^/\\\n])*/ """
+    r""" | (?P<predicate>\b(?:repo|file|symbol)[.:][a-z][a-z._]*\() """
+    r""" | (?P<filter>(?<![\w.])[a-z][a-z._]*)\s*: """
+    r""" | (?P<open>\() | (?P<close>\)) """,
     re.X,
 )
 
@@ -255,9 +253,7 @@ def decode_literal_query(raw: str) -> str:
 
 
 _RUST_STRING = r'r(?P<hashes>\#*)"(?P<raw>.*?)"(?P=hashes)|"(?P<cooked>(?:\\.|[^"\\])*)"'
-_RUST_TOKENS = re.compile(
-    _RUST_STRING + r"|(?P<comment>//[^\n]*|/\*.*?\*/)", re.S
-)
+_RUST_TOKENS = re.compile(_RUST_STRING + r"|(?P<comment>//[^\n]*|/\*.*?\*/)", re.S)
 
 
 def strip_rust_comments(body: str) -> str:
@@ -361,7 +357,8 @@ def scan_old_q_queries(
     for relative in dict.fromkeys((*OLD_Q_QUERIES, *OLD_Q_QUERY_TABLES)):
         body = read(RUNTIME_TESTS / relative)
         queries = [
-            query for prefix in OLD_Q_QUERIES.get(relative, ())
+            query
+            for prefix in OLD_Q_QUERIES.get(relative, ())
             for query in rust_string_literals(body, prefix)
         ]
         if relative in OLD_Q_QUERY_TABLES:
@@ -388,10 +385,14 @@ def scan_native_repository_queries(
 ) -> int:
     body = strip_rust_comments(read(NATIVE_REPOSITORY_QUERIES))
     cases = (
-        ("repository_path_aliases_and_scalar_file_matchers_gate_the_source_repository",
-         "native_assertion"),
-        ("legacy_repo_metadata_and_repo_surface_are_explicitly_unavailable_on_native_text",
-         "native_refusal"),
+        (
+            "repository_path_aliases_and_scalar_file_matchers_gate_the_source_repository",
+            "native_assertion",
+        ),
+        (
+            "legacy_repo_metadata_and_repo_surface_are_explicitly_unavailable_on_native_text",
+            "native_refusal",
+        ),
     )
     count = 0
     for name, outcome in cases:
@@ -408,7 +409,11 @@ def scan_native_repository_queries(
         count += len(queries)
         for query in queries:
             record_query(
-                query, outcome, name, keyword_evidence, surface_evidence,
+                query,
+                outcome,
+                name,
+                keyword_evidence,
+                surface_evidence,
             )
     return count
 
@@ -420,9 +425,7 @@ def scan_frontdoor_scenarios(
     body = strip_rust_comments(read(FRONTDOOR_SCENARIOS_RS))
     queries = []
     for rail in ("SDK", "IPC"):
-        table = re.search(
-            rf"{rail}_FRONTDOOR_SCENARIOS[^=]*=\s*&\[(.*?)\n\];", body, re.S
-        )
+        table = re.search(rf"{rail}_FRONTDOOR_SCENARIOS[^=]*=\s*&\[(.*?)\n\];", body, re.S)
         if table is None:
             raise ValueError(f"missing {rail} front-door scenario table")
         rows = rust_string_literals(table.group(1), r"query_text:")
@@ -732,15 +735,9 @@ def main() -> int:
     surface_evidence: dict[str, Evidence] = {}
     demoted_evidence: dict[str, Evidence] = {}
     try:
-        old_q_rows = scan_old_q_queries(
-            keyword_evidence, surface_evidence
-        )
-        frontdoor_rows = scan_frontdoor_scenarios(
-            keyword_evidence, surface_evidence
-        )
-        native_rows = scan_native_repository_queries(
-            keyword_evidence, surface_evidence
-        )
+        old_q_rows = scan_old_q_queries(keyword_evidence, surface_evidence)
+        frontdoor_rows = scan_frontdoor_scenarios(keyword_evidence, surface_evidence)
+        native_rows = scan_native_repository_queries(keyword_evidence, surface_evidence)
         owner_local_demotion_hits = scan_lowering_owner_local_demotions(demoted_evidence)
     except (OSError, ValueError) as error:
         print(f"FAIL: query witness inventory: {error}", file=sys.stderr)
@@ -804,7 +801,9 @@ def main() -> int:
             }
         )
         if stale_waivers:
-            print(f"FAIL: stale query witness exceptions: {', '.join(stale_waivers)}", file=sys.stderr)
+            print(
+                f"FAIL: stale query witness exceptions: {', '.join(stale_waivers)}", file=sys.stderr
+            )
             problems += len(stale_waivers)
         waived = [
             item for item in untested_filters if item.split(" ")[0] in EXECUTION_UNVERIFIED_WAIVER

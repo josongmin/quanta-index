@@ -1356,7 +1356,8 @@ def test_native_capture_replays_real_product_and_canonical_validators(
 
 
 def test_native_capture_parses_each_child_once_in_product_validator(
-    native_capture_fixture: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+    native_capture_fixture: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     child_parses = []
     capture_parse = causal_cost_capture.parse_timeline_stream
@@ -1373,6 +1374,7 @@ def test_native_capture_parses_each_child_once_in_product_validator(
                     if (opened.st_dev, opened.st_ino) == (child.st_dev, child.st_ino):
                         child_parses.append(name)
             return parser(stream, **kwargs)
+
         return parse
 
     monkeypatch.setattr(causal_cost_capture, "parse_timeline_stream", counted(capture_parse))
@@ -1563,7 +1565,9 @@ def test_legacy_managed_capture_refuses_current_producer_checkout(
         pytest.fail("Legacy capture attempted to build the current Native producer")
 
     monkeypatch.setattr(causal_cost_capture, "build_scale", unexpected_build)
-    with pytest.raises(ValueError, match="Legacy managed capture requires a clean archived source checkout"):
+    with pytest.raises(
+        ValueError, match="Legacy managed capture requires a clean archived source checkout"
+    ):
         capture(args)
     assert not args.out_root.exists()
 

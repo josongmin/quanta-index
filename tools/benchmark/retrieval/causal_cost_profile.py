@@ -869,12 +869,9 @@ def _native_linux_resource_observation(value: object) -> dict:
     if (
         value["owner"] != "linux-process-owner-v1"
         or value["scope"] != "scale_harness_and_owned_descendants_until_cgroup_empty"
-        or value["aggregate_rss_method"]
-        != "sampled_smaps_rollup_rss_sum_shared_pages_may_repeat"
-        or value["cgroup_memory_method"]
-        != "cgroup_v2_memory.peak_kernel_accounted_memory_not_rss"
-        or value["migration_caveat"]
-        != "unobserved_cgroup_migration_requires_external_prevention"
+        or value["aggregate_rss_method"] != "sampled_smaps_rollup_rss_sum_shared_pages_may_repeat"
+        or value["cgroup_memory_method"] != "cgroup_v2_memory.peak_kernel_accounted_memory_not_rss"
+        or value["migration_caveat"] != "unobserved_cgroup_migration_requires_external_prevention"
         or value["ownership_complete"] is not True
         or value["continuous_rss_peak"] is not False
         or value["allocated_disk_peak"] is not None
@@ -1170,7 +1167,11 @@ def _native_map_root_staged(trace: dict, spans: dict, identified: set[int]) -> d
         if not root or root.get("stage") != "map_apply" or root.get("lane_id") != 0:
             continue
         posting = spans.get(root.get("parent_span_id"))
-        if not posting or posting.get("stage") != "native_text_postings" or posting.get("lane_id") != 39:
+        if (
+            not posting
+            or posting.get("stage") != "native_text_postings"
+            or posting.get("lane_id") != 39
+        ):
             continue
         counts = scoped_batches.setdefault(install["span_id"], (posting, {}))[1]
         lane = span["lane_id"]
@@ -1265,9 +1266,12 @@ def _native_stderr_summary(raw: RawFile, descriptor: dict, capture_id: str) -> d
         raise ValueError("native stderr size differs from drain")
     # Historical artifacts contain only the last 16KiB. New artifacts partition
     # that same payload budget into a disjoint initial/final 8KiB pair.
-    paired_scope = "bounded disjoint prefix and tail within 16KiB total; full file content not hashed"
+    paired_scope = (
+        "bounded disjoint prefix and tail within 16KiB total; full file content not hashed"
+    )
     paired = (
-        "prefix" in descriptor or "retained_budget_bytes" in descriptor
+        "prefix" in descriptor
+        or "retained_budget_bytes" in descriptor
         or descriptor.get("scope") == paired_scope
     )
     prefix = descriptor.get("prefix")
@@ -1830,9 +1834,7 @@ def validate_native_product_artifacts(
         raise ValueError("native source mutation count axes differ from declared profile")
     for axis, expected in expected_mutations.items():
         _exact_int(mutation_counts[axis], expected, f"native source mutation count {axis}")
-    if detail.get("derived_fanout") != (
-        "unobserved; no projection producer in Index-only fixture"
-    ):
+    if detail.get("derived_fanout") != ("unobserved; no projection producer in Index-only fixture"):
         raise ValueError("native derived fanout observation scope differs")
     expected_limits = (
         expected_foreground_workload.get("work_limits")

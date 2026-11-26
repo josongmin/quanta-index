@@ -96,11 +96,21 @@ def test_explicit_build_directory_config_is_respected(tmp_path: Path) -> None:
     }
     result = subprocess.run(
         [
-            str(SCRIPT), "--lane", "release-native-daemon-bin-lane",
-            "metadata", "--format-version", "1", "--no-deps",
-            "--config", f"build.build-dir={json.dumps(str(directory))}",
+            str(SCRIPT),
+            "--lane",
+            "release-native-daemon-bin-lane",
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--config",
+            f"build.build-dir={json.dumps(str(directory))}",
         ],
-        cwd=REPO_ROOT, env=env, check=True, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     payload = json.loads(result.stdout)
     assert payload["build_directory"] == str(directory)

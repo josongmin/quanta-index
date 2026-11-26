@@ -10128,7 +10128,9 @@ def test_qualified_gold_receipts_require_source_bound_task_reviews(tmp_path):
         pairrun.validate_admission_manifest(same_reviewer)
     same_reviewer = json.loads(json.dumps(admission))
     same_reviewer["gold"]["annotators"][1]["annotator_id"] = " gold-owner-a\t"
-    with pytest.raises(pairrun.RunError, match="annotation authorities and receipts must be distinct"):
+    with pytest.raises(
+        pairrun.RunError, match="annotation authorities and receipts must be distinct"
+    ):
         pairrun.validate_admission_manifest(same_reviewer)
     common = {
         "suite_sha256": pairrun.sha_file(st["suite_path"]),
@@ -12122,7 +12124,9 @@ def fixture_v3(tmp_path: Path, *, answerable_only: bool = False, blinding: str =
         },
         "captures": {
             "q0": _v3_capture("quanta", current=True),
-            "q1": dict(_v3_capture("quanta", current=True), model="model2vec:test", model_revision="r1"),
+            "q1": dict(
+                _v3_capture("quanta", current=True), model="model2vec:test", model_revision="r1"
+            ),
         },
         "route_provenance": {
             "lexical": {"capture_id": "q0"},
@@ -13107,9 +13111,12 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
     assert prep.count("uv run --frozen --extra dev just benchmark-control-contract-local") == 1
     control_pytest = pytest_invocations(control)
     assert control_pytest
-    assert local.splitlines().count(
-        "uv run --frozen --extra dev python tools/benchmark/retrieval/proof_inventory.py --run-local"
-    ) == 1
+    assert (
+        local.splitlines().count(
+            "uv run --frozen --extra dev python tools/benchmark/retrieval/proof_inventory.py --run-local"
+        )
+        == 1
+    )
     retrieval_test = "tools/ci/tests/test_retrieval_benchmark.py"
     oracle_suite_test = "tools/ci/tests/test_source_oracle_suite.py"
     for test_path in (retrieval_test, oracle_suite_test):
