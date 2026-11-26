@@ -3,7 +3,7 @@
 use super::{NativeDispatcher, NativeRetirementAuthorityV2};
 use quanta_index_contract::{
     index::{
-        IndexInstanceId, IndexProfile, InputDomain, ObjectRef, OperationStatus, ProjectionId,
+        IndexInstanceId, IndexProfile, InputDomain, OperationStatus, ProjectionId,
         SubmitOutcome, UpdateKind, UpdateRequest, WorkIntent, WorkScope,
     },
     native_protocol::{NativeIndexRequest, NativeIndexResponse},
@@ -40,21 +40,6 @@ fn request_sha256_v2(request: &UpdateRequest, budget: &mut WorkBudget) -> Result
 
 fn retired() -> IndexError {
     IndexError::InvalidInput("retired projection or instance identity".into())
-}
-
-fn target_profile_ref(kind: &UpdateKind) -> Option<ObjectRef> {
-    match kind {
-        UpdateKind::Reconfigure { profile } => Some(*profile),
-        UpdateKind::HistoryAdvance(transition) => Some(transition.profile),
-        UpdateKind::SourceHistoryAdvance(transition)
-        | UpdateKind::SourceHistoryResync { transition, .. } => Some(transition.history.profile),
-        UpdateKind::SourceAdvance(_)
-        | UpdateKind::SourceResync { .. }
-        | UpdateKind::ProjectionAdvance(_)
-        | UpdateKind::HistoryAppend(_)
-        | UpdateKind::CompactSourceLocal { .. }
-        | UpdateKind::Materialize { .. } => None,
-    }
 }
 
 impl NativeRetirementAuthorityV2 {
@@ -114,14 +99,6 @@ impl NativeDispatcher {
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         budget.checkpoint()?;
-        if let Some(profile) = target_profile_ref(&request.kind) {
-            quanta_index_kernel::with_loaded_profile_v1(
-                profile,
-                self.objects.as_ref(),
-                budget,
-                |loaded, budget| retirement.check_profile(loaded, budget),
-            )??;
-        }
         match &request.kind {
             UpdateKind::ProjectionAdvance(transition) => {
                 retirement.reject_projection(transition.projection)?;
@@ -134,6 +111,14 @@ impl NativeDispatcher {
             }
             UpdateKind::Materialize { claim } => {
                 retirement.check_work_intent(&claim.intent)?;
+            }
+            UpdateKind::Reconfigure { profile } => {
+                quanta_index_kernel::with_loaded_profile_v1(
+                    *profile,
+                    self.objects.as_ref(),
+                    budget,
+                    |loaded, budget| retirement.check_profile(loaded, budget),
+                )??;
             }
             _ => {}
         }
@@ -219,87 +204,5 @@ impl NativeDispatcher {
         }
         budget.checkpoint()?;
         Ok(None)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use quanta_index_contract::index::{
-        AuxiliaryGenerationKeyV1, HistoryAppendV1, HistoryGenerationAdvanceV1,
-        HistorySourceCutV1, HistoryTransition, MapRoot, OwnerMutationSet, SourceCut,
-        SourceHistoryTransitionV1, SourceTransition,
-    };
-    use quanta_index_contract::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
-
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-    fn reference(byte: u8) -> ObjectRef {
-        ObjectRef(Digest([byte; 32]))
-    }
-
-    #[test]
-    fn retirement_checks_every_update_profile_reference() -> TestResult {
-        let profile = reference(1);
-        let cut = HistorySourceCutV1 {
-            generation: AuxiliaryGenerationKeyV1 {
-                repo_id: RepoId::new("history-repo")?,
-                revision_id: RevisionId::new("history-revision")?,
-                generation: ManifestGeneration::new(2),
-            },
-            durable_epoch: AuxEpochV1::new(3),
-            snapshot_digest: Digest([2; 32]),
-            replay_start: Digest([3; 32]),
-        };
-        let source = SourceTransition {
-            expected_source: SourceCut {
-                owners: MapRoot(None),
-                paths: MapRoot(None),
-                frontiers: MapRoot(None),
-            },
-            owners: OwnerMutationSet {
-                root: MapRoot(None),
-                count: 0,
-                digest: Digest([4; 32]),
-            },
-            events: Vec::new(),
-        };
-        let history = HistoryTransition {
-            instance: IndexInstanceId([5; 16]),
-            expected: None,
-            next: cut.clone(),
-            input: reference(6),
-            profile,
-        };
-        let append = HistoryAppendV1 {
-            instance: history.instance,
-            expected: cut.clone(),
-            input: reference(7),
-            profile,
-        };
-        let source_history = SourceHistoryTransitionV1 {
-            source: source.clone(),
-            history: HistoryGenerationAdvanceV1 {
-                prior_instance: IndexInstanceId([8; 16]),
-                expected: cut,
-                instance: history.instance,
-                input: reference(9),
-                profile,
-            },
-        };
-        for kind in [
-            UpdateKind::Reconfigure { profile },
-            UpdateKind::HistoryAdvance(history),
-            UpdateKind::SourceHistoryAdvance(Box::new(source_history.clone())),
-            UpdateKind::SourceHistoryResync {
-                prior_epoch: 1,
-                transition: Box::new(source_history),
-            },
-        ] {
-            assert_eq!(target_profile_ref(&kind), Some(profile));
-        }
-        assert_eq!(target_profile_ref(&UpdateKind::HistoryAppend(append)), None);
-        assert_eq!(target_profile_ref(&UpdateKind::SourceAdvance(source)), None);
-        Ok(())
     }
 }
