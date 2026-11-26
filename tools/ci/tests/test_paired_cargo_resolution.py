@@ -428,7 +428,9 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
     ):
         target = quanta / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(repo_root / relative, target)
+        shutil.copyfile(repo_root / relative, target)
+    # The fixture rewrites copied inputs even when the issuing source is sealed.
+    (quanta / "scripts/verify-repomap-cross-repo.sh").chmod(0o700)
     if not use_p10:
         registry = quanta / "tools/ci/proof-authority.toml"
         registry.write_text(registry.read_text().replace(
