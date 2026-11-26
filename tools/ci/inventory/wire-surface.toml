@@ -466,7 +466,11 @@ id = "lexical-file-authority"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/file-authority/root.cbor"
 reproduction = "producer-rebuild"
-notes = "Format 22 compact File root binds QLMAP002 source/document/routing maps, bounded immutable segments, authenticated run registry and posting authority, compaction debt, and the premerge run witness in the shared pool. Raw source blocks remain authoritative for exact verification. Older authority formats require producer rebuild."
+notes = "Format 22 compact File root binds QLMAP002 source/document/routing maps, bounded immutable segments, authenticated run registry and posting authority, compaction debt, and the premerge run witness in the shared pool. Retained read-only verification also authenticates format 21 with its original policy and wire encoding. Raw source blocks remain authoritative for exact verification. Formats before 21 require producer rebuild."
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/legacy/file_root.rs"
+name = "PRIOR_FILE_AUTHORITY_FORMAT"
+value = 21
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/legacy/file_root.rs"
 name = "FILE_AUTHORITY_FORMAT"
