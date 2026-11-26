@@ -310,7 +310,8 @@ fn assert_selected_native_source_export_v1(
     let receipt_json: serde_json::Value = serde_json::from_slice(&std::fs::read(&receipt)?)?;
     let mut binary_file = std::fs::File::open(binary)?;
     let mut binary_hash = Sha256::new();
-    std::io::copy(&mut binary_file, &mut binary_hash)?;
+    let copied_bytes = std::io::copy(&mut binary_file, &mut binary_hash)?;
+    assert!(copied_bytes > 0, "Native binary is empty");
     let binary_sha256 = format!("{:x}", binary_hash.finalize());
     let config_sha256 = format!("{:x}", Sha256::digest(&config_bytes));
     let mut selected_bytes = serde_json::to_vec(&serde_json::json!({
@@ -408,7 +409,8 @@ fn assert_selected_native_source_export_v1(
             source.file.repo_relative_path.as_str(),
             format!("protected/{id}.rs")
         );
-        assert_eq!(source.source_sha256, Sha256::digest(body.as_bytes()).into());
+        let expected_sha256: [u8; 32] = Sha256::digest(body.as_bytes()).into();
+        assert_eq!(source.source_sha256, expected_sha256);
         assert!(*text_admitted && language.is_none());
         assert_eq!(*source_bytes, body.len() as u64);
         let Frame::FileChunk { offset, bytes } = &frames[base + 2] else {
