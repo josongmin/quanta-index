@@ -53,6 +53,52 @@ quanta_index_contract::native_serde_struct!(GraphRoot {
     incoming: MapRoot,
 });
 
+/// Exact root wire written before typed file facts were retained.
+#[derive(Clone, Copy)]
+struct LegacyGraphRoot {
+    input: InputBinding,
+    projection: ProjectionBinding,
+    owners: MapRoot,
+    nodes: MapRoot,
+    edges: MapRoot,
+    incoming: MapRoot,
+}
+quanta_index_contract::native_serde_struct!(LegacyGraphRoot {
+    input: InputBinding,
+    projection: ProjectionBinding,
+    owners: MapRoot,
+    nodes: MapRoot,
+    edges: MapRoot,
+    incoming: MapRoot,
+});
+
+impl From<LegacyGraphRoot> for GraphRoot {
+    fn from(root: LegacyGraphRoot) -> Self {
+        Self {
+            facts_epoch: 0,
+            input: root.input,
+            projection: root.projection,
+            owners: root.owners,
+            nodes: root.nodes,
+            edges: root.edges,
+            incoming: root.incoming,
+        }
+    }
+}
+
+impl From<GraphRoot> for LegacyGraphRoot {
+    fn from(root: GraphRoot) -> Self {
+        Self {
+            input: root.input,
+            projection: root.projection,
+            owners: root.owners,
+            nodes: root.nodes,
+            edges: root.edges,
+            incoming: root.incoming,
+        }
+    }
+}
+
 /// The shared Kernel hook supplies the selected group's old binding and its
 /// already validated projection transition. `affected` is the original
 /// certificate-bound mutation set, not a second delta format.
@@ -117,6 +163,11 @@ impl NativeGraph {
         {
             return Err(IndexError::InvalidInput("graph predecessor differs".into()));
         }
+        if root.facts_epoch == 0
+            && (instance.policy == rank_policy || projection.producer_policy == rank_policy)
+        {
+            return Err(IndexError::RebuildRequired);
+        }
         if prior.is_some() && affected.is_none() {
             return Err(IndexError::InvalidInput(
                 "graph bootstrap has predecessor".into(),
@@ -142,7 +193,11 @@ impl NativeGraph {
         }
         root.input = input;
         root.projection = *projection;
-        let bytes = encode_funded(&root, context.budget)?;
+        let bytes = if root.facts_epoch == 0 {
+            encode_funded(&LegacyGraphRoot::from(root), context.budget)?
+        } else {
+            encode_funded(&root, context.budget)?
+        };
         let mut children = Vec::new();
         children.extend(root.owners.0);
         children.extend(root.nodes.0);
@@ -250,10 +305,20 @@ fn load_root(
             "graph root reference mismatch".into(),
         ));
     }
-    let root: GraphRoot = serde_json::from_slice(&stored.payload)
-        .map_err(|error| IndexError::CorruptObject(format!("graph root: {error}")))?;
-    if root.facts_epoch != TYPED_FACTS_ROOT_EPOCH
-        || root.input != binding.input
+    let root = match serde_json::from_slice::<GraphRoot>(&stored.payload) {
+        Ok(root) if root.facts_epoch == TYPED_FACTS_ROOT_EPOCH => root,
+        Ok(_) => {
+            return Err(IndexError::CorruptObject(
+                "graph root facts epoch differs".into(),
+            ));
+        }
+        Err(_) => {
+            let legacy: LegacyGraphRoot = serde_json::from_slice(&stored.payload)
+                .map_err(|error| IndexError::CorruptObject(format!("graph root: {error}")))?;
+            GraphRoot::from(legacy)
+        }
+    };
+    if root.input != binding.input
         || binding.logical_commitment != Digest(Sha256::digest(&stored.payload).into())
     {
         return Err(IndexError::CorruptObject(
@@ -272,6 +337,12 @@ fn load_root(
         return Err(IndexError::CorruptObject(
             "graph root children mismatch".into(),
         ));
+    }
+    let rank_policy = quanta_index_contract::native_protocol::native_repomap_rank_policy();
+    if root.facts_epoch == 0
+        && (root.projection.producer_policy == rank_policy || binding.input.policy == rank_policy)
+    {
+        return Err(IndexError::RebuildRequired);
     }
     Ok(root)
 }

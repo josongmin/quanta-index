@@ -192,7 +192,7 @@ impl IndexQueryPort<GraphQuery, GraphPage> for NativeGraphReader {
     }
 }
 
-fn query_graph(
+pub(super) fn query_graph(
     selected: &MemberBinding,
     request: &GraphQuery,
     maps: &dyn PersistentMapPort,
