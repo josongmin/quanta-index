@@ -78,10 +78,10 @@ repos:
 
       - id: cargo-fmt-check
         name: cargo fmt check
-        entry: ./scripts/cargow fmt --all -- --check
+        entry: ./scripts/run-rustfmt-owned.sh -- --check
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|(crates|benchmarks)/.*(Cargo\.toml|\.rs))$
+        files: ^(Cargo\.toml|Cargo\.lock|(crates|benchmarks|shared)/.*(Cargo\.toml|\.rs)|scripts/run-rustfmt-owned\.sh)$
         stages: [pre-commit]
 
       - id: cargo-check
