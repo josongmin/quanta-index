@@ -694,7 +694,9 @@ def test_orchestrator_pins_a_frozen_legacy_producer(
         ("cold", "foreign_assembly"),
     ],
 )
-def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(tmp_path, mode, fault):
+def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
+    tmp_path, monkeypatch, mode, fault,
+):
     def digest(path):
         return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -756,6 +758,7 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(tmp_path, mo
         "    print(json.dumps(args), file=log)\n"
         f"mode, fault = {mode!r}, {fault!r}\n"
         f"daemon_sha = {digest(daemon).removeprefix('sha256:')!r}\n"
+        f"history_sha = {digest(history).removeprefix('sha256:')!r}\n"
         f"text_ids, error_ids, history_ids = {text_ids!r}, {error_ids!r}, {history_ids!r}\n"
         f"retained_ids = {retained_ids!r}\n"
         f"history_view, history_cut, history_instance = {history_view!r}, {history_cut!r}, {history_instance!r}\n"
@@ -803,6 +806,7 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(tmp_path, mo
         'config_template_sha256="c" * 64, published=[{"view": view, "page": {"view": page_view}}])\n'
         'else:\n'
         '    assert flag == ("--native-history-reopen" if mode == "warm" else "--native-history")\n'
+        '    assert hashlib.sha256(pathlib.Path(source).read_bytes()).hexdigest() == history_sha\n'
         '    report["schema"] = "native-dsl-history-samples-v2"\n'
         '    view = {"sequence": 6} if fault == "history_view_drift" else history_view\n'
         '    report["published"] = {"view": view, "cut": history_cut, "instance": history_instance, '
@@ -820,6 +824,9 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(tmp_path, mo
     runner.chmod(0o700)
     out = tmp_path / "native.json"
     out.write_text("previous capture")
+    executable_scratch = tmp_path / "execution-temp"
+    executable_scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(executable_scratch))
     result = subprocess.run(
         [
             sys.executable, str(COLD_MATRIX_PATH), "--out", str(out), "--bin-mode", mode,
@@ -886,10 +893,14 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(tmp_path, mo
     logged = [json.loads(line) for line in calls.read_text().splitlines()]
     assert logged.pop(0) == ["--list-native"]
     history_flag = "--native-history-reopen" if mode == "warm" else "--native-history"
+    staged_history = Path(next(argv[1] for argv in logged if argv[0] == history_flag))
+    assert staged_history != history
+    assert staged_history.parent.parent == executable_scratch.resolve()
+    assert not staged_history.exists()
     expected_calls = [
         [flag, str(path), scenario]
         for flag, path, ids in (
-            ("--native-text", daemon, text_ids + error_ids), (history_flag, history, history_ids),
+            ("--native-text", daemon, text_ids + error_ids), (history_flag, staged_history, history_ids),
             ("--native-retained", daemon, retained_ids),
         )
         for scenario in ids

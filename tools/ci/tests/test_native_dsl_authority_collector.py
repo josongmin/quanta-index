@@ -35,6 +35,7 @@ def _inputs(tmp_path: Path) -> tuple[argparse.Namespace, list[str], dict]:
     runner = tmp_path / "runner"
     daemon = tmp_path / "daemon"
     runner.write_bytes(b"pinned runner")
+    runner.chmod(0o500)
     daemon.write_bytes(b"pinned daemon")
     published = {"view": {"sequence": 5}, "cut": {"durable_epoch": 18}, "instance": [1] * 16}
     fixture = tmp_path / "history.json"
@@ -135,7 +136,19 @@ def test_authority_aggregate_requires_every_daemon_report_rss(
     calls: dict[str, int] = {}
     samples = 1 if mode == "cold" else 200
 
-    def fake_native_json(_run, _description, *argv):
+    scratch_root = tmp_path / "input-temp"
+    scratch_root.mkdir()
+    scratch_alias = tmp_path / "input-temp-alias"
+    scratch_alias.symlink_to(scratch_root, target_is_directory=True)
+    monkeypatch.setattr("tempfile.tempdir", str(scratch_alias))
+    runner_paths = set()
+
+    def fake_native_json(run, _description, *argv):
+        runner = Path(run.args[0][0])
+        assert runner != Path(bin_cmd[0])
+        assert runner.parents[2] == scratch_root
+        assert runner.read_bytes() == Path(bin_cmd[0]).read_bytes()
+        runner_paths.add(runner)
         if argv == ("--list-native",):
             return roster
         scenario = argv[-1]
@@ -161,6 +174,9 @@ def test_authority_aggregate_requires_every_daemon_report_rss(
                                          "read_epoch": 18, "matched": 1,
                                          "remaining": 1, "after": None})
             assert argv[0] == ("--native-history" if mode == "cold" else "--native-history-reopen")
+            history = Path(argv[1])
+            assert history != args.native_history_fixture
+            assert history.read_bytes() == args.native_history_fixture.read_bytes()
             wrapper["schema"] = f"native-dsl-history-process-{mode}-v1"
             wrapper["config_sha256"] = "b" * 64
             wrapper["history"] = report
@@ -185,7 +201,8 @@ def test_authority_aggregate_requires_every_daemon_report_rss(
 
     monkeypatch.setattr(collector, "native_json", fake_native_json)
 
-    def fake_assemble(_run, matrix, out, assembled_mode, head, qualification):
+    def fake_assemble(run, matrix, out, assembled_mode, head, qualification):
+        assert runner_paths == {Path(run.args[0][0])}
         raw = json.loads(matrix.read_text())
         assert (assembled_mode, head, qualification) == (mode, args.bin_head, "authority")
         assert raw["qualification"] == "authority"

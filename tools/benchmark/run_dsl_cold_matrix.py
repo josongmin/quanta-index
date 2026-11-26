@@ -50,6 +50,10 @@ from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from evidence import RawFile
 
 DEFAULT_SAMPLES = 20
 BinRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -212,6 +216,18 @@ def measure(run: BinRunner, samples: int, out: Path) -> int:
     return len(collected)
 
 
+def stage_executable(binary: RawFile, stage: Path) -> RawFile:
+    if not os.access(binary.path, os.X_OK):
+        raise RuntimeError("frozen producer is not executable")
+    private = stage / "bin"
+    private.mkdir()
+    runner = binary.copy_to(private / binary.path.name)
+    runner.path.chmod(0o500)
+    if not os.access(runner.path, os.X_OK):
+        raise RuntimeError("frozen producer staging directory must allow execution")
+    return runner
+
+
 def measure_frozen(args: argparse.Namespace, bin_cmd: list[str]) -> int:
     from benchctl import require_frozen_source
     from compare_dsl_bench import ArtifactRefused, load_artifact
@@ -235,15 +251,10 @@ def measure_frozen(args: argparse.Namespace, bin_cmd: list[str]) -> int:
         binary = RawFile.capture(Path(bin_cmd[0]))
         if binary.sha256 != args.bin_sha256:
             raise RuntimeError("frozen producer binary SHA-256 differs")
-        if not os.access(binary.path, os.X_OK):
-            raise RuntimeError("frozen producer is not executable")
         out.parent.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(dir=out.parent) as scratch:
             stage = Path(scratch)
-            private = stage / "bin"
-            private.mkdir()
-            runner = binary.copy_to(private / binary.path.name)
-            runner.path.chmod(0o500)
+            runner = stage_executable(binary, stage)
             staged = stage / "artifact.json"
             env = dict(os.environ, QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS="1")
             run = partial(run_bin, [str(runner.path)], cwd=checkout, env=env)
@@ -482,80 +493,98 @@ def measure_native(args: argparse.Namespace, bin_cmd: list[str]) -> int:
         "instance": published_history["instance"]["instance"],
     }
 
-    run = partial(run_bin, [str(runner.path)], cwd=cwd, env=dict(os.environ, QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS="1"))
-    roster = native_json(run, "Native DSL roster", "--list-native")
-    if set(roster) != {"text", "error", "history", "retained"}:
-        raise RuntimeError("Native DSL roster requires Text, error, History and retained scenarios")
-
-    seen = set()
-    for kind, label, expected_count in (("text", "Text", 14), ("history", "History", 7), ("retained", "retained", 12)):
-        scenarios = roster[kind]
-        if not isinstance(scenarios, list) or len(scenarios) != expected_count:
-            raise RuntimeError(f"Native DSL {label} roster requires exactly {expected_count} scenarios")
-        for scenario in scenarios:
-            if not isinstance(scenario, str) or not scenario or scenario in seen:
-                raise RuntimeError(f"invalid or duplicate Native DSL scenario {scenario!r}")
-            seen.add(scenario)
-    errors = roster["error"]
-    if (
-        not isinstance(errors, list) or len(errors) != 5
-        or any(not isinstance(scenario, str) or scenario not in roster["text"] for scenario in errors)
-        or len(set(errors)) != 5
-    ):
-        raise RuntimeError("Native DSL error roster requires five distinct Text SDK scenarios")
-    error_set = set(errors)
-
-    mode = args.bin_mode
-    cold = mode == "cold"
-    routes = {
-        "text": ("--native-text", daemon.path),
-        "history": ("--native-history" if cold else "--native-history-reopen", history.path),
-        "retained": ("--native-retained", daemon.path),
-    }
-    rows = []
-    for kind, (flag, source) in routes.items():
-        for scenario in roster[kind]:
-            reports = []
-            for _ in range(args.samples if cold else 1):
-                report = native_json(run, f"SDK report for {scenario}", flag, str(source), scenario)
-                report_kind = "error" if scenario in error_set else kind
-                validate_native_report(
-                    report, report_kind, scenario, mode, daemon.sha256,
-                    history_config_sha, history_target,
-                )
-                if authority:
-                    require_native_authority_rss(report, report_kind, scenario)
-                reports.append(report)
-            rows.append({"scenario_id": scenario, "kind": report_kind, "reports": reports})
-
-    if cwd is not None:
-        require_frozen_source(cwd, args.bin_head)
-    for name, pinned in (("runner", runner), ("daemon", daemon), ("History fixture", history)):
-        if RawFile.capture(pinned.path) != pinned:
-            raise RuntimeError(f"Native DSL {name} changed during capture")
-    artifact = {
-        "schema": "native-dsl-matrix-v1",
-        "qualification": "authority" if authority else "diagnostic",
-        "mode": mode,
-        "git_head": args.bin_head,
-        "runner_sha256": runner.sha256,
-        "daemon_sha256": daemon.sha256,
-        "history_fixture_sha256": history.sha256,
-        "scenarios": rows,
-    }
     out.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(dir=out.parent) as scratch:
-        staged = Path(scratch) / out.name
+    with (
+        TemporaryDirectory(prefix="quanta-native-dsl-input-") as input_scratch,
+        TemporaryDirectory(dir=out.parent) as output_scratch,
+    ):
+        inputs = Path(input_scratch).resolve(strict=True)
+        output_stage = Path(output_scratch)
+        private_runner = stage_executable(runner, inputs)
+        private_history = history.copy_to(inputs / "history-fixture.json")
+        private_history.path.chmod(0o400)
+        retained_inputs = (
+            ("runner", runner),
+            ("daemon", daemon),
+            ("History fixture", history),
+            ("staged runner", private_runner),
+            ("staged History fixture", private_history),
+        )
+
+        def require_unchanged_inputs(phase: str) -> None:
+            for name, pinned in retained_inputs:
+                if RawFile.capture(pinned.path) != pinned:
+                    raise RuntimeError(f"Native DSL {name} changed during {phase}")
+
+        env = dict(os.environ, QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS="1")
+        run = partial(run_bin, [str(private_runner.path)], cwd=cwd, env=env)
+        roster = native_json(run, "Native DSL roster", "--list-native")
+        if set(roster) != {"text", "error", "history", "retained"}:
+            raise RuntimeError("Native DSL roster requires Text, error, History and retained scenarios")
+
+        seen = set()
+        for kind, label, expected_count in (("text", "Text", 14), ("history", "History", 7), ("retained", "retained", 12)):
+            scenarios = roster[kind]
+            if not isinstance(scenarios, list) or len(scenarios) != expected_count:
+                raise RuntimeError(f"Native DSL {label} roster requires exactly {expected_count} scenarios")
+            for scenario in scenarios:
+                if not isinstance(scenario, str) or not scenario or scenario in seen:
+                    raise RuntimeError(f"invalid or duplicate Native DSL scenario {scenario!r}")
+                seen.add(scenario)
+        errors = roster["error"]
+        if (
+            not isinstance(errors, list) or len(errors) != 5
+            or any(not isinstance(scenario, str) or scenario not in roster["text"] for scenario in errors)
+            or len(set(errors)) != 5
+        ):
+            raise RuntimeError("Native DSL error roster requires five distinct Text SDK scenarios")
+        error_set = set(errors)
+
+        mode = args.bin_mode
+        cold = mode == "cold"
+        routes = {
+            "text": ("--native-text", daemon.path),
+            "history": ("--native-history" if cold else "--native-history-reopen", private_history.path),
+            "retained": ("--native-retained", daemon.path),
+        }
+        rows = []
+        for kind, (flag, source) in routes.items():
+            for scenario in roster[kind]:
+                reports = []
+                for _ in range(args.samples if cold else 1):
+                    report = native_json(run, f"SDK report for {scenario}", flag, str(source), scenario)
+                    report_kind = "error" if scenario in error_set else kind
+                    validate_native_report(
+                        report, report_kind, scenario, mode, daemon.sha256,
+                        history_config_sha, history_target,
+                    )
+                    if authority:
+                        require_native_authority_rss(report, report_kind, scenario)
+                    reports.append(report)
+                rows.append({"scenario_id": scenario, "kind": report_kind, "reports": reports})
+
+        if cwd is not None:
+            require_frozen_source(cwd, args.bin_head)
+        require_unchanged_inputs("capture")
+        artifact = {
+            "schema": "native-dsl-matrix-v1",
+            "qualification": "authority" if authority else "diagnostic",
+            "mode": mode,
+            "git_head": args.bin_head,
+            "runner_sha256": runner.sha256,
+            "daemon_sha256": daemon.sha256,
+            "history_fixture_sha256": history.sha256,
+            "scenarios": rows,
+        }
+        staged = output_stage / "native-matrix.json"
         staged.write_text(json.dumps(artifact, allow_nan=False) + "\n", encoding="utf-8")
         if args.native_artifact:
-            assembled = Path(scratch) / "assembled.json"
+            assembled = output_stage / "assembled.json"
             assemble_native(
                 run, staged, assembled, mode, args.bin_head, artifact["qualification"],
             )
             require_frozen_source(cwd, args.bin_head)
-            for name, pinned in (("runner", runner), ("daemon", daemon), ("History fixture", history)):
-                if RawFile.capture(pinned.path) != pinned:
-                    raise RuntimeError(f"Native DSL {name} changed during assembly")
+            require_unchanged_inputs("assembly")
             staged = assembled
         staged.replace(out)
     return len(rows)
