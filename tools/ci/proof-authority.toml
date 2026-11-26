@@ -18,7 +18,7 @@ schema = "tools/ci/proof-aggregate.schema.json"
 artifact = "artifacts/proof-authority/p12-release-aggregate.json"
 
 [aggregate.verdicts]
-CODE_QUALIFIED = ["p00-authority-freeze", "p01-canonical-identity", "p02a-repomap-compiler", "p02b-operation-journal", "p03-candidate-activation-owner", "p03-candidate-activation", "p04-read-view-lifetime-owner", "p04-read-view-lifetime", "p05-query-truth-owner", "p05-query-truth", "p06-sdk-binding-owner", "p06-sdk-binding", "p07-provider-boundary-owner", "p07-provider-boundary", "p08-runtime-supervisor-owner", "p08-runtime-supervisor", "p09-control-readiness-owner", "p09-control-readiness", "p10-state-migration-owner", "p10-state-migration", "p11-cross-repo-cutover"]
+CODE_QUALIFIED = ["p00-authority-freeze", "p01-canonical-identity", "p02b-operation-journal", "p03-candidate-activation-owner", "p03-candidate-activation", "p04-read-view-lifetime-owner", "p04-read-view-lifetime", "p05-query-truth-owner", "p05-query-truth", "p06-sdk-binding-owner", "p06-sdk-binding", "p07-provider-boundary-owner", "p07-provider-boundary", "p08-runtime-supervisor-owner", "p08-runtime-supervisor", "p09-control-readiness-owner", "p09-control-readiness", "p10-state-migration-owner", "p10-state-migration", "p11-cross-repo-cutover"]
 DEPLOYED = ["p11-deployment"]
 ACTIVATED = ["p11-activation"]
 ROLLBACK_PROVEN = ["p10-state-migration", "p11-rollback"]
@@ -93,32 +93,9 @@ source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_scopes = ["canonical-identity"]
-test_authority_targets = ["contract-base-canonical-identity-v1", "contract-repomap-layout-v3-contract", "contract-search-plane-error-code-v2", "repomap-layout-v3-security"]
+test_authority_targets = ["contract-base-canonical-identity-v1", "contract-search-plane-error-code-v2"]
 dependencies = ["p00-authority-freeze"]
 artifact = "artifacts/proof-authority/p01-canonical-identity.json"
-required_host = "any"
-
-[[proofs]]
-id = "p02a-repomap-compiler"
-authority_state = "staged"
-execution_mode = "test-authority"
-staged_reason = "The dedicated RepoMap query and its bounded-query test were retired. The remaining compiler tests cover the legacy library, not the current Native Source product route; product proof migration is pending."
-ticket = "S21-03"
-family = "A"
-checkpoint = "M1"
-owner = "crates/quanta-index-repomap/src/materializer.rs"
-command = "just proof-p02a-repomap-compiler"
-gate = "release"
-profile = "p02a-repomap-compiler"
-target = "repomap-compiler-owner"
-filter = "none"
-source_binding = "exact"
-binary_binding = "none"
-artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_scopes = ["p02a-repomap-compiler"]
-test_authority_targets = ["repomap-compiler-owner-v1", "repomap-owner-surface"]
-dependencies = ["p01-canonical-identity"]
-artifact = "artifacts/proof-authority/p02a-repomap-compiler.json"
 required_host = "any"
 
 [[proofs]]
@@ -148,9 +125,9 @@ id = "p03-candidate-activation-owner"
 authority_state = "executable"
 execution_mode = "test-authority"
 ticket = "S21-02"
-family = "U"
+family = "A"
 checkpoint = "M1"
-owner = "crates/quanta-index-repomap/src/store.rs"
+owner = "crates/quanta-index-kernel/src/update.rs"
 command = "just proof-p03-candidate-activation-owner"
 gate = "correctness"
 profile = "test-candidate-activation-owner"
@@ -160,15 +137,15 @@ source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_scopes = ["candidate-activation-owner"]
-test_authority_targets = [
-  "candidate-activation-owner-v1",
-  "repomap-store-durability",
-  "repomap-bootstrap-owner-flow",
-  "repomap-owner-surface",
-]
-dependencies = ["p02a-repomap-compiler", "p02b-operation-journal"]
+test_authority_targets = ["kernel-native-bootstrap"]
+dependencies = ["p02b-operation-journal"]
 artifact = "artifacts/proof-authority/p03-candidate-activation-owner.json"
 required_host = "any"
+
+[proofs.required_nextest_cases]
+kernel-native-bootstrap = [
+  "existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens",
+]
 
 [[proofs]]
 id = "p03-candidate-activation"
@@ -178,7 +155,7 @@ staged_reason = "The Native activation and restart case is registered; fresh Lin
 ticket = "S21-02"
 family = "F"
 checkpoint = "M1"
-owner = "crates/quanta-index-repomap/src/store.rs"
+owner = "crates/quanta-index-kernel/src/update.rs"
 command = "just proof-p03-candidate-activation"
 gate = "release"
 profile = "candidate-activation-release"
@@ -204,7 +181,7 @@ execution_mode = "test-authority"
 ticket = "S21-05"
 family = "U"
 checkpoint = "M2"
-owner = "crates/quanta-index-search-plane/src/query_dispatcher/read_view/view.rs"
+owner = "crates/quanta-index-kernel/src/update.rs"
 command = "just proof-p04-read-view-lifetime-owner"
 gate = "correctness"
 profile = "read-view-lifetime-owner"
@@ -213,15 +190,17 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_scopes = ["read-view-lifetime-owner", "search-plane-read-view-lib"]
-test_authority_targets = [
-  "read-view-lifetime-owner-v1",
-  "repomap-owner-surface",
-  "core-read-view-declaration",
-]
+test_authority_scopes = ["read-view-lifetime-owner"]
+test_authority_targets = ["kernel-native-query-session-real"]
 dependencies = ["p03-candidate-activation-owner"]
 artifact = "artifacts/proof-authority/p04-read-view-lifetime-owner.json"
 required_host = "any"
+
+[proofs.required_nextest_cases]
+kernel-native-query-session-real = [
+  "real_text_then_semantic_and_text_keep_view_a_after_body_b_publishes",
+  "cancellation_of_original_request_after_fast_prevents_semantic_provider",
+]
 
 [[proofs]]
 id = "p04-read-view-lifetime"
@@ -231,7 +210,7 @@ staged_reason = "The Native product fixture binds pinned lifetime, retention, GC
 ticket = "S21-05"
 family = "F"
 checkpoint = "M2"
-owner = "crates/quanta-index-search-plane/src/query_dispatcher/read_view/view.rs"
+owner = "crates/quanta-index-kernel/src/update.rs"
 command = "just proof-p04-read-view-lifetime"
 gate = "release"
 profile = "read-view-lifetime"

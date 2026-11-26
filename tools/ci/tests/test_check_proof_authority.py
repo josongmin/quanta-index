@@ -1450,8 +1450,9 @@ def test_code_gate_selects_only_canonical_code_proofs_and_prerequisites() -> Non
     selected = MODULE.code_qualified_proof_ids(registry)
 
     assert selected == MODULE.EXPECTED_VERDICT_PROOFS["CODE_QUALIFIED"]
-    assert len(selected) == 21
+    assert len(selected) == 20
     assert not {
+        "p02a-repomap-compiler",
         "p11-deployment",
         "p11-activation",
         "p11-rollback",
@@ -1460,6 +1461,34 @@ def test_code_gate_selects_only_canonical_code_proofs_and_prerequisites() -> Non
     registry["aggregate"]["verdicts"]["CODE_QUALIFIED"].remove("p11-cross-repo-cutover")
     with pytest.raises(ValueError, match="canonical authority"):
         MODULE.code_qualified_proof_ids(registry)
+
+
+def test_current_proof_uses_native_owners_after_repomap_retirement() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proofs = {proof["id"]: proof for proof in registry["proofs"]}
+    assert "p02a-repomap-compiler" not in proofs
+    assert proofs["p01-canonical-identity"]["test_authority_targets"] == [
+        "contract-base-canonical-identity-v1",
+        "contract-search-plane-error-code-v2",
+    ]
+
+    activation = proofs["p03-candidate-activation-owner"]
+    assert activation["dependencies"] == ["p02b-operation-journal"]
+    assert activation["family"] == "A"
+    assert activation["required_nextest_cases"] == {
+        "kernel-native-bootstrap": [
+            "existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens",
+        ],
+    }
+
+    read_view = proofs["p04-read-view-lifetime-owner"]
+    assert read_view["dependencies"] == ["p03-candidate-activation-owner"]
+    assert read_view["required_nextest_cases"] == {
+        "kernel-native-query-session-real": [
+            "real_text_then_semantic_and_text_keep_view_a_after_body_b_publishes",
+            "cancellation_of_original_request_after_fast_prevents_semantic_provider",
+        ],
+    }
 
 
 def test_code_gate_requires_source_binding_and_does_not_require_operations(capsys) -> None:

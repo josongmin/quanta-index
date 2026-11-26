@@ -33,12 +33,12 @@ rust-profile-list:
         'validate-shared-surface contract/core/sdk/search-plane shared-surface validation rail' \
         'test-fast           default local test loop; workspace lib/bin tests, excludes daemon e2e' \
         'test-canonical-identity P01A identity, codec, layout-security, and error-authority proof' \
-        'test-p02a-repomap-compiler P02A whole-bundle graph compiler owner proof' \
+        'test-p02a-repomap-compiler legacy RepoMap compiler diagnostics' \
         'test-p02b-operation-journal P02B global sequence authority and operation journal proof' \
         'test-candidate-activation-owner P03 sealed-candidate activation, recovery, and quarantine owner proof' \
         'test-candidate-activation-release P03 Native activation and restart on the release daemon' \
         'test-read-view-lifetime-owner P04 read-view lifetime, pin/GC barrier owner proof' \
-        'test-search-plane-read-view-lib P04 search-plane read-view lib proof' \
+        'test-search-plane-read-view-lib legacy search-plane read-view checks' \
         'test-query-truth-owner P05 query outcome/cursor/oracle owner proof' \
         'test-query-truth-release P05 Native retained keysets on the release daemon' \
         'test-control-readiness-owner P09 control authorization/readiness owner proof' \
@@ -1314,16 +1314,6 @@ verify-prompts:
 precommit-run:
     source scripts/quanta-index-env.sh && python3 -m pre_commit run --all-files --show-diff-on-failure
 
-# P02A whole-bundle RepoMap graph compiler owner proof. The scoped rail runs
-# the compiler owner target plus the repomap bounded/owner surfaces bound to
-# the same source; structural rails guard the contract surface the compiler
-# DTO section touched. RSS/production-host benchmark stays a separate
-# release-only rail and is NOT_RUN here.
-proof-p02a-repomap-compiler:
-    @just rust-profile test-p02a-repomap-compiler
-    @just rust-hexagonal
-    @just rust-wire-inventory
-
 proof-p03-candidate-activation-owner:
     @just rust-profile test-candidate-activation-owner
     @just rust-hexagonal
@@ -1337,16 +1327,9 @@ proof-p03-candidate-activation:
 rust-test-candidate-activation-release:
     python3 tools/ci/run-local-test-scope.py candidate-activation-release
 
-# P04 read-view lifetime owner proof (S21-05): the scoped rail runs the
-# repomap lifetime owner target plus the repomap owner surface and the core
-# read-view declaration bound to the same source; the search-plane lib rail
-# carries the view-level V2 tests. The structural guard proves routes have
-# zero ambient lookup and the V1 surfaces stay deleted. The Linux
-# production-like release subrail (p04-read-view-lifetime, release-daemon
-# binding) stays NOT_RUN on this host.
+# P04 owner proof covers pinned Native Text/Semantic views and cancellation.
 proof-p04-read-view-lifetime-owner:
     @just rust-profile test-read-view-lifetime-owner
-    @just rust-profile test-search-plane-read-view-lib
     @just rust-read-view-ambient
     @just rust-hexagonal
     @just rust-wire-inventory

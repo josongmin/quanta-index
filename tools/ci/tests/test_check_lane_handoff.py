@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tools.ci.tests.p11_test_issuer import nextest_bytes
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HANDOFF_CHECKER_PATH = REPO_ROOT / "tools/ci/lint/check-lane-handoff.py"
 PROOF_CHECKER_PATH = REPO_ROOT / "tools/ci/lint/check-proof-authority.py"
@@ -237,6 +239,92 @@ def test_handoff_replays_schema_from_proof_commit_after_registry_relocation(tmp_
         root=root,
         require_result_head=False,
     ) == []
+
+
+def test_explicit_retired_proof_archive_replays_issuing_registry(tmp_path, capsys):
+    root, handoff, _ = _fixture(tmp_path)
+    registry = root / "tools/ci/proof-authority.toml"
+    catalog = root / "tools/ci/test-authority.toml"
+    current_registry = registry.read_text()
+    current_catalog = catalog.read_text()
+    retired_id = "p02a-repomap-compiler"
+    package = "quanta-index-repomap"
+    roster = {
+        "repomap-compiler-owner-v1": "compiler_owner_v1",
+        "repomap-bounded-query": "bounded_query",
+        "repomap-owner-surface": "owner_surface",
+    }
+    issuer = dict(PROOF._read_toml(registry)["proofs"][0])
+    issuer.update(
+        id=retired_id,
+        ticket="S21-03",
+        family="A",
+        execution_mode="test-authority",
+        command="just proof-p02a-repomap-compiler",
+        profile="p02a-repomap-compiler",
+        target="repomap-compiler-owner",
+        test_authority_scopes=["p02a-repomap-compiler"],
+        test_authority_targets=list(roster),
+        artifact=f"artifacts/proof-authority/{retired_id}.json",
+    )
+    registry.write_text(
+        current_registry + "\n[[proofs]]\n"
+        + "".join(f"{key} = {json.dumps(value)}\n" for key, value in issuer.items())
+    )
+    catalog.write_text(
+        current_catalog + "\n[[integration_targets]]\n"
+        'id = "repomap-bounded-query"\n'
+        'path = "crates/quanta-index-repomap/tests/bounded_query.rs"\n'
+        'owner = "quanta-index-repomap"\n'
+        'rail = "pr-workspace-nextest"\n'
+    )
+    _run(root, "git", "add", str(registry), str(catalog))
+    _run(root, "git", "commit", "-qm", "Record historical proof authority")
+    issuing_head = _run(root, "git", "rev-parse", "HEAD")
+
+    payload = json.loads((root / handoff["proofs"][0]["manifest"]).read_bytes())
+    payload["proof_id"] = retired_id
+    payload["family"] = "A"
+    payload["source"]["head"] = issuing_head
+    payload["invocation"] = {key: issuer[key] for key in ("command", "profile", "target", "filter")}
+    payload["counts"].update(selected=len(roster), executed=len(roster), passed=len(roster))
+    payload["artifacts"] = []
+    runs = []
+    for binary in roster.values():
+        inventory, events = nextest_bytes(package, binary, "test", "fixture_case")
+        run = {"format": "nextest-jsonl"}
+        for field, raw in (("inventory", inventory), ("events", events)):
+            source = f"artifacts/raw/{binary}-{field}"
+            digest = hashlib.sha256(raw).hexdigest()
+            blob = PROOF.content_archive_relative_path("evidence", digest)
+            (root / blob).write_bytes(raw)
+            payload["artifacts"].append({"source_path": source, "path": blob, "sha256": digest})
+            run[field] = source
+        runs.append(run)
+    payload["execution_result"] = {"schema_version": 1, "runs": runs}
+    raw = json.dumps(payload).encode()
+    archive = root / PROOF.proof_archive_relative_path(payload, hashlib.sha256(raw).hexdigest())
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(raw)
+
+    registry.write_text(current_registry)
+    catalog.write_text(current_catalog)
+    _run(root, "git", "add", str(registry), str(catalog))
+    _run(root, "git", "commit", "-qm", "Retire RepoMap proof from current qualification")
+
+    command = ["--root", str(root), "--manifest", str(archive)]
+    assert PROOF.main(command) == 0, capsys.readouterr().err
+    assert PROOF.main([*command, "--bind-source"]) == 1
+    assert "not registered" in capsys.readouterr().err
+
+    wrong_archive = archive.with_name("wrong-digest.json")
+    wrong_archive.write_bytes(raw)
+    assert PROOF.main(["--root", str(root), "--manifest", str(wrong_archive)]) == 1
+    assert "immutable archive path" in capsys.readouterr().err
+
+    (root / payload["artifacts"][-1]["path"]).write_bytes(b"changed terminal events")
+    assert PROOF.main(command) == 1
+    assert "digest" in capsys.readouterr().err
 
 
 def test_leaf_handoff_validator_accepts_injected_proof_checker(tmp_path: Path) -> None:

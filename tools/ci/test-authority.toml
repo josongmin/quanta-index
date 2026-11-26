@@ -224,9 +224,7 @@ lane = "test-canonical-identity-lane"
 test_threads = 4
 targets = [
   "contract-base-canonical-identity-v1",
-  "contract-repomap-layout-v3-contract",
   "contract-search-plane-error-code-v2",
-  "repomap-layout-v3-security",
 ]
 
 [local_scopes.p02b-operation-journal]
@@ -240,12 +238,7 @@ targets = [
 [local_scopes.candidate-activation-owner]
 lane = "test-candidate-activation-owner-lane"
 test_threads = 4
-targets = [
-  "candidate-activation-owner-v1",
-  "repomap-store-durability",
-  "repomap-bootstrap-owner-flow",
-  "repomap-owner-surface",
-]
+targets = ["kernel-native-bootstrap"]
 
 [local_scopes.candidate-activation-release]
 lane = "test-daemon-lane"
@@ -255,11 +248,7 @@ targets = ["searchd-runtime-native-product-process"]
 [local_scopes.read-view-lifetime-owner]
 lane = "test-read-view-lifetime-owner-lane"
 test_threads = 4
-targets = [
-  "read-view-lifetime-owner-v1",
-  "repomap-owner-surface",
-  "core-read-view-declaration",
-]
+targets = ["kernel-native-query-session-real"]
 
 [local_scopes.read-view-lifetime]
 lane = "test-daemon-lane"

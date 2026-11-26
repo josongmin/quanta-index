@@ -84,9 +84,8 @@ CLEAN_DIRTY_DIGEST = "sha256:" + hashlib.sha256(b"quanta-index-dirty-v2\0").hexd
 EXPECTED_PROOF_DEPENDENCIES: dict[str, list[str]] = {
     "p00-authority-freeze": [],
     "p01-canonical-identity": ["p00-authority-freeze"],
-    "p02a-repomap-compiler": ["p01-canonical-identity"],
     "p02b-operation-journal": ["p01-canonical-identity"],
-    "p03-candidate-activation-owner": ["p02a-repomap-compiler", "p02b-operation-journal"],
+    "p03-candidate-activation-owner": ["p02b-operation-journal"],
     "p03-candidate-activation": ["p03-candidate-activation-owner"],
     "p04-read-view-lifetime-owner": ["p03-candidate-activation-owner"],
     "p04-read-view-lifetime": ["p04-read-view-lifetime-owner", "p03-candidate-activation"],
@@ -112,7 +111,6 @@ EXPECTED_VERDICT_PROOFS: dict[str, list[str]] = {
     "CODE_QUALIFIED": [
         "p00-authority-freeze",
         "p01-canonical-identity",
-        "p02a-repomap-compiler",
         "p02b-operation-journal",
         "p03-candidate-activation-owner",
         "p03-candidate-activation",
@@ -835,7 +833,8 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
         ):
             findings.append(Finding(path, f"{where}.dependencies must be an array of proof IDs"))
 
-    expected_tickets = {f"S21-{index:02d}" for index in range(14)}
+    # Historical handoffs read S21-03 from the issuing registry.
+    expected_tickets = {f"S21-{index:02d}" for index in range(14)} - {"S21-03"}
     if seen_ids != set(EXPECTED_PROOF_DEPENDENCIES):
         findings.append(
             Finding(
@@ -860,7 +859,7 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
         findings.append(
             Finding(
                 path,
-                f"proof tickets must cover S21-00..S21-13 exactly; missing={sorted(expected_tickets - tickets)} extra={sorted(tickets - expected_tickets)}",
+                f"proof tickets differ from the current SEP-21 graph; missing={sorted(expected_tickets - tickets)} extra={sorted(tickets - expected_tickets)}",
             )
         )
     if covered_families != FAMILIES:
@@ -3205,8 +3204,9 @@ def _main_locked(argv: list[str] | None = None) -> int:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
 
+    require_current = args.require_all or args.require_code_qualified or args.dependencies_of is not None
     findings = check_registry(registry, root=root, path=registry_path)
-    if args.require_all or args.require_code_qualified or args.dependencies_of is not None:
+    if require_current:
         for label, path in (("registry", registry_path), ("schema", schema_path)):
             if path is None:
                 continue
@@ -3319,7 +3319,18 @@ def _main_locked(argv: list[str] | None = None) -> int:
                 )
             )
             continue
-        proof = proof_by_id.get(proof_id)
+        replay = manifest_path.is_relative_to(root / PROOF_ARCHIVE_ROOT)
+        manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+        proof = proof_by_id.get(proof_id) if isinstance(proof_id, str) else None
+        if proof is None and replay and not (require_current or args.bind_source):
+            try:
+                canonical = root / proof_archive_relative_path(payload, manifest_digest)
+                if manifest_path != canonical:
+                    raise ValueError("retired proof manifest is not its immutable archive path")
+                proof = committed_proof_authorities(root, payload["source"]["head"])[proof_id]
+            except (OSError, KeyError, TypeError, ValueError) as error:
+                findings.append(Finding(manifest_path, f"cannot replay retired proof authority: {error}"))
+                continue
         if proof is None:
             findings.append(Finding(manifest_path, f"proof_id {proof_id!r} is not registered"))
             continue
@@ -3327,7 +3338,6 @@ def _main_locked(argv: list[str] | None = None) -> int:
             findings.append(Finding(manifest_path, f"duplicate manifest for proof_id {proof_id!r}"))
             continue
         seen_proofs.add(proof_id)
-        replay = manifest_path.is_relative_to(root / PROOF_ARCHIVE_ROOT)
         schema = None
         if schema_path is not None and not replay:
             try:
@@ -3351,9 +3361,9 @@ def _main_locked(argv: list[str] | None = None) -> int:
         findings.extend(manifest_findings)
         if not manifest_findings:
             payload_by_id[proof_id] = payload
-            selected_digests[proof_id] = hashlib.sha256(manifest_bytes).hexdigest()
+            selected_digests[proof_id] = manifest_digest
 
-    if args.require_all or args.require_code_qualified or args.dependencies_of is not None:
+    if require_current:
         findings.extend(
             check_aggregate(
                 payload_by_id,
