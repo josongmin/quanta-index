@@ -587,7 +587,7 @@ def test_external_cold_command_requires_complete_frozen_pin_before_execution(
     ],
 )
 def test_orchestrator_pins_a_frozen_legacy_producer(
-    tmp_path: Path, mode: str, fault: str | None
+    tmp_path: Path, monkeypatch, mode: str, fault: str | None
 ) -> None:
     repo = tmp_path / "legacy"
     repo.mkdir()
@@ -620,12 +620,16 @@ def test_orchestrator_pins_a_frozen_legacy_producer(
     if fault == "producer-exit":
         write_artifact += "sys.exit(17)\n"
     fake = tmp_path / "frozen-producer"
+    executable_scratch = tmp_path / "execution-temp"
+    executable_scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(executable_scratch))
     fake.write_text(
         f"#!{sys.executable}\n"
         "import os, pathlib, sys\n"
         'assert os.environ["QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS"] == "1"\n'
         f"assert pathlib.Path.cwd().resolve() == pathlib.Path({str(repo.resolve())!r})\n"
         f"assert pathlib.Path(sys.argv[0]).resolve() != pathlib.Path({str(fake)!r}).resolve()\n"
+        f"assert pathlib.Path(sys.argv[0]).resolve().parents[2] == pathlib.Path({str(executable_scratch.resolve())!r})\n"
         + body
         + write_artifact,
         encoding="utf-8",
