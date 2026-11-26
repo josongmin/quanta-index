@@ -324,9 +324,14 @@ def _setup(tmp_path: Path, *, archived: bool = False) -> tuple[dict, Path, Path,
 
 
 def test_detached_ab_captures_original_three_sidecars_from_private_copy(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
     options, fixture_dir, marker, runner, head = _prepared_capture(tmp_path)
+    executable_scratch = tmp_path / "executable-scratch"
+    executable_scratch.mkdir()
+    scratch_alias = tmp_path / "executable-scratch-alias"
+    scratch_alias.symlink_to(executable_scratch, target_is_directory=True)
+    monkeypatch.setattr("tempfile.tempdir", str(scratch_alias))
     expected_cases, _ = _source_cases(options["source_checkout"], head)
     files = capture_detached_ab(**options)
     assert set(files) == {"summary.json", "cases.json", "provider-stats.json"}
@@ -341,8 +346,11 @@ def test_detached_ab_captures_original_three_sidecars_from_private_copy(
         )
         == files
     )
-    assert marker.read_text() != str(runner)
-    assert marker.read_text().endswith("/relevance_openai_ab")
+    executed_runner = Path(marker.read_text())
+    assert executed_runner != runner
+    assert executed_runner.name == "relevance_openai_ab"
+    assert executed_runner.parents[1] == executable_scratch
+    assert not executed_runner.exists()
     for name in files:
         assert (options["out_dir"] / name).read_bytes() == (fixture_dir / name).read_bytes()
     assert "benign-test-only-key" not in repr(files)

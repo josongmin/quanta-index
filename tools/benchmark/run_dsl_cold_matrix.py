@@ -252,10 +252,12 @@ def measure_frozen(args: argparse.Namespace, bin_cmd: list[str]) -> int:
         if binary.sha256 != args.bin_sha256:
             raise RuntimeError("frozen producer binary SHA-256 differs")
         out.parent.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(dir=out.parent) as scratch:
-            stage = Path(scratch)
-            runner = stage_executable(binary, stage)
-            staged = stage / "artifact.json"
+        with (
+            TemporaryDirectory(prefix="quanta-legacy-dsl-input-") as input_scratch,
+            TemporaryDirectory(dir=out.parent) as output_scratch,
+        ):
+            runner = stage_executable(binary, Path(input_scratch).resolve(strict=True))
+            staged = Path(output_scratch) / "artifact.json"
             env = dict(os.environ, QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS="1")
             run = partial(run_bin, [str(runner.path)], cwd=checkout, env=env)
             sample_count = None

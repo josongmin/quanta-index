@@ -1163,15 +1163,19 @@ def capture_detached_ab(
     )
     _grant_digest(env)
 
-    with TemporaryDirectory(prefix=".relevance-openai-ab-", dir=final.parent) as scratch_name:
+    with (
+        TemporaryDirectory(prefix="quanta-relevance-openai-ab-runner-") as runner_scratch,
+        TemporaryDirectory(prefix=".relevance-openai-ab-", dir=final.parent) as scratch_name,
+    ):
         scratch = Path(scratch_name)
-        private_runner = scratch / "relevance_openai_ab"
+        private_runner = Path(runner_scratch).resolve(strict=True) / "relevance_openai_ab"
         copied = original.copy_to(private_runner)
         _require(
             copied.sha256 == runner_sha256 and copied.size == original.size,
             "private runner copy differs",
         )
         private_runner.chmod(stat.S_IRUSR | stat.S_IXUSR)
+        _require(os.access(private_runner, os.X_OK), "runner scratch directory must allow execution")
         _require(
             RawFile.capture(private_runner).sha256 == runner_sha256, "private executable changed"
         )
