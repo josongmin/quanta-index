@@ -152,6 +152,22 @@ fn native_uds_repository_paths_page_same_path_and_bind_cursor() -> TestResult {
         &budget(),
     )?)?;
 
+    let scalar = client.query_paths(
+        ViewSelection::Exact(published_view),
+        file_spec().instance,
+        "src/",
+        None,
+        1,
+        &budget(),
+    )?;
+    let [entry] = scalar.entries.as_slice() else {
+        return Err("scalar path page must contain the unscoped entry".into());
+    };
+    assert_eq!(scalar.view, published_view);
+    assert_eq!(entry.path, "src/shared.rs");
+    assert_eq!(entry.source, legacy);
+    assert!(!scalar.has_more);
+
     let expected = [
         (None, legacy),
         (Some(&repo_a), source_a),
