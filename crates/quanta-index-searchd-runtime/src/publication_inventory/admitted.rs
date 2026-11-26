@@ -103,10 +103,9 @@ impl ScanFile {
 impl Drop for ScanFile {
     fn drop(&mut self) {
         if let Some(file) = self.file.take() {
-            if crate::owned_fd_close::close_owned_file(file).is_err() {
-                self.state.mark_close_uncertain();
-            } else {
-                self.state.release();
+            match crate::owned_fd_close::close_owned_file(file) {
+                Ok(()) => self.state.release(),
+                Err(_) => self.state.mark_close_uncertain(),
             }
         }
     }

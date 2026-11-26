@@ -569,12 +569,11 @@ impl AnnDirectory {
                 consolidation::prepare(&mut next, recipe, scoped)
             })()
         };
-        if result.is_err() {
-            context
+        match &result {
+            Err(_) => context
                 .budget
-                .record_failed_stage(quanta_index_core::DiagnosticStageV1::Compaction);
-        } else {
-            *self = next;
+                .record_failed_stage(quanta_index_core::DiagnosticStageV1::Compaction),
+            Ok(_) => *self = next,
         }
         crate::build_diagnostic::finish_build_stage(span, result.is_ok());
         result

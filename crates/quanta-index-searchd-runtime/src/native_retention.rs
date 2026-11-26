@@ -1238,13 +1238,11 @@ mod tests {
                     "retention phase result changed under split page limits".into(),
                 ));
             }
-            outcome.or_else(|error| {
-                if expected_failure && error == IndexError::ResourceLimited {
-                    Ok(())
-                } else {
-                    Err(error)
-                }
-            })?;
+            match outcome {
+                Ok(()) => {}
+                Err(IndexError::ResourceLimited) if expected_failure => {}
+                Err(error) => return Err(error),
+            }
         }
         if catalog
             .limits

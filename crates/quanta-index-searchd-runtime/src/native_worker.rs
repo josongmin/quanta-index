@@ -1138,7 +1138,7 @@ async fn run_lane(
                         "native operation task failed: {error}"
                     )));
                     receiver.close();
-                    while receiver.try_recv().is_ok() {}
+                    while let Ok(_queued) = receiver.try_recv() {}
                     accepting = false;
                 }
             }

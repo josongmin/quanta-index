@@ -511,29 +511,33 @@ impl Adapter {
             let was_retired = shm.retired;
             let had_mutation = shm.mutation.is_some();
             let result = self.prepare_shm_map(&mut shm, &path, event);
-            if result.is_ok() {
-                // The lower VFS can now attach a physical SHM descriptor.
-                shm.retired = false;
-                handle.shm = Some(shm);
-            } else {
-                // A refused BEFORE callback prevents every lower SHM syscall.
-                // Refund only the newly acquired, provably unstarted ticket;
-                // an earlier started write and its FD custody remain held.
-                if !had_mutation
-                    && shm
-                        .mutation
-                        .as_ref()
-                        .is_some_and(|mutation| !mutation.is_started())
-                {
-                    shm.mutation = None;
-                    shm.mutation_parent = None;
-                }
-                shm.retired = was_retired;
-                if had_shm || shm.mutation.is_some() {
+            match result {
+                Ok(()) => {
+                    // The lower VFS can now attach a physical SHM descriptor.
+                    shm.retired = false;
                     handle.shm = Some(shm);
+                    Ok(())
+                }
+                Err(error) => {
+                    // A refused BEFORE callback prevents every lower SHM syscall.
+                    // Refund only the newly acquired, provably unstarted ticket;
+                    // an earlier started write and its FD custody remain held.
+                    if !had_mutation
+                        && shm
+                            .mutation
+                            .as_ref()
+                            .is_some_and(|mutation| !mutation.is_started())
+                    {
+                        shm.mutation = None;
+                        shm.mutation_parent = None;
+                    }
+                    shm.retired = was_retired;
+                    if had_shm || shm.mutation.is_some() {
+                        handle.shm = Some(shm);
+                    }
+                    Err(error)
                 }
             }
-            result
         })
     }
     fn prepare_shm_map(

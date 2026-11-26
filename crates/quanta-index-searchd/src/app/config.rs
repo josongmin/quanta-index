@@ -2436,18 +2436,14 @@ mod tests {
             Some(expected)
         );
         for rejected in names {
-            assert!(
-                lexical_pool_write_limits_from_lookup(&|name| Ok(
-                    (name != rejected).then(|| "1".into())
-                ))
-                .is_err()
-            );
-            assert!(
-                lexical_pool_write_limits_from_lookup(&|name| Ok(Some(
-                    if name == rejected { "0" } else { "1" }.into()
-                )))
-                .is_err()
-            );
+            let missing = lexical_pool_write_limits_from_lookup(&|name| {
+                Ok((name != rejected).then(|| "1".into()))
+            });
+            assert!(missing.is_err());
+            let invalid = lexical_pool_write_limits_from_lookup(&|name| {
+                Ok(Some(if name == rejected { "0" } else { "1" }.into()))
+            });
+            assert!(invalid.is_err());
         }
     }
 
@@ -3796,16 +3792,14 @@ mod tests {
             }
         })?;
         assert_eq!(reviewed, live);
-        assert!(
-            semantic_embedder_profile_from_lookup(&|name| {
-                if name == "OPENAI_API_KEY" {
-                    Ok(None)
-                } else {
-                    review_lookup(name)
-                }
-            })
-            .is_err()
-        );
+        let missing_api_key = semantic_embedder_profile_from_lookup(&|name| {
+            if name == "OPENAI_API_KEY" {
+                Ok(None)
+            } else {
+                review_lookup(name)
+            }
+        });
+        assert!(missing_api_key.is_err());
         Ok(())
     }
 
