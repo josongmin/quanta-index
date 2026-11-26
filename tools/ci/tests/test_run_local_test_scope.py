@@ -84,6 +84,7 @@ def test_combined_scopes_build_one_nextest_command(tmp_path: Path, monkeypatch) 
     assert command.count("--test") == 2
     assert command[command.index("--status-level") + 1] == "leak"
     assert command[command.index("--final-status-level") + 1] == "fail"
+    assert command[command.index("--no-tests") + 1] == "fail"
 
 
 def test_scope_refuses_cross_product_target_leak(tmp_path: Path, monkeypatch) -> None:
@@ -178,6 +179,7 @@ def test_library_only_scope_builds_one_nextest_command(tmp_path: Path, monkeypat
     assert packages == ["library"]
     assert "--lib" in command
     assert command.count("nextest") == 1
+    assert command[command.index("--no-tests") + 1] == "fail"
 
 
 def test_owner_library_scope_runs_ignored_tests_only_when_requested(

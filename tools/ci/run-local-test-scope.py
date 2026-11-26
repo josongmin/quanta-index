@@ -287,10 +287,10 @@ def build_command(
             "leak",
             "--final-status-level",
             "fail",
+            "--no-tests",
+            "fail",
         ]
     )
-    if module_filter:
-        command.extend(["--no-tests", "fail"])
     return command
 
 
