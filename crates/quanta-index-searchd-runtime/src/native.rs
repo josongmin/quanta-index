@@ -358,12 +358,15 @@ fn open_native_format(
                 physical.mark_close_unwitnessed();
                 return Err(anyhow::anyhow!("close native marker: {error}"));
             }
-            if written.is_ok() {
-                ticket.confirmed_native_fd_retired()?;
-            } else if let Ok(observed) = observed {
-                ticket.confirmed_unsynced_native_fd_retired(observed)?;
+            match written {
+                Ok(()) => ticket.confirmed_native_fd_retired()?,
+                Err(error) => {
+                    if let Ok(observed) = observed {
+                        ticket.confirmed_unsynced_native_fd_retired(observed)?;
+                    }
+                    return Err(error);
+                }
             }
-            written?;
         }
         Err(error) => return Err(error.into()),
     }

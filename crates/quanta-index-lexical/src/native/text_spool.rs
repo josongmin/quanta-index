@@ -2040,10 +2040,9 @@ impl TextSpool {
             }
             Ok(())
         });
-        if result.is_err() {
-            self.inventory_poisoned.set(true);
-        } else {
-            self.inventory_packet.borrow_mut().apply_delta(&delta);
+        match &result {
+            Err(_) => self.inventory_poisoned.set(true),
+            Ok(()) => self.inventory_packet.borrow_mut().apply_delta(&delta),
         }
         result
     }

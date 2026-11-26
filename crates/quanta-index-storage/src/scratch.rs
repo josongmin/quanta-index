@@ -1158,17 +1158,13 @@ mod tests {
                 path: &Path,
             ) -> Result<Box<dyn ScratchNamespaceLease>, IndexError> {
                 let _previous = self.acquired.fetch_add(1, Ordering::SeqCst);
-                fs::DirBuilder::new()
-                    .mode(0o700)
-                    .create(path)
-                    .or_else(|error| {
-                        if error.kind() == io::ErrorKind::AlreadyExists {
-                            Ok(())
-                        } else {
-                            Err(error)
-                        }
-                    })
-                    .map_err(|error| IndexError::Storage(format!("fixture namespace: {error}")))?;
+                match fs::DirBuilder::new().mode(0o700).create(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => {
+                        return Err(IndexError::Storage(format!("fixture namespace: {error}")));
+                    }
+                }
                 let metadata = fs::metadata(path)
                     .map_err(|error| IndexError::Storage(format!("fixture metadata: {error}")))?;
                 Ok(Box::new(Lease(

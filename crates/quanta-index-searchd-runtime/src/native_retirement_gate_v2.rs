@@ -99,26 +99,22 @@ fn checked_resume_outcome_v2(
 
 impl NativeRetirementAuthorityV2 {
     fn reject_projection(&self, projection: ProjectionId) -> Result<(), IndexError> {
-        if self
+        match self
             .retired_projections
             .binary_search_by_key(&projection.0, |value| value.0)
-            .is_ok()
         {
-            Err(retired())
-        } else {
-            Ok(())
+            Ok(_) => Err(retired()),
+            Err(_) => Ok(()),
         }
     }
 
     fn reject_instance(&self, instance: IndexInstanceId) -> Result<(), IndexError> {
-        if self
+        match self
             .retired_instances
             .binary_search_by_key(&instance.0, |value| value.0)
-            .is_ok()
         {
-            Err(retired())
-        } else {
-            Ok(())
+            Ok(_) => Err(retired()),
+            Err(_) => Ok(()),
         }
     }
 

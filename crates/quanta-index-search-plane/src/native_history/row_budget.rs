@@ -651,23 +651,10 @@ mod tests {
             assert!(decode_json_shape::<NativeShape<NativeRefTagShape>>(invalid).is_err());
         }
 
-        let mut cbor = Vec::new();
-        ciborium::ser::into_writer(
-            &ciborium::value::Value::Map(vec![
-                (
-                    ciborium::value::Value::Bytes(b"name".to_vec()),
-                    ciborium::value::Value::Text("main".into()),
-                ),
-                (
-                    ciborium::value::Value::Bytes(b"sha".to_vec()),
-                    ciborium::value::Value::Text("abc".into()),
-                ),
-            ]),
-            &mut cbor,
-        )
-        .expect("CBOR byte-key row");
+        // A fixed CBOR map with byte-string keys, independent of the decoder.
+        let cbor = b"\xa2\x44name\x64main\x43sha\x63abc";
         let shape: RefTagShape =
-            ciborium::de::from_reader(cbor.as_slice()).expect("known byte keys");
+            quanta_index_ipc::decode_cbor_payload(cbor).expect("known byte keys");
         assert_eq!(shape.name.0, 4);
         assert_eq!(shape.sha.0, 3);
     }

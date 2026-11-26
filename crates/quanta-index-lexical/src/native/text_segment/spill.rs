@@ -293,15 +293,16 @@ impl SegmentSpill {
             insert.clear_bindings();
             result
         })();
-        if result.is_err() {
-            self.poisoned = true;
-        } else {
-            self.inserted = self
-                .inserted
-                .checked_add(width(self.rows.len())?)
-                .ok_or(IndexError::ResourceLimited)?;
-            self.arena.clear();
-            self.rows.clear();
+        match &result {
+            Err(_) => self.poisoned = true,
+            Ok(()) => {
+                self.inserted = self
+                    .inserted
+                    .checked_add(width(self.rows.len())?)
+                    .ok_or(IndexError::ResourceLimited)?;
+                self.arena.clear();
+                self.rows.clear();
+            }
         }
         result
     }
