@@ -1051,6 +1051,121 @@ where
 }
 
 #[cfg(test)]
+mod fixture_decode {
+    use serde::{
+        Deserialize, Deserializer,
+        de::{self, MapAccess, SeqAccess, Visitor},
+    };
+    use std::fmt;
+
+    enum Field {
+        A,
+        B,
+        Other,
+    }
+
+    impl<'de> Deserialize<'de> for Field {
+        fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+            struct FieldVisitor;
+            impl Visitor<'_> for FieldVisitor {
+                type Value = Field;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    formatter.write_str("a fixture field name")
+                }
+
+                fn visit_str<E: de::Error>(self, value: &str) -> Result<Field, E> {
+                    Ok(match value {
+                        "a" => Field::A,
+                        "b" => Field::B,
+                        _ => Field::Other,
+                    })
+                }
+
+                fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Field, E> {
+                    Ok(match value {
+                        b"a" => Field::A,
+                        b"b" => Field::B,
+                        _ => Field::Other,
+                    })
+                }
+            }
+            decoder.deserialize_identifier(FieldVisitor)
+        }
+    }
+
+    struct FixtureVisitor<const HAS_B: bool>;
+
+    impl<'de, const HAS_B: bool> Visitor<'de> for FixtureVisitor<HAS_B> {
+        type Value = (u8, Option<(bool, String)>);
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a fixture struct")
+        }
+
+        fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+            let mut a = None;
+            let mut b = None;
+            while let Some(field) = map.next_key::<Field>()? {
+                match field {
+                    Field::A => {
+                        if a.is_some() {
+                            return Err(de::Error::duplicate_field("a"));
+                        }
+                        a = Some(map.next_value()?);
+                    }
+                    Field::B if HAS_B => {
+                        if b.is_some() {
+                            return Err(de::Error::duplicate_field("b"));
+                        }
+                        b = Some(map.next_value()?);
+                    }
+                    Field::B | Field::Other => {
+                        let _: de::IgnoredAny = map.next_value()?;
+                    }
+                }
+            }
+            let a = a.ok_or_else(|| de::Error::missing_field("a"))?;
+            if HAS_B && b.is_none() {
+                return Err(de::Error::missing_field("b"));
+            }
+            Ok((a, b))
+        }
+
+        fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+            let a = seq
+                .next_element()?
+                .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+            let b = if HAS_B {
+                Some(
+                    seq.next_element()?
+                        .ok_or_else(|| de::Error::invalid_length(1, &self))?,
+                )
+            } else {
+                None
+            };
+            if seq.next_element::<de::IgnoredAny>()?.is_some() {
+                return Err(de::Error::invalid_length(usize::from(HAS_B) + 2, &self));
+            }
+            Ok((a, b))
+        }
+    }
+
+    pub(super) fn decode<'de, D: Deserializer<'de>, const HAS_B: bool>(
+        decoder: D,
+        name: &'static str,
+    ) -> Result<(u8, Option<(bool, String)>), D::Error> {
+        const A_FIELDS: &[&str] = &["a"];
+        const AB_FIELDS: &[&str] = &["a", "b"];
+        decoder.deserialize_struct(
+            name,
+            if HAS_B { AB_FIELDS } else { A_FIELDS },
+            FixtureVisitor::<HAS_B>,
+        )
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde::Deserialize;
@@ -1203,10 +1318,19 @@ mod tests {
         owner.work = owner.work.saturating_add(work);
         result
     }
-    #[derive(Deserialize, Debug, PartialEq)]
+    #[derive(Debug, PartialEq)]
     struct Fixture {
         a: u8,
         b: (bool, String),
+    }
+    impl<'de> Deserialize<'de> for Fixture {
+        fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+            let (a, b) = super::fixture_decode::decode::<_, true>(decoder, "Fixture")?;
+            Ok(Self {
+                a,
+                b: b.ok_or_else(|| de::Error::missing_field("b"))?,
+            })
+        }
     }
     #[test]
     fn fixed_map_wire_and_retained_text() {
@@ -1640,9 +1764,15 @@ mod edge_tests {
     }
     #[test]
     fn byte_encoded_struct_key_and_indefinite_map() {
-        #[derive(Debug, Deserialize, PartialEq)]
+        #[derive(Debug, PartialEq)]
         struct Wire {
             a: u8,
+        }
+        impl<'de> Deserialize<'de> for Wire {
+            fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+                let (a, _) = super::fixture_decode::decode::<_, false>(decoder, "Wire")?;
+                Ok(Self { a })
+            }
         }
         let mut scratch = [0_u8; 4];
         let value: Wire = from_slice_with_finite_error_and_work_v3(
@@ -1734,10 +1864,19 @@ mod fixed_wire_contract {
         assert_eq!(charged.last(), Some(&0));
     }
 
-    #[derive(Debug, Deserialize, PartialEq)]
+    #[derive(Debug, PartialEq)]
     struct MapWire {
         a: u8,
         b: (bool, String),
+    }
+    impl<'de> Deserialize<'de> for MapWire {
+        fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+            let (a, b) = super::fixture_decode::decode::<_, true>(decoder, "MapWire")?;
+            Ok(Self {
+                a,
+                b: b.ok_or_else(|| de::Error::missing_field("b"))?,
+            })
+        }
     }
 
     #[test]

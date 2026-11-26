@@ -1,7 +1,10 @@
 //! Bounded retirement identity bytes. This is data until an installed BOOT
 //! reader joins it to the held predecessor route and selected candidate.
 
-use std::io::{self, Write};
+use std::{
+    fmt,
+    io::{self, Write},
+};
 
 use sha2::{Digest as _, Sha256};
 
@@ -21,6 +24,26 @@ pub enum RetiredProjectionPolicyErrorV1<E> {
     Format(&'static str),
     Admission(E),
     Io(io::Error),
+}
+
+impl<E: fmt::Display> fmt::Display for RetiredProjectionPolicyErrorV1<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Format(reason) => formatter.write_str(reason),
+            Self::Admission(error) => fmt::Display::fmt(error, formatter),
+            Self::Io(error) => fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for RetiredProjectionPolicyErrorV1<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Format(_) => None,
+            Self::Admission(error) => Some(error),
+            Self::Io(error) => Some(error),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,13 +94,17 @@ impl RetiredProjectionPolicyHeaderV1 {
 
 /// Physical object reference and exact body digest. Neither field proves the
 /// predecessor association without BOOT and selection verification.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RetiredProjectionPolicyRefV1 {
     pub object: ObjectRef,
     pub sha256: Digest,
     pub identity_count: u32,
 }
+crate::native_serde_struct!([serde_identifier] RetiredProjectionPolicyRefV1 {
+    object: ObjectRef,
+    sha256: Digest,
+    identity_count: u32,
+});
 
 impl RetiredProjectionPolicyRefV1 {
     pub fn validate_v1(&self) -> Result<(), &'static str> {

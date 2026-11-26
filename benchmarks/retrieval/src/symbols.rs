@@ -892,11 +892,24 @@ pub fn extract_symbols(path: &str, source: &str) -> Result<Vec<SymbolRecord>, Sy
 
 /// A Go helper result supplied explicitly for released-grammar evaluation.
 /// It is never selected by the default symbol producer.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug)]
 pub struct GoCandidateEdit {
     pub start: usize,
     pub end: usize,
     pub replacement: String,
+}
+
+impl Serialize for GoCandidateEdit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("GoCandidateEdit", 3)?;
+        state.serialize_field("start", &self.start)?;
+        state.serialize_field("end", &self.end)?;
+        state.serialize_field("replacement", &self.replacement)?;
+        state.end()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -994,11 +1007,24 @@ pub fn extract_go_candidate_symbols(
 }
 
 /// Candidate-only TypeScript compiler edit, in original UTF-8 byte offsets.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug)]
 pub struct SyntaxCandidateEdit {
     pub start: usize,
     pub end: usize,
     pub replacement: String,
+}
+
+impl Serialize for SyntaxCandidateEdit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SyntaxCandidateEdit", 3)?;
+        state.serialize_field("start", &self.start)?;
+        state.serialize_field("end", &self.end)?;
+        state.serialize_field("replacement", &self.replacement)?;
+        state.end()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1282,6 +1308,26 @@ pub fn extract_corpus_symbols(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidate_edit_digest_input_keeps_fixed_field_order() {
+        const GOLD: &[u8] = br#"[{"start":1,"end":3,"replacement":"x"}]"#;
+        let go = GoCandidateEdit {
+            start: 1,
+            end: 3,
+            replacement: "x".into(),
+        };
+        let syntax = SyntaxCandidateEdit {
+            start: 1,
+            end: 3,
+            replacement: "x".into(),
+        };
+        assert_eq!(serde_json::to_vec(&[go]).expect("Go edit JSON"), GOLD);
+        assert_eq!(
+            serde_json::to_vec(&[syntax]).expect("syntax edit JSON"),
+            GOLD
+        );
+    }
 
     #[test]
     fn explicit_go_candidate_keeps_original_symbol_records() {
