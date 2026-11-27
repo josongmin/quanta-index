@@ -1,7 +1,7 @@
 //! Old Tree policy is retained only as an exact selected Source predecessor.
 //! The old builder is a fixture; the replacement is the real current Text index.
 
-use super::*;
+use super::{source_body_validation::scoped_budget, *};
 use quanta_index_core::index::{
     BaseMember, DeltaInput, PlanContext, PlanDecision, SourceDelta, SourceTextAdmission,
     ports::{IndexBuildPort, IndexFuture},
@@ -115,7 +115,6 @@ fn text_kernel(
 #[test]
 fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
     let root = tempfile::tempdir()?;
-    let objects = Arc::new(FileObjectStore::open(root.path().join("native-objects"))?);
     let catalog = Arc::new(SqliteCatalog::open(
         root.path(),
         Duration::from_millis(100),
@@ -123,6 +122,10 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
     let scratch = Arc::new(quanta_index_storage::FileScratchSpace::open_standalone(
         root.path().join("scratch"),
         16 * 1024 * 1024 * 1024,
+    )?);
+    let objects = Arc::new(FileObjectStore::open_with_scratch(
+        root.path().join("native-objects"),
+        scratch.clone(),
     )?);
     let admission = Digest([31; 32]);
     let previous = TextRecipe::previous_tree(admission);
@@ -138,13 +141,13 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
         previous,
         true,
     )?;
-    let genesis = old.create_workspace(workspace(), 1, &mut budget())?;
+    let genesis = old.create_workspace(workspace(), 1, &mut scoped_budget())?;
     let old_profile = old.stage_profile(
         old.begin_input(operation(1))?,
         &IndexProfile {
             instances: vec![old_spec.clone()],
         },
-        &mut budget(),
+        &mut scoped_budget(),
     )?;
     let configured = published(block_on(old.submit(
         UpdateRequest {
@@ -154,14 +157,14 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
                 profile: old_profile,
             },
         },
-        &mut budget(),
+        &mut scoped_budget(),
     ))?)?;
     let first_source = old.stage_source_text(
         old.begin_input(operation(2))?,
         "old.rs",
         b"alpha stable",
         SourceTextAdmission::Utf8 { policy: admission },
-        &mut budget(),
+        &mut scoped_budget(),
     )?;
     let first = published(block_on(old.submit(
         request(
@@ -178,9 +181,9 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
                 next: Some(first_source),
             }],
         )?,
-        &mut budget(),
+        &mut scoped_budget(),
     ))?)?;
-    let old_ticket = old.pin_view(ViewSelection::Exact(first), &budget())?;
+    let old_ticket = old.pin_view(ViewSelection::Exact(first), &scoped_budget())?;
     let old_member = member(&old, &objects, first)?;
     assert_eq!(old_member.input.policy, previous.output_policy());
     drop(old);
@@ -210,12 +213,15 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
             2,
             vec![],
         )?,
-        &mut budget(),
+        &mut scoped_budget(),
     ))?;
-    assert!(matches!(
-        refused,
-        SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::RebuildRequired))
-    ));
+    assert!(
+        matches!(
+            refused,
+            SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::RebuildRequired))
+        ),
+        "unexpected legacy Tree write result: {refused:?}"
+    );
     assert_eq!(source(&live, first)?, old_ticket.view().source);
 
     let current_profile = live.stage_profile(
@@ -223,7 +229,7 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
         &IndexProfile {
             instances: vec![current_spec],
         },
-        &mut budget(),
+        &mut scoped_budget(),
     )?;
     let rebuilt = published(block_on(live.submit(
         UpdateRequest {
@@ -233,17 +239,19 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
                 profile: current_profile,
             },
         },
-        &mut budget(),
+        &mut scoped_budget(),
     ))?)?;
     assert_eq!(source(&live, rebuilt)?, old_ticket.view().source);
     assert_eq!(old_ticket.view().identity, first);
     assert_eq!(
-        objects.get(old_member.artifact, &mut budget())?.payload,
+        objects
+            .get(old_member.artifact, &mut scoped_budget())?
+            .payload,
         OLD_ARTIFACT
     );
     let index = NativeTextIndex::new(current);
     let df = |view| -> TestResult<u64> {
-        let ticket = live.pin_view(ViewSelection::Exact(view), &budget())?;
+        let ticket = live.pin_view(ViewSelection::Exact(view), &scoped_budget())?;
         Ok(index.inspect_term_df(
             &member(&live, &objects, view)?,
             CaseMode::Sensitive,
@@ -252,7 +260,7 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
                 ticket: ticket.record(),
                 objects: objects.as_ref(),
                 maps: objects.as_ref(),
-                budget: &mut budget(),
+                budget: &mut scoped_budget(),
             },
         )?)
     };
@@ -263,7 +271,7 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
         "old.rs",
         b"beta stable",
         SourceTextAdmission::Utf8 { policy: admission },
-        &mut budget(),
+        &mut scoped_budget(),
     )?;
     let next = published(block_on(live.submit(
         request(
@@ -280,10 +288,10 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
                 next: Some(next_source),
             }],
         )?,
-        &mut budget(),
+        &mut scoped_budget(),
     ))?)?;
     assert_eq!(df(next)?, 0);
-    let ticket = live.pin_view(ViewSelection::Exact(next), &budget())?;
+    let ticket = live.pin_view(ViewSelection::Exact(next), &scoped_budget())?;
     assert_eq!(
         index.inspect_term_df(
             &member(&live, &objects, next)?,
@@ -293,14 +301,16 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
                 ticket: ticket.record(),
                 objects: objects.as_ref(),
                 maps: objects.as_ref(),
-                budget: &mut budget()
+                budget: &mut scoped_budget()
             },
         )?,
         1
     );
     assert_eq!(old_ticket.view().identity, first);
     assert_eq!(
-        objects.get(old_member.artifact, &mut budget())?.payload,
+        objects
+            .get(old_member.artifact, &mut scoped_budget())?
+            .payload,
         OLD_ARTIFACT
     );
     Ok(())
