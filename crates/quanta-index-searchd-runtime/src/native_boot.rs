@@ -2247,6 +2247,8 @@ mod legacy_candidate_tests;
 
 #[cfg(test)]
 mod selection_guard_tests {
+    use quanta_index_core::index::Digest;
+
     use super::*;
 
     #[test]
