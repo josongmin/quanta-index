@@ -315,6 +315,7 @@ fn assert_selected_native_source_export_v1(
         "--receipt",
         receipt.to_str().ok_or("Native receipt path is not UTF-8")?,
     ];
+    let before_refusal = native_regular_files(root)?;
     let refused = Command::new(binary)
         .arg("select-native-state")
         .args(common_arguments)
@@ -323,21 +324,18 @@ fn assert_selected_native_source_export_v1(
         !refused.status.success(),
         "mutable Select accepted a presealed route"
     );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("operation digest conflicts with retained admission"),
+        "mutable Select did not reach the retained route guard: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
     assert!(!receipt.try_exists()?, "refused Select published a receipt");
-    {
-        let mut catalog = SqliteCatalog::open(root, Duration::from_secs(2))?;
-        let mut work = WorkBudget::with_request(work_limits(), budget());
-        let manifest = catalog
-            .native_boot_manifest(&mut work)?
-            .ok_or("refused Select discarded the BOOT manifest")?;
-        assert_eq!(manifest.operation.key, operation(2));
-        assert_eq!(manifest.publication, selected.view);
-        assert_eq!(
-            manifest.protected_source_routes.map(|route| route.object),
-            Some(route_ref)
-        );
-        catalog.close_checked()?;
-    }
+    assert_eq!(
+        native_regular_files(root)?,
+        before_refusal,
+        "refused Select changed the protected root"
+    );
 
     let hex = |bytes: [u8; 32]| {
         bytes
@@ -431,7 +429,7 @@ fn assert_selected_native_source_export_v1(
                 && bytes.len() >= length + 4,
             "protected Source frame exceeds bound"
         );
-        frames.push(serde_json::from_slice::<Frame>(&bytes[4..4 + length])?);
+        frames.push(Frame::decode_json_v1(&bytes[4..4 + length])?);
         bytes = &bytes[4 + length..];
     }
     assert_eq!(
