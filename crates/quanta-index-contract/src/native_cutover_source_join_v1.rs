@@ -5196,7 +5196,7 @@ mod tests {
         assert_eq!(associate_lineage(&baseline).unwrap(), vec![(7, 7), (1, 1)]);
 
         let mut missing_lease = baseline.clone();
-        missing_lease.source_facts.remove(1);
+        let _removed_source_fact = missing_lease.source_facts.remove(1);
         assert!(associate_lineage(&missing_lease).is_err());
 
         let mut stale_lease = baseline.clone();

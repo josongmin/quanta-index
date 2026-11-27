@@ -1093,9 +1093,12 @@ mod frame_wire_tests {
             matches!(frame, NativeSourceSnapshotExportFrameV1::FileChunk { offset: 0, bytes } if bytes.len() == 64 * 1024)
         );
         BODY_REPLAY_ENTRY_COUNT.with(|count| assert_eq!(count.get(), 0));
-        let _: NativeSourceSnapshotExportFrameV1 =
-            serde_json::from_slice(br#"{"body":{"offset":0,"bytes":[]},"kind":"file_chunk"}"#)
-                .unwrap();
+        drop(
+            serde_json::from_slice::<NativeSourceSnapshotExportFrameV1>(
+                br#"{"body":{"offset":0,"bytes":[]},"kind":"file_chunk"}"#,
+            )
+            .unwrap(),
+        );
         BODY_REPLAY_ENTRY_COUNT.with(|count| assert!(count.get() > 0));
 
         assert_eq!(

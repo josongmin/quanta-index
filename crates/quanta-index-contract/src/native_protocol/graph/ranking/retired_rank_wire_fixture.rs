@@ -21,7 +21,7 @@ pub(crate) struct NativeRepoMapQuery {
 
 impl NativeRepoMapQuery {
     #[must_use]
-    pub fn valid_native_rank_query(&self) -> bool {
+    fn valid_native_rank_query(&self) -> bool {
         !(self.query_text.trim().is_empty()
             || self.query_text.len() > MAX_REPOMAP_RANK_QUERY_BYTES
             || self.focus_subjects.len() > MAX_REPOMAP_RANK_FOCUS_SUBJECTS
@@ -389,7 +389,7 @@ impl Serialize for NativeRepoMapResultRef<'_> {
 
 impl NativeRepoMapResultRef<'_> {
     #[must_use]
-    pub fn valid_native_rank_result(&self) -> bool {
+    pub(super) fn valid_native_rank_result(&self) -> bool {
         self.policy == native_repomap_rank_policy()
             && self.hits.len() <= MAX_REPOMAP_RANK_HITS
             && self.drop_reason_codes.iter().all(|reason| {
@@ -427,16 +427,6 @@ impl NativeRepoMapResultRef<'_> {
                     && !hit.owner_path.as_str().is_empty()
                     && hit.owner_path.as_str().len() <= MAX_REPOMAP_RANK_PATH_BYTES
             })
-    }
-}
-
-impl crate::native_protocol::NativeIndexResponse {
-    /// Serialize the canonical result without copying its retained hit buffers.
-    pub fn serialize_repomap_ranked_ref<S: Serializer>(
-        result: &NativeRepoMapResultRef<'_>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_newtype_variant("NativeIndexResponse", 30, "RepoMapRanked", result)
     }
 }
 
