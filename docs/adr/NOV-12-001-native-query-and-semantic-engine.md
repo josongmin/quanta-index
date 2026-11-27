@@ -368,6 +368,11 @@ transfers each immutable object once. Parent frames retain the original child
 order and repeated references. The frontier and visit table acquire their own
 backing under the configured inventory ceiling. A back edge refuses the
 transfer as a digest conflict.
+Source-only export and restore-forward validate the predecessor's Catalog
+census under the held root lease. The full protected transfer derives snapshot
+objects from those rows for staging in the destination. BOOT validates the
+selected root's physical closure, including an imported route's stored
+predecessor route, snapshot, and pages.
 [Snapshot contract](../../crates/quanta-index-contract/src/index/protected_native_snapshot.rs) ·
 [BOOT verification](../../crates/quanta-index-searchd-runtime/src/native_boot/restore_forward/preserved_native_v1.rs)
 

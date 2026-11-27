@@ -1052,16 +1052,22 @@ fn writes_native_selection(mode: NativeCommandModeV1) -> bool {
     )
 }
 
-/// The plain selector has no field that could carry retained policy custody.
-/// Candidate selection may carry that same policy explicitly.
+/// Before a mutable selection, compare retained custody with what its writer can persist.
 fn refuses_mutable_retained_selection_v1(
     mode: NativeCommandModeV1,
     protected_source_routes: Option<ObjectRef>,
     retired_projection_policy: Option<RetiredProjectionPolicyRefV1>,
 ) -> bool {
-    writes_native_selection(mode)
-        && (protected_source_routes.is_some()
-            || (matches!(mode, NativeCommandModeV1::Select) && retired_projection_policy.is_some()))
+    let written_policy = match mode {
+        NativeCommandModeV1::Select => None,
+        NativeCommandModeV1::SelectCandidate {
+            protected_source_routes: None,
+            retired_projection_policy,
+            ..
+        } => retired_projection_policy,
+        _ => return false,
+    };
+    protected_source_routes.is_some() || retired_projection_policy != written_policy
 }
 
 /// The original Control reservation and its one WorkBudget precede the
@@ -2271,6 +2277,15 @@ mod selection_guard_tests {
             candidate,
             None,
             Some(policy),
+        ));
+        assert!(refuses_mutable_retained_selection_v1(candidate, None, None));
+        assert!(refuses_mutable_retained_selection_v1(
+            candidate,
+            None,
+            Some(RetiredProjectionPolicyRefV1 {
+                sha256: Digest([6; 32]),
+                ..policy
+            }),
         ));
         assert!(refuses_mutable_retained_selection_v1(
             NativeCommandModeV1::Select,
