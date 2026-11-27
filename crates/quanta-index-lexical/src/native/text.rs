@@ -7211,7 +7211,8 @@ mod tests {
     #[test]
     fn native_root_json_is_funded_through_put_and_refusal_preserves_wire_commitment()
     -> Result<(), IndexError> {
-        let gold = br#"{"owners":null,"terms":null,"docs":0,"indexed_tokens":0}"#;
+        // The Root wire in declared field order, including its path index.
+        let gold = br#"{"owners":null,"terms":null,"docs":0,"indexed_tokens":0,"path_postings":null,"path_docs":0,"path_indexed_tokens":0}"#;
         let length = u64::try_from(gold.len()).map_err(|_error| IndexError::ResourceLimited)?;
         for (ceiling, refuse) in [
             (
