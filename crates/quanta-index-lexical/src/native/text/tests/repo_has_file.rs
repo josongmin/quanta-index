@@ -157,6 +157,96 @@ fn overlay_search_checks_every_selected_path_owner_in_a_repository_bucket() -> R
 }
 
 #[test]
+fn overlay_rename_in_repository_bucket_keeps_stable_results() -> Result<(), IndexError> {
+    use super::overlay_tests::{captured_overlay, reader_overlay};
+    use quanta_index_core::index::NativeTextHitSource;
+
+    let (fixture, other) = repo_fixture_with_second_path("body/a.rs")?;
+    let overlay = || {
+        let mut rows = vec![
+            captured_overlay(fixture.owner, Some("body/a.rs"), Some("one draft")),
+            captured_overlay(other, Some("body/renamed.rs"), Some("one revised")),
+        ];
+        rows.sort_unstable_by_key(|row| row.owner);
+        rows
+    };
+    let constraints = quanta_index_contract::QueryConstraintSetV1::unconstrained();
+    let first = reader_overlay(&fixture, overlay(), &constraints, 2)?;
+    let repeated = reader_overlay(&fixture, overlay(), &constraints, 2)?;
+    check_eq!(first.matched, 2);
+    check_eq!(first.remaining, 2);
+    check_eq!(first.hits.len(), 2);
+    check_eq!(repeated.matched, first.matched);
+    check_eq!(repeated.remaining, first.remaining);
+    for (actual, again) in first.hits.iter().zip(&repeated.hits) {
+        check_eq!(actual.owner, again.owner);
+        check_eq!(actual.path, again.path);
+        check_eq!(actual.score, again.score);
+        check_eq!(actual.source, NativeTextHitSource::Overlay { revision: 19 });
+    }
+    check!(
+        first
+            .hits
+            .iter()
+            .any(|hit| { hit.owner == fixture.owner && hit.path == "body/a.rs" })
+    );
+    check!(
+        first
+            .hits
+            .iter()
+            .any(|hit| { hit.owner == other && hit.path == "body/renamed.rs" })
+    );
+    Ok(())
+}
+
+#[test]
+fn overlay_repository_bucket_rejects_corrupt_source_repository_and_path() -> Result<(), IndexError>
+{
+    use super::overlay_tests::{captured_overlay, reader_overlay};
+
+    let (mut fixture, other) = repo_fixture_with_second_path("body/a.rs")?;
+    let source = reference(71);
+    let stored = fixture
+        .objects
+        .stored
+        .get(&source)
+        .ok_or(IndexError::ResourceLimited)?;
+    let original: SourceRecord = decode(&stored.payload)?;
+    let overlay = || {
+        let mut rows = vec![
+            captured_overlay(fixture.owner, Some("body/a.rs"), Some("one draft")),
+            captured_overlay(other, None, None),
+        ];
+        rows.sort_unstable_by_key(|row| row.owner);
+        rows
+    };
+    let constraints = quanta_index_contract::QueryConstraintSetV1::unconstrained();
+
+    let mut wrong_repository = original.clone();
+    wrong_repository.source_repo_id = Some(repo_id("corp-a")?);
+    fixture.objects.add(
+        source,
+        encode(&wrong_repository)?,
+        vec![wrong_repository.bytes],
+    )?;
+    check!(matches!(
+        reader_overlay(&fixture, overlay(), &constraints, 2),
+        Err(IndexError::CorruptObject(_))
+    ));
+
+    let mut wrong_path = original;
+    wrong_path.path = "body/foreign.rs".into();
+    fixture
+        .objects
+        .add(source, encode(&wrong_path)?, vec![wrong_path.bytes])?;
+    check!(matches!(
+        reader_overlay(&fixture, overlay(), &constraints, 2),
+        Err(IndexError::CorruptObject(_))
+    ));
+    Ok(())
+}
+
+#[test]
 fn select_path_unions_only_singleton_keyword_path_postings() -> Result<(), IndexError> {
     use quanta_index_contract::{LqCase, LqExpr, LqFilter, LqLeaf, LqQuery, LqSelect, LqSpan};
 
